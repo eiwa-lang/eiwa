@@ -1,6 +1,6 @@
-# Plano: Monomorfização + Refatoração de `Task<T>`
+# Plano: Monomorfização + Refatoração de `Task<T>` (Alinhar com [read roadmap](docs/roadmap.md) Ver Phase 50)
 
-## Fase 0 — Type Params em `contract` e `skill`
+## Etapa 0 — Type Params em `contract` e `skill`
 
 ### Necessidade
 
@@ -20,14 +20,14 @@ Precisamos estender a linguagem.
 
 ### Tasks
 
-#### Task 0.1: Parser — `contract Name<T>` e `skill Name<T>`
+#### Task 50.0.1: Parser — `contract Name<T>` e `skill Name<T>`
 
 Estender `parseContractDeclaration` e `parseSkillDeclaration` para aceitar `<T>` opcional após o nome, igual `fun` e `type` já fazem.
 
 - `src/frontend/parser/declaration.zig` — `contractDeclaration`, `skillDeclaration`
 - Adicionar `generic_params: []const []const u8` ao AST de `contract_decl` e `skill_decl`
 
-#### Task 0.2: AST — campos `generic_params`
+#### Task 50.0.2: AST — campos `generic_params`
 
 ```zig
 // ast.zig
@@ -53,14 +53,14 @@ Todos os pontos de criação sintética de `contract_decl`/`skill_decl` no type 
 - `src/core/type_checker/clone.zig` — se existir
 - `src/core/type_checker/infer_decl.zig` — assinaturas sintéticas
 
-#### Task 0.3: Type checker — registro de contracts/skills genéricos
+#### Task 50.0.3: Type checker — registro de contracts/skills genéricos
 
 Em `declareSignatures`, contracts e skills com `generic_params.len > 0` devem:
 1. Ser registrados em `local_symbols` (visível para imports)
 2. Registrar assinatura no scope mas **não** validar corpo ainda (como funções genéricas)
 3. `resolved_c_name` com prefixo do módulo
 
-#### Task 0.4: Resolução de type params em constraints
+#### Task 50.0.4: Resolução de type params em constraints
 
 ```eiwa
 contract Awaitable<T> { fun await(): T }
@@ -77,7 +77,7 @@ O `T` na constraint `Awaitable<T>` do skill deve resolver para o type param do s
 
 ---
 
-## Fase 1 — Monomorfização (Phase 50)
+## Etapa 1 — Monomorfização (Phase 50)
 
 ### Visão Geral
 
@@ -116,34 +116,28 @@ C + Runtime
 
 ### Tasks
 
-#### Task 1.1: Mecanismo de clonagem de AST
+#### Task 50.1.1: Mecanismo de clonagem de AST (COMPLETED)
 
-Criar `cloneAST(node: *ASTNode, allocator, subst: TypeSubst) -> *ASTNode` que:
-- Copia recursivamente um `ASTNode` e seus filhos
-- Durante a cópia, substiui referências ao type param `T` pelo tipo concreto
-- `TypeSubst` é um map `{ nome_do_param → *const EiwaType }`
+`cloneNode` + `cloneTypeRef` em `src/core/type_checker/clone.zig`. Já usados por `monomorphizeClass`. Copiam recursivamente um ASTNode substituindo type params por tipos concretos via `generic_map`.
 
-Arquivos afetados:
-- `src/core/ast.zig` — nova função `cloneNode`
-- `src/core/type_checker/monomorph.zig` — novo módulo
-
-#### Task 1.2: Trigger de monomorfização no type checker
+#### Task 50.1.2: Trigger de monomorfização no type checker
 
 Em `inferCall` (`infer_call.zig`), quando:
 ```
 callee = fun_decl com generic_params.len > 0
 type_args = [EiwaType.Concrete]
 ```
-1. Gerar chave única: `"funName<T1,T2>"` (ex: `"foo<Int>"`)
-2. Verificar cache de instâncias (`mono_cache: HashMap(string, *ASTNode)`)
+1. Gerar chave única: `"funName_T1_T2"` (ex: `"foo_Int"`)
+2. Verificar cache de instâncias (`monomorphized_functions: ArrayList(*ASTNode)`)
 3. Se não existir: clonar o `fun_decl` com `subst = { T → Int }`, inserir no módulo atual
 4. Type-check o clone normalmente
 
 Arquivos afetados:
 - `src/core/type_checker/infer_call.zig` — trigger no call resolution
-- `src/core/type_checker/core.zig` — adicionar `mono_cache` ao `TypeChecker`
+- `src/core/type_checker/core.zig` — `monomorphized_functions` adicionado
+- `src/core/type_checker/monomorphize.zig` — nova função `monomorphizeFunction`
 
-#### Task 1.3: Geração de C para instâncias
+#### Task 50.1.3: Geração de C para instâncias
 
 No transpiler:
 
@@ -158,16 +152,14 @@ Arquivos afetados:
 - `src/backend/c_transpiler/declaration.zig` — `emitFunDecl` deve processar instâncias
 - `src/backend/c_transpiler/expression.zig` — resolver chamada para instância correta
 
-#### Task 1.4: Cache de instâncias
+#### Task 50.1.4: Cache de instâncias
 
-Instâncias monomorfizadas devem ser cacheadas para evitar duplicação. Uma `HashMap(string, *ASTNode)` no `TypeChecker`, key = `"foo<Int,String>"`.
+Instâncias monomorfizadas devem ser cacheadas para evitar duplicação. `monomorphized_functions: ArrayList(*ASTNode)` no `TypeChecker`.
 
-#### Task 1.5: Tipos genéricos (`type Task<T>`)
+#### Task 50.1.5: Tipos genéricos (`type Task<T>`) — via `monomorphizeClass`
 
-Além de funções, tipos genéricos como `Task<T>` precisam de monomorfização:
-- `Task<Int>` vira struct C concreta com nome `Task_Int`
-- Construtor `Task<Int>.new(…)` vira `Task_Int_new(…)`
-- Propriedades com `T` viram tipo concreto
+Já implementado via `monomorphizeClass`. `Task<Int>` vira struct C concreta com nome `Task_Int`.
+Construtor `Task<Int>.new(…)` vira `Task_Int_new(…)`.
 
 #### Verificação
 
@@ -178,7 +170,7 @@ Além de funções, tipos genéricos como `Task<T>` precisam de monomorfização
 
 ---
 
-## Fase 2 — Refatoração de `Task<T>` (Remover Special Cases)
+## Etapa 2 — Refatoração de `Task<T>` (Remover Special Cases)
 
 ### O que será removido
 
@@ -207,7 +199,7 @@ eiwa task { 42 }
 
 ### Tasks
 
-#### Task 2.1: Garantir que `fun task<T>` seja type-checkável
+#### Task 50.2.1: Garantir que `fun task<T>` seja type-checkável
 
 O corpo de `task<T>` em `std/core.ei` invoca o construtor de `Task<T>`:
 
@@ -219,7 +211,7 @@ fun task<T>(block: () -> T): Task<T> {
 
 Com monomorfização, `Task<Int>` vira struct concreta. O construtor `Task<Int>.new` chama libaco para criar a co-rotina de verdade.
 
-#### Task 2.2: Código da fibra vai pra `lib {}` (libaco)
+#### Task 50.2.2: Código da fibra vai pra `lib {}` (libaco)
 
 Em vez de gerar `({ })` inline no transpiler, o construtor de `Task<T>` chama `lib {}`:
 
@@ -236,19 +228,19 @@ O construtor `Task<T>.new(block)` aloca a Task, cria co-rotina via `aco_create`,
 
 Arquivo: `src/std/core.ei` + runtime `src/runtime/third_party/libaco/`
 
-#### Task 2.3: Remover special cases do type checker
+#### Task 50.2.3: Remover special cases do type checker
 
 Remover:
 - Bloco `if (std.mem.eql(u8, name, "task")` em `infer_call.zig` (~linha 44)
 - Lógica `.await()` especial em `infer_member.zig`
 
-#### Task 2.4: Remover special cases do transpiler
+#### Task 50.2.4: Remover special cases do transpiler
 
 Remover:
 - Bloco `c.callee.data == .identifier and … base_name == "Task"` em `expression.zig` (~linha 373)
 - Bloco `g.name == "await" and rt_base == GenericInstance(Task)` em `expression.zig` (~linha 481)
 
-#### Task 2.5: Limpar `cType` de Task
+#### Task 50.2.5: Limpar `cType` de Task
 
 Remover o special case em `core.zig`:
 ```zig
@@ -259,7 +251,7 @@ Remover o special case em `core.zig`:
 
 Cada `Task<T>` monomorfizada gera seu próprio C type.
 
-#### Task 2.6: Remover `fiber.c` / `fiber.h`
+#### Task 50.2.6: Remover `fiber.c` / `fiber.h`
 
 Após libaco integrado, remover todo `src/runtime/fiber.c` e `src/runtime/fiber.h`.
 
@@ -272,7 +264,7 @@ Após libaco integrado, remover todo `src/runtime/fiber.c` e `src/runtime/fiber.
 
 ---
 
-## Fase 3 — Arquitetura Final: Contract + Skill + libaco
+## Etapa 3 — Arquitetura Final: Contract + Skill + libaco
 
 ### Design final da linguagem
 
@@ -316,11 +308,11 @@ fun task<T>(block: () -> T): Task<T> {
 
 ### Tasks
 
-#### Task 3.1: Skill methods acessarem `this.props` de `type`
+#### Task 50.3.1: Skill methods acessarem `this.props` de `type`
 
 Skills precisam acessar as propriedades do `type` consumidor via `this`. Ex: em `TaskLibaco.await()`, `this.done` e `this.co` são props de `Task<T>`. Verificar se o mecanismo atual de skill → type resolve isso corretamente (já deve funcionar — skills recebem `this` do tipo consumidor).
 
-#### Task 3.2: `lib {}` bindings de libaco
+#### Task 50.3.2: `lib {}` bindings de libaco
 
 Criar `src/runtime/third_party/libaco/` com:
 - `aco.h` — header original
@@ -329,7 +321,7 @@ Criar `src/runtime/third_party/libaco/` com:
 
 Criar binding `lib Libaco` em `src/std/core.ei` expondo as funções necessárias.
 
-#### Task 3.3: Construtor `Task<T>.new(block)` com libaco
+#### Task 50.3.3: Construtor `Task<T>.new(block)` com libaco
 
 O construtor da type `Task<T>` deve:
 1. Alocar a Task via GC
@@ -339,7 +331,7 @@ O construtor da type `Task<T>` deve:
 
 O closure packing (lambda → `{fn_ptr, env}`) já existe no transpiler para closures normais. O construtor precisa receber a lambda como `EiwaClosure` e extrair `fn_ptr` + `env`.
 
-#### Task 3.4: `await()` via skill implementado
+#### Task 50.3.4: `await()` via skill implementado
 
 O método `await()` no skill `TaskLibaco`:
 1. Loop `while(!this.done)` chamando `Libaco.resume(this.co)`
@@ -347,7 +339,7 @@ O método `await()` no skill `TaskLibaco`:
 
 Isso substitui os `({ })` blocks do transpiler atual.
 
-#### Task 3.5: Remover runtime legado
+#### Task 50.3.5: Remover runtime legado
 
 Após libaco + refatoração:
 - `src/runtime/fiber.c` — deletar
@@ -398,21 +390,21 @@ src/
 ## Dependências Completas
 
 ```
-Fase 0 (Contract/Skill Generics) ─── necessário para Fase 3
+Etapa 0 (Contract/Skill Generics) ─── necessário para Etapa 3
     │
     ▼
-Fase 1 (Monomorfização) ─────────── necessário para Fases 2 e 3
+Etapa 1 (Monomorfização) ─────────── necessário para Etapas 2 e 3
     │
     ▼
-Fase 2 (Remover Special Cases) ──── necessário para Fase 3
+Etapa 2 (Remover Special Cases) ──── necessário para Etapa 3
     │
     ▼
-Fase 3 (Contract + Skill + libaco) ─ destino final
+Etapa 3 (Contract + Skill + libaco) ─ destino final
 ```
 
 ## Cronograma Estimado
 
-| Fase | Esforço | Complexidade |
+| Etapa | Esforço | Complexidade |
 |------|---------|--------------|
 | 0 — Type params em contract/skill | 2 dias | Média |
 | 1 — Monomorfização | 3-5 dias | Alta |

@@ -336,27 +336,23 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 49.4:** Refactor `src/std/log.ei`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
 - [x] **Task 49.5:** Update samples and tests (`log_sample.ei`, `log_test.ei`, `arest.ei`, `enum_sample.ei`, `enum_test.ei`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
 
-
-
 ### Phase 50: Monomorphização + Refatoração de `Task<T>` (PENDING)
 > **Nota:** Plano detalhado em `docs/plano_mono_task.md`. A implementação tem 4 fases sequenciais. O destino final é `Task<T>` 100% em Eiwa via `contract + skill + lib {}` (libaco), com zero special cases no compilador.
-
-#### Fase 0 — Type Params em `contract` e `skill` (COMPLETED)
+#### Type Params em `contract` e `skill` (COMPLETED)
 - [x] **Task 50.0.1:** Parser: `contract Awaitable<T>` e `skill Foo<T>` — `<T>` opcional após o nome
 - [x] **Task 50.0.2:** AST: campo `generic_params` em `contract_decl` e `skill_decl`
 - [x] **Task 50.0.3:** Type checker: registro de contracts/skills genéricos em `local_symbols`, early return no corpo
 - [x] **Task 50.0.4:** Resolução de type params em constraints (`skill Foo : Awaitable<T>`)
 - [x] **Verify:** Contract/skill com type param parseiam e registram corretamente
-
-#### Fase 1 — Monomorfização
-- [ ] **Task 50.1.1:** Mecanismo de clonagem de AST com substituição de type params
-- [ ] **Task 50.1.2:** Trigger no type checker: `inferCall` clona e type-check instância monomorfizada
+#### Monomorfização
+- [ ] **Task 50.1.1:** Mecanismo de clonagem de AST com substituição de type params (`cloneNode`, `cloneTypeRef`)
+- [ ] **Task 50.1.5:** Tipos genéricos (`type Task<T>`) monomorfizados via `monomorphizeClass`
+- [ ] **Foundation fixes:** `String` como built-in em `resolveTypeRef`; `String ↔ Custom(String)` em `isCompatible`; transpiler mapeia `Custom(String)` → `core_String*`
+- [ ] **Task 50.1.2:** Trigger no type checker: `inferCall` clona e type-check função genérica monomorfizada
 - [ ] **Task 50.1.3:** Transpiler: gera função C separada por instância (nome mangled)
 - [ ] **Task 50.1.4:** Cache de instâncias para evitar duplicação
-- [ ] **Task 50.1.5:** Tipos genéricos (`type Task<T>`) também monomorfizados
-- [ ] **Verify:** `eiwa test samples/tests/generics_test.ei` passa; funções/tipos com `T` funcionam
-
-#### Fase 2 — Remover Special Cases de `Task<T>`
+- [ ] **Verify:** `eiwa test` passa; funções genéricas com `T` funcionam
+#### Remover Special Cases de `Task<T>`
 - [ ] **Task 50.2.1:** `fun task<T>` em std/core.ei usa monomorfização em vez de special case
 - [ ] **Task 50.2.2:** Construtor `Task<T>` usa `lib {}` (libaco) em vez de C inline `({ })`
 - [ ] **Task 50.2.3:** Remover special case `task()` em `infer_call.zig:44`
@@ -366,8 +362,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [ ] **Task 50.2.7:** Remover special case `cType("Task")` em `core.zig:55`
 - [ ] **Task 50.2.8:** Remover `src/runtime/fiber.c` e `src/runtime/fiber.h` (substituído por libaco)
 - [ ] **Verify:** `eiwa test samples/tests/task_test.ei` passa sem special cases no compilador
-
-#### Fase 3 — Arquitetura Final: Contract + Skill + libaco
+#### Arquitetura Final: Contract + Skill + libaco
 - [ ] **Task 50.3.1:** `contract Awaitable<T>` em `std/core.ei`
 - [ ] **Task 50.3.2:** `skill TaskLibaco : Awaitable<T>` com `await()` via libaco
 - [ ] **Task 50.3.3:** `lib {}` binding para libaco em `src/runtime/third_party/libaco/`
