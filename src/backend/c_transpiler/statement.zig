@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../../core/compat.zig");
+const ArrayList = compat.ArrayList;
 const core = @import("core.zig");
 const type_system = @import("../../core/type_system.zig");
 
@@ -6,7 +8,7 @@ const ASTNode = core.ASTNode;
 const CTranspiler = core.CTranspiler;
 
 fn getBoxTypeName(allocator: std.mem.Allocator, c_type: []const u8) anyerror![]const u8 {
-    var safe = std.ArrayList(u8).init(allocator);
+    var safe = ArrayList(u8).init(allocator);
     for (c_type) |c| {
         if (c == '*') {
             try safe.appendSlice("Ptr");
@@ -119,7 +121,7 @@ pub fn emitStatement(self: *CTranspiler, node: *ASTNode) anyerror!void {
             if (f.iterable.resolved_type) |rt| {
                 if (rt.* == .Array) {
                     const inner_c_type = try core.getCTypeStr(self.allocator, rt.Array);
-                    var safe_inner = std.ArrayList(u8).init(self.allocator);
+                    var safe_inner = ArrayList(u8).init(self.allocator);
                     for (inner_c_type) |c| {
                         if (c == '*') continue;
                         if (c == ' ') continue;

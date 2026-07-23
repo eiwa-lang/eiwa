@@ -4,7 +4,7 @@ Welcome, AI Agent! This guide outlines the project context, technical stack, arc
 
 ## 🌌 Project Overview
 Aether is a pragmatic, statically typed, natively compiled systems language with a Kotlin-inspired syntax. 
-* **The Compiler** is built from scratch in **Zig (0.13.0)**.
+* **The Compiler** is built from scratch in **Zig (0.16.0)**.
 * **The Backend** compiles Aether code (`.ae`) into intermediate **C code**, which is then compiled into a native binary via `zig cc -O0` (Development mode) or direct C optimization.
 * **Memory Management:** Driven by a conservative Garbage Collector (**Boehm GC**) in the generated C runtime.
 
@@ -80,7 +80,7 @@ Aether has **NO implementation inheritance** (`class`, `open`, `abstract`, and `
 ---
 
 ## ⚠️ Critical Rules & Gotchas for LLMs
-1. **Zig Version:** Ensure compatibility with Zig `0.13.0`. Do not use deprecated API structures from older versions.
+1. **Zig Version:** Ensure compatibility with Zig `0.16.0`. Do not use deprecated API structures from older versions.
 2. **Type Checking First:** Never generate code bypassing validations. All semantic checks, Null Safety, and Type Enforcements must happen in `src/core/types.zig` before calling the transpiler.
 3. **Boehm GC Integration:** Memory allocation in the transpiled C code must use GC-managed hooks (like `GC_MALLOC` or `GC_MALLOC_ATOMIC`) via runtime definitions. Do not use raw malloc/free.
 4. **Name Mangling:** Types, objects, skills, contracts, functions, and standard library methods use Name Mangling (e.g., `system_Int` instead of raw `Int`) in the C backend to avoid naming collisions.

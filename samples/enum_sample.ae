@@ -1,0 +1,43 @@
+import { println } from "std.io"
+
+enum Direction {
+    NORTH,
+    EAST,
+    SOUTH,
+    WEST
+}
+
+enum Status {
+    PENDING,
+    ACTIVE,
+    COMPLETED,
+    FAILED
+}
+
+fun describeDirection(dir: Direction): String {
+    return when (dir) {
+        Direction.NORTH -> "Heading North"
+        Direction.EAST -> "Heading East"
+        Direction.SOUTH -> "Heading South"
+        Direction.WEST -> "Heading West"
+        else -> "Unknown"
+    }
+}
+
+fun main() {
+    println("=== Aether Native Enum Demonstration ===")
+
+    val d1 = Direction.NORTH
+    val d2 = Direction.EAST
+    val d3 = Direction.SOUTH
+
+    println("d1 name: " + d1.name + ", ordinal: " + d1.ordinal.toString())
+    println("d2 name: " + d2.name + ", ordinal: " + d2.ordinal.toString())
+    println("d3 name: " + d3.name + ", ordinal: " + d3.ordinal.toString())
+
+    println("Describe d1: " + describeDirection(d1))
+    println("Describe d2: " + describeDirection(d2))
+
+    val s = Status.COMPLETED
+    println("Status name: " + s.name + ", ordinal: " + s.ordinal.toString())
+}

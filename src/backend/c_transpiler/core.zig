@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../../core/compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../../core/ast.zig");
 const tc_mod = @import("../../core/type_checker/core.zig");
 const type_system = @import("../../core/type_system.zig");
@@ -31,7 +33,7 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.AetherTyp
         },
         .Array => |elem| {
             const inner = try getCTypeStr(allocator, elem);
-            var safe_inner = std.ArrayList(u8).init(allocator);
+            var safe_inner = ArrayList(u8).init(allocator);
             for (inner) |c| {
                 if (c == '*') continue;
                 if (c == ' ') continue;
@@ -55,9 +57,9 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.AetherTyp
 
 pub const CTranspiler = struct {
     allocator: std.mem.Allocator,
-    header_writer: std.ArrayList(u8),
-    forward_writer: std.ArrayList(u8), // for type forward declarations (before header)
-    writer: std.ArrayList(u8),
+    header_writer: ArrayList(u8),
+    forward_writer: ArrayList(u8), // for type forward declarations (before header)
+    writer: ArrayList(u8),
     classes: std.StringHashMap(void),
     known_constructors: std.StringHashMap(void), // pre-registered, not yet emitted
     libs: std.StringHashMap(void),
@@ -66,14 +68,15 @@ pub const CTranspiler = struct {
     emitted_variables: std.StringHashMap(void),
     emitted_modules: std.AutoHashMap(*ASTNode, void),
     is_test_mode: bool = false,
-    test_names: std.ArrayList([]const u8),
+    test_names: ArrayList([]const u8),
     test_count: usize = 0,
     classes_ast: ?*std.StringHashMap(*ASTNode) = null,
     objects_ast: ?*std.StringHashMap(*ASTNode) = null,
+    enums_ast: ?*std.StringHashMap(*ASTNode) = null,
     contracts_ast: ?*std.StringHashMap(*ASTNode) = null,
     alias_map: ?*std.StringHashMap([]const u8) = null,
     source_file: []const u8 = "<unknown>", // path to the .ae source file being transpiled
-    static_initializers: std.ArrayList(StaticInitializer),
+    static_initializers: ArrayList(StaticInitializer),
 
     pub const StaticInitializer = struct {
         name: []const u8,
@@ -88,6 +91,7 @@ pub const CTranspiler = struct {
     pub const emitTestDecl = decl_mod.emitTestDecl;
     pub const emitLibDecl = decl_mod.emitLibDecl;
     pub const emitObjectDecl = decl_mod.emitObjectDecl;
+    pub const emitEnumDecl = decl_mod.emitEnumDecl;
 
     pub const emitStatement = stmt_mod.emitStatement;
     pub const emitExpression = expr_mod.emitExpression;
@@ -104,7 +108,7 @@ pub const CTranspiler = struct {
             }
         } else if (base.* == .Array) {
             const inner = try self.cType(base.Array);
-            var safe_inner = std.ArrayList(u8).init(self.allocator);
+            var safe_inner = ArrayList(u8).init(self.allocator);
             for (inner) |c| {
                 if (c == '*') continue;
                 if (c == ' ') continue;
@@ -126,9 +130,9 @@ pub const CTranspiler = struct {
     pub fn init(allocator: std.mem.Allocator) CTranspiler {
         return CTranspiler{
             .allocator = allocator,
-            .header_writer = std.ArrayList(u8).init(allocator),
-            .forward_writer = std.ArrayList(u8).init(allocator),
-            .writer = std.ArrayList(u8).init(allocator),
+            .header_writer = ArrayList(u8).init(allocator),
+            .forward_writer = ArrayList(u8).init(allocator),
+            .writer = ArrayList(u8).init(allocator),
             .classes = std.StringHashMap(void).init(allocator),
             .known_constructors = std.StringHashMap(void).init(allocator),
             .libs = std.StringHashMap(void).init(allocator),
@@ -137,9 +141,9 @@ pub const CTranspiler = struct {
             .emitted_variables = std.StringHashMap(void).init(allocator),
             .emitted_modules = std.AutoHashMap(*ASTNode, void).init(allocator),
             .is_test_mode = false,
-            .test_names = std.ArrayList([]const u8).init(allocator),
+            .test_names = ArrayList([]const u8).init(allocator),
             .test_count = 0,
-            .static_initializers = std.ArrayList(StaticInitializer).init(allocator),
+            .static_initializers = ArrayList(StaticInitializer).init(allocator),
         };
     }
 
@@ -194,7 +198,7 @@ pub const CTranspiler = struct {
             }
         }
 
-        var final = std.ArrayList(u8).init(self.allocator);
+        var final = ArrayList(u8).init(self.allocator);
         try final.appendSlice(std_lib_c);
         try final.appendSlice("\n__thread AetherExceptionFrame* aether_exception_stack = 0;\n__thread void* aether_active_exception = 0;\n\n");
         try final.appendSlice(self.forward_writer.items); // forward decls go first
@@ -207,7 +211,7 @@ pub const CTranspiler = struct {
     pub fn emitArrayStruct(self: *CTranspiler, elem: *const type_system.AetherType) !void {
         const inner_c_type = try self.cType(elem);
 
-        var safe_inner = std.ArrayList(u8).init(self.allocator);
+        var safe_inner = ArrayList(u8).init(self.allocator);
         for (inner_c_type) |c| {
             if (c == '*') continue;
             if (c == ' ') continue;
@@ -271,6 +275,8 @@ pub const CTranspiler = struct {
                         if (cd.generic_params.len == 0 and std.mem.indexOf(u8, actual_name, "_K") == null and std.mem.indexOf(u8, actual_name, "_V") == null) {
                             try self.emitTypeDecl(stmt);
                         }
+                    } else if (stmt.data == .enum_decl) {
+                        try self.emitEnumDecl(stmt);
                     } else if (stmt.data == .contract_decl) {
                         try self.emitContractDecl(stmt);
                     } else if (stmt.data == .skill_decl) {
@@ -293,10 +299,10 @@ pub const CTranspiler = struct {
                 }
 
                 // Pass 3: Top-Level Statements Collection
-                var top_level_stmts = std.ArrayList(*ASTNode).init(self.allocator);
+                var top_level_stmts = ArrayList(*ASTNode).init(self.allocator);
                 defer top_level_stmts.deinit();
                 for (p.statements) |stmt| {
-                    if (stmt.data != .fun_decl and stmt.data != .type_decl and stmt.data != .contract_decl and stmt.data != .skill_decl and stmt.data != .import_stmt and stmt.data != .test_decl and stmt.data != .lib_decl and stmt.data != .object_decl) {
+                    if (stmt.data != .fun_decl and stmt.data != .type_decl and stmt.data != .enum_decl and stmt.data != .contract_decl and stmt.data != .skill_decl and stmt.data != .import_stmt and stmt.data != .test_decl and stmt.data != .lib_decl and stmt.data != .object_decl) {
                         try top_level_stmts.append(stmt);
                     }
                 }

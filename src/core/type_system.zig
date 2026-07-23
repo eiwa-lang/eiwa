@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("compat.zig");
+const ArrayList = compat.ArrayList;
 
 pub const AetherType = union(enum) {
     Int,
@@ -184,7 +186,7 @@ pub const VariableSymbol = struct {
 
 pub const Symbol = union(enum) {
     Variable: VariableSymbol,
-    Overloads: std.ArrayList(*const AetherType),
+    Overloads: ArrayList(*const AetherType),
 };
 
 pub const Scope = struct {
@@ -229,7 +231,7 @@ pub const Scope = struct {
 
         const sym = try self.allocator.create(Symbol);
         if (is_func) {
-            var list = std.ArrayList(*const AetherType).init(self.allocator);
+            var list = ArrayList(*const AetherType).init(self.allocator);
             try list.append(t);
             sym.* = .{ .Overloads = list };
         } else {
@@ -269,7 +271,7 @@ pub const Scope = struct {
 pub fn isNullable(t: *const AetherType) bool {
     return switch (t.*) {
         .Null => true,
-        .Pointer => |_| true,
+        .Pointer => true,
         .Union => |u| isNullable(u.left) or isNullable(u.right),
         else => false,
     };

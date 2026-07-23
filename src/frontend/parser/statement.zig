@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../../core/compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../../core/ast.zig");
 const ASTNode = ast.ASTNode;
 const TokenType = ast.TokenType;
@@ -13,7 +15,7 @@ pub fn whileStatement(self: *Parser) anyerror!*ASTNode {
     
     var body: *ASTNode = undefined;
     if (self.match(.l_brace)) {
-        var stmts = std.ArrayList(*ASTNode).init(self.allocator);
+        var stmts = ArrayList(*ASTNode).init(self.allocator);
         while (!self.check(.r_brace) and !self.check(.eof)) {
             try stmts.append(try self.declaration());
         }
@@ -38,7 +40,7 @@ pub fn forStatement(self: *Parser) anyerror!*ASTNode {
     
     var body: *ASTNode = undefined;
     if (self.match(.l_brace)) {
-        var stmts = std.ArrayList(*ASTNode).init(self.allocator);
+        var stmts = ArrayList(*ASTNode).init(self.allocator);
         while (!self.check(.r_brace) and !self.check(.eof)) {
             try stmts.append(try self.declaration());
         }
@@ -74,17 +76,17 @@ pub fn tryStatement(self: *Parser) anyerror!*ASTNode {
     const col = self.previous.column;
     
     try self.consume(.l_brace, "Expected '{' after 'try'.");
-    var try_stmts = std.ArrayList(*ASTNode).init(self.allocator);
+    var try_stmts = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
         try try_stmts.append(try self.declaration());
     }
     try self.consume(.r_brace, "Expected '}' after 'try' block.");
     const try_body = try self.createNode(.{ .block = .{ .statements = try try_stmts.toOwnedSlice() } });
     
-    var catches = std.ArrayList(ast.CatchBlock).init(self.allocator);
+    var catches = ArrayList(ast.CatchBlock).init(self.allocator);
     while (self.match(.kw_catch)) {
         var var_name: ?[]const u8 = null;
-        var types = std.ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+        var types = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
         
         if (self.match(.l_paren)) {
             try self.consume(.identifier, "Expected exception variable name.");
@@ -110,7 +112,7 @@ pub fn tryStatement(self: *Parser) anyerror!*ASTNode {
         }
 
         try self.consume(.l_brace, "Expected '{' after catch declaration.");
-        var catch_stmts = std.ArrayList(*ASTNode).init(self.allocator);
+        var catch_stmts = ArrayList(*ASTNode).init(self.allocator);
         while (!self.check(.r_brace) and !self.check(.eof)) {
             try catch_stmts.append(try self.declaration());
         }

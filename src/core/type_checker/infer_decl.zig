@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const parser_mod = @import("../../frontend/parser/core.zig");
 const core = @import("core.zig");
@@ -60,10 +62,13 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
             return error.ImportError;
         }
     } else {
-        const raw_mod_path = try std.fs.path.join(self.allocator, &.{ dir_path, actual_module_path });
-        mod_path = try std.fs.path.relative(self.allocator, ".", raw_mod_path);
+        if (std.mem.eql(u8, dir_path, ".")) {
+            mod_path = actual_module_path;
+        } else {
+            mod_path = try std.fs.path.join(self.allocator, &.{ dir_path, actual_module_path });
+        }
         if (self.registry == null) {
-            mod_source = std.fs.cwd().readFileAlloc(self.allocator, mod_path, 1024 * 1024) catch |err| {
+            mod_source = std.Io.Dir.cwd().readFileAlloc(self.io, mod_path, self.allocator, .limited(1024 * 1024)) catch |err| {
                 self.reportError(node.line, node.column, "ImportError: Failed to read module file '{s}': {}", .{ mod_path, err });
                 return error.ImportError;
             };
@@ -381,7 +386,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
     for (c.methods) |method| {
         if (method.data == .fun_decl) {
             const m = &method.data.fun_decl;
-            var param_types = std.ArrayList(*const AetherType).init(self.allocator);
+            var param_types = ArrayList(*const AetherType).init(self.allocator);
             for (m.params) |p| {
                 const p_t = if (p.type_ref) |tr| self.resolveTypeRef(tr) catch try self.resolveTypeName("Void", false) else try self.resolveTypeName("Void", false);
                 try param_types.append(p_t);
@@ -395,7 +400,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
                 }
             }
 
-            var mangled = std.ArrayList(u8).init(self.allocator);
+            var mangled = ArrayList(u8).init(self.allocator);
             try mangled.writer().print("{s}_{s}", .{ actual_c_name, m.name });
             if (method_count > 1) {
                 for (param_types.items) |pt| {
@@ -452,7 +457,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
 fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
     if (c.skills.len == 0) return;
 
-    var final_methods = std.ArrayList(*ASTNode).init(self.allocator);
+    var final_methods = ArrayList(*ASTNode).init(self.allocator);
     var provided = std.StringHashMap([]const u8).init(self.allocator);
 
     for (c.methods) |m| {
@@ -643,7 +648,7 @@ pub fn inferContractDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
     for (cd.methods) |method| {
         if (method.data != .fun_decl) continue;
         const m = &method.data.fun_decl;
-        var param_types = std.ArrayList(*const AetherType).init(self.allocator);
+        var param_types = ArrayList(*const AetherType).init(self.allocator);
         for (m.params) |p| {
             const p_t = if (p.type_ref) |tr| try self.resolveTypeRef(tr) else try self.resolveTypeName("Void", false);
             try param_types.append(p_t);
@@ -681,8 +686,8 @@ pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aet
 
 pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
     var f = &node.data.fun_decl;
-    var param_types = std.ArrayList(*const AetherType).init(self.allocator);
-    var mangled_name = std.ArrayList(u8).init(self.allocator);
+    var param_types = ArrayList(*const AetherType).init(self.allocator);
+    var mangled_name = ArrayList(u8).init(self.allocator);
     const is_method = scope.lookupVariable("this") != null;
     if (is_method) {
         const this_t = scope.lookupVariable("this").?;
@@ -934,6 +939,33 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     for (o.members) |member| {
         _ = try self.inferNode(member, &obj_scope);
     }
+    t.* = .Void;
+}
+
+pub fn inferEnumDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+    var ed = &node.data.enum_decl;
+    if (ed.resolved_c_name == null) {
+        if (self.module_prefix) |prefix| {
+            ed.resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, ed.name });
+            try self.alias_map.put(ed.name, ed.resolved_c_name.?);
+        } else {
+            ed.resolved_c_name = ed.name;
+        }
+    }
+    const actual_c_name = ed.resolved_c_name.?;
+    const enum_type = try self.allocator.create(AetherType);
+    enum_type.* = .{ .Custom = actual_c_name };
+
+    if (scope.lookupVariable(ed.name) == null) {
+        _ = scope.define(ed.name, enum_type, false, false) catch {};
+    }
+    if (!std.mem.eql(u8, ed.name, actual_c_name)) {
+        if (scope.lookupVariable(actual_c_name) == null) {
+            _ = scope.define(actual_c_name, enum_type, false, false) catch {};
+        }
+    }
+
+    try self.enums_ast.put(actual_c_name, node);
     t.* = .Void;
 }
 
@@ -1524,7 +1556,7 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
         if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "serdeFields")) return;
     }
 
-    var elems = std.ArrayList(*ASTNode).init(self.allocator);
+    var elems = ArrayList(*ASTNode).init(self.allocator);
     defer elems.deinit();
 
     if (std.mem.startsWith(u8, c.name, "collections_List_") or std.mem.startsWith(u8, c.name, "List_")) {
@@ -1576,7 +1608,7 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
 
     const serde_field_type = try self.resolveTypeName("SerdeField", false);
     const list_c_name = self.alias_map.get("List") orelse "List";
-    var mangled = std.ArrayList(u8).init(self.allocator);
+    var mangled = ArrayList(u8).init(self.allocator);
     try mangled.appendSlice(list_c_name);
     try mangled.appendSlice("_");
     try serde_field_type.formatSafe(mangled.writer());

@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const core = @import("core.zig");
 const type_system = @import("../type_system.zig");
@@ -57,7 +59,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
             }
 
             const base_name = type_decl.resolved_c_name orelse class_name;
-            var mangled = std.ArrayList(u8).init(self.allocator);
+            var mangled = ArrayList(u8).init(self.allocator);
             try mangled.appendSlice(base_name);
             try mangled.appendSlice("_");
             for (type_args, 0..) |type_arg, i| {
@@ -222,7 +224,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
                 return;
             } else {
                 // Print the argument types we provided to help debug
-                var expected_types_str = std.ArrayList(u8).init(self.allocator);
+                var expected_types_str = ArrayList(u8).init(self.allocator);
                 if (overloads.len > 0 and overloads[0].* == .Function) {
                     for (overloads[0].Function.params, 0..) |p, i| {
                         if (i > 0) try expected_types_str.appendSlice(", ");
@@ -231,7 +233,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
                     }
                 }
                 
-                var actual_types_str = std.ArrayList(u8).init(self.allocator);
+                var actual_types_str = ArrayList(u8).init(self.allocator);
                 for (c.arguments, 0..) |arg, i| {
                     if (i > 0) try actual_types_str.appendSlice(", ");
                     if (arg.resolved_type) |rt| {
@@ -463,7 +465,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
                             }
                         }
                         
-                        var mangled = std.ArrayList(u8).init(self.allocator);
+                        var mangled = ArrayList(u8).init(self.allocator);
                         try mangled.appendSlice(variable.Custom);
                         try mangled.appendSlice("_");
                         for (type_args, 0..) |t_arg, i| {

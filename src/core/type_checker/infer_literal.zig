@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const core = @import("core.zig");
 const type_system = @import("../type_system.zig");
@@ -106,7 +108,7 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
     type_args[0] = first_type;
     
     // O mangled name deve ser baseado no nome importado (list_c_name), nao string "List"
-    var mangled = std.ArrayList(u8).init(self.allocator);
+    var mangled = ArrayList(u8).init(self.allocator);
     try mangled.appendSlice(list_c_name);
     try mangled.appendSlice("_");
     try first_type.formatSafe(mangled.writer());
@@ -156,7 +158,7 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     const mmap_base = self.alias_map.get("MutableMap") orelse "MutableMap";
     const map_base = self.alias_map.get("Map") orelse "Map";
 
-    var map_mangled_str = std.ArrayList(u8).init(self.allocator);
+    var map_mangled_str = ArrayList(u8).init(self.allocator);
     try map_mangled_str.appendSlice(map_base);
     try map_mangled_str.appendSlice("_");
     try first_key_type.formatSafe(map_mangled_str.writer());
@@ -164,7 +166,7 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     try first_value_type.formatSafe(map_mangled_str.writer());
     const mangled_name = try map_mangled_str.toOwnedSlice();
     
-    var node_mangled_str = std.ArrayList(u8).init(self.allocator);
+    var node_mangled_str = ArrayList(u8).init(self.allocator);
     try node_mangled_str.appendSlice(node_base);
     try node_mangled_str.appendSlice("_");
     try first_key_type.formatSafe(node_mangled_str.writer());
@@ -172,7 +174,7 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     try first_value_type.formatSafe(node_mangled_str.writer());
     const node_mangled = try node_mangled_str.toOwnedSlice();
     
-    var mmap_mangled_str = std.ArrayList(u8).init(self.allocator);
+    var mmap_mangled_str = ArrayList(u8).init(self.allocator);
     try mmap_mangled_str.appendSlice(mmap_base);
     try mmap_mangled_str.appendSlice("_");
     try first_key_type.formatSafe(mmap_mangled_str.writer());

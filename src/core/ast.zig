@@ -33,6 +33,7 @@ pub const TokenType = enum {
     kw_when,
     kw_object,
     kw_default,
+    kw_enum,
 
     // Symbols and Operators
     eq,         // =
@@ -129,6 +130,11 @@ pub const WhenCase = struct {
     is_else: bool,
 };
 
+pub const EnumVariant = struct {
+    name: []const u8,
+    ordinal: usize,
+};
+
 pub const ASTNode = struct {
     line: usize,
     column: usize,
@@ -204,6 +210,12 @@ pub const ASTNodeType = union(enum) {
         name: ?[]const u8,
         members: []const *ASTNode,
         resolved_c_name: ?[]const u8,
+    },
+    enum_decl: struct {
+        annotations: []const Annotation,
+        name: []const u8,
+        variants: []const EnumVariant,
+        resolved_c_name: ?[]const u8 = null,
     },
     
     // Literals

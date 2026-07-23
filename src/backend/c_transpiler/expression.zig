@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../../core/compat.zig");
+const ArrayList = compat.ArrayList;
 const core = @import("core.zig");
 const ts = @import("../../core/type_system.zig");
 
@@ -64,7 +66,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     try self.emitArrayStruct(ts.extractBaseType(rt).Array);
                     
                     const inner_c_type = try core.getCTypeStr(self.allocator, ts.extractBaseType(rt).Array);
-                    var safe_inner = std.ArrayList(u8).init(self.allocator);
+                    var safe_inner = ArrayList(u8).init(self.allocator);
                     for (inner_c_type) |ch| {
                         if (ch == '*') continue;
                         if (ch == ' ') continue;
@@ -84,7 +86,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     const struct_name = rt.Custom;
                     try self.writer.writer().print("{s}_new(({{ ", .{struct_name});
                     
-                    var safe_inner_name = std.ArrayList(u8).init(self.allocator);
+                    var safe_inner_name = ArrayList(u8).init(self.allocator);
                     if (listItemType(self, rt)) |item_type| {
                         const inner_c_type = try core.getCTypeStr(self.allocator, item_type);
                         for (inner_c_type) |ch| {
@@ -129,7 +131,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 if (rt.* == .Custom) {
                     const custom_name = rt.Custom; // Map_core_String_core_String
                     
-                    var safe_inner_name = std.ArrayList(u8).init(self.allocator);
+                    var safe_inner_name = ArrayList(u8).init(self.allocator);
                     if (m.elements.len > 0) {
                         const call = m.elements[0].data.call_expr;
                         try call.arguments[0].resolved_type.?.formatSafe(safe_inner_name.writer());
@@ -221,6 +223,16 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     const class_name = g.object.data.identifier.name;
                     const actual_class_name = g.object.data.identifier.resolved_c_name orelse if (self.alias_map) |am| (am.get(class_name) orelse class_name) else class_name;
                     if (oa.contains(actual_class_name)) {
+                        try self.writer.writer().print("{s}_{s}", .{actual_class_name, g.name});
+                        return;
+                    }
+                }
+            }
+            if (self.enums_ast) |ea| {
+                if (g.object.data == .identifier) {
+                    const class_name = g.object.data.identifier.name;
+                    const actual_class_name = g.object.data.identifier.resolved_c_name orelse if (self.alias_map) |am| (am.get(class_name) orelse class_name) else class_name;
+                    if (ea.contains(actual_class_name)) {
                         try self.writer.writer().print("{s}_{s}", .{actual_class_name, g.name});
                         return;
                     }
@@ -334,7 +346,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 const f = ts.extractBaseType(c.callee.resolved_type.?).Function;
                 const ret_type_str = try core.getCTypeStr(self.allocator, f.return_type);
                 
-                var params_c = std.ArrayList(u8).init(self.allocator);
+                var params_c = ArrayList(u8).init(self.allocator);
                 try params_c.appendSlice("void*");
                 if (f.receiver) |rec| {
                     try params_c.appendSlice(", ");
@@ -499,7 +511,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     class_name = rt.Custom;
                 } else if (rt.* == .Array) {
                     const inner_c_type = try core.getCTypeStr(self.allocator, rt.Array);
-                    var safe_inner = std.ArrayList(u8).init(self.allocator);
+                    var safe_inner = ArrayList(u8).init(self.allocator);
                     for (inner_c_type) |ch| {
                         if (ch == '*') continue;
                         if (ch == ' ') continue;
@@ -534,7 +546,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     const cnode = (self.contracts_ast.?.get(actual_contract_name) orelse self.contracts_ast.?.get(class_name)).?;
                     const cm = cnode.data.contract_decl.methods[contract_method_index];
                     var ret_str: []const u8 = "void";
-                    var params_str = std.ArrayList(u8).init(self.allocator);
+                    var params_str = ArrayList(u8).init(self.allocator);
                     if (cm.resolved_type) |crt| {
                         if (crt.* == .Function) {
                             ret_str = try self.cType(crt.Function.return_type);
@@ -992,8 +1004,8 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             const line = node.line;
             const col = node.column;
             
-            var param_names = std.ArrayList([]const u8).init(self.allocator);
-            var param_types = std.ArrayList(*const ts.AetherType).init(self.allocator);
+            var param_names = ArrayList([]const u8).init(self.allocator);
+            var param_types = ArrayList(*const ts.AetherType).init(self.allocator);
             
             var locals = std.StringHashMap(void).init(self.allocator);
             defer locals.deinit();
@@ -1038,7 +1050,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 try collectDeclaredLocals(stmt, &locals);
             }
             
-            var captures = std.ArrayList(CaptureInfo).init(self.allocator);
+            var captures = ArrayList(CaptureInfo).init(self.allocator);
             defer captures.deinit();
             for (l.body) |stmt| {
                 try self.collectCaptures(stmt, &locals, &captures);
@@ -1070,7 +1082,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             }
             
             // Create a temporary body writer for this lambda
-            var body_writer = std.ArrayList(u8).init(self.allocator);
+            var body_writer = ArrayList(u8).init(self.allocator);
             defer body_writer.deinit();
             
             const old_writer = self.writer;
@@ -1166,7 +1178,7 @@ const CaptureInfo = struct {
 };
 
 fn getBoxTypeName(allocator: std.mem.Allocator, c_type: []const u8) ![]const u8 {
-    var safe = std.ArrayList(u8).init(allocator);
+    var safe = ArrayList(u8).init(allocator);
     for (c_type) |c| {
         if (c == '*') {
             try safe.appendSlice("Ptr");
@@ -1216,7 +1228,7 @@ fn collectDeclaredLocals(node: *ASTNode, locals: *std.StringHashMap(void)) anyer
     }
 }
 
-pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.StringHashMap(void), captures: *std.ArrayList(CaptureInfo)) anyerror!void {
+pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.StringHashMap(void), captures: *ArrayList(CaptureInfo)) anyerror!void {
     switch (node.data) {
         .identifier => |i| {
             if (locals.contains(i.name)) return;

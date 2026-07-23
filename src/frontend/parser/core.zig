@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../../core/compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../../core/ast.zig");
 const lexer = @import("../lexer.zig");
 
@@ -70,6 +72,7 @@ pub const Parser = struct {
     pub const libDeclaration = declaration_mod.libDeclaration;
     pub const parseAnnotations = declaration_mod.parseAnnotations;
     pub const objectDeclaration = declaration_mod.objectDeclaration;
+    pub const enumDeclaration = declaration_mod.enumDeclaration;
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         var p = Parser{
@@ -94,7 +97,7 @@ fn core_parseTypeAnnotation(self: *Parser) anyerror!?*const ast.ASTTypeRef {
 fn core_parseType(self: *Parser) anyerror!*const ast.ASTTypeRef {
     var ref = try self.allocator.create(ast.ASTTypeRef);
     if (self.match(.l_paren)) {
-        var params = std.ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+        var params = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
         if (!self.check(.r_paren)) {
             while (true) {
                 const p_t = try self.parseType();
@@ -135,7 +138,7 @@ fn core_parseType(self: *Parser) anyerror!*const ast.ASTTypeRef {
     } else {
         try self.consume(.identifier, "Expected type name.");
         const name = self.previous.lexeme;
-        var generic_args = std.ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+        var generic_args = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
         
         if (self.match(.less)) {
             while (true) {
@@ -156,7 +159,7 @@ fn core_parseType(self: *Parser) anyerror!*const ast.ASTTypeRef {
 
     if (self.match(.dot)) {
         try self.consume(.l_paren, "Expected '(' after receiver type.");
-        var params = std.ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+        var params = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
         if (!self.check(.r_paren)) {
             while (true) {
                 const p_t = try self.parseType();
@@ -187,7 +190,7 @@ fn core_parseType(self: *Parser) anyerror!*const ast.ASTTypeRef {
     }
     
     if (self.check(.pipe)) {
-        var union_list = std.ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+        var union_list = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
         if (ref.union_types.len > 0) {
             for (ref.union_types) |ut| try union_list.append(ut);
         } else {
@@ -247,7 +250,7 @@ fn core_createNodeAt(self: *Parser, data: ASTNodeType, line: usize, col: usize) 
 }
 
 fn core_parse(self: *Parser) anyerror!*ASTNode {
-    var statements = std.ArrayList(*ASTNode).init(self.allocator);
+    var statements = ArrayList(*ASTNode).init(self.allocator);
     defer statements.deinit();
 
     while (!self.check(.eof)) {

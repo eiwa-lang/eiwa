@@ -24,6 +24,15 @@ sudo apt install libgc-dev
 brew install bdw-gc
 ```
 
+**Instalação no Windows (MSYS2 / vcpkg):**
+```bash
+# MSYS2 MinGW-w64:
+pacman -S mingw-w64-x86_64-gc
+
+# Ou vcpkg:
+vcpkg install bdw-gc
+```
+
 ---
 
 ## 2. Compilando o CLI do Aether

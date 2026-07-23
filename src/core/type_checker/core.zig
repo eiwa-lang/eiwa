@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const parser_mod = @import("../../frontend/parser/core.zig");
 const type_system = @import("../type_system.zig");
@@ -18,7 +20,7 @@ pub const isBool = type_system.isBool;
 pub const ModuleRegistry = struct {
     allocator: std.mem.Allocator,
     modules: std.StringHashMap(ModuleState),
-    ordered_modules: std.ArrayList([]const u8),
+    ordered_modules: ArrayList([]const u8),
 
     pub const ModuleState = struct {
         filename: []const u8,
@@ -32,7 +34,7 @@ pub const ModuleRegistry = struct {
         return .{
             .allocator = allocator,
             .modules = std.StringHashMap(ModuleState).init(allocator),
-            .ordered_modules = std.ArrayList([]const u8).init(allocator),
+            .ordered_modules = ArrayList([]const u8).init(allocator),
         };
     }
 
@@ -49,6 +51,7 @@ pub const ModuleRegistry = struct {
 
 pub const TypeChecker = struct {
     allocator: std.mem.Allocator,
+    io: std.Io = undefined,
     global_scope: Scope,
     source: []const u8,
     filename: []const u8,
@@ -60,9 +63,10 @@ pub const TypeChecker = struct {
     objects_ast: std.StringHashMap(*ASTNode),
     contracts_ast: std.StringHashMap(*ASTNode),
     skills_ast: std.StringHashMap(*ASTNode),
+    enums_ast: std.StringHashMap(*ASTNode),
     functions_ast: std.StringHashMap(*ASTNode),
     local_symbols: std.StringHashMap(void),
-    monomorphized_nodes: std.ArrayList(*ASTNode),
+    monomorphized_nodes: ArrayList(*ASTNode),
     current_class_name: ?[]const u8 = null,
     current_class_methods: ?[]const *ASTNode = null,
     current_type_c_name: ?[]const u8 = null,
@@ -111,9 +115,10 @@ pub const TypeChecker = struct {
             .objects_ast = std.StringHashMap(*ASTNode).init(allocator),
             .contracts_ast = std.StringHashMap(*ASTNode).init(allocator),
             .skills_ast = std.StringHashMap(*ASTNode).init(allocator),
+            .enums_ast = std.StringHashMap(*ASTNode).init(allocator),
             .functions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .local_symbols = std.StringHashMap(void).init(allocator),
-            .monomorphized_nodes = std.ArrayList(*ASTNode).init(allocator),
+            .monomorphized_nodes = ArrayList(*ASTNode).init(allocator),
             .current_class_name = null,
             .registry = null,
             .pass = .validation,
@@ -130,6 +135,7 @@ pub const TypeChecker = struct {
         self.objects_ast.deinit();
         self.contracts_ast.deinit();
         self.skills_ast.deinit();
+        self.enums_ast.deinit();
         self.functions_ast.deinit();
         self.local_symbols.deinit();
         self.monomorphized_nodes.deinit();
@@ -183,7 +189,7 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         }
         base_type = acc.*;
     } else if (ref.is_function) {
-        var params = std.ArrayList(*const AetherType).init(self.allocator);
+        var params = ArrayList(*const AetherType).init(self.allocator);
         for (ref.generic_args) |arg| {
             try params.append(try self.resolveTypeRef(arg));
         }
@@ -204,7 +210,7 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         const type_args = try self.allocator.alloc(*const AetherType, 1);
         type_args[0] = inner_type;
 
-        var mangled = std.ArrayList(u8).init(self.allocator);
+        var mangled = ArrayList(u8).init(self.allocator);
         const resolved_base = self.alias_map.get(list_base) orelse list_base;
         try mangled.appendSlice(resolved_base);
         try mangled.appendSlice("_");
@@ -240,7 +246,7 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         } else if (std.mem.eql(u8, alias, "Null")) {
             base_type = .Null;
         } else if (ref.generic_args.len > 0) {
-            var args_list = std.ArrayList(*const AetherType).init(self.allocator);
+            var args_list = ArrayList(*const AetherType).init(self.allocator);
             for (ref.generic_args) |arg| {
                 const arg_type = try self.resolveTypeRef(arg);
                 try args_list.append(arg_type);
@@ -257,7 +263,7 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
                 base_type = .{ .GenericInstance = .{ .base_name = alias, .type_args = type_args } };
 
                 const actual_base = self.alias_map.get(alias) orelse alias;
-                var mangled = std.ArrayList(u8).init(self.allocator);
+                var mangled = ArrayList(u8).init(self.allocator);
                 try mangled.appendSlice(actual_base);
                 try mangled.appendSlice("_");
                 for (type_args, 0..) |t_arg, i| {
@@ -385,8 +391,11 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         const pkg_name = actual_module_path[4..];
                         mod_path = try std.fmt.allocPrint(self.allocator, "std/{s}", .{pkg_name});
                     } else {
-                        const raw_path = try std.fs.path.join(self.allocator, &.{ dir_path, actual_module_path });
-                        mod_path = try std.fs.path.relative(self.allocator, ".", raw_path);
+                        if (std.mem.eql(u8, dir_path, ".")) {
+                            mod_path = actual_module_path;
+                        } else {
+                            mod_path = try std.fs.path.join(self.allocator, &.{ dir_path, actual_module_path });
+                        }
                     }
                     if (reg.modules.get(mod_path)) |m| {
                         try m.checker.declareTypes(m.ast_root);
@@ -401,6 +410,10 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         var skill_ast_it = m.checker.skills_ast.iterator();
                         while (skill_ast_it.next()) |entry| {
                             try self.skills_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+                        }
+                        var enum_ast_it = m.checker.enums_ast.iterator();
+                        while (enum_ast_it.next()) |entry| {
+                            try self.enums_ast.put(entry.key_ptr.*, entry.value_ptr.*);
                         }
                         var alias_it = m.checker.alias_map.iterator();
                         while (alias_it.next()) |entry| {
@@ -515,6 +528,27 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         if (!std.mem.eql(u8, o_name, actual_c_name)) {
                             _ = self.global_scope.define(actual_c_name, obj_type, false, false) catch {};
                         }
+                    }
+                }
+            } else if (stmt.data == .enum_decl) {
+                var ed = &stmt.data.enum_decl;
+                if (ed.resolved_c_name == null) {
+                    if (self.module_prefix) |prefix| {
+                        ed.resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, ed.name });
+                        try self.alias_map.put(ed.name, ed.resolved_c_name.?);
+                    } else {
+                        ed.resolved_c_name = ed.name;
+                    }
+                }
+                const actual_c_name = ed.resolved_c_name.?;
+                const enum_type = try self.allocator.create(AetherType);
+                enum_type.* = .{ .Custom = actual_c_name };
+                try self.enums_ast.put(actual_c_name, stmt);
+                try self.local_symbols.put(ed.name, {});
+                if (self.global_scope.lookupVariable(ed.name) == null) {
+                    _ = self.global_scope.define(ed.name, enum_type, false, false) catch {};
+                    if (!std.mem.eql(u8, ed.name, actual_c_name)) {
+                        _ = self.global_scope.define(actual_c_name, enum_type, false, false) catch {};
                     }
                 }
             }
@@ -653,12 +687,8 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
     // Append any dynamically monomorphized classes to the AST
     if (node.data == .program and self.monomorphized_nodes.items.len > 0) {
         var final_stmts = try self.allocator.alloc(*ASTNode, node.data.program.statements.len + self.monomorphized_nodes.items.len);
-        for (node.data.program.statements, 0..) |stmt, i| {
-            final_stmts[i] = stmt;
-        }
-        for (self.monomorphized_nodes.items, 0..) |stmt, i| {
-            final_stmts[node.data.program.statements.len + i] = stmt;
-        }
+        @memcpy(final_stmts[0..node.data.program.statements.len], node.data.program.statements);
+        @memcpy(final_stmts[node.data.program.statements.len..], self.monomorphized_nodes.items);
         node.data.program.statements = final_stmts;
     }
 
@@ -668,7 +698,7 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
 fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*const AetherType {
     if (self.pass == .validation) {
         switch (node.data) {
-            .program, .type_decl, .object_decl, .fun_decl => {},
+            .program, .type_decl, .object_decl, .enum_decl, .fun_decl => {},
             else => {
                 if (node.resolved_type) |rt| {
                     return rt;
@@ -703,6 +733,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .contract_decl => try infer_decl_mod.inferContractDecl(self, node, scope, t),
         .skill_decl => try infer_decl_mod.inferSkillDecl(self, node, scope, t),
         .object_decl => try infer_decl_mod.inferObjectDecl(self, node, scope, t),
+        .enum_decl => try infer_decl_mod.inferEnumDecl(self, node, scope, t),
         .fun_decl => try infer_decl_mod.inferFunDecl(self, node, scope, t),
         .var_decl => try infer_decl_mod.inferVarDecl(self, node, scope, t),
         .assignment => try infer_expr_mod.inferAssignment(self, node, scope, t),

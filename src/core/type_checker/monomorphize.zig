@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const type_system = @import("../type_system.zig");
 const core = @import("core.zig");
@@ -60,7 +62,7 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
     defer old_aliases.deinit();
 
     for (type_decl.generic_params, 0..) |param_name, i| {
-        var conc_buf = std.ArrayList(u8).init(self.allocator);
+        var conc_buf = ArrayList(u8).init(self.allocator);
         try type_args[i].formatSafe(conc_buf.writer());
         const conc_name = try conc_buf.toOwnedSlice();
 
@@ -123,7 +125,7 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
     try self.classes_ast.put(mangled_name, new_node);
     try self.alias_map.put(mangled_name, mangled_name);
     if (std.mem.indexOf(u8, mangled_name, "_or_") != null) {
-        var display_buf = std.ArrayList(u8).init(self.allocator);
+        var display_buf = ArrayList(u8).init(self.allocator);
         var it = std.mem.splitSequence(u8, mangled_name, "_or_");
         var idx: usize = 0;
         while (it.next()) |part| : (idx += 1) {

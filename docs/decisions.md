@@ -277,7 +277,7 @@ Regras centrais:
 **Razão:** Combina máxima performance (zero allocation para logs filtrados) com concisão sintática (trailing lambdas), alinhando a stdlib de logs ao modelo de composição por skills e contracts da linguagem.
 
 ## ADR 33: Tipos `enum` First-Class na Linguagem e Refatoração de `std.log`
-**Data:** Fase 49 (Planejada - Julho 2026)
+**Data:** Fase 49 (Julho 2026)
 **Contexto:** Atualmente, constantes agrupadas como níveis de log (`LogLevel`) em `src/std/log.ae` utilizam inteiros em um `object` (`val TRACE: Int = 0`). Isso impede a checagem estática rigorosa de valores no compilador, perde a semântica de tipos nativos e força a conversão manual de inteiros em cadeias de texto (`logLevelToString(level: Int)`).
 **Decisão:**
 1. **Declaração Nativa de `enum`:** A linguagem introduz a palavra-chave `enum` para declarar enums fortemente tipados (`enum LogLevel { TRACE, DEBUG, INFO, WARN, ERROR, OFF }`).

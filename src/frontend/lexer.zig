@@ -116,6 +116,7 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, text, "when")) return .kw_when;
         if (std.mem.eql(u8, text, "object")) return .kw_object;
         if (std.mem.eql(u8, text, "default")) return .kw_default;
+        if (std.mem.eql(u8, text, "enum")) return .kw_enum;
         if (std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "false")) return .bool_literal;
         return .identifier;
     }

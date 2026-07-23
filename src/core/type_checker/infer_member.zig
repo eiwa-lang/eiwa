@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const core = @import("core.zig");
 const type_system = @import("../type_system.zig");
@@ -18,7 +20,7 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const AetherType,
         .Custom => |n| name_opt = n,
         .GenericInstance => |gi| {
             const actual_gi_base = self.alias_map.get(gi.base_name) orelse gi.base_name;
-            var mangled = std.ArrayList(u8).init(self.allocator);
+            var mangled = ArrayList(u8).init(self.allocator);
             mangled.appendSlice(actual_gi_base) catch return null;
             mangled.appendSlice("_") catch return null;
             for (gi.type_args, 0..) |t_arg, idx| {
@@ -188,6 +190,42 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                 self.reportError(node.line, node.column, "TypeError: Static member '{s}' not found in object '{s}'.", .{g.name, class_name});
                 return error.TypeError;
             }
+        } else if (self.enums_ast.contains(actual_class_name)) {
+            is_static = true;
+            g.object.data.identifier.resolved_c_name = actual_class_name;
+            const enum_node = self.enums_ast.get(actual_class_name).?;
+            const ed = enum_node.data.enum_decl;
+            if (std.mem.eql(u8, g.name, "values")) {
+                const fn_type = try self.allocator.create(AetherType);
+                const ret_type = try self.allocator.create(AetherType);
+                const elem_type = try self.allocator.create(AetherType);
+                elem_type.* = .{ .Custom = actual_class_name };
+                ret_type.* = .{ .GenericInstance = .{
+                    .base_name = "List",
+                    .type_args = try self.allocator.dupe(*const AetherType, &.{elem_type}),
+                }};
+                fn_type.* = .{ .Function = .{
+                    .params = &.{},
+                    .return_type = ret_type,
+                    .c_name = try std.fmt.allocPrint(self.allocator, "{s}_values", .{actual_class_name}),
+                }};
+                prop_type = fn_type;
+            } else {
+                var found_variant = false;
+                for (ed.variants) |variant| {
+                    if (std.mem.eql(u8, variant.name, g.name)) {
+                        found_variant = true;
+                        const variant_type = try self.allocator.create(AetherType);
+                        variant_type.* = .{ .Custom = actual_class_name };
+                        prop_type = variant_type;
+                        break;
+                    }
+                }
+                if (!found_variant) {
+                    self.reportError(node.line, node.column, "TypeError: Variant '{s}' not found in enum '{s}'.", .{g.name, class_name});
+                    return error.TypeError;
+                }
+            }
         }
     }
 
@@ -204,7 +242,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
         .Custom => |n| base_name = n,
         .GenericInstance => |gi| {
             const actual_gi_base = self.alias_map.get(gi.base_name) orelse gi.base_name;
-            var mangled = std.ArrayList(u8).init(self.allocator);
+            var mangled = ArrayList(u8).init(self.allocator);
             try mangled.appendSlice(actual_gi_base);
             try mangled.appendSlice("_");
             for (gi.type_args, 0..) |t_arg, i| {
@@ -226,7 +264,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     if (lookup_name) |name| {
         var actual_name = name;
         if (!self.classes_ast.contains(actual_name) and std.mem.indexOf(u8, actual_name, " | ") != null) {
-            var buf = std.ArrayList(u8).init(self.allocator);
+            var buf = ArrayList(u8).init(self.allocator);
             var it = std.mem.splitSequence(u8, actual_name, " | ");
             var idx: usize = 0;
             while (it.next()) |part| : (idx += 1) {
@@ -260,7 +298,49 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                 }
             }
         }
-        if (self.contracts_ast.get(name)) |contract_node| {
+        if (self.enums_ast.get(actual_name) != null) {
+            if (std.mem.eql(u8, g.name, "ordinal")) {
+                const int_t = try self.allocator.create(AetherType);
+                int_t.* = .Int;
+                prop_type = int_t;
+            } else if (std.mem.eql(u8, g.name, "name")) {
+                const str_t = try self.allocator.create(AetherType);
+                str_t.* = .String;
+                prop_type = str_t;
+            } else if (std.mem.eql(u8, g.name, "toString")) {
+                const fn_t = try self.allocator.create(AetherType);
+                const str_t = try self.allocator.create(AetherType);
+                str_t.* = .String;
+                fn_t.* = .{ .Function = .{
+                    .params = &.{},
+                    .return_type = str_t,
+                    .c_name = try std.fmt.allocPrint(self.allocator, "{s}_toString", .{actual_name}),
+                }};
+                prop_type = fn_t;
+            } else if (std.mem.eql(u8, g.name, "hashCode")) {
+                const fn_t = try self.allocator.create(AetherType);
+                const int_t = try self.allocator.create(AetherType);
+                int_t.* = .Int;
+                fn_t.* = .{ .Function = .{
+                    .params = &.{},
+                    .return_type = int_t,
+                    .c_name = try std.fmt.allocPrint(self.allocator, "{s}_hashCode", .{actual_name}),
+                }};
+                prop_type = fn_t;
+            } else if (std.mem.eql(u8, g.name, "equals")) {
+                const fn_t = try self.allocator.create(AetherType);
+                const bool_t = try self.allocator.create(AetherType);
+                bool_t.* = .Bool;
+                const param_t = try self.allocator.create(AetherType);
+                param_t.* = .{ .Custom = "Stringable" };
+                fn_t.* = .{ .Function = .{
+                    .params = try self.allocator.dupe(*const AetherType, &.{param_t}),
+                    .return_type = bool_t,
+                    .c_name = try std.fmt.allocPrint(self.allocator, "{s}_equals", .{actual_name}),
+                }};
+                prop_type = fn_t;
+            }
+        } else if (self.contracts_ast.get(name)) |contract_node| {
             // Member lookup on a contract-typed receiver
             for (contract_node.data.contract_decl.methods) |method| {
                 if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
@@ -452,7 +532,7 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
         .Custom => |n| lookup_name = self.alias_map.get(n) orelse n,
         .GenericInstance => |gi| {
             const actual_gi_base = self.alias_map.get(gi.base_name) orelse gi.base_name;
-            var mangled = std.ArrayList(u8).init(self.allocator);
+            var mangled = ArrayList(u8).init(self.allocator);
             try mangled.appendSlice(actual_gi_base);
             try mangled.appendSlice("_");
             for (gi.type_args, 0..) |t_arg, i| {
@@ -468,7 +548,7 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     if (lookup_name) |name| {
         var actual_name = name;
         if (!self.classes_ast.contains(actual_name) and std.mem.indexOf(u8, actual_name, " | ") != null) {
-            var buf = std.ArrayList(u8).init(self.allocator);
+            var buf = ArrayList(u8).init(self.allocator);
             var it = std.mem.splitSequence(u8, actual_name, " | ");
             var idx: usize = 0;
             while (it.next()) |part| : (idx += 1) {

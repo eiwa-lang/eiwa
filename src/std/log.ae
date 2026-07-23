@@ -3,48 +3,36 @@ import { now, Time } from "std.time"
 import { Throwable } from "std.exceptions"
 import { println } from "std.io"
 
-object LogLevel {
-    val TRACE: Int = 0
-    val DEBUG: Int = 1
-    val INFO: Int = 2
-    val WARN: Int = 3
-    val ERROR: Int = 4
-    val OFF: Int = 5
-}
-
-fun logLevelToString(level: Int): String {
-    return when (level) {
-        0 -> "TRACE"
-        1 -> "DEBUG"
-        2 -> "INFO"
-        3 -> "WARN"
-        4 -> "ERROR"
-        5 -> "OFF"
-        else -> "INFO"
-    }
+enum LogLevel {
+    TRACE,
+    DEBUG,
+    INFO,
+    WARN,
+    ERROR,
+    OFF
 }
 
 contract LogFormatter {
-    fun format(level: Int, message: String, throwable: Throwable?, fields: Map<String, String>): String
+    fun format(level: LogLevel, message: String, throwable: Throwable?, fields: Map<String, String>): String
 }
 
 skill TextFormatter : LogFormatter {
-    fun getAnsiColor(level: Int): String {
+    fun getAnsiColor(level: LogLevel): String {
         return when (level) {
-            0 -> "\x1b[35m"
-            1 -> "\x1b[90m"
-            2 -> "\x1b[36m"
-            3 -> "\x1b[33m"
-            4 -> "\x1b[31m"
+            LogLevel.TRACE -> "\x1b[35m"
+            LogLevel.DEBUG -> "\x1b[90m"
+            LogLevel.INFO -> "\x1b[36m"
+            LogLevel.WARN -> "\x1b[33m"
+            LogLevel.ERROR -> "\x1b[31m"
             else -> "\x1b[0m"
         }
     }
 
-    implement fun format(level: Int, message: String, throwable: Throwable?, fields: Map<String, String>): String {
+    implement fun format(level: LogLevel, message: String, throwable: Throwable?, fields: Map<String, String>): String {
         val reset = "\x1b[0m"
         val color = this.getAnsiColor(level)
         val timestamp = now().toString()
-        val levelStr = logLevelToString(level)
+        val levelStr = level.name
 
         var result = "[" + timestamp + "] " + color + "[" + levelStr + "]" + reset + " " + message
 
@@ -79,9 +67,9 @@ skill TextFormatter : LogFormatter {
 }
 
 skill JsonFormatter : LogFormatter {
-    implement fun format(level: Int, message: String, throwable: Throwable?, fields: Map<String, String>): String {
+    implement fun format(level: LogLevel, message: String, throwable: Throwable?, fields: Map<String, String>): String {
         val timestamp = now().toString()
-        val levelStr = logLevelToString(level)
+        val levelStr = level.name
 
         var json = "{\"timestamp\":\"" + timestamp + "\",\"level\":\"" + levelStr + "\",\"message\":\"" + message + "\""
 
@@ -114,10 +102,10 @@ type JsonLogFormatter() : LogFormatter + JsonFormatter
 
 type Logger(
     val fields: Map<String, String> = Map<String, String>(),
-    var level: Int = 2,
+    var level: LogLevel = LogLevel.INFO,
     var formatter: LogFormatter = StandardLogFormatter()
 ) {
-    fun setLevel(newLevel: Int) {
+    fun setLevel(newLevel: LogLevel) {
         this.level = newLevel
     }
 
@@ -172,11 +160,11 @@ type Logger(
         return child
     }
 
-    fun isEnabled(targetLevel: Int): Bool {
-        return targetLevel >= this.level
+    fun isEnabled(targetLevel: LogLevel): Bool {
+        return targetLevel.ordinal >= this.level.ordinal
     }
 
-    fun log(targetLevel: Int, message: String, throwable: Throwable? = null) {
+    fun log(targetLevel: LogLevel, message: String, throwable: Throwable? = null) {
         if (this.isEnabled(targetLevel)) {
             val formatted = this.formatter.format(targetLevel, message, throwable, this.fields)
             println(formatted)
@@ -184,58 +172,51 @@ type Logger(
     }
 
     fun trace(msgFn: () -> String) {
-        if (this.isEnabled(0)) {
+        if (this.isEnabled(LogLevel.TRACE)) {
             val msgStr = msgFn()
-            val s0 = msgStr
-            this.log(0, s0, null)
+            this.log(LogLevel.TRACE, msgStr, null)
         }
     }
 
     fun debug(msgFn: () -> String) {
-        if (this.isEnabled(1)) {
+        if (this.isEnabled(LogLevel.DEBUG)) {
             val msgStr = msgFn()
-            val s1 = msgStr
-            this.log(1, s1, null)
+            this.log(LogLevel.DEBUG, msgStr, null)
         }
     }
 
     fun info(msgFn: () -> String) {
-        if (this.isEnabled(2)) {
+        if (this.isEnabled(LogLevel.INFO)) {
             val msgStr = msgFn()
-            val s2 = msgStr
-            this.log(2, s2, null)
+            this.log(LogLevel.INFO, msgStr, null)
         }
     }
 
     fun warn(msgFn: () -> String) {
-        if (this.isEnabled(3)) {
+        if (this.isEnabled(LogLevel.WARN)) {
             val msgStr = msgFn()
-            val s3 = msgStr
-            this.log(3, s3, null)
+            this.log(LogLevel.WARN, msgStr, null)
         }
     }
 
     fun warn(throwable: Throwable, msgFn: () -> String) {
-        if (this.isEnabled(3)) {
+        if (this.isEnabled(LogLevel.WARN)) {
             val msgStr = msgFn()
-            val sw3 = msgStr
-            this.log(3, sw3, throwable)
+            this.log(LogLevel.WARN, msgStr, throwable)
         }
     }
 
     fun error(msgFn: () -> String) {
-        if (this.isEnabled(4)) {
+        if (this.isEnabled(LogLevel.ERROR)) {
             val msgStr = msgFn()
-            val s4 = msgStr
-            this.log(4, s4, null)
+            this.log(LogLevel.ERROR, msgStr, null)
         }
     }
 
     fun error(throwable: Throwable, msgFn: () -> String) {
-        if (this.isEnabled(4)) {
+        if (this.isEnabled(LogLevel.ERROR)) {
             val msgStr = msgFn()
-            val se4 = msgStr
-            this.log(4, se4, throwable)
+            this.log(LogLevel.ERROR, msgStr, throwable)
         }
     }
 }
@@ -243,7 +224,7 @@ type Logger(
 object Log {
     val rootLogger: Logger = Logger()
 
-    fun setLevel(level: Int) {
+    fun setLevel(level: LogLevel) {
         Log.rootLogger.setLevel(level)
     }
 
@@ -287,4 +268,3 @@ object Log {
         Log.rootLogger.error(throwable, msgFn)
     }
 }
-

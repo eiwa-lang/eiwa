@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../../core/compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../../core/ast.zig");
 const ASTNode = ast.ASTNode;
 const TokenType = ast.TokenType;
@@ -7,7 +9,7 @@ const Parser = @import("core.zig").Parser;
 
 pub fn declaration(self: *Parser) anyerror!*ASTNode {
     const annotations = try self.parseAnnotations();
-    var modifiers = std.ArrayList(TokenType).init(self.allocator);
+    var modifiers = ArrayList(TokenType).init(self.allocator);
 
     while (self.match(.kw_implement) or self.match(.kw_operator)) {
         try modifiers.append(self.previous.token_type);
@@ -42,6 +44,10 @@ pub fn declaration(self: *Parser) anyerror!*ASTNode {
         if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on object"); return error.ParseError; }
         return try self.objectDeclaration(annotations);
     }
+    if (self.match(.kw_enum)) {
+        if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on enum"); return error.ParseError; }
+        return try self.enumDeclaration(annotations);
+    }
     
     if (modifiers.items.len > 0) {
         self.errorAtCurrent("Modifiers must precede a function declaration");
@@ -59,12 +65,12 @@ pub fn declaration(self: *Parser) anyerror!*ASTNode {
 }
 
 pub fn parseAnnotations(self: *Parser) anyerror![]ast.Annotation {
-    var annotations = std.ArrayList(ast.Annotation).init(self.allocator);
+    var annotations = ArrayList(ast.Annotation).init(self.allocator);
     while (self.match(.at)) {
         try self.consume(.identifier, "Expected annotation name after '@'.");
         const name = self.previous.lexeme;
         
-        var arguments = std.ArrayList([]const u8).init(self.allocator);
+        var arguments = ArrayList([]const u8).init(self.allocator);
         if (self.match(.l_paren)) {
             if (!self.check(.r_paren)) {
                 while (true) {
@@ -93,7 +99,7 @@ pub fn libDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*AS
     const name = self.previous.lexeme;
     
     try self.consume(.l_brace, "Expected '{' before lib body.");
-    var functions = std.ArrayList(*ASTNode).init(self.allocator);
+    var functions = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
         const fun_annotations = try self.parseAnnotations();
         if (self.match(.kw_fun)) {
@@ -147,7 +153,7 @@ pub fn testDeclaration(self: *Parser) anyerror!*ASTNode {
     }
 
     try self.consume(.l_brace, "Expected '{' before test body.");
-    var stmts = std.ArrayList(*ASTNode).init(self.allocator);
+    var stmts = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
         try stmts.append(try self.declaration());
     }
@@ -166,7 +172,7 @@ pub fn importDeclaration(self: *Parser) anyerror!*ASTNode {
     
     try self.consume(.l_brace, "Expected '{' after import.");
     
-    var destructured = std.ArrayList([]const u8).init(self.allocator);
+    var destructured = ArrayList([]const u8).init(self.allocator);
     
     if (!self.check(.r_brace)) {
         while (true) {
@@ -198,7 +204,7 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
     const name = self.previous.lexeme;
 
     try self.consume(.l_paren, "Expected '(' after function name.");
-    var params = std.ArrayList(Param).init(self.allocator);
+    var params = ArrayList(Param).init(self.allocator);
     
     if (!self.check(.r_paren)) {
         while (true) {
@@ -231,7 +237,7 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
         body = try self.expression();
         is_expr = true;
     } else if (self.match(.l_brace)) {
-        var stmts = std.ArrayList(*ASTNode).init(self.allocator);
+        var stmts = ArrayList(*ASTNode).init(self.allocator);
         while (!self.check(.r_brace) and !self.check(.eof)) {
             try stmts.append(try self.declaration());
         }
@@ -269,7 +275,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
         name = self.previous.lexeme;
     }
 
-    var generic_params = std.ArrayList([]const u8).init(self.allocator);
+    var generic_params = ArrayList([]const u8).init(self.allocator);
     if (self.match(.less)) {
         if (!self.check(.greater)) {
             while (true) {
@@ -281,7 +287,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
         try self.consume(.greater, "Expected '>' after generic parameters.");
     }
 
-    var props = std.ArrayList(ast.ClassProp).init(self.allocator);
+    var props = ArrayList(ast.ClassProp).init(self.allocator);
     if (self.match(.l_paren)) {
         if (!self.check(.r_paren)) {
             while (true) {
@@ -322,8 +328,8 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
         try self.consume(.r_paren, "Expected ')' after type primary constructor.");
     }
 
-    var contracts = std.ArrayList([]const u8).init(self.allocator);
-    var skills = std.ArrayList([]const u8).init(self.allocator);
+    var contracts = ArrayList([]const u8).init(self.allocator);
+    var skills = ArrayList([]const u8).init(self.allocator);
     while (true) {
         if (self.match(.colon)) {
             while (true) {
@@ -342,10 +348,10 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
         }
     }
 
-    var methods = std.ArrayList(*ASTNode).init(self.allocator);
+    var methods = ArrayList(*ASTNode).init(self.allocator);
     if (self.match(.l_brace)) {
         while (!self.check(.r_brace) and !self.check(.eof)) {
-            var modifiers = std.ArrayList(TokenType).init(self.allocator);
+            var modifiers = ArrayList(TokenType).init(self.allocator);
             while (self.match(.kw_implement) or self.match(.kw_operator)) {
                 try modifiers.append(self.previous.token_type);
             }
@@ -379,11 +385,11 @@ pub fn contractDeclaration(self: *Parser, annotations: []ast.Annotation) anyerro
     try self.consume(.identifier, "Expected contract name.");
     const name = self.previous.lexeme;
 
-    var methods = std.ArrayList(*ASTNode).init(self.allocator);
+    var methods = ArrayList(*ASTNode).init(self.allocator);
     // Braces are optional for empty (marker) contracts: `contract Animal`
     if (self.match(.l_brace)) {
         while (!self.check(.r_brace) and !self.check(.eof)) {
-            var modifiers = std.ArrayList(TokenType).init(self.allocator);
+            var modifiers = ArrayList(TokenType).init(self.allocator);
             while (self.match(.kw_implement) or self.match(.kw_operator)) {
                 try modifiers.append(self.previous.token_type);
             }
@@ -419,7 +425,7 @@ pub fn skillDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*
     try self.consume(.identifier, "Expected skill name.");
     const name = self.previous.lexeme;
 
-    var required_contracts = std.ArrayList([]const u8).init(self.allocator);
+    var required_contracts = ArrayList([]const u8).init(self.allocator);
     if (self.match(.colon)) {
         while (true) {
             try self.consume(.identifier, "Expected contract name after ':'.");
@@ -429,9 +435,9 @@ pub fn skillDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*
     }
 
     try self.consume(.l_brace, "Expected '{' before skill body.");
-    var methods = std.ArrayList(*ASTNode).init(self.allocator);
+    var methods = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
-        var modifiers = std.ArrayList(TokenType).init(self.allocator);
+        var modifiers = ArrayList(TokenType).init(self.allocator);
         while (self.match(.kw_implement) or self.match(.kw_operator)) {
             try modifiers.append(self.previous.token_type);
         }
@@ -464,10 +470,10 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
     }
     
     try self.consume(.l_brace, "Expected '{' before object body.");
-    var members = std.ArrayList(*ASTNode).init(self.allocator);
+    var members = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
         const member_annotations = try self.parseAnnotations();
-        var modifiers = std.ArrayList(TokenType).init(self.allocator);
+        var modifiers = ArrayList(TokenType).init(self.allocator);
         while (self.match(.kw_implement) or self.match(.kw_operator)) {
             try modifiers.append(self.previous.token_type);
         }
@@ -494,6 +500,38 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
         .annotations = annotations,
         .name = name,
         .members = try members.toOwnedSlice(),
+        .resolved_c_name = null,
+    } }, line, col);
+}
+
+pub fn enumDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*ASTNode {
+    const line = self.previous.line;
+    const col = self.previous.column;
+    try self.consume(.identifier, "Expected enum name.");
+    const enum_name = self.previous.lexeme;
+
+    try self.consume(.l_brace, "Expected '{' before enum body.");
+    var variants = ArrayList(ast.EnumVariant).init(self.allocator);
+    var ordinal: usize = 0;
+
+    while (!self.check(.r_brace) and !self.check(.eof)) {
+        try self.consume(.identifier, "Expected enum variant name.");
+        try variants.append(.{
+            .name = self.previous.lexeme,
+            .ordinal = ordinal,
+        });
+        ordinal += 1;
+
+        if (self.match(.comma)) {
+            // optional trailing or separating comma
+        }
+    }
+    try self.consume(.r_brace, "Expected '}' after enum body.");
+
+    return try self.createNodeAt(.{ .enum_decl = .{
+        .annotations = annotations,
+        .name = enum_name,
+        .variants = try variants.toOwnedSlice(),
         .resolved_c_name = null,
     } }, line, col);
 }

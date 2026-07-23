@@ -1,27 +1,24 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const compat = @import("core/compat.zig");
+const ArrayList = compat.ArrayList;
 const lexer = @import("frontend/lexer.zig");
 const parser = @import("frontend/parser/core.zig");
 const c_transpiler = @import("backend/c_transpiler/core.zig");
 const ast = @import("core/ast.zig");
 
-
 /// Main entry point for the Aether CLI.
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) {
-            std.debug.print("Memory leak detected in compiler general purpose allocator!\n", .{});
-        }
-    }
-    
-    var global_arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer global_arena.deinit();
-    const allocator = global_arena.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.arena.allocator();
 
-    const args = try std.process.argsAlloc(gpa.allocator());
-    defer std.process.argsFree(gpa.allocator(), args);
+    var args_list = ArrayList([]const u8).init(allocator);
+    var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args_it.deinit();
+    while (args_it.next()) |arg| {
+        try args_list.append(arg);
+    }
+    const args = args_list.items;
 
     if (args.len < 2 or (!std.mem.eql(u8, args[1], "run") and !std.mem.eql(u8, args[1], "build") and !std.mem.eql(u8, args[1], "test"))) {
         std.debug.print("Usage: aether <run|build|test> [file.ae]\n", .{});
@@ -30,10 +27,12 @@ pub fn main() !void {
     const is_build = std.mem.eql(u8, args[1], "build");
     const is_test = std.mem.eql(u8, args[1], "test");
 
-    var source_alloc = std.ArrayList(u8).init(allocator);
+    var source_alloc = ArrayList(u8).init(allocator);
     defer source_alloc.deinit();
 
     var filename: []const u8 = "synthetic_test.ae";
+
+    const io = init.io;
 
     if (is_test) {
         var search_path: []const u8 = ".";
@@ -41,22 +40,22 @@ pub fn main() !void {
             search_path = args[2];
         }
         if (std.mem.endsWith(u8, search_path, ".ae")) {
-            try source_alloc.writer().print("import {{}} from \"{s}\"\n", .{search_path});
+            try source_alloc.print("import {{}} from \"{s}\"\n", .{search_path});
         } else {
-            var dir = std.fs.cwd().openDir(search_path, .{ .iterate = true }) catch |err| {
+            var dir = std.Io.Dir.cwd().openDir(io, search_path, .{ .iterate = true }) catch |err| {
                 std.debug.print("Failed to open test path '{s}': {}\n", .{ search_path, err });
                 return;
             };
-            defer dir.close();
+            defer dir.close(io);
             var walker = try dir.walk(allocator);
             defer walker.deinit();
 
-            while (try walker.next()) |entry| {
+            while (try walker.next(io)) |entry| {
                 if (entry.kind == .file) {
                     if (std.mem.endsWith(u8, entry.basename, "_test.ae")) {
                         const full_import_path = try std.fs.path.join(allocator, &.{ search_path, entry.path });
                         defer allocator.free(full_import_path);
-                        try source_alloc.writer().print("import {{}} from \"{s}\"\n", .{full_import_path});
+                        try source_alloc.print("import {{}} from \"{s}\"\n", .{full_import_path});
                     }
                 }
             }
@@ -75,12 +74,12 @@ pub fn main() !void {
             std.debug.print("Error: Unsupported file extension. Please use .ae files.\n", .{});
             return;
         }
-        const file_content = try std.fs.cwd().readFileAlloc(allocator, filename, 1024 * 1024);
+        const file_content = try std.Io.Dir.cwd().readFileAlloc(io, filename, allocator, .limited(1024 * 1024));
         defer allocator.free(file_content);
         try source_alloc.appendSlice(file_content);
     }
     const source = source_alloc.items;
-    try std.fs.cwd().writeFile(.{ .sub_path = "synthetic_test.ae", .data = source });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = "synthetic_test.ae", .data = source });
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -88,12 +87,12 @@ pub fn main() !void {
     var registry = @import("core/type_checker/core.zig").ModuleRegistry.init(arena.allocator());
     defer registry.deinit();
 
-    var queue = std.ArrayList([]const u8).init(arena.allocator());
+    var queue = ArrayList([]const u8).init(arena.allocator());
     defer queue.deinit();
 
     const std_modules = @import("core/type_checker/infer_decl.zig").std_modules;
 
-    const resolved_entry_path = try std.fs.path.relative(arena.allocator(), ".", filename);
+    const resolved_entry_path = try arena.allocator().dupe(u8, filename);
     try queue.append(resolved_entry_path);
 
     var queue_idx: usize = 0;
@@ -117,7 +116,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, cur_path, "synthetic_test.ae")) {
             source_content = source;
         } else {
-            source_content = std.fs.cwd().readFileAlloc(arena.allocator(), cur_path, 1024 * 1024) catch |err| {
+            source_content = std.Io.Dir.cwd().readFileAlloc(io, cur_path, arena.allocator(), .limited(1024 * 1024)) catch |err| {
                 std.debug.print("Error: Failed to read module file '{s}': {}\n", .{ cur_path, err });
                 std.process.exit(1);
             };
@@ -142,6 +141,7 @@ pub fn main() !void {
 
         var checker = try arena.allocator().create(@import("core/type_checker/core.zig").TypeChecker);
         checker.* = @import("core/type_checker/core.zig").TypeChecker.init(arena.allocator(), source_content, cur_path);
+        checker.io = io;
         checker.module_prefix = if (queue_idx == 0) null else prefix;
         checker.is_test_mode = is_test;
         checker.registry = &registry;
@@ -172,8 +172,11 @@ pub fn main() !void {
                         const pkg_name = actual_module_path[4..];
                         import_resolved_path = try std.fmt.allocPrint(arena.allocator(), "std/{s}", .{pkg_name});
                     } else {
-                        const raw_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, actual_module_path });
-                        import_resolved_path = try std.fs.path.relative(arena.allocator(), ".", raw_path);
+                        if (std.mem.eql(u8, dir_path, ".")) {
+                            import_resolved_path = actual_module_path;
+                        } else {
+                            import_resolved_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, actual_module_path });
+                        }
                     }
                     try queue.append(import_resolved_path);
                 }
@@ -182,37 +185,38 @@ pub fn main() !void {
     }
 
     // Pass 2a: Declare Class and Object Types (Dependencies first: reverse queue order)
-    var idx: usize = registry.ordered_modules.items.len;
+    const modules_slice = registry.ordered_modules.items;
+    var idx: usize = modules_slice.len;
     while (idx > 0) {
         idx -= 1;
-        const path = registry.ordered_modules.items[idx];
+        const path = modules_slice[idx];
         const mod = registry.modules.get(path).?;
         try mod.checker.declareTypes(mod.ast_root);
     }
 
     // Pass 2b: Declare Signatures (constructors, methods, functions, libraries)
-    idx = registry.ordered_modules.items.len;
+    idx = modules_slice.len;
     while (idx > 0) {
         idx -= 1;
-        const path = registry.ordered_modules.items[idx];
+        const path = modules_slice[idx];
         const mod = registry.modules.get(path).?;
         try mod.checker.declareSignatures(mod.ast_root);
     }
 
     // Pass 2c: Resolve Imports (link/copy symbols between modules)
-    idx = registry.ordered_modules.items.len;
+    idx = modules_slice.len;
     while (idx > 0) {
         idx -= 1;
-        const path = registry.ordered_modules.items[idx];
+        const path = modules_slice[idx];
         const mod = registry.modules.get(path).?;
         try mod.checker.resolveImports(mod.ast_root);
     }
 
     // Pass 3: Validate Bodies
-    idx = registry.ordered_modules.items.len;
+    idx = modules_slice.len;
     while (idx > 0) {
         idx -= 1;
-        const path = registry.ordered_modules.items[idx];
+        const path = modules_slice[idx];
         const mod = registry.modules.get(path).?;
         mod.checker.validate(mod.ast_root) catch {
             std.process.exit(1);
@@ -222,6 +226,7 @@ pub fn main() !void {
     // Consolidate classes, objects, contracts, and aliases for the CTranspiler
     var global_classes_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_objects_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
+    var global_enums_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_contracts_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_alias_map = std.StringHashMap([]const u8).init(arena.allocator());
 
@@ -234,6 +239,10 @@ pub fn main() !void {
         var object_it = mod.checker.objects_ast.iterator();
         while (object_it.next()) |entry| {
             try global_objects_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var enum_it = mod.checker.enums_ast.iterator();
+        while (enum_it.next()) |entry| {
+            try global_enums_ast.put(entry.key_ptr.*, entry.value_ptr.*);
         }
         var contract_it = mod.checker.contracts_ast.iterator();
         while (contract_it.next()) |entry| {
@@ -252,6 +261,7 @@ pub fn main() !void {
     transpiler.is_test_mode = is_test;
     transpiler.classes_ast = &global_classes_ast;
     transpiler.objects_ast = &global_objects_ast;
+    transpiler.enums_ast = &global_enums_ast;
     transpiler.contracts_ast = &global_contracts_ast;
     transpiler.alias_map = &global_alias_map;
     transpiler.source_file = filename; // used for #line directives in C output
@@ -261,7 +271,7 @@ pub fn main() !void {
     defer allocator.free(c_code);
 
     const out_c_filename = "temp_out.c";
-    try std.fs.cwd().writeFile(.{ .sub_path = out_c_filename, .data = c_code });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_c_filename, .data = c_code });
     // defer std.fs.cwd().deleteFile(out_c_filename) catch {};
 
     // Invoke zig cc
@@ -272,14 +282,18 @@ pub fn main() !void {
 
     const actual_zig = "zig";
 
-    var cc_argv = std.ArrayList([]const u8).init(allocator);
-    try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", "-O0", "-fwrapv", "-fno-sanitize=undefined", out_c_filename, "-lgc" });
+    var cc_argv = ArrayList([]const u8).init(allocator);
+    try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", "-O0", "-fwrapv", "-fno-sanitize=undefined" });
+    if (builtin.target.os.tag == .macos) {
+        try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
+    }
+    try cc_argv.appendSlice(&[_][]const u8{ out_c_filename, "-lgc" });
 
     var lib_it = transpiler.link_libraries.keyIterator();
     while (lib_it.next()) |lib_name| {
         const flag = try std.fmt.allocPrint(allocator, "-l{s}", .{lib_name.*});
         try cc_argv.append(flag);
-        
+
         const macro = try std.fmt.allocPrint(allocator, "-DAETHER_USE_{s}", .{lib_name.*});
         for (macro) |*c| {
             c.* = std.ascii.toUpper(c.*);
@@ -289,16 +303,15 @@ pub fn main() !void {
 
     try cc_argv.appendSlice(&[_][]const u8{ "-o", final_bin });
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = cc_argv.items,
     });
     defer {
         allocator.free(result.stdout);
         allocator.free(result.stderr);
     }
-    
-    if (result.term != .Exited or result.term.Exited != 0) {
+
+    if (result.term != .exited or result.term.exited != 0) {
         // Filter C stderr: show only semantic errors, hide internal C details.
         // With #line directives in the generated C, clang now reports errors as:
         //   person.ae:2:172: error: ...
@@ -313,7 +326,7 @@ pub fn main() !void {
             if (std.mem.indexOf(u8, line, "temp_out.c:")) |_| {
                 // Fallback: error on a C-internal line (outside #line'd regions)
                 if (std.mem.indexOf(u8, line, "error: ")) |err_pos| {
-                    const raw_msg = line[err_pos + 7..];
+                    const raw_msg = line[err_pos + 7 ..];
                     const msg = translateCError(raw_msg);
                     if (!found_error) {
                         std.debug.print("\nCompilation error:\n", .{});
@@ -324,17 +337,17 @@ pub fn main() !void {
             } else if (std.mem.indexOf(u8, line, ".ae:")) |ae_pos| {
                 // Error mapped back to an Aether source file via #line directive
                 // Format: path/to/file.ae:LINE:COL: error: MESSAGE
-                const location_part = line[0..ae_pos + 3]; // e.g. "../../samples/person.ae"
+                const location_part = line[0 .. ae_pos + 3]; // e.g. "../../samples/person.ae"
                 // Extract just the basename for cleaner output
                 const ae_basename = std.fs.path.basename(location_part);
                 // Find line number after the .ae:
-                const after_ae = line[ae_pos + 4..];
+                const after_ae = line[ae_pos + 4 ..];
                 var col_it = std.mem.splitScalar(u8, after_ae, ':');
                 const line_num = col_it.next() orelse "?";
                 // Find the error message
                 if (std.mem.indexOf(u8, line, "error: ")) |err_pos| {
                     std.debug.print("RAW C ERROR LINE: {s}\n", .{line});
-                    const raw_msg = line[err_pos + 7..];
+                    const raw_msg = line[err_pos + 7 ..];
                     const msg = translateCError(raw_msg);
                     if (!found_error) {
                         std.debug.print("\nCompilation error:\n", .{});
@@ -361,22 +374,16 @@ pub fn main() !void {
         // Execute final binary
         var exe_path_buf: [1024]u8 = undefined;
         const exe_path = try std.fmt.bufPrint(&exe_path_buf, "./{s}", .{final_bin});
-        
-        var child = std.process.Child.init(&[_][]const u8{ exe_path }, allocator);
-        child.stdin_behavior = .Inherit;
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
-        
-        try child.spawn();
-        const term = try child.wait();
-        
-        // Clean up binary after running
-        // std.fs.cwd().deleteFile(final_bin) catch {};
 
-        if (term == .Exited and term.Exited != 0) {
-            std.process.exit(term.Exited);
-        } else if (term == .Signal) {
-            std.debug.print("Error: Test runner crashed with signal {d}\n", .{term.Signal});
+        var child = try std.process.spawn(io, .{
+            .argv = &[_][]const u8{exe_path},
+        });
+        const term = try child.wait(io);
+
+        if (term == .exited and term.exited != 0) {
+            std.process.exit(term.exited);
+        } else if (term == .signal) {
+            std.debug.print("Error: Test runner crashed with signal {}\n", .{term.signal});
             std.process.exit(1);
         }
     } else {

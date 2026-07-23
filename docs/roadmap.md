@@ -307,13 +307,13 @@ Design and implement the native logging package `std.log` (`src/std/log.ae`) sup
 - [x] **Task 48.5:** Implement unit test suite `samples/tests/log_test.ae`, demonstration sample `samples/log_sample.ae`, and integrate `std.log` into `samples/arest/arest.ae`.
 - [x] **Verify:** Execute test suite `aether test samples/tests/log_test.ae`, verify sample `aether run samples/log_sample.ae`, and run `zig build test`.
 
-### Phase 49: First-Class Enum Types & `std.log` Enum Refactoring (PENDING)
+### Phase 49: First-Class Enum Types & `std.log` Enum Refactoring (COMPLETED)
 Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DEBUG, INFO, WARN, ERROR, OFF }`) with auto-generated ordinal and string representations, and refactor `std.log` (`src/std/log.ae`) to use `LogLevel` enum instead of integer constants.
-- [ ] **Task 49.1:** Lexer & Parser: Add `kw_enum` keyword and parse `enum Name { Variant1, Variant2, ... }` declarations into AST `enum_decl`.
-- [ ] **Task 49.2:** TypeChecker: Register `enum` types with variant values, implicit `ordinal: Int`, `name: String`, `values(): List<EnumType>`, `Stringable`, `Equatable`, `Hashable`.
-- [ ] **Task 49.3:** C Transpiler: Transpile enum declarations to static C enum structs and integer value descriptors.
-- [ ] **Task 49.4:** Refactor `src/std/log.ae`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
-- [ ] **Task 49.5:** Update samples and tests (`log_sample.ae`, `log_test.ae`, `arest.ae`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
+- [x] **Task 49.1:** Lexer & Parser: Add `kw_enum` keyword and parse `enum Name { Variant1, Variant2, ... }` declarations into AST `enum_decl`.
+- [x] **Task 49.2:** TypeChecker: Register `enum` types with variant values, implicit `ordinal: Int`, `name: String`, `values(): List<EnumType>`, `Stringable`, `Equatable`, `Hashable`.
+- [x] **Task 49.3:** C Transpiler: Transpile enum declarations to static C enum structs and integer value descriptors.
+- [x] **Task 49.4:** Refactor `src/std/log.ae`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
+- [x] **Task 49.5:** Update samples and tests (`log_sample.ae`, `log_test.ae`, `arest.ae`, `enum_sample.ae`, `enum_test.ae`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
 
 ---
 

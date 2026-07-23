@@ -125,6 +125,10 @@ sudo apt install libgc-dev
 
 # macOS
 brew install bdw-gc
+
+# Windows (MSYS2 / vcpkg)
+pacman -S mingw-w64-x86_64-gc
+# or: vcpkg install bdw-gc
 ```
 
 ### 2. Build the Compiler

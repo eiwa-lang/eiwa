@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../../core/compat.zig");
+const ArrayList = compat.ArrayList;
 const core = @import("core.zig");
 const ts = @import("../../core/type_system.zig");
 
@@ -257,7 +259,7 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     if (self.emitted_functions.contains(func_name)) return;
     try self.emitted_functions.put(func_name, {});
 
-    var sig = std.ArrayList(u8).init(self.allocator);
+    var sig = ArrayList(u8).init(self.allocator);
     if (is_main) {
         try sig.writer().print("int ", .{});
     } else if (node.resolved_type) |rt| {
@@ -386,5 +388,91 @@ pub fn emitObjectDecl(self: *CTranspiler, node: *ASTNode) anyerror!void {
                 try self.static_initializers.append(.{ .name = var_name, .init = init_node });
             }
         }
+    }
+}
+
+pub fn emitEnumDecl(self: *CTranspiler, node: *ASTNode) !void {
+    const ed = node.data.enum_decl;
+    const actual_name = ed.resolved_c_name orelse ed.name;
+    if (self.classes.contains(actual_name)) return;
+    try self.classes.put(actual_name, {});
+
+    const hw = self.header_writer.writer();
+    const w = self.writer.writer();
+
+    // Struct & Type Descriptor in Header
+    try hw.print("typedef struct {s} {s};\n", .{ actual_name, actual_name });
+    try hw.print("extern const AetherTypeDescriptor {s}_descriptor;\n", .{ actual_name });
+    try hw.print("struct {s} {{\n", .{ actual_name });
+    try hw.print("    const AetherTypeDescriptor* _desc;\n", .{});
+    try hw.print("    int ordinal;\n", .{});
+    try hw.print("    core_String* name;\n", .{});
+    try hw.print("}};\n\n", .{});
+
+    // Method & Variant Getter Declarations in Header
+    try hw.print("core_String* {s}_toString({s}* self);\n", .{ actual_name, actual_name });
+    try hw.print("int {s}_hashCode({s}* self);\n", .{ actual_name, actual_name });
+    try hw.print("bool {s}_equals({s}* self, void* other);\n", .{ actual_name, actual_name });
+    for (ed.variants) |variant| {
+        try hw.print("{s}* {s}_{s}_get(void);\n", .{ actual_name, actual_name, variant.name });
+        try hw.print("#define {s}_{s} ({s}_{s}_get())\n", .{ actual_name, variant.name, actual_name, variant.name });
+    }
+    try self.header_writer.appendSlice("\n");
+
+    // C File: Method Implementations
+    try w.print("core_String* {s}_toString({s}* self) {{\n", .{ actual_name, actual_name });
+    try w.print("    if (!self) return core_String_new(\"null\", 4);\n", .{});
+    try w.print("    return self->name;\n", .{});
+    try w.print("}}\n\n", .{});
+
+    try w.print("int {s}_hashCode({s}* self) {{\n", .{ actual_name, actual_name });
+    try w.print("    if (!self) return 0;\n", .{});
+    try w.print("    return self->ordinal;\n", .{});
+    try w.print("}}\n\n", .{});
+
+    try w.print("bool {s}_equals({s}* self, void* other) {{\n", .{ actual_name, actual_name });
+    try w.print("    if (!self || !other) return self == other;\n", .{});
+    try w.print("    {s}* o = ({s}*)other;\n", .{ actual_name, actual_name });
+    try w.print("    return self->ordinal == o->ordinal;\n", .{});
+    try w.print("}}\n\n", .{});
+
+    // C File: Contract vtables & Descriptor
+    try w.print("void* {s}_Stringable_vtable[] = {{ (void*)&{s}_toString }};\n", .{ actual_name, actual_name });
+    try w.print("void* {s}_Hashable_vtable[] = {{ (void*)&{s}_hashCode }};\n", .{ actual_name, actual_name });
+    try w.print("void* {s}_Equatable_vtable[] = {{ (void*)&{s}_equals }};\n", .{ actual_name, actual_name });
+
+    try w.print("const AetherContractImpl {s}_contract_impls[] = {{\n", .{ actual_name });
+    try w.print("    {{ &core_Stringable_contract, {s}_Stringable_vtable }},\n", .{ actual_name });
+    try w.print("    {{ &core_Hashable_contract, {s}_Hashable_vtable }},\n", .{ actual_name });
+    try w.print("    {{ &core_Equatable_contract, {s}_Equatable_vtable }},\n", .{ actual_name });
+    try w.print("}};\n\n", .{});
+
+    try w.print("const AetherTypeDescriptor {s}_descriptor = {{\n", .{ actual_name });
+    try w.print("    .name = \"{s}\",\n", .{ actual_name });
+    try w.print("    .impls = {s}_contract_impls,\n", .{ actual_name });
+    try w.print("    .impl_count = 3,\n", .{});
+    try w.print("}};\n\n", .{});
+
+    // C File: Variant Storage & Lazy Initializers
+    for (ed.variants) |variant| {
+        try w.print("static struct {s} {s}_{s}_struct;\n", .{ actual_name, actual_name, variant.name });
+    }
+
+    try w.print("static bool {s}_inited = false;\n", .{actual_name});
+    try w.print("static void {s}_init() {{\n", .{actual_name});
+    try w.print("    if ({s}_inited) return;\n", .{actual_name});
+    try w.print("    {s}_inited = true;\n", .{actual_name});
+    for (ed.variants) |variant| {
+        try w.print("    {s}_{s}_struct._desc = &{s}_descriptor;\n", .{ actual_name, variant.name, actual_name });
+        try w.print("    {s}_{s}_struct.ordinal = {d};\n", .{ actual_name, variant.name, variant.ordinal });
+        try w.print("    {s}_{s}_struct.name = core_String_new(\"{s}\", {d});\n", .{ actual_name, variant.name, variant.name, variant.name.len });
+    }
+    try w.print("}}\n\n", .{});
+
+    for (ed.variants) |variant| {
+        try w.print("{s}* {s}_{s}_get(void) {{\n", .{ actual_name, actual_name, variant.name });
+        try w.print("    {s}_init();\n", .{actual_name});
+        try w.print("    return &{s}_{s}_struct;\n", .{ actual_name, variant.name });
+        try w.print("}}\n\n", .{});
     }
 }

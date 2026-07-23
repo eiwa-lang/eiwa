@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../../core/compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../../core/ast.zig");
 const ASTNode = ast.ASTNode;
 const TokenType = ast.TokenType;
@@ -242,7 +244,7 @@ pub fn call(self: *Parser) anyerror!*ASTNode {
     if (expr.data == .identifier and self.check(.less)) {
         const saved = self.*;
         self.suppress_errors = true;
-        var type_args = std.ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+        var type_args = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
         var ok = true;
 
         _ = self.match(.less);
@@ -268,7 +270,7 @@ pub fn call(self: *Parser) anyerror!*ASTNode {
                 const col = self.previous.column;
                 const lambda = try parseLambdaLiteral(self, line, col);
                 if (expr.data == .call_expr) {
-                    var new_args = std.ArrayList(*ASTNode).init(self.allocator);
+                    var new_args = ArrayList(*ASTNode).init(self.allocator);
                     try new_args.appendSlice(expr.data.call_expr.arguments);
                     try new_args.append(lambda);
                     expr.data.call_expr.arguments = try new_args.toOwnedSlice();
@@ -287,7 +289,7 @@ pub fn call(self: *Parser) anyerror!*ASTNode {
                 const col = self.previous.column;
                 const lambda = try parseLambdaLiteral(self, line, col);
                 if (expr.data == .call_expr) {
-                    var new_args = std.ArrayList(*ASTNode).init(self.allocator);
+                    var new_args = ArrayList(*ASTNode).init(self.allocator);
                     try new_args.appendSlice(expr.data.call_expr.arguments);
                     try new_args.append(lambda);
                     expr.data.call_expr.arguments = try new_args.toOwnedSlice();
@@ -325,7 +327,7 @@ pub fn call(self: *Parser) anyerror!*ASTNode {
 pub fn finishCall(self: *Parser, callee: *ASTNode, type_args: []const *const ast.ASTTypeRef) anyerror!*ASTNode {
     const line = self.previous.line;
     const col = self.previous.column;
-    var args = std.ArrayList(*ASTNode).init(self.allocator);
+    var args = ArrayList(*ASTNode).init(self.allocator);
     if (!self.check(.r_paren)) {
         while (true) {
             try args.append(try self.expression());
@@ -337,7 +339,7 @@ pub fn finishCall(self: *Parser, callee: *ASTNode, type_args: []const *const ast
 }
 
 pub fn parseLambdaLiteral(self: *Parser, line: usize, col: usize) anyerror!*ASTNode {
-    var params = std.ArrayList(ast.Param).init(self.allocator);
+    var params = ArrayList(ast.Param).init(self.allocator);
     var temp_lexer = self.lexer;
     var has_arrow = false;
     var brace_depth: usize = 0;
@@ -373,7 +375,7 @@ pub fn parseLambdaLiteral(self: *Parser, line: usize, col: usize) anyerror!*ASTN
         try self.consume(.arrow, "Expected '->' after lambda parameters.");
     }
 
-    var body_stmts = std.ArrayList(*ASTNode).init(self.allocator);
+    var body_stmts = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
         try body_stmts.append(try self.declaration());
     }
@@ -405,7 +407,7 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
         
         var then_branch: *ASTNode = undefined;
         if (self.match(.l_brace)) {
-            var stmts = std.ArrayList(*ASTNode).init(self.allocator);
+            var stmts = ArrayList(*ASTNode).init(self.allocator);
             while (!self.check(.r_brace) and !self.check(.eof)) {
                 try stmts.append(try self.declaration());
             }
@@ -418,7 +420,7 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
         var else_branch: ?*ASTNode = null;
         if (self.match(.kw_else)) {
             if (self.match(.l_brace)) {
-                var stmts = std.ArrayList(*ASTNode).init(self.allocator);
+                var stmts = ArrayList(*ASTNode).init(self.allocator);
                 while (!self.check(.r_brace) and !self.check(.eof)) {
                     try stmts.append(try self.declaration());
                 }
@@ -440,9 +442,9 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
 
         try self.consume(.l_brace, "Expected '{' after 'when'.");
 
-        var cases = std.ArrayList(ast.WhenCase).init(self.allocator);
+        var cases = ArrayList(ast.WhenCase).init(self.allocator);
         while (!self.check(.r_brace) and !self.check(.eof)) {
-            var conds = std.ArrayList(*ASTNode).init(self.allocator);
+            var conds = ArrayList(*ASTNode).init(self.allocator);
             var is_else = false;
 
             if (self.match(.kw_else)) {
@@ -473,7 +475,7 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
 
             var body: *ASTNode = undefined;
             if (self.match(.l_brace)) {
-                var stmts = std.ArrayList(*ASTNode).init(self.allocator);
+                var stmts = ArrayList(*ASTNode).init(self.allocator);
                 while (!self.check(.r_brace) and !self.check(.eof)) {
                     try stmts.append(try self.declaration());
                 }
@@ -524,7 +526,7 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
     }
     
     if (self.match(.l_bracket)) {
-        var elements = std.ArrayList(*ASTNode).init(self.allocator);
+        var elements = ArrayList(*ASTNode).init(self.allocator);
         var is_map = false;
         
         if (!self.check(.r_bracket)) {

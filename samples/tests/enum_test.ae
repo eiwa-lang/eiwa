@@ -1,0 +1,48 @@
+import { assert } from "std.exceptions"
+
+enum TaskState {
+    IDLE,
+    RUNNING,
+    SUCCESS,
+    ERROR
+}
+
+test "Enum variant name and ordinal properties" {
+    val s0 = TaskState.IDLE
+    val s1 = TaskState.RUNNING
+    val s2 = TaskState.SUCCESS
+    val s3 = TaskState.ERROR
+
+    assert(s0.ordinal == 0)
+    assert(s0.name == "IDLE")
+
+    assert(s1.ordinal == 1)
+    assert(s1.name == "RUNNING")
+
+    assert(s2.ordinal == 2)
+    assert(s2.name == "SUCCESS")
+
+    assert(s3.ordinal == 3)
+    assert(s3.name == "ERROR")
+}
+
+test "Enum variant equality and comparison" {
+    val a = TaskState.RUNNING
+    val b = TaskState.RUNNING
+    val c = TaskState.SUCCESS
+
+    assert(a == b)
+    assert(a != c)
+}
+
+test "Enum pattern matching via when" {
+    val state = TaskState.SUCCESS
+    val result = when (state) {
+        TaskState.IDLE -> 0
+        TaskState.RUNNING -> 1
+        TaskState.SUCCESS -> 2
+        TaskState.ERROR -> 3
+        else -> -1
+    }
+    assert(result == 2)
+}

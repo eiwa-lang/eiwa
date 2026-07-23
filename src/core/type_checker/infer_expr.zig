@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const core = @import("core.zig");
 const type_system = @import("../type_system.zig");
@@ -378,7 +380,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
                 for (type_decl.methods) |method| {
                     if (method.data == .fun_decl) {
                         const m_decl = method.data.fun_decl;
-                        var param_types = std.ArrayList(*const AetherType).init(self.allocator);
+                        var param_types = ArrayList(*const AetherType).init(self.allocator);
                         for (m_decl.params) |p| {
                             const p_t = if (p.type_ref) |tr| try self.resolveTypeRef(tr) else try self.resolveTypeName("Void", false);
                             try param_types.append(p_t);
@@ -408,7 +410,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
         }
     }
     
-    var param_types = std.ArrayList(*const AetherType).init(self.allocator);
+    var param_types = ArrayList(*const AetherType).init(self.allocator);
     
     if (l.params.len > 0) {
         for (l.params, 0..) |p, i| {
