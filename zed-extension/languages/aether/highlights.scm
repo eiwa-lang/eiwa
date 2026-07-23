@@ -124,7 +124,7 @@
 ] @number
 
 [
-  "null"
+  (null_literal)
   (boolean_literal)
 ] @boolean
 
@@ -164,7 +164,11 @@
   "import"
 ] @keyword
 
-"fun" @keyword.function
+((simple_identifier) @keyword
+  (#any-of? @keyword "is" "!is" "in" "!in" "as" "as?"))
+
+(function_declaration
+  "fun" @keyword.function)
 
 (jump_expression) @keyword.return
 
@@ -211,12 +215,6 @@
   "?:"
   "?"
   "!!"
-  "is"
-  "!is"
-  "in"
-  "!in"
-  "as"
-  "as?"
   ".."
   "->"
   "|"
@@ -239,11 +237,8 @@
   "::"
 ] @punctuation.delimiter
 
-(string_literal
-  "$" @punctuation.special
-  (interpolated_identifier) @none)
-
-(string_literal
-  "${" @punctuation.special
-  (interpolated_expression) @none
-  "}" @punctuation.special)
+(interpolation_identifier_start) @punctuation.special
+(interpolated_identifier) @none
+(interpolation_expression_start) @punctuation.special
+(interpolated_expression) @none
+(interpolation_expression_end) @punctuation.special

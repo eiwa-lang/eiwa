@@ -14,10 +14,7 @@
   (simple_identifier) @name) @item
 
 (property_declaration
-  [
-    "val"
-    "var"
-  ] @context
+  (binding_pattern_kind) @context
   (variable_declaration
     (simple_identifier) @name)) @item
 
