@@ -315,6 +315,16 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 49.4:** Refactor `src/std/log.ae`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
 - [x] **Task 49.5:** Update samples and tests (`log_sample.ae`, `log_test.ae`, `arest.ae`, `enum_sample.ae`, `enum_test.ae`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
 
+### Phase 50: Structured Concurrency and Tasks (PENDING)
+Introduce lightweight concurrent tasks with structured concurrency, allowing asynchronous execution without exposing threads, fibers or platform-specific primitives.
+- [ ] **Task 50.1:** Add the `task` keyword to the lexer, parser and AST, supporting `task { ... }` expressions.
+- [ ] **Task 50.2:** Introduce the built-in generic type `Task<T>` where `T` is inferred from the block's last expression.
+- [ ] **Task 50.3:** Implement the built-in `await()` operation to suspend until the task completes and return the computed value.
+- [ ] **Task 50.4:** Introduce the runtime scheduler using lightweight execution units, hiding implementation details behind the runtime.
+- [ ] **Task 50.5:** Propagate task failures so exceptions raised inside a task are rethrown when `await()` is called.
+- [ ] **Task 50.6:** Implement code generation with runtime calls for task creation and awaiting; initial backend may use native threads.
+- [ ] **Verify:** Execute multiple tasks concurrently, retrieve their results, and verify concurrent execution produces correct output.
+
 ---
 
 ## ✅ Definition of Done (Per Phase)
@@ -330,4 +340,3 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 * **Method Resolution Name Mangling (July 9, 2026):** Resolved a compiler bug where primitive method resolution failed on `Int`, `Bool`, etc., because the type checker searched for the raw type names in `classes_ast` instead of using the mangled name `system_Int`.
 * **Modular Standard Library Architecture (July 21, 2026):** Refactored the monolithic `src/std/core.ae` into clean specialist modules (`std.core`, `std.io`, `std.system`, `std.exceptions`), renamed `Printable` to `Echoable`, and centralized implicit import constants in `infer_decl.zig` (ADR 30).
 * **Implicit `this` Member Syntax (July 21, 2026):** Made `this.` optional for reading/writing properties and calling sibling methods inside `type` declarations and receiver lambdas (`T.() -> Void`), adding pre-registration of class method signatures in `class_scope`, parameter shadowing resolution, and property assignment emission in CTranspiler (ADR 31).
-
