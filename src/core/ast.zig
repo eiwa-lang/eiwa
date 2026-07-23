@@ -187,12 +187,14 @@ pub const ASTNodeType = union(enum) {
     contract_decl: struct {
         annotations: []const Annotation,
         name: []const u8,
+        generic_params: []const []const u8 = &.{},
         methods: []const *ASTNode,
         resolved_c_name: ?[]const u8,
     },
     skill_decl: struct {
         annotations: []const Annotation,
         name: []const u8,
+        generic_params: []const []const u8 = &.{},
         required_contracts: []const []const u8,
         methods: []const *ASTNode,
         resolved_c_name: ?[]const u8,

@@ -341,12 +341,12 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 ### Phase 50: Monomorphização + Refatoração de `Task<T>` (PENDING)
 > **Nota:** Plano detalhado em `docs/plano_mono_task.md`. A implementação tem 4 fases sequenciais. O destino final é `Task<T>` 100% em Eiwa via `contract + skill + lib {}` (libaco), com zero special cases no compilador.
 
-#### Fase 0 — Type Params em `contract` e `skill`
-- [ ] **Task 50.0.1:** Parser: `contract Awaitable<T>` e `skill Foo<T>` — `<T>` opcional após o nome
-- [ ] **Task 50.0.2:** AST: campo `generic_params` em `contract_decl` e `skill_decl`
-- [ ] **Task 50.0.3:** Type checker: registro de contracts/skills genéricos em `local_symbols`, early return no corpo
-- [ ] **Task 50.0.4:** Resolução de type params em constraints (`skill Foo : Awaitable<T>`)
-- [ ] **Verify:** Contract/skill com type param parseiam e registram corretamente
+#### Fase 0 — Type Params em `contract` e `skill` (COMPLETED)
+- [x] **Task 50.0.1:** Parser: `contract Awaitable<T>` e `skill Foo<T>` — `<T>` opcional após o nome
+- [x] **Task 50.0.2:** AST: campo `generic_params` em `contract_decl` e `skill_decl`
+- [x] **Task 50.0.3:** Type checker: registro de contracts/skills genéricos em `local_symbols`, early return no corpo
+- [x] **Task 50.0.4:** Resolução de type params em constraints (`skill Foo : Awaitable<T>`)
+- [x] **Verify:** Contract/skill com type param parseiam e registram corretamente
 
 #### Fase 1 — Monomorfização
 - [ ] **Task 50.1.1:** Mecanismo de clonagem de AST com substituição de type params

@@ -644,6 +644,11 @@ pub fn inferContractDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
     }
     try self.contracts_ast.put(actual_c_name, node);
 
+    if (cd.generic_params.len > 0) {
+        t.* = .Void;
+        return;
+    }
+
     // Register method signatures only (contracts have no bodies to check).
     for (cd.methods) |method| {
         if (method.data != .fun_decl) continue;
