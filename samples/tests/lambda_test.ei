@@ -51,9 +51,9 @@ fun html(init: HTMLBuilder.() -> Void): String {
 test "lambdas: simple HTML builder DSL" {
     val result = html {
         body {
-            "Hello Aether DSL!"
+            "Hello Eiwa DSL!"
         }
     }
-    assert(result == "<html><body>Hello Aether DSL!</body></html>")
+    assert(result == "<html><body>Hello Eiwa DSL!</body></html>")
 }
 

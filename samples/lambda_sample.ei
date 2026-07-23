@@ -15,7 +15,7 @@ fun html(init: HTMLBuilder.() -> Void): String {
 }
 
 fun main() {
-    print("--- Testando Lambdas e Closures no Aether ---")
+    print("--- Testando Lambdas e Closures no Eiwa ---")
     
     // Lambda com tipos explícitos
     val sum: (Int, Int) -> Int = { x: Int, y: Int -> x + y }
@@ -42,7 +42,7 @@ fun main() {
     // DSL com Receiver Lambda e Trailing Lambdas
     val htmlResult = html {
         body {
-            "Hello from Aether DSL!"
+            "Hello from Eiwa DSL!"
         }
     }
     print("Resultado da DSL: " + htmlResult)

@@ -25,7 +25,7 @@ fun main() {
                 val req = conn!!.readRequest()
                 print("Received request: " + req.method + " " + req.path)
                 
-                conn!!.writeResponse(200, "text/plain", "Hello from Aether HTTP Server!")
+                conn!!.writeResponse(200, "text/plain", "Hello from Eiwa HTTP Server!")
                 conn!!.close()
                 
                 // Finaliza o demo após a primeira requisição para evitar loops infinitos nos testes/samples

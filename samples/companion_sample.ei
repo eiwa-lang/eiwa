@@ -6,7 +6,7 @@ type File(val path: String) {
         return "File path: " + this.path
     }
 } object {
-    val defaultPath = "/tmp/aether_db.json"
+    val defaultPath = "/tmp/eiwa_db.json"
     
     fun createDefault(): File {
         return File(File.defaultPath)

@@ -11,7 +11,7 @@ test "http.ae: should perform HTTP GET request successfully" {
 
 test "http.ae: should perform HTTP POST request successfully" {
     val client = Client()
-    val response = client.post("https://httpbun.com/post", "name=Aether&speed=Fast")
+    val response = client.post("https://httpbun.com/post", "name=Eiwa&speed=Fast")
 
     assert(response != null)
     assert(response.status == 200)

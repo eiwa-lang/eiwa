@@ -1,7 +1,7 @@
 import { Env } from "std.env"
 
 fun main() {
-    print("--- Aether Environment Configuration Sample ---")
+    print("--- Eiwa Environment Configuration Sample ---")
 
     // Try loading environment from .env file (optional, returns false if not found)
     val envLoaded = Env.load()
@@ -25,7 +25,7 @@ fun main() {
     print("Debug Mode: " + debugMode.toString())
 
     // 3. Modifying the environment dynamically
-    Env.set("MY_CUSTOM_CONFIG", "aether-config-value")
+    Env.set("MY_CUSTOM_CONFIG", "eiwa-config-value")
     
     if (Env.exists("MY_CUSTOM_CONFIG")) {
         print("Custom configuration exists: " + Env.get("MY_CUSTOM_CONFIG", "default"))

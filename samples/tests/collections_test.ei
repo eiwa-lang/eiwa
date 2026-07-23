@@ -30,21 +30,21 @@ test "should add and read from MutableMap" {
     
     val map: MutableMap<String, Int> = MutableMap(bucketBuilder.list)
     
-    map["Aether"] = 100
+    map["Eiwa"] = 100
     map["Kotlin"] = 200
     map.put("Zig", 300)
 
-    assert(map["Aether"] == 100)
+    assert(map["Eiwa"] == 100)
     assert(map["Kotlin"] == 200)
     assert(map["Zig"] == 300)
     assert(map["Rust"] == null)
 
-    assert(map.containsKey("Aether") == true)
+    assert(map.containsKey("Eiwa") == true)
     assert(map.containsKey("Rust") == false)
 
     // Update existing
-    map["Aether"] = 999
-    assert(map["Aether"] == 999)
+    map["Eiwa"] = 999
+    assert(map["Eiwa"] == 999)
 }
 
 test "should work with MutableSet" {
@@ -58,10 +58,10 @@ test "should work with MutableSet" {
     val map: MutableMap<String, Bool> = MutableMap(bucketBuilder.list)
     val set: MutableSet<String> = MutableSet(map)
 
-    set.add("Aether")
+    set.add("Eiwa")
     set.add("Zig")
 
-    assert(set.contains("Aether") == true)
+    assert(set.contains("Eiwa") == true)
     assert(set.contains("Zig") == true)
     assert(set.contains("Kotlin") == false)
 }
@@ -84,9 +84,9 @@ test "should infer types for MutableMap" {
     }
     
     val map = MutableMap(bucketBuilder.list)
-    map.put("Aether", 100)
+    map.put("Eiwa", 100)
     
-    assert(map.get("Aether") == 100)
+    assert(map.get("Eiwa") == 100)
 }
 
 test "should infer types for MutableSet" {
@@ -175,7 +175,7 @@ test "should serialize Map to JSON string" {
     }
     
     val mmap = MutableMap(bucketBuilder.list)
-    mmap.put("name", "Aether")
+    mmap.put("name", "Eiwa")
     mmap.put("version", "1.0")
     mmap.put("quotes", "a \"b\" c")
     mmap.put("backslash", "a\\b")
@@ -184,7 +184,7 @@ test "should serialize Map to JSON string" {
     val json = map.toJson()
     
     // Check that all key-value pairs are properly present in the JSON string
-    assert(json.indexOf("\"name\": \"Aether\"") != -1)
+    assert(json.indexOf("\"name\": \"Eiwa\"") != -1)
     assert(json.indexOf("\"version\": \"1.0\"") != -1)
     assert(json.indexOf("\"quotes\": \"a \\\"b\\\" c\"") != -1)
     assert(json.indexOf("\"backslash\": \"a\\\\b\"") != -1)

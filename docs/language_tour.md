@@ -1001,7 +1001,7 @@ Because Eiwa transpiles to C, integrating with native C libraries is seamless. Y
 
 Annotations on `lib` blocks instruct the compiler and linker on how to process the native library:
 - **`@Header` (Compile-Time Includes)**: Instructs the C Transpiler to inject the corresponding `#include` directives at the top of the generated C file so that C compiler knows about the function signatures, structs, and constants.
-- **`@Link` (Linker-Time Libraries)**: Instructs the Eiwa compiler to append the corresponding `-l<library>` flag (e.g., `-lcurl`) during the linking phase, and injects `-DAETHER_USE_<LIBRARY>` preprocessor definitions into the C compiler.
+- **`@Link` (Linker-Time Libraries)**: Instructs the Eiwa compiler to append the corresponding `-l<library>` flag (e.g., `-lcurl`) during the linking phase, and injects `-DEIWA_USE_<LIBRARY>` preprocessor definitions into the C compiler.
 - **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions.
 
 ```kotlin

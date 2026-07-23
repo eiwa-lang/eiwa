@@ -25,7 +25,7 @@ fun describeDirection(dir: Direction): String {
 }
 
 fun main() {
-    println("=== Aether Native Enum Demonstration ===")
+    println("=== Eiwa Native Enum Demonstration ===")
 
     val d1 = Direction.NORTH
     val d2 = Direction.EAST

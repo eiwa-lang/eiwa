@@ -41,10 +41,10 @@ test "should work with union using null" {
 
 test "should work with MutableMap holding union values" {
     val map: MutableMap<String, String | Int> = MutableMap()
-    map["name"] = "Aether"
+    map["name"] = "Eiwa"
     map["version"] = 1
 
-    assert(map["name"] == "Aether")
+    assert(map["name"] == "Eiwa")
     assert(map["version"] == 1)
 }
 
@@ -73,7 +73,7 @@ test "should create a union type in a type" {
     }
     assert(boxUnion.get() == 10)
 
-    val boxUnionString: Box<Int | String> = Box("Aether")
+    val boxUnionString: Box<Int | String> = Box("Eiwa")
     when (boxUnionString.get()) {
         is Int -> {
             assert(false)
@@ -91,7 +91,7 @@ test "should create a union type in a type" {
     if (boxUnionString.get() is String) {
         assert(true)
     }
-    assert(boxUnionString.get() == "Aether")
+    assert(boxUnionString.get() == "Eiwa")
 
     val person = Person("Leo", 25)
     val boxUnionPerson: Box<Int | String | Person> = Box(person)

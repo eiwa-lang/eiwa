@@ -63,9 +63,9 @@ test "core contracts: synthesized hashCode" {
 }
 
 test "core contracts: polymorphic toString dynamic dispatch" {
-    val items: List<Stringable> = [Person("David", 50), 99, "Aether", true]
+    val items: List<Stringable> = [Person("David", 50), 99, "Eiwa", true]
     assert(items[0].toString() == "Person(name=David, age=50)")
     assert(items[1].toString() == "99")
-    assert(items[2].toString() == "Aether")
+    assert(items[2].toString() == "Eiwa")
     assert(items[3].toString() == "true")
 }

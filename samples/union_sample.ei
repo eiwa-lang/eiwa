@@ -13,13 +13,13 @@ fun main() {
     assert(value == 42)
 
     val map: MutableMap<String, String | Int> = MutableMap()
-    map["language"] = "Aether"
+    map["language"] = "Eiwa"
     map["year"] = 2026
 
     print("Map language: " + ((map["language"]) as String))
     print("Map year: " + ((map["year"]) as Int).toString())
 
-    assert(map["language"] == "Aether")
+    assert(map["language"] == "Eiwa")
     assert(map["year"] == 2026)
 
     print("Union types sample executed successfully!")

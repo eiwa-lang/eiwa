@@ -21,7 +21,7 @@ fun main() {
             get("/") {
                 val body = MutableMap<String, String>()
                 body["welcome"] = "Hi there!"
-                body["description"] = "Arest is a Web Framework for Aether!"
+                body["description"] = "Arest is a Web Framework for Eiwa!"
                 body["date"] = now().toString()
 
                 respond(200, "application/json", body.toJson())

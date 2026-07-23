@@ -3,22 +3,22 @@ import { File } from "std.fs"
 
 test "env: basic env variable setting, getting, unsetting and exists" {
     // Initially doesn't exist
-    Env.unset("AETHER_TEST_VAR")
-    assert(Env.exists("AETHER_TEST_VAR") == false)
-    assert(Env.get("AETHER_TEST_VAR") == null)
+    Env.unset("EIWA_TEST_VAR")
+    assert(Env.exists("EIWA_TEST_VAR") == false)
+    assert(Env.get("EIWA_TEST_VAR") == null)
 
     // Set variable
-    assert(Env.set("AETHER_TEST_VAR", "test-val-123"))
-    assert(Env.exists("AETHER_TEST_VAR") == true)
+    assert(Env.set("EIWA_TEST_VAR", "test-val-123"))
+    assert(Env.exists("EIWA_TEST_VAR") == true)
     
     // Get variable
-    val valOpt = Env.get("AETHER_TEST_VAR")
+    val valOpt = Env.get("EIWA_TEST_VAR")
     assert(valOpt != null)
     assert(valOpt!! == "test-val-123")
 
     // Unset variable
-    assert(Env.unset("AETHER_TEST_VAR"))
-    assert(Env.exists("AETHER_TEST_VAR") == false)
+    assert(Env.unset("EIWA_TEST_VAR"))
+    assert(Env.exists("EIWA_TEST_VAR") == false)
 }
 
 test "env: default overloads for String, Int and Bool" {

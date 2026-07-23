@@ -1,4 +1,4 @@
-// Demonstration of the 'when' expression in Aether
+// Demonstration of the 'when' expression in Eiwa
 import { print } from "std.core"
 
 contract Vehicle
