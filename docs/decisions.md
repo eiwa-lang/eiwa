@@ -299,31 +299,9 @@ Regras centrais:
 3. Atualizar a entrada do CLI para `pub fn main(init: std.process.Init)` e propagar o manipulador `std.Io` para chamadas de disco e subprocessos (`std.process.run`, `std.process.spawn`).
 **Razão:** Permite que desenvolvedores em Linux, macOS e Windows compilem o Eiwa nativamente utilizando a versão mais recente do Zig (0.16.0) sem quebrar o ecossistema existente.
 
-## ADR 35: Concorrência Estruturada com Fibras e Tasks (Task/Fiber Unificado)
-**Data:** Fase 36/50 (Unificada)
-**Contexto:** O Eiwa não possuía concorrência nativa. `std.http.Client` bloqueava a thread inteira em chamadas `libcurl`, e servidores HTTP como `arest` processavam uma conexão por vez. Precisávamos de concorrência leve e ergonômica, similar a Kotlin Coroutines, sem a complexidade de um runtime de threads OS.
-
-**Decisão:**
-
-Fundir as antigas Fases 36 (Fiber-based Concurrency) e 50 (Structured Concurrency) em uma única fase unificada, implementada em três camadas:
-
-**Camada 1 — Runtime de Fibras (Zig, não C):**
-- Scheduler single-threaded com event loop (kqueue no macOS, epoll no Linux).
-- Fibras cooperativas implementadas em Zig (`src/runtime/fiber.zig`), usando `makecontext`/`swapcontext` (POSIX) ou assembly platform-specific.
-- Toda fibra tem uma pilha própria (4KB inicial, crescimento sob demanda).
-- O scheduler roda em uma única thread OS (sem locks, sem data races) — escalabilidade futura via Execution Contexts (estilo Crystal ADR 36/50).
-
-**Camada 2 — API `task { }` / `await()`:**
-- `task { expr }` é uma função da stdlib (`src/std/core.ei`), não uma keyword — o parser já suporta `ident { lambda }`.
-- Retorna `Task<T>`, tipo declarado na stdlib com tratamento especial no type checker (como `String`, `Int`).
-- `await()` é o **único** ponto de suspensão. Não existe `suspend fun`. Funções que chamam `await()` já estão rodando dentro de um `task { }`.
-- Structured concurrency: o escopo pai só completa quando todos os tasks filhos completam.
-- Sem `launch`, sem cancelamento, sem channels no MVP.
-
-**Camada 3 — I/O Não-Bloqueante:**
-- `std.net.Socket` se torna fiber-aware (yield ao invés de bloquear).
-- `std.http.Client` e `std.http.Server` refatorados para usar o event loop.
-- `arest` passa a servir múltiplas conexões concorrentemente em uma única thread.
-
-**Razão:** A separação em camadas permite entrega incremental: o runtime de fibras (Camada 1) é reutilizável pela stdlib antes mesmo da sintaxe `task { }` existir. A API Kotlin-style (Camada 2) é familiar e minimalista. O scheduler single-threaded elimina toda a complexidade de locks e data races, mantendo o modelo mental simples. A migração futura para Execution Contexts paralelos (Crystal-style) fica documentada como evolução, não como redesign.
+## ADR 35: Concorrência Estruturada com Fibras e Tasks
+**Data:** Fase 36 (MVP) / Fase 50 (Refactoring com neco)
+**Contexto:** O Eiwa não possuía concorrência nativa. Precisávamos de concorrência leve ergonômica similar a Kotlin Coroutines, sem runtime de threads OS.
+**Decisão:** O MVP (Fase 36) implementou fibras em C via `ucontext.h` (`fiber.c`/`fiber.h`) com special cases hardcoded no compilador para `task{}`/`await()`. A Fase 50 substituirá este runtime C por **neco** (https://github.com/tidwall/neco) em `third_party/neco/`, usando monomorfização para que `Task<T>` seja 100% implementado em Eiwa na stdlib via `contract Awaitable<T>` + `skill TaskNeco + lib Neco`, eliminando todos os special cases.
+**Razão:** neco foi escolhido sobre libaco por ser single-file (sem assembly platform-specific), usar kqueue/epoll nativamente, ter API limpa para suspend/resume por ID e ser MIT license. A monomorfização elimina a dívida técnica dos special cases da Fase 36 e permite que qualquer tipo/função genérica se beneficie do mesmo mecanismo.
 
