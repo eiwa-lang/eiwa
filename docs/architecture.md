@@ -1,11 +1,11 @@
-# Aether Compiler Architecture
+# Eiwa Compiler Architecture
 
-Aether is a statically typed, pragmatic programming language that uses Kotlin-inspired syntax. It is written in Zig and transpiles to C, combining high-level developer ergonomics with low-level portability and speed.
+Eiwa is a statically typed, pragmatic programming language that uses Kotlin-inspired syntax. It is written in Zig and transpiles to C, combining high-level developer ergonomics with low-level portability and speed.
 
 ## High-Level Pipeline
 
-The Aether compiler (`aether`) follows a classic multi-pass architecture:
-1. **Frontend**: Source Code (`.ae`) -> Tokens -> Abstract Syntax Tree (AST).
+The Eiwa compiler (`eiwa`) follows a classic multi-pass architecture:
+1. **Frontend**: Source Code (`.ei`) -> Tokens -> Abstract Syntax Tree (AST).
 2. **Core (Semantic Engine)**: AST -> Scope Resolution -> Type Checking -> Resolved AST.
 3. **Backend**: Resolved AST -> Intermediate C Code -> Native Binary.
 
@@ -29,7 +29,7 @@ A Recursive Descent Parser that consumes tokens and builds an Abstract Syntax Tr
 ### AST (`ast.zig`)
 Defines the `ASTNode` structures and `TokenType` enums. Every node contains positional metadata (`line`, `column`) and an optional `resolved_type` which is populated during the Semantic pass.
 
-Aether's type system is **composition-based** (ADR 25) — there is no implementation inheritance. The declaration nodes are:
+Eiwa's type system is **composition-based** (ADR 25) — there is no implementation inheritance. The declaration nodes are:
 - **`type_decl`** — owns state and identity; implements contracts (`:`) and composes skills (`+`).
 - **`contract_decl`** — pure behavioral API (method signatures only, no state, no bodies).
 - **`skill_decl`** — reusable, stateless implementation; may *require* contracts without implementing them.
@@ -50,7 +50,7 @@ The most critical part of the compiler. It ensures mathematical and logical corr
 
 ## 3. Backend (Dual-Strategy)
 
-Aether emprega uma arquitetura de "Dual-Backend" para entregar o melhor dos dois mundos: ciclos de feedback instantâneos durante o desenvolvimento e performance extrema em produção.
+Eiwa emprega uma arquitetura de "Dual-Backend" para entregar o melhor dos dois mundos: ciclos de feedback instantâneos durante o desenvolvimento e performance extrema em produção.
 
 ### 3.1. C Transpiler (Modo Desenvolvimento / `run`)
 Localizado em `src/backend/c_transpiler/`.
@@ -59,7 +59,7 @@ Localizado em `src/backend/c_transpiler/`.
 - Em seguida, o CLI aciona internamente o `zig cc -O0` para gerar o binário de debug em tempo recorde (geralmente sub-segundo).
 - Útil para testar a aplicação localmente e iterar rápido.
 
-**Runtime representation of the composition model:** every `type` instance starts with an `AetherTypeDescriptor*` header. The descriptor points to an impl table with one `{contract, vtable}` entry per implemented contract. Contract-typed values are plain `void*`; method calls on them dispatch dynamically via `aether_find_vtable(desc, &Contract_contract)[index]`. Concrete receivers always use direct static calls — dynamic dispatch is only paid where contracts are actually used. The same machinery powers `is` checks, smart casts, and `catch` matching against the `Throwable` contract.
+**Runtime representation of the composition model:** every `type` instance starts with an `EiwaTypeDescriptor*` header. The descriptor points to an impl table with one `{contract, vtable}` entry per implemented contract. Contract-typed values are plain `void*`; method calls on them dispatch dynamically via `eiwa_find_vtable(desc, &Contract_contract)[index]`. Concrete receivers always use direct static calls — dynamic dispatch is only paid where contracts are actually used. The same machinery powers `is` checks, smart casts, and `catch` matching against the `Throwable` contract.
 
 ### 3.2. LLVM IR Emitter (Modo Produção / `build --release`)
 *Fase Futura (Pipeline de Release)*

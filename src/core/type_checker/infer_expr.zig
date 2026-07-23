@@ -8,7 +8,7 @@ const type_system = @import("../type_system.zig");
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
 const Scope = core.Scope;
-const AetherType = core.AetherType;
+const EiwaType = core.EiwaType;
 const extractBaseType = core.extractBaseType;
 const isNullable = core.isNullable;
 
@@ -21,7 +21,7 @@ pub const inferArrayLiteral = @import("infer_literal.zig").inferArrayLiteral;
 pub const inferMapLiteral = @import("infer_literal.zig").inferMapLiteral;
 
 
-fn isValidType(self: *TypeChecker, t: *const AetherType) bool {
+fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
     switch (t.*) {
         .Int, .Bool, .String, .Void, .Null => return true,
         .Pointer => |elem| return isValidType(self, elem),
@@ -38,18 +38,18 @@ fn isValidType(self: *TypeChecker, t: *const AetherType) bool {
     }
 }
 
-pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const a = &node.data.assignment;
-    var assigned_type: *const AetherType = undefined;
+    var assigned_type: *const EiwaType = undefined;
     if (scope.lookupVariableSymbol(a.name)) |vs| {
-        a.value.expected_type = vs.aether_type;
+        a.value.expected_type = vs.eiwa_type;
         a.value.resolved_type = null;
         assigned_type = try self.inferNode(a.value, scope);
         if (!vs.is_mut) {
             self.reportError(node.line, node.column, "TypeError: Cannot reassign constant variable '{s}'.", .{a.name});
             return error.TypeError;
         }
-        const expected = vs.aether_type;
+        const expected = vs.eiwa_type;
         if (!self.isCompatible(expected, assigned_type)) {
             self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when reassigning variable '{s}'.", .{ expected.*, assigned_type.*, a.name });
             return error.TypeError;
@@ -80,7 +80,7 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     t.* = assigned_type.*;
 }
 
-pub fn inferUnaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferUnaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const u = node.data.unary_expr;
     const op_type = try self.inferNode(u.operand, scope);
     
@@ -104,7 +104,7 @@ pub fn inferUnaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aet
     }
 }
 
-pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const b = node.data.binary_expr;
     const left_type = try self.inferNode(b.left, scope);
     const right_type = try self.inferNode(b.right, scope);
@@ -186,7 +186,7 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     }
 }
 
-pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var i = &node.data.identifier;
     if (self.alias_map.get(i.name)) |c_name| {
         i.resolved_c_name = c_name;
@@ -210,7 +210,7 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
                 }
             }
         }
-        t.* = vs.aether_type.*;
+        t.* = vs.eiwa_type.*;
 
         // Detect variable capture
         var curr: ?*Scope = scope;
@@ -254,7 +254,7 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     return error.TypeError;
 }
 
-pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const a = node.data.as_expr;
     const val_type = try self.inferNode(a.value, scope);
     const target_type = try self.resolveTypeRef(a.type_ref);
@@ -280,7 +280,7 @@ pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aether
     t.* = target_type.*;
 }
 
-pub fn inferIsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferIsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const i = node.data.is_expr;
     const val_type = try self.inferNode(i.value, scope);
     const target_type = try self.resolveTypeRef(i.type_ref);
@@ -298,7 +298,7 @@ pub fn inferIsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aether
     t.* = .Bool;
 }
 
-pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const ternary_node = node.data.ternary_expr;
     const cond_type = try self.inferNode(ternary_node.condition, scope);
     
@@ -330,9 +330,9 @@ pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *A
         if (core.isNullable(then_type)) {
             t.* = then_type.*;
         } else {
-            const left_t = try self.allocator.create(AetherType);
+            const left_t = try self.allocator.create(EiwaType);
             left_t.* = then_type.*;
-            const right_t = try self.allocator.create(AetherType);
+            const right_t = try self.allocator.create(EiwaType);
             right_t.* = .Null;
             t.* = .{ .Union = .{
                 .left = left_t,
@@ -342,14 +342,14 @@ pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *A
     }
 }
 
-pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const l = &node.data.lambda_expr;
     const old_props = self.current_class_props;
     defer self.current_class_props = old_props;
     
-    var expected_params: ?[]const *const AetherType = null;
-    var expected_receiver: ?*const AetherType = null;
-    var expected_return: ?*const AetherType = null;
+    var expected_params: ?[]const *const EiwaType = null;
+    var expected_receiver: ?*const EiwaType = null;
+    var expected_return: ?*const EiwaType = null;
     
     if (node.expected_type) |exp| {
         const exp_base = extractBaseType(exp);
@@ -380,13 +380,13 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
                 for (type_decl.methods) |method| {
                     if (method.data == .fun_decl) {
                         const m_decl = method.data.fun_decl;
-                        var param_types = ArrayList(*const AetherType).init(self.allocator);
+                        var param_types = ArrayList(*const EiwaType).init(self.allocator);
                         for (m_decl.params) |p| {
                             const p_t = if (p.type_ref) |tr| try self.resolveTypeRef(tr) else try self.resolveTypeName("Void", false);
                             try param_types.append(p_t);
                         }
                         const ret_t = if (m_decl.type_ref) |tr| try self.resolveTypeRef(tr) else try self.resolveTypeName("Void", false);
-                         const fn_type = try self.allocator.create(AetherType);
+                         const fn_type = try self.allocator.create(EiwaType);
                          fn_type.* = .{ .Function = .{
                              .params = try param_types.toOwnedSlice(),
                              .return_type = ret_t,
@@ -410,11 +410,11 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
         }
     }
     
-    var param_types = ArrayList(*const AetherType).init(self.allocator);
+    var param_types = ArrayList(*const EiwaType).init(self.allocator);
     
     if (l.params.len > 0) {
         for (l.params, 0..) |p, i| {
-            var p_type: *const AetherType = undefined;
+            var p_type: *const EiwaType = undefined;
             if (p.type_ref) |tr| {
                 p_type = try self.resolveTypeRef(tr);
             } else if (expected_params) |exp_ps| {
@@ -459,13 +459,13 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
         self.current_class_props = &lambda_class_props;
     }
     
-    var body_type: *const AetherType = undefined;
+    var body_type: *const EiwaType = undefined;
     if (l.body.len == 0) {
-        const void_t = try self.allocator.create(AetherType);
+        const void_t = try self.allocator.create(EiwaType);
         void_t.* = .Void;
         body_type = void_t;
     } else {
-        var last_t: ?*const AetherType = null;
+        var last_t: ?*const EiwaType = null;
         for (l.body) |stmt| {
             last_t = try self.inferNode(stmt, &lambda_scope);
         }
@@ -479,7 +479,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
         }
     }
     
-    const fn_t = try self.allocator.create(AetherType);
+    const fn_t = try self.allocator.create(EiwaType);
     fn_t.* = .{ .Function = .{
         .params = try param_types.toOwnedSlice(),
         .return_type = body_type,

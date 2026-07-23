@@ -392,7 +392,7 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
     const col = self.current.column;
     
     if (self.check(.kw_default)) {
-        self.reportLexerError(self.current.line, self.current.column, "Syntax Error: 'default' is a reserved keyword in Aether.", .{});
+        self.reportLexerError(self.current.line, self.current.column, "Syntax Error: 'default' is a reserved keyword in Eiwa.", .{});
         return error.ParseError;
     }
 

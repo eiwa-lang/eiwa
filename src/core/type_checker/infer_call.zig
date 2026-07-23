@@ -8,11 +8,11 @@ const type_system = @import("../type_system.zig");
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
 const Scope = core.Scope;
-const AetherType = core.AetherType;
+const EiwaType = core.EiwaType;
 const extractBaseType = core.extractBaseType;
 const isNullable = core.isNullable;
 
-fn isValidType(self: *TypeChecker, t: *const AetherType) bool {
+fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
     switch (t.*) {
         .Int, .Bool, .String, .Void, .Null => return true,
         .Pointer => |elem| return isValidType(self, elem),
@@ -29,7 +29,7 @@ fn isValidType(self: *TypeChecker, t: *const AetherType) bool {
     }
 }
 
-pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var c = &node.data.call_expr;
     // 1. Infer all arguments that are NOT lambdas
     for (c.arguments) |arg| {
@@ -53,7 +53,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
                 return error.TypeError;
             }
 
-            var type_args = try self.allocator.alloc(*const AetherType, c.type_args.len);
+            var type_args = try self.allocator.alloc(*const EiwaType, c.type_args.len);
             for (c.type_args, 0..) |type_ref, i| {
                 type_args[i] = try self.resolveTypeRef(type_ref);
             }
@@ -111,7 +111,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
         }
 
         if (scope.lookupFunctions(name)) |overloads| {
-            var best_match: ?*const AetherType = null;
+            var best_match: ?*const EiwaType = null;
             
             for (overloads) |overload| {
                 if (overload.* != .Function) continue;
@@ -293,9 +293,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
                 if (class_node) |cn| {
                     const type_decl = cn.data.type_decl;
                     if (type_decl.generic_params.len > 0) {
-                        var type_args = try self.allocator.alloc(*const AetherType, type_decl.generic_params.len);
+                        var type_args = try self.allocator.alloc(*const EiwaType, type_decl.generic_params.len);
                         for (type_decl.generic_params, 0..) |g_param, i| {
-                            var found_type: ?*const AetherType = null;
+                            var found_type: ?*const EiwaType = null;
                             if (node.expected_type) |exp_t| {
                                 const exp_base = extractBaseType(exp_t);
                                 if (exp_base.* == .GenericInstance and std.mem.eql(u8, exp_base.GenericInstance.base_name, name)) {
@@ -320,7 +320,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
                                                 const t1 = (self.resolveTypeName(raw_p1, false) catch null) orelse (if (std.mem.startsWith(u8, raw_p1, "core_")) self.resolveTypeName(raw_p1[5..], false) catch null else null);
                                                 const t2 = (self.resolveTypeName(raw_p2, false) catch null) orelse (if (std.mem.startsWith(u8, raw_p2, "core_")) self.resolveTypeName(raw_p2[5..], false) catch null else null);
                                                 if (t1 != null and t2 != null) {
-                                                    const union_t = try self.allocator.create(AetherType);
+                                                    const union_t = try self.allocator.create(EiwaType);
                                                     union_t.* = .{ .Union = .{ .left = t1.?, .right = t2.? } };
                                                     found_type = union_t;
                                                 }

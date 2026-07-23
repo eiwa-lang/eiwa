@@ -7,7 +7,7 @@ const ts = @import("../../core/type_system.zig");
 const ASTNode = core.ASTNode;
 const CTranspiler = core.CTranspiler;
 
-fn listItemType(self: *CTranspiler, t: *const ts.AetherType) ?*const ts.AetherType {
+fn listItemType(self: *CTranspiler, t: *const ts.EiwaType) ?*const ts.EiwaType {
     const base = ts.extractBaseType(t);
     if (base.* != .Custom) return null;
     const classes_ast = self.classes_ast orelse return null;
@@ -72,7 +72,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         if (ch == ' ') continue;
                         try safe_inner.append(ch);
                     }
-                    const struct_name = try std.fmt.allocPrint(self.allocator, "AetherArray_{s}", .{safe_inner.items});
+                    const struct_name = try std.fmt.allocPrint(self.allocator, "EiwaArray_{s}", .{safe_inner.items});
                     
                     try self.writer.appendSlice("({ ");
                     try self.writer.writer().print("{s}* _tmp_arr = {s}_new(); ", .{struct_name, struct_name});
@@ -106,7 +106,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     }
                     const safe_inner = safe_inner_name.items;
                     
-                    const array_struct_name = try std.fmt.allocPrint(self.allocator, "AetherArray_{s}", .{safe_inner});
+                    const array_struct_name = try std.fmt.allocPrint(self.allocator, "EiwaArray_{s}", .{safe_inner});
                     try self.writer.writer().print("{s}* _tmp_arr = {s}_new(); ", .{array_struct_name, array_struct_name});
                     for (a.elements) |elem| {
                         try self.writer.writer().print("{s}_push(_tmp_arr, ", .{array_struct_name});
@@ -143,16 +143,16 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     const safe_inner = safe_inner_name.items;
                     
                     const node_name = try std.fmt.allocPrint(self.allocator, "collections_Node_{s}", .{ safe_inner });
-                    const custom_t = try self.allocator.create(ts.AetherType);
+                    const custom_t = try self.allocator.create(ts.EiwaType);
                     custom_t.* = .{ .Custom = node_name };
-                    const null_t = try self.allocator.create(ts.AetherType);
+                    const null_t = try self.allocator.create(ts.EiwaType);
                     null_t.* = .Null;
-                    const union_t = try self.allocator.create(ts.AetherType);
+                    const union_t = try self.allocator.create(ts.EiwaType);
                     union_t.* = .{ .Union = .{ .left = custom_t, .right = null_t } };
                     
                     try self.emitArrayStruct(union_t);
                     
-                    const array_name = try std.fmt.allocPrint(self.allocator, "AetherArray_{s}", .{node_name});
+                    const array_name = try std.fmt.allocPrint(self.allocator, "EiwaArray_{s}", .{node_name});
                     const list_name = try std.fmt.allocPrint(self.allocator, "collections_List_collections_Node_{s}Opt", .{safe_inner});
                     const mmap_name = try std.fmt.allocPrint(self.allocator, "collections_MutableMap_{s}", .{safe_inner});
                     
@@ -463,7 +463,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                             return;
                         }
                     }
-                    try self.writer.appendSlice("aether_to_string((void*)(");
+                    try self.writer.appendSlice("eiwa_to_string((void*)(");
                     try self.emitExpression(g.object);
                     try self.writer.appendSlice("))");
                     return;
@@ -494,7 +494,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                             return;
                         }
                     }
-                    try self.writer.appendSlice("aether_hash_code((void*)(");
+                    try self.writer.appendSlice("eiwa_hash_code((void*)(");
                     try self.emitExpression(g.object);
                     try self.writer.appendSlice("))");
                     return;
@@ -517,7 +517,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         if (ch == ' ') continue;
                         try safe_inner.append(ch);
                     }
-                    class_name = try std.fmt.allocPrint(self.allocator, "AetherArray_{s}", .{safe_inner.items});
+                    class_name = try std.fmt.allocPrint(self.allocator, "EiwaArray_{s}", .{safe_inner.items});
                 } else if (rt.* == .Union) {
                     if (rt.Union.left.* == .String) {
                         class_name = "core_String";
@@ -557,18 +557,18 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         }
                     }
                     if (std.mem.eql(u8, g.name, "toString")) {
-                        try self.writer.appendSlice("aether_to_string((void*)(");
+                        try self.writer.appendSlice("eiwa_to_string((void*)(");
                         try self.emitExpression(g.object);
                         try self.writer.appendSlice("))");
                         return;
                     } else if (std.mem.eql(u8, g.name, "hashCode")) {
-                        try self.writer.appendSlice("aether_hash_code((void*)(");
+                        try self.writer.appendSlice("eiwa_hash_code((void*)(");
                         try self.emitExpression(g.object);
                         try self.writer.appendSlice("))");
                         return;
                     }
 
-                    try self.writer.writer().print("(({s}(*)(void*{s}))aether_find_vtable(*(const AetherTypeDescriptor**) (", .{ ret_str, params_str.items });
+                    try self.writer.writer().print("(({s}(*)(void*{s}))eiwa_find_vtable(*(const EiwaTypeDescriptor**) (", .{ ret_str, params_str.items });
                     try self.emitExpression(g.object);
                     try self.writer.writer().print("), &{s}_contract)[{d}])(", .{ actual_contract_name, contract_method_index });
                     try self.emitExpression(g.object);
@@ -739,7 +739,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     }
                 }
 
-                var string_or_custom_type: ?*const ts.AetherType = null;
+                var string_or_custom_type: ?*const ts.EiwaType = null;
                 if (b.left.resolved_type) |rt| {
                     const base = ts.extractBaseType(rt);
                     if (base.* == .String or base.* == .Custom) {
@@ -885,13 +885,13 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 if (self.isContract(contract_c_name)) {
                     try self.writer.appendSlice("((uintptr_t)(");
                     try self.emitExpression(i.value);
-                    try self.writer.writer().print(") < 0x10000 || aether_implements(*(const AetherTypeDescriptor**) (", .{});
+                    try self.writer.writer().print(") < 0x10000 || eiwa_implements(*(const EiwaTypeDescriptor**) (", .{});
                     try self.emitExpression(i.value);
                     try self.writer.writer().print("), &{s}_contract))", .{contract_c_name});
                 } else {
                     try self.writer.appendSlice("((uintptr_t)(");
                     try self.emitExpression(i.value);
-                    try self.writer.appendSlice(") >= 0x10000 && *(const AetherTypeDescriptor**)(");
+                    try self.writer.appendSlice(") >= 0x10000 && *(const EiwaTypeDescriptor**)(");
                     try self.emitExpression(i.value);
                     try self.writer.writer().print(") == &{s}_descriptor)", .{target_c_name});
                 }
@@ -965,9 +965,9 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                                 } else if (std.mem.eql(u8, target_c_name, "core_Bool")) {
                                     try self.writer.writer().print("((uintptr_t)({s}) <= 1)", .{subj_var_name});
                                 } else if (self.isContract(target_c_name)) {
-                                    try self.writer.writer().print("((uintptr_t)({s}) < 0x10000 || aether_implements(*(const AetherTypeDescriptor**)({s}), &{s}_contract))", .{ subj_var_name, subj_var_name, target_c_name });
+                                    try self.writer.writer().print("((uintptr_t)({s}) < 0x10000 || eiwa_implements(*(const EiwaTypeDescriptor**)({s}), &{s}_contract))", .{ subj_var_name, subj_var_name, target_c_name });
                                 } else {
-                                    try self.writer.writer().print("((uintptr_t)({s}) >= 0x10000 && *(const AetherTypeDescriptor**)({s}) == &{s}_descriptor)", .{ subj_var_name, subj_var_name, target_c_name });
+                                    try self.writer.writer().print("((uintptr_t)({s}) >= 0x10000 && *(const EiwaTypeDescriptor**)({s}) == &{s}_descriptor)", .{ subj_var_name, subj_var_name, target_c_name });
                                 }
                                 if (type_cond.is_not) {
                                     try self.writer.appendSlice(")");
@@ -1005,7 +1005,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             const col = node.column;
             
             var param_names = ArrayList([]const u8).init(self.allocator);
-            var param_types = ArrayList(*const ts.AetherType).init(self.allocator);
+            var param_types = ArrayList(*const ts.EiwaType).init(self.allocator);
             
             var locals = std.StringHashMap(void).init(self.allocator);
             defer locals.deinit();
@@ -1126,8 +1126,8 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             try self.header_writer.appendSlice(body_writer.items);
             try self.header_writer.appendSlice("}\n\n");
             
-            // Construct the AetherClosure struct literal
-            try self.writer.appendSlice("(AetherClosure){ ");
+            // Construct the EiwaClosure struct literal
+            try self.writer.appendSlice("(EiwaClosure){ ");
             try self.writer.writer().print("(void*){s}, ", .{lambda_fn_name});
             if (captures.items.len > 0) {
                 try self.writer.writer().print("({{\n", .{});

@@ -1,6 +1,6 @@
-# Aether Compiler Roadmap & Progress
+# Eiwa Compiler Roadmap & Progress
 
-This document tracks the historical progress, current status, and future roadmap of the Aether Compiler. 
+This document tracks the historical progress, current status, and future roadmap of the Eiwa Compiler. 
 
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
 
@@ -16,7 +16,7 @@ This document tracks the historical progress, current status, and future roadmap
 ### Phase 6: Control Flow & Expressions (COMPLETED)
 - [x] Implement Math, Logic, and Comparison Operators.
 - [x] Implement `while` loops, `return`, and assignments.
-- [x] Validate via recursive `fibonacci.ae` execution.
+- [x] Validate via recursive `fibonacci.ei` execution.
 
 ### Phase 7: Architecture Refactoring & Documentation (COMPLETED)
 - [x] Split source into `core`, `frontend`, and `backend` modules.
@@ -60,18 +60,18 @@ This document tracks the historical progress, current status, and future roadmap
 - [x] **Verify:** Compiler intercepts null-safety violations and the C transpilier emits ternary checks.
 
 ### Phase 14: CLI & Build Pipeline (COMPLETED)
-- [x] **Task 14.1:** Implement the `aether build file.ae` command in the CLI (`main.zig`).
+- [x] **Task 14.1:** Implement the `eiwa build file.ei` command in the CLI (`main.zig`).
 - [x] **Task 14.2:** The `build` command compiles the code generating a standalone static binary without executing it.
 - [x] **Task 14.3:** Optimize the pipeline of the C Transpiler to erase intermediate `.c` and `.o` files, leaving only the executable.
 
 ### Phase 15: Memory Management & Garbage Collection (COMPLETED)
 - [x] **Task 15.1:** Replace manual allocations (`malloc`) in the C Transpiler with a conservative Garbage Collector (Boehm GC) via the `-lgc` linker flag.
-- [x] **Task 15.2:** Eliminate memory leaks in native objects (`AetherString`, class instances).
+- [x] **Task 15.2:** Eliminate memory leaks in native objects (`EiwaString`, class instances).
 - [x] **Task 15.3:** Ensure runtime object lifecycles are safe and do not freeze execution.
 
 ### Phase 16: Módulos & Multi-file Compilation (COMPLETED)
 - [x] **Task 16.1:** Add support for the `import` keyword in the Lexer/Parser.
-- [x] **Task 16.2:** Allow the compiler to read, analyze, and compile multiple `.ae` files into a single Global AST.
+- [x] **Task 16.2:** Allow the compiler to read, analyze, and compile multiple `.ei` files into a single Global AST.
 - [x] **Task 16.3:** Resolve namespace collisions between files using dynamic Name Mangling.
 
 ### Phase 17: Core Library, Arrays & For-Loops (COMPLETED)
@@ -92,7 +92,7 @@ This document tracks the historical progress, current status, and future roadmap
 
 ### Phase 20: LLVM Native Emitter & Release Pipeline (PENDING / LATER)
 Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a direct LLVM IR emitter constructed in-memory. This eliminates C transpilation overhead and enables advanced low-level control.
-- [ ] **Task 20.1:** Add support for the `--release` flag in the CLI (`aether build --release file.ae`).
+- [ ] **Task 20.1:** Add support for the `--release` flag in the CLI (`eiwa build --release file.ei`).
 - [ ] **Task 20.2:** Build `llvm_emitter.zig`, bypassing the C backend, and translating the Resolved AST directly into in-memory LLVM structures using LLVM-C API bindings (`@cImport` of LLVM-C headers in Zig) to construct modules directly in memory.
 - [ ] **Task 20.3:** Hook up LLVM optimization passes (`-O3` for release and `-O0` for development/run commands) to generate native optimized binaries.
 - [ ] **Task 20.4:** Build-Time Optimizations (Speed up Dev Loops):
@@ -102,18 +102,18 @@ Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a
 - [ ] **Task 20.5:** Runtime Performance Enhancements:
   - **Precise Garbage Collection (Stack Maps):** Emit stack map metadata so the GC knows exactly where references live, replacing the slow, conservative scans of Boehm GC.
   - **Tail Call Optimization (TCO):** Use LLVM's `tail` or `musttail` markers to optimize recursive function calls and prevent stack overflows.
-  - **Custom Calling Conventions:** Optimize register allocation and parameters passing for the Aether runtime instead of complying with standard C ABI.
+  - **Custom Calling Conventions:** Optimize register allocation and parameters passing for the Eiwa runtime instead of complying with standard C ABI.
 
 ### Phase 21: Native Test System & CLI Refinements (COMPLETED)
 - [x] **Task 21.1:** Add native `test "name" { ... }` blocks in the AST and Parser.
-- [x] **Task 21.2:** Implement the `aether test` CLI command to search for `_test.ae` files and run test suites in isolation.
-- [x] **Task 21.3:** Make file extensions optional in imports (focusing strictly on `.ae` files).
-- [x] **Verify:** Native tests run and pass using `aether test`.
+- [x] **Task 21.2:** Implement the `eiwa test` CLI command to search for `_test.ei` files and run test suites in isolation.
+- [x] **Task 21.3:** Make file extensions optional in imports (focusing strictly on `.ei` files).
+- [x] **Verify:** Native tests run and pass using `eiwa test`.
 
 ### Phase 22: Top-Level Statements & Hybrid Main (COMPLETED)
 - [x] **Task 22.1:** Update the AST and Parser to allow free statements (e.g. `print`, function calls) at the root level of files.
 - [x] **Task 22.2:** The TypeChecker scopes all root-level statements and compiles them in order.
-- [x] **Task 22.3:** The CTranspiler wraps top-level statements inside the generated `aether_main()` or `main()`, avoiding the need for `fun main()`.
+- [x] **Task 22.3:** The CTranspiler wraps top-level statements inside the generated `eiwa_main()` or `main()`, avoiding the need for `fun main()`.
 - [x] **Task 22.4:** Support Hybrid Main: if the user provides `fun main()`, top-level statements are either wrapped or checked for conflicts.
 - [x] **Task 22.5:** Ensure imported modules do not execute their top-level statements; only the entry file or tests run.
 - [x] **Verify:** Samples run correctly without needing an explicit `fun main()`.
@@ -124,9 +124,9 @@ Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a
 - [x] **Task 23.3:** Validate cross-file overloaded functions in the Global AST.
 
 ### Phase 24: Native SDK Architecture (COMPLETED)
-- [x] **Task 24.1:** Eliminate utility methods from raw C runtime (`aether_runtime.h`), moving primitive logic into the Aether SDK.
-- [x] **Task 24.2:** Create clean C bindings (`lib C { fun printf(...) }`) and implement the `String` class entirely in Aether.
-- [x] **Task 24.3:** Move print overloads, `toString` conversions, and concatenation to `std/core.ae`.
+- [x] **Task 24.1:** Eliminate utility methods from raw C runtime (`eiwa_runtime.h`), moving primitive logic into the Eiwa SDK.
+- [x] **Task 24.2:** Create clean C bindings (`lib C { fun printf(...) }`) and implement the `String` class entirely in Eiwa.
+- [x] **Task 24.3:** Move print overloads, `toString` conversions, and concatenation to `std/core.ei`.
 
 ### Phase 25: User-Defined Annotations & Metadata (PENDING / LATER)
 - [ ] **Task 25.1:** Add support in the Lexer, AST, and Parser for user-defined annotations (e.g. `annotation Header(files: [String])`).
@@ -135,7 +135,7 @@ Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a
 
 ### Phase 26: Standard Library Packages & Time API (COMPLETED)
 - [x] **Task 26.1:** Map the virtual prefix `std.*` in imports to resolve files inside the compiler's internal `std/` directory.
-- [x] **Task 26.2:** Migrate core utilities to the `std.core` package (`std/core.ae`).
+- [x] **Task 26.2:** Migrate core utilities to the `std.core` package (`std/core.ei`).
 - [x] **Task 26.3:** Implement `std.time` package featuring the **Epoch-First** `Time` and `Duration` abstractions.
 - [x] **Task 26.4:** Encapsulate `<time.h>` calls inside the `lib NativeTime` block.
 
@@ -199,7 +199,7 @@ Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a
 ### Phase 36: Fiber-based Concurrency & Event Loop Runtime (PENDING)
 - [ ] **Task 36.1:** Update C runtime to support lightweight cooperative threads (Fibers/Green-Threads) with manual context switching (e.g., using `<ucontext.h>` or platform-specific assembly).
 - [ ] **Task 36.2:** Build an integrated Global Event Loop in the runtime using `epoll` (Linux) / `kqueue` (macOS/BSD) or `libevent` under the hood.
-- [ ] **Task 36.3:** Re-implement standard socket block functions in Aether FFI to yield execution of the running Fiber, resuming only when notified by the runtime event loop.
+- [ ] **Task 36.3:** Re-implement standard socket block functions in Eiwa FFI to yield execution of the running Fiber, resuming only when notified by the runtime event loop.
 - [ ] **Task 36.4:** Implement high-performance, non-blocking `std.http` on top of Fibers to achieve Go/Crystal-like concurrency.
 
 ### Phase 37: Default Parameters (COMPLETED)
@@ -227,8 +227,8 @@ Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a
 - [x] **Verify:** Compile and run a script that uses `Env.get()` to retrieve environment variables.
 
 ### Phase 40: Multi-Pass Compiler Architecture Refactoring (Crystal/Kotlin Style) (PLANNED)
-Refactor the Aether compiler from file-by-file recursive typechecking to a global, multi-pass type resolution architecture inspired by Crystal and Kotlin to natively support project-wide namespaces and circular dependencies.
-- [ ] **Task 40.1:** Refactor file resolution to support a global Parsing Pass. Scan all files in the dependency graph starting from the entry point (`main.ae`) and load their parsed ASTs into a shared registry, rather than recursively compiling imports on-the-fly.
+Refactor the Eiwa compiler from file-by-file recursive typechecking to a global, multi-pass type resolution architecture inspired by Crystal and Kotlin to natively support project-wide namespaces and circular dependencies.
+- [ ] **Task 40.1:** Refactor file resolution to support a global Parsing Pass. Scan all files in the dependency graph starting from the entry point (`main.ei`) and load their parsed ASTs into a shared registry, rather than recursively compiling imports on-the-fly.
 - [ ] **Task 40.2:** Implement Type and Signature Declaration Pass. Walk all parsed ASTs and populate a global symbol table with all class, object, and function types and signatures, leaving bodies/initializers un-typechecked.
 - [ ] **Task 40.3:** Implement Semantic Body Validation Pass. Typecheck function bodies, method definitions, and initializers using the populated global symbol table. Resolves circular imports and cross-file type dependencies natively.
 - [ ] **Task 40.4:** Deduplicate Transpiler Output. Update `CTranspiler` to leverage the global registry, ensuring each standard library module is transpiled exactly once without duplicate C definitions.
@@ -245,21 +245,21 @@ Replace implementation inheritance entirely with the composition model defined i
 - [x] **Task 41.7:** Replace the `Exception` base class with the `Throwable` contract: `throw`/`catch` accept any type implementing `Throwable`; update `when`/`is` checks to use contract conformance instead of hierarchy.
 - [x] **Task 41.8:** Enforce singleton `object` semantics under the new model (direct member access, instantiation forbidden).
 - [x] **Task 41.9:** C Transpiler lowering: `type` → struct + methods, `object` → global instance, skill methods → functions on the consuming type, contract-typed values → fat pointers (data + vtable) with dynamic dispatch. Remove struct-embedding inheritance emission.
-- [x] **Task 41.10:** Migrate `src/std/*.ae`, samples and tests off `class`/inheritance; delete all inheritance machinery from the TypeChecker.
+- [x] **Task 41.10:** Migrate `src/std/*.ei`, samples and tests off `class`/inheritance; delete all inheritance machinery from the TypeChecker.
 - [x] **Verify:** Every example in the composition spec (valid and invalid) behaves as specified; full test suite passes with no inheritance code remaining.
 
 > **Known trade-offs (accepted):** skill methods are cloned per consuming type (C++ template-style code duplication in exchange for zero-cost static dispatch); contract-typed values are erased to `void*` in C (the TypeChecker is the only type-safety layer for dynamic dispatch). Follow-ups live in Phases 42–44.
 
 ### Phase 45: Serialization — `Serializable` Contract + JSON/YAML Skills (COMPLETED)
-Compile-time serialization without runtime reflection (ADR 27): the compiler generates `serdeFields(): List<SerdeField>` per `type` marked `: Serializable`; formats are pure-Aether skills (`+ Json`, `+ Yaml`) in a new `std.serde` module that walk the field list. Serialization only; deserialization is a future phase.
-- [x] **Task 45.1:** Create `src/std/serde.ae`: `contract Serializable`, `SerdeField`, `contract SerdeValue` + std boxes (`IntValue`, `FloatValue`, `BoolValue`, `StringValue`, `ObjectValue`, `ListValue`), and skills `Json`/`Yaml` with `toJson()`/`toYaml()` written 100% in Aether.
+Compile-time serialization without runtime reflection (ADR 27): the compiler generates `serdeFields(): List<SerdeField>` per `type` marked `: Serializable`; formats are pure-Eiwa skills (`+ Json`, `+ Yaml`) in a new `std.serde` module that walk the field list. Serialization only; deserialization is a future phase.
+- [x] **Task 45.1:** Create `src/std/serde.ei`: `contract Serializable`, `SerdeField`, `contract SerdeValue` + std boxes (`IntValue`, `FloatValue`, `BoolValue`, `StringValue`, `ObjectValue`, `ListValue`), and skills `Json`/`Yaml` with `toJson()`/`toYaml()` written 100% in Eiwa.
 - [x] **Task 45.2:** TypeChecker: accept the marker contract and resolve the generated `serdeFields()` signature; treat a user-provided `implement fun serdeFields()` as an override of the generated body.
 - [x] **Task 45.3:** Compiler codegen: for every `type` implementing `Serializable`, emit the `serdeFields()` body including only serializable fields — primitives, nested `Serializable` types (recursive via `ObjectValue`) and `List<T>` of serializable `T` (via `ListValue`); silently skip all other fields.
-- [x] **Task 45.4:** Samples: `samples/serialization_sample.ae` (nested objects, lists, skipped fields) and `samples/tests/serialization_test.ae` covering JSON and YAML output.
-- [x] **Verify:** Full suite passes (`zig build`, `zig build test`, `aether test samples/tests`); sample output matches expected JSON/YAML.
+- [x] **Task 45.4:** Samples: `samples/serialization_sample.ei` (nested objects, lists, skipped fields) and `samples/tests/serialization_test.ei` covering JSON and YAML output.
+- [x] **Verify:** Full suite passes (`zig build`, `zig build test`, `eiwa test samples/tests`); sample output matches expected JSON/YAML.
 
 ### Phase 42: Null Safety on Contract Receivers (PENDING)
-Contract-typed receivers are erased to `void*` and dispatch dynamically through `aether_find_vtable`. The safe-call path (`?.`) currently ignores the null check for contract method calls, and nullable contract types (`Drawable?`) are untested — a null receiver segfaults instead of short-circuiting.
+Contract-typed receivers are erased to `void*` and dispatch dynamically through `eiwa_find_vtable`. The safe-call path (`?.`) currently ignores the null check for contract method calls, and nullable contract types (`Drawable?`) are untested — a null receiver segfaults instead of short-circuiting.
 - [ ] **Task 42.1:** Emit the null short-circuit (`(obj) == 0 ? 0 : dispatch`) for `?.` calls on contract-typed receivers in the C Transpiler (`expression.zig` contract dispatch branch).
 - [ ] **Task 42.2:** Validate nullable contract types end-to-end: `val d: Drawable? = null`, `d?.draw()`, `d ?: fallback`, and `!!` assertions on contracts.
 - [ ] **Task 42.3:** TypeChecker: reject non-safe member access on nullable contract receivers with the standard null-safety error.
@@ -267,13 +267,13 @@ Contract-typed receivers are erased to `void*` and dispatch dynamically through 
 
 ### Phase 43: Heterogeneous Contract Collections (`List<Drawable>`) (PENDING / LATER)
 ADR 25 envisioned heterogeneous collections of contracts (e.g. `List<Drawable>`), but the monomorphizer generates concrete C containers and contract type erasure (`void*`) is not propagated into generic instantiations (element arrays would degrade to invalid `void` element types).
-- [ ] **Task 43.1:** Propagate contract erasure into `getCTypeStr` consumers inside monomorphized collections: a `List<Drawable>` must generate its storage as `void*` elements (named e.g. `AetherArray_voidPtr`) instead of an invalid `void` element type.
+- [ ] **Task 43.1:** Propagate contract erasure into `getCTypeStr` consumers inside monomorphized collections: a `List<Drawable>` must generate its storage as `void*` elements (named e.g. `EiwaArray_voidPtr`) instead of an invalid `void` element type.
 - [ ] **Task 43.2:** TypeChecker: allow contract types as generic arguments (`List<Drawable>`, `Map<String, Throwable>`) and ensure method returns/params inside the monomorphized collection keep the contract static type (so returned elements dispatch dynamically).
 - [ ] **Task 43.3:** Transpiler: contract dispatch when the receiver expression is a collection element access (e.g. `shapes[0].draw()`).
 - [ ] **Verify:** Test that stores `Circle` and `Square` in one `List<Shape>` and dynamically dispatches a method per element.
 
 ### Phase 44: Composition Test Coverage Hardening (PENDING)
-The composition model (Phase 41) currently has only 5 dedicated tests (`composition_test.ae`). Several interaction paths are unverified.
+The composition model (Phase 41) currently has only 5 dedicated tests (`composition_test.ei`). Several interaction paths are unverified.
 - [ ] **Task 44.1:** Tests for contracts as function parameters and return types (`fun renderAll(items: List<Drawable>)` without Phase 43, or `fun max(a, b): Drawable` style single-value flows).
 - [ ] **Task 44.2:** Cross-module composition: contracts and skills declared in one module, composed in another (including `std`-level contracts beyond `Throwable`).
 - [ ] **Task 44.3:** Skills requiring multiple contracts (`skill S : A, B`) and types composing multiple skills with multiple requirements.
@@ -287,33 +287,33 @@ General Union types (e.g., `String | Int` or `T1 | T2`) across variable declarat
 - [x] **Task 46.2:** Update TypeChecker (`core_resolveTypeRef` and `core_isCompatible`) to resolve general Union types and perform subtyping checks across union variants.
 - [x] **Task 46.3:** Update C Transpiler (`getCTypeStr`) to represent general non-null unions as `void*` with primitive autoboxing/unboxing.
 - [x] **Task 46.4:** Support multi-type generic collections such as `Map<String, String | Int>` and `MutableMap<String, String | Int>`.
-- [x] **Task 46.5:** Update documentation (`docs/roadmap.md`, `docs/decisions.md`, `docs/language_tour.md`) and add samples (`samples/union_sample.ae`) and tests (`samples/tests/union_test.ae`).
+- [x] **Task 46.5:** Update documentation (`docs/roadmap.md`, `docs/decisions.md`, `docs/language_tour.md`) and add samples (`samples/union_sample.ei`) and tests (`samples/tests/union_test.ei`).
 
 ### Phase 47: Core System Contracts & Fundamental Skill Derivation (`Stringable`, `Hashable`, `Equatable`, `Echoable`) (COMPLETED)
-Establish a unified language-wide contract hierarchy and automatic skill derivation for all Aether types (`type`, `object`, and primitives `Int`, `Bool`, `String`).
-- [x] **Task 47.1:** Declare core contracts (`contract Stringable`, `contract Equatable`, `contract Hashable`) and core skills (`skill Echoable`) in `src/std/core.ae`.
+Establish a unified language-wide contract hierarchy and automatic skill derivation for all Eiwa types (`type`, `object`, and primitives `Int`, `Bool`, `String`).
+- [x] **Task 47.1:** Declare core contracts (`contract Stringable`, `contract Equatable`, `contract Hashable`) and core skills (`skill Echoable`) in `src/std/core.ei`.
 - [x] **Task 47.2:** Update TypeChecker to automatically inject core contracts (`Stringable`, `Hashable`, `Equatable`) into the implicit contract implementations of every user-declared `type` and `object`.
 - [x] **Task 47.3:** Synthesize missing default method implementations (`toString()`, `equals()`, `hashCode()`) in the TypeChecker for types that do not explicitly provide custom implementations, skipping closure/function properties (`is_function`).
-- [x] **Task 47.4:** Declare primitive types (`Int`, `Bool`, `String`, `Pointer`) in `src/std/core.ae` as implementers of `Stringable`, `Hashable`, and `Equatable`.
-- [x] **Task 47.5:** Refactor compiler dynamic dispatch and C Transpiler to use contract vtables for `Stringable.toString()` and `Hashable.hashCode()` calls across Union types (`String | Int`) and erased generics (`void*`), with C runtime helpers (`aether_to_string`, `aether_hash_code`).
-- [x] **Verify:** Compile and run test suites (`core_contracts_test.ae`) verifying polymorphic `.toString()` calls, generic `Stringable` parameters, and contract-based dynamic dispatch on custom types, primitives, and union types.
+- [x] **Task 47.4:** Declare primitive types (`Int`, `Bool`, `String`, `Pointer`) in `src/std/core.ei` as implementers of `Stringable`, `Hashable`, and `Equatable`.
+- [x] **Task 47.5:** Refactor compiler dynamic dispatch and C Transpiler to use contract vtables for `Stringable.toString()` and `Hashable.hashCode()` calls across Union types (`String | Int`) and erased generics (`void*`), with C runtime helpers (`eiwa_to_string`, `eiwa_hash_code`).
+- [x] **Verify:** Compile and run test suites (`core_contracts_test.ei`) verifying polymorphic `.toString()` calls, generic `Stringable` parameters, and contract-based dynamic dispatch on custom types, primitives, and union types.
 
 ### Phase 48: Standard Library Logging (`std.log`) (COMPLETED)
-Design and implement the native logging package `std.log` (`src/std/log.ae`) supporting lazy evaluation via lambdas, ANSI colored console output, Throwable exception logging, and skill-based formatters (`skill TextFormatter`, `skill JsonFormatter`).
-- [x] **Task 48.1:** Implement `src/std/log.ae` defining `LogLevel`, `contract LogFormatter`, `skill TextFormatter`, `skill JsonFormatter`, `type Logger`, and static facade `object Log`.
+Design and implement the native logging package `std.log` (`src/std/log.ei`) supporting lazy evaluation via lambdas, ANSI colored console output, Throwable exception logging, and skill-based formatters (`skill TextFormatter`, `skill JsonFormatter`).
+- [x] **Task 48.1:** Implement `src/std/log.ei` defining `LogLevel`, `contract LogFormatter`, `skill TextFormatter`, `skill JsonFormatter`, `type Logger`, and static facade `object Log`.
 - [x] **Task 48.2:** Implement lazy message evaluation via lambda receivers (`Log.info { ... }`), preventing string building when log level is filtered out.
 - [x] **Task 48.3:** Implement `Throwable` exception parameters on `warn` and `error` overloads.
 - [x] **Task 48.4:** Implement ANSI color output for `TextFormatter` console logging and structured JSON formatting via `JsonFormatter`.
-- [x] **Task 48.5:** Implement unit test suite `samples/tests/log_test.ae`, demonstration sample `samples/log_sample.ae`, and integrate `std.log` into `samples/arest/arest.ae`.
-- [x] **Verify:** Execute test suite `aether test samples/tests/log_test.ae`, verify sample `aether run samples/log_sample.ae`, and run `zig build test`.
+- [x] **Task 48.5:** Implement unit test suite `samples/tests/log_test.ei`, demonstration sample `samples/log_sample.ei`, and integrate `std.log` into `samples/arest/arest.ei`.
+- [x] **Verify:** Execute test suite `eiwa test samples/tests/log_test.ei`, verify sample `eiwa run samples/log_sample.ei`, and run `zig build test`.
 
 ### Phase 49: First-Class Enum Types & `std.log` Enum Refactoring (COMPLETED)
-Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DEBUG, INFO, WARN, ERROR, OFF }`) with auto-generated ordinal and string representations, and refactor `std.log` (`src/std/log.ae`) to use `LogLevel` enum instead of integer constants.
+Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DEBUG, INFO, WARN, ERROR, OFF }`) with auto-generated ordinal and string representations, and refactor `std.log` (`src/std/log.ei`) to use `LogLevel` enum instead of integer constants.
 - [x] **Task 49.1:** Lexer & Parser: Add `kw_enum` keyword and parse `enum Name { Variant1, Variant2, ... }` declarations into AST `enum_decl`.
 - [x] **Task 49.2:** TypeChecker: Register `enum` types with variant values, implicit `ordinal: Int`, `name: String`, `values(): List<EnumType>`, `Stringable`, `Equatable`, `Hashable`.
 - [x] **Task 49.3:** C Transpiler: Transpile enum declarations to static C enum structs and integer value descriptors.
-- [x] **Task 49.4:** Refactor `src/std/log.ae`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
-- [x] **Task 49.5:** Update samples and tests (`log_sample.ae`, `log_test.ae`, `arest.ae`, `enum_sample.ae`, `enum_test.ae`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
+- [x] **Task 49.4:** Refactor `src/std/log.ei`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
+- [x] **Task 49.5:** Update samples and tests (`log_sample.ei`, `log_test.ei`, `arest.ei`, `enum_sample.ei`, `enum_test.ei`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
 
 ### Phase 50: Structured Concurrency and Tasks (PENDING)
 Introduce lightweight concurrent tasks with structured concurrency, allowing asynchronous execution without exposing threads, fibers or platform-specific primitives.
@@ -336,7 +336,7 @@ Introduce lightweight concurrent tasks with structured concurrency, allowing asy
 
 ## 🛠️ Historic Bugfixes & Tools
 * **C Transpiler `.if_expr` (July 9, 2026):** Fixed C transpiler to emit statements for `if/else` instead of C ternary operators `?:` when in Statement mode, resolving compilation issues with complex blocks (e.g., `return`).
-* **Runtime Stream (July 9, 2026):** Updated `aether run` command to output `stdout` in real-time (unbuffered) using `child.spawn()` with stream inheritance (`.Inherit`), allowing long-running loops to execute correctly without blocking the TTY.
+* **Runtime Stream (July 9, 2026):** Updated `eiwa run` command to output `stdout` in real-time (unbuffered) using `child.spawn()` with stream inheritance (`.Inherit`), allowing long-running loops to execute correctly without blocking the TTY.
 * **Method Resolution Name Mangling (July 9, 2026):** Resolved a compiler bug where primitive method resolution failed on `Int`, `Bool`, etc., because the type checker searched for the raw type names in `classes_ast` instead of using the mangled name `system_Int`.
-* **Modular Standard Library Architecture (July 21, 2026):** Refactored the monolithic `src/std/core.ae` into clean specialist modules (`std.core`, `std.io`, `std.system`, `std.exceptions`), renamed `Printable` to `Echoable`, and centralized implicit import constants in `infer_decl.zig` (ADR 30).
+* **Modular Standard Library Architecture (July 21, 2026):** Refactored the monolithic `src/std/core.ei` into clean specialist modules (`std.core`, `std.io`, `std.system`, `std.exceptions`), renamed `Printable` to `Echoable`, and centralized implicit import constants in `infer_decl.zig` (ADR 30).
 * **Implicit `this` Member Syntax (July 21, 2026):** Made `this.` optional for reading/writing properties and calling sibling methods inside `type` declarations and receiver lambdas (`T.() -> Void`), adding pre-registration of class method signatures in `class_scope`, parameter shadowing resolution, and property assignment emission in CTranspiler (ADR 31).

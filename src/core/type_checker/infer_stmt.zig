@@ -5,9 +5,9 @@ const core = @import("core.zig");
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
 const Scope = core.Scope;
-const AetherType = core.AetherType;
+const EiwaType = core.EiwaType;
 
-pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const i = node.data.if_expr;
     const cond_type = try self.inferNode(i.condition, scope);
     if (!core.isBool(cond_type)) {
@@ -49,7 +49,7 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aether
     }
 }
 
-pub fn inferWhileStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferWhileStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const w = node.data.while_stmt;
     const cond_type = try self.inferNode(w.condition, scope);
     if (!core.isBool(cond_type)) {
@@ -60,7 +60,7 @@ pub fn inferWhileStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aet
     t.* = .Void;
 }
 
-pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const f = node.data.for_stmt;
     var iter_type = try self.inferNode(f.iterable, scope);
     
@@ -97,7 +97,7 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     t.* = .Void;
 }
 
-pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const r = node.data.return_stmt;
     if (r.value) |v| {
         const ret_type = try self.inferNode(v, scope);
@@ -107,7 +107,7 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     t.* = .Void;
 }
 
-pub fn checkBlock(self: *TypeChecker, block: []const *ASTNode, parent_scope: *Scope) anyerror!*const AetherType {
+pub fn checkBlock(self: *TypeChecker, block: []const *ASTNode, parent_scope: *Scope) anyerror!*const EiwaType {
     var local_scope = Scope.init(self.allocator, parent_scope);
     defer local_scope.deinit();
 
@@ -115,12 +115,12 @@ pub fn checkBlock(self: *TypeChecker, block: []const *ASTNode, parent_scope: *Sc
         _ = try self.inferNode(stmt, &local_scope);
     }
 
-    const t = try self.allocator.create(AetherType);
+    const t = try self.allocator.create(EiwaType);
     t.* = .Void;
     return t;
 }
 
-pub fn inferThrowStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferThrowStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const expr = node.data.throw_stmt.expr;
     const expr_type = try self.inferNode(expr, scope);
 
@@ -143,7 +143,7 @@ pub fn inferThrowStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aet
     t.* = .Void;
 }
 
-pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const ts = node.data.try_stmt;
     _ = try self.inferNode(ts.body, scope);
 
@@ -158,7 +158,7 @@ pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
         defer catch_scope.deinit();
 
         if (c.var_name) |var_name| {
-            var var_type: *const AetherType = throwable_type;
+            var var_type: *const EiwaType = throwable_type;
             if (c.types.len == 1) {
                 var_type = try self.resolveTypeRef(c.types[0]);
             }

@@ -5,7 +5,7 @@ const core = @import("core.zig");
 
 const ASTNode = ast.ASTNode;
 const TypeChecker = core.TypeChecker;
-const AetherType = type_system.AetherType;
+const EiwaType = type_system.EiwaType;
 
 pub fn cloneTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!*ast.ASTTypeRef {
     const new_ref = try self.allocator.create(ast.ASTTypeRef);

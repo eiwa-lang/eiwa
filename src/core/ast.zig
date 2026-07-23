@@ -1,7 +1,7 @@
 const std = @import("std");
 const type_system = @import("type_system.zig");
 
-/// Token types supported by the Aether compiler.
+/// Token types supported by the Eiwa compiler.
 pub const TokenType = enum {
     // Keywords
     kw_val,
@@ -99,7 +99,7 @@ pub const ASTTypeRef = struct {
     union_types: []const *const ASTTypeRef = &.{},
     receiver_type: ?*const ASTTypeRef = null,
     return_type: ?*const ASTTypeRef = null,
-    resolved_type: ?*const type_system.AetherType = null,
+    resolved_type: ?*const type_system.EiwaType = null,
 };
 
 /// Auxiliary structures for the AST
@@ -113,7 +113,7 @@ pub const ClassProp = struct {
     is_mut: bool,
     name: []const u8,
     type_ref: *const ASTTypeRef,
-    resolved_type: ?*const type_system.AetherType = null,
+    resolved_type: ?*const type_system.EiwaType = null,
     is_property: bool = true,
     initializer: ?*ASTNode = null,
 };
@@ -138,8 +138,8 @@ pub const EnumVariant = struct {
 pub const ASTNode = struct {
     line: usize,
     column: usize,
-    resolved_type: ?*const type_system.AetherType = null,
-    expected_type: ?*const type_system.AetherType = null,
+    resolved_type: ?*const type_system.EiwaType = null,
+    expected_type: ?*const type_system.EiwaType = null,
     data: ASTNodeType,
 };
 

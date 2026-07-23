@@ -24,10 +24,10 @@ lib NativeString {
     fun strlen(s: OpaquePointer): Int
     
     //TODO: Remove this, they are only for internal usage
-    @Alias("aether_char_at")
+    @Alias("eiwa_char_at")
     fun charAt(s: OpaquePointer, index: Int): Int
     
-    @Alias("aether_terminate")
+    @Alias("eiwa_terminate")
     fun terminate(s: OpaquePointer, index: Int): Void
 }
 

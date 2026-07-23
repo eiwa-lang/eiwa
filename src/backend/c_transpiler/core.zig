@@ -12,7 +12,7 @@ pub const expr_mod = @import("expression.zig");
 pub const stmt_mod = @import("statement.zig");
 pub const decl_mod = @import("declaration.zig");
 
-pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.AetherType) ![]const u8 {
+pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType) ![]const u8 {
     switch (t.*) {
         .Int => return "int",
         .Bool => return "bool",
@@ -39,7 +39,7 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.AetherTyp
                 if (c == ' ') continue;
                 try safe_inner.append(c);
             }
-            return try std.fmt.allocPrint(allocator, "AetherArray_{s}*", .{safe_inner.items});
+            return try std.fmt.allocPrint(allocator, "EiwaArray_{s}*", .{safe_inner.items});
         },
         .Union => |u| {
             if (u.right.* == .Null) {
@@ -50,7 +50,7 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.AetherTyp
                 return "void*";
             }
         },
-        .Function => return "AetherClosure",
+        .Function => return "EiwaClosure",
         else => return "void*",
     }
 }
@@ -75,7 +75,7 @@ pub const CTranspiler = struct {
     enums_ast: ?*std.StringHashMap(*ASTNode) = null,
     contracts_ast: ?*std.StringHashMap(*ASTNode) = null,
     alias_map: ?*std.StringHashMap([]const u8) = null,
-    source_file: []const u8 = "<unknown>", // path to the .ae source file being transpiled
+    source_file: []const u8 = "<unknown>", // path to the .ei source file being transpiled
     static_initializers: ArrayList(StaticInitializer),
 
     pub const StaticInitializer = struct {
@@ -99,7 +99,7 @@ pub const CTranspiler = struct {
 
     /// Contract-aware C type: contract-typed values are erased to `void*`
     /// (dynamic dispatch goes through the object header descriptor).
-    pub fn cType(self: *CTranspiler, t: *const type_system.AetherType) ![]const u8 {
+    pub fn cType(self: *CTranspiler, t: *const type_system.EiwaType) ![]const u8 {
         const base = type_system.extractBaseType(t);
         if (base.* == .Custom) {
             if (self.contracts_ast) |ca| {
@@ -114,7 +114,7 @@ pub const CTranspiler = struct {
                 if (c == ' ') continue;
                 try safe_inner.append(c);
             }
-            return try std.fmt.allocPrint(self.allocator, "AetherArray_{s}*", .{safe_inner.items});
+            return try std.fmt.allocPrint(self.allocator, "EiwaArray_{s}*", .{safe_inner.items});
         }
         return getCTypeStr(self.allocator, t);
     }
@@ -200,7 +200,7 @@ pub const CTranspiler = struct {
 
         var final = ArrayList(u8).init(self.allocator);
         try final.appendSlice(std_lib_c);
-        try final.appendSlice("\n__thread AetherExceptionFrame* aether_exception_stack = 0;\n__thread void* aether_active_exception = 0;\n\n");
+        try final.appendSlice("\n__thread EiwaExceptionFrame* eiwa_exception_stack = 0;\n__thread void* eiwa_active_exception = 0;\n\n");
         try final.appendSlice(self.forward_writer.items); // forward decls go first
         try final.appendSlice(self.header_writer.items);
         try final.appendSlice(self.writer.items);
@@ -208,7 +208,7 @@ pub const CTranspiler = struct {
         return try final.toOwnedSlice();
     }
 
-    pub fn emitArrayStruct(self: *CTranspiler, elem: *const type_system.AetherType) !void {
+    pub fn emitArrayStruct(self: *CTranspiler, elem: *const type_system.EiwaType) !void {
         const inner_c_type = try self.cType(elem);
 
         var safe_inner = ArrayList(u8).init(self.allocator);
@@ -217,7 +217,7 @@ pub const CTranspiler = struct {
             if (c == ' ') continue;
             try safe_inner.append(c);
         }
-        const struct_name = try std.fmt.allocPrint(self.allocator, "AetherArray_{s}", .{safe_inner.items});
+        const struct_name = try std.fmt.allocPrint(self.allocator, "EiwaArray_{s}", .{safe_inner.items});
 
         if (self.classes.contains(struct_name)) return;
         try self.classes.put(struct_name, {});
@@ -323,22 +323,22 @@ pub const CTranspiler = struct {
                         try self.writer.appendSlice("    int __failed = 0;\n");
                         for (self.test_names.items, 0..) |tname, i| {
                             try self.writer.appendSlice("    {\n");
-                            try self.writer.appendSlice("        AetherExceptionFrame __frame;\n");
-                            try self.writer.appendSlice("        aether_push_exception_frame(&__frame);\n");
+                            try self.writer.appendSlice("        EiwaExceptionFrame __frame;\n");
+                            try self.writer.appendSlice("        eiwa_push_exception_frame(&__frame);\n");
                             try self.writer.appendSlice("        if (setjmp(__frame.buf) == 0) {\n");
-                            try self.writer.writer().print("            aether_test_{d}();\n", .{i});
-                            try self.writer.appendSlice("            aether_pop_exception_frame();\n");
+                            try self.writer.writer().print("            eiwa_test_{d}();\n", .{i});
+                            try self.writer.appendSlice("            eiwa_pop_exception_frame();\n");
                             try self.writer.writer().print("            printf(\"[PASS] {s}\\n\");\n", .{tname});
                             try self.writer.appendSlice("        } else {\n");
-                            try self.writer.appendSlice("            aether_pop_exception_frame();\n");
-                            try self.writer.appendSlice("            void* __exc = aether_active_exception;\n");
-                            try self.writer.appendSlice("            aether_active_exception = 0;\n");
+                            try self.writer.appendSlice("            eiwa_pop_exception_frame();\n");
+                            try self.writer.appendSlice("            void* __exc = eiwa_active_exception;\n");
+                            try self.writer.appendSlice("            eiwa_active_exception = 0;\n");
                             try self.writer.appendSlice("            const char* __name = \"UnknownException\";\n");
                             try self.writer.appendSlice("            const char* __msg = \"\";\n");
                             try self.writer.appendSlice("            if (__exc) {\n");
-                            try self.writer.appendSlice("                const AetherTypeDescriptor* __desc = *(const AetherTypeDescriptor**)__exc;\n");
+                            try self.writer.appendSlice("                const EiwaTypeDescriptor* __desc = *(const EiwaTypeDescriptor**)__exc;\n");
                             try self.writer.appendSlice("                if (__desc) __name = __desc->name;\n");
-                            try self.writer.appendSlice("                void** __vt = aether_find_vtable(__desc, &exceptions_Throwable_contract);\n");
+                            try self.writer.appendSlice("                void** __vt = eiwa_find_vtable(__desc, &exceptions_Throwable_contract);\n");
                             try self.writer.appendSlice("                if (__vt && __vt[0]) {\n");
                             try self.writer.appendSlice("                    core_String* __s = ((core_String*(*)(void*))__vt[0])(__exc);\n");
                             try self.writer.appendSlice("                    if (__s) __msg = __s->ptr;\n");

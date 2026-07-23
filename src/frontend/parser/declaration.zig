@@ -267,7 +267,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
     const col = self.previous.column;
 
     if (self.check(.kw_default)) {
-        self.reportLexerError(self.current.line, self.current.column, "Syntax Error: 'default' is a reserved keyword in Aether.", .{});
+        self.reportLexerError(self.current.line, self.current.column, "Syntax Error: 'default' is a reserved keyword in Eiwa.", .{});
         return error.ParseError;
     }
     var name: []const u8 = "";

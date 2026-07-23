@@ -2,33 +2,33 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const ArrayList = compat.ArrayList;
 
-pub const AetherType = union(enum) {
+pub const EiwaType = union(enum) {
     Int,
     String,
     Bool,
-    Pointer: *const AetherType,
+    Pointer: *const EiwaType,
     Void,
     Null,
     Unknown,
-    Array: *const AetherType,
+    Array: *const EiwaType,
     Custom: []const u8,
     Function: struct {
-        params: []const *const AetherType,
-        return_type: *const AetherType,
+        params: []const *const EiwaType,
+        return_type: *const EiwaType,
         c_name: []const u8,
-        receiver: ?*const AetherType = null,
+        receiver: ?*const EiwaType = null,
     },
     Union: struct {
-        left: *const AetherType,
-        right: *const AetherType,
+        left: *const EiwaType,
+        right: *const EiwaType,
     },
     GenericParam: []const u8,
     GenericInstance: struct {
         base_name: []const u8,
-        type_args: []const *const AetherType,
+        type_args: []const *const EiwaType,
     },
 
-    pub fn format(self: AetherType, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: EiwaType, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         switch (self) {
             .Int => try writer.writeAll("Int"),
@@ -89,7 +89,7 @@ pub const AetherType = union(enum) {
         }
     }
 
-    pub fn formatSafe(self: AetherType, writer: anytype) !void {
+    pub fn formatSafe(self: EiwaType, writer: anytype) !void {
         switch (self) {
             .Int => try writer.writeAll("Int"),
             .String => try writer.writeAll("String"),
@@ -178,7 +178,7 @@ pub const AetherType = union(enum) {
 const ast = @import("ast.zig");
 
 pub const VariableSymbol = struct {
-    aether_type: *const AetherType,
+    eiwa_type: *const EiwaType,
     is_mut: bool,
     is_boxed: bool = false,
     decl_node: ?*ast.ASTNode = null,
@@ -186,7 +186,7 @@ pub const VariableSymbol = struct {
 
 pub const Symbol = union(enum) {
     Variable: VariableSymbol,
-    Overloads: ArrayList(*const AetherType),
+    Overloads: ArrayList(*const EiwaType),
 };
 
 pub const Scope = struct {
@@ -208,7 +208,7 @@ pub const Scope = struct {
         self.symbols.deinit();
     }
 
-    pub fn define(self: *Scope, name: []const u8, t: *const AetherType, is_mut: bool, is_func: bool) !void {
+    pub fn define(self: *Scope, name: []const u8, t: *const EiwaType, is_mut: bool, is_func: bool) !void {
         if (self.symbols.get(name)) |existing| {
             if (is_func) {
                 if (existing.* == .Overloads) {
@@ -222,7 +222,7 @@ pub const Scope = struct {
                     return error.SymbolAlreadyDefined;
                 }
             } else {
-                if (existing.* == .Variable and isCompatible(existing.Variable.aether_type, t)) {
+                if (existing.* == .Variable and isCompatible(existing.Variable.eiwa_type, t)) {
                     return;
                 }
                 return error.SymbolAlreadyDefined;
@@ -231,11 +231,11 @@ pub const Scope = struct {
 
         const sym = try self.allocator.create(Symbol);
         if (is_func) {
-            var list = ArrayList(*const AetherType).init(self.allocator);
+            var list = ArrayList(*const EiwaType).init(self.allocator);
             try list.append(t);
             sym.* = .{ .Overloads = list };
         } else {
-            sym.* = .{ .Variable = .{ .aether_type = t, .is_mut = is_mut } };
+            sym.* = .{ .Variable = .{ .eiwa_type = t, .is_mut = is_mut } };
         }
         try self.symbols.put(name, sym);
     }
@@ -250,14 +250,14 @@ pub const Scope = struct {
         return null;
     }
 
-    pub fn lookupVariable(self: *Scope, name: []const u8) ?*const AetherType {
+    pub fn lookupVariable(self: *Scope, name: []const u8) ?*const EiwaType {
         if (self.lookupVariableSymbol(name)) |vs| {
-            return vs.aether_type;
+            return vs.eiwa_type;
         }
         return null;
     }
 
-    pub fn lookupFunctions(self: *Scope, name: []const u8) ?[]const *const AetherType {
+    pub fn lookupFunctions(self: *Scope, name: []const u8) ?[]const *const EiwaType {
         if (self.symbols.get(name)) |sym| {
             if (sym.* == .Overloads) return sym.Overloads.items;
         }
@@ -268,7 +268,7 @@ pub const Scope = struct {
     }
 };
 
-pub fn isNullable(t: *const AetherType) bool {
+pub fn isNullable(t: *const EiwaType) bool {
     return switch (t.*) {
         .Null => true,
         .Pointer => true,
@@ -277,14 +277,14 @@ pub fn isNullable(t: *const AetherType) bool {
     };
 }
 
-pub fn extractBaseType(t: *const AetherType) *const AetherType {
+pub fn extractBaseType(t: *const EiwaType) *const EiwaType {
     return switch (t.*) {
         .Union => |u| if (u.right.* == .Null) extractBaseType(u.left) else t,
         else => t,
     };
 }
 
-pub fn isBool(t: *const AetherType) bool {
+pub fn isBool(t: *const EiwaType) bool {
     const base = extractBaseType(t);
     switch (base.*) {
         .Bool => return true,
@@ -295,7 +295,7 @@ pub fn isBool(t: *const AetherType) bool {
     }
 }
 
-pub fn isCompatible(expected: *const AetherType, actual: *const AetherType) bool {
+pub fn isCompatible(expected: *const EiwaType, actual: *const EiwaType) bool {
     if (expected.* == .Unknown or actual.* == .Unknown) return true;
     if (isNullable(expected) and actual.* == .Null) return true;
     if (isNullable(actual) and !isNullable(expected)) return false;

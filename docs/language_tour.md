@@ -1,8 +1,8 @@
-# The Aether Language Tour
+# The Eiwa Language Tour
 
-Aether was born from a desire to write low-level systems code with the ergonomics of modern high-level languages like Kotlin. 
+Eiwa was born from a desire to write low-level systems code with the ergonomics of modern high-level languages like Kotlin. 
 
-While Aether shares an almost identical baseline syntax with Kotlin, it operates in a fundamentally different environment: **there is no JVM, no massive standard library, and no runtime interpreter.** Everything is compiled directly to native code with a highly optimized embedded Garbage Collector.
+While Eiwa shares an almost identical baseline syntax with Kotlin, it operates in a fundamentally different environment: **there is no JVM, no massive standard library, and no runtime interpreter.** Everything is compiled directly to native code with a highly optimized embedded Garbage Collector.
 
 Because of this, some architectural decisions differ from Kotlin to provide extreme performance and absolute safety.
 
@@ -10,13 +10,13 @@ Because of this, some architectural decisions differ from Kotlin to provide extr
 
 ## 1. Module System (File-Based Namespaces)
 
-Aether adopts a modern, lightweight module system inspired by ES6 and Go. Every `.ae` file is an implicit module. You don't need to define explicit `package com.x.y` declarations at the top of your files.
+Eiwa adopts a modern, lightweight module system inspired by ES6 and Go. Every `.ei` file is an implicit module. You don't need to define explicit `package com.x.y` declarations at the top of your files.
 
 To use symbols from another file, you must explicitly declare exactly what you want to import using destructuring. This prevents polluting your namespace and makes dependencies crystal clear.
 
 ```kotlin
-// Assumes a file named 'math.ae' exists in the same directory.
-// The .ae extension is optional and will be inferred automatically.
+// Assumes a file named 'math.ei' exists in the same directory.
+// The .ei extension is optional and will be inferred automatically.
 import { add, Vector } from "math"
 
 fun main() {
@@ -26,21 +26,21 @@ fun main() {
 ```
 
 **The Implicit Standard Library**
-Aether comes with a core module named `system.ae` which contains fundamental types, C-bindings, and intrinsic functions (like `print`). The compiler automatically injects an `import {} from "system"` at the top of every file, making all standard functions globally available without explicitly requiring an import statement.
+Eiwa comes with a core module named `system.ei` which contains fundamental types, C-bindings, and intrinsic functions (like `print`). The compiler automatically injects an `import {} from "system"` at the top of every file, making all standard functions globally available without explicitly requiring an import statement.
 
-*(Note: In the C backend, the compiler automatically performs Name Mangling to prevent collisions across files, meaning `add` inside `math.ae` becomes `math_add` in the final native binary, ensuring absolute safety).*
+*(Note: In the C backend, the compiler automatically performs Name Mangling to prevent collisions across files, meaning `add` inside `math.ei` becomes `math_add` in the final native binary, ensuring absolute safety).*
 
 ---
 
 ## 2. Top-Level Statements & Side-Effects
 
-Aether is designed to be highly fluid for quick scripts. Because of this, `fun main()` is **optional**. You can write statements directly at the root of your file.
+Eiwa is designed to be highly fluid for quick scripts. Because of this, `fun main()` is **optional**. You can write statements directly at the root of your file.
 
 ```kotlin
-// script.ae
+// script.ei
 import { add } from "math"
 
-// This is perfectly valid Aether code
+// This is perfectly valid Eiwa code
 val a = 10
 val b = 5
 print(add(a, b))
@@ -49,7 +49,7 @@ print(add(a, b))
 If your code reaches the end of the file, it exits successfully (returning `0` to the OS). If you want to force an exit with an error code, you can use the built-in `exit(code)` function natively.
 
 **The Golden Rule of Modules (No Side-Effects):**
-Top-level execution is **only allowed in your root file** (the one you pass to `aether run`). If an *imported* file tries to run top-level statements (like calling `print`), the compiler will strictly block it and throw an `ImportSideEffectsNotAllowed` error. 
+Top-level execution is **only allowed in your root file** (the one you pass to `eiwa run`). If an *imported* file tries to run top-level statements (like calling `print`), the compiler will strictly block it and throw an `ImportSideEffectsNotAllowed` error. 
 
 Imported files must be "passive libraries", meaning they should only **declare** things (Functions, Types, Tests, etc.). This ensures maximum code hygiene and predictable execution paths.
 
@@ -57,7 +57,7 @@ Imported files must be "passive libraries", meaning they should only **declare**
 
 ## 3. Arrays and Loops
 
-Aether features a native type system for dynamic arrays and full-featured generic **collections**, along with ergonomic `for` and `while` loops.
+Eiwa features a native type system for dynamic arrays and full-featured generic **collections**, along with ergonomic `for` and `while` loops.
 
 The `[Type]` syntax is syntactic sugar for an immutable **`List<T>`**. Read elements with `[index]` or `.get(index)`, check size with `.size()`. For mutation, call `.mut()` on any immutable collection to get a `MutableList<T>` (see [Section 7.5](#75-mutability-conversion----mut-and-freeze)).
 
@@ -88,7 +88,7 @@ fun main() {
 
 ## 4. String Escape Sequences
 
-Aether supports Kotlin-style backslash escape sequences inside double-quoted string literals. The following escape sequences are recognized and processed by the compiler:
+Eiwa supports Kotlin-style backslash escape sequences inside double-quoted string literals. The following escape sequences are recognized and processed by the compiler:
 
 * `\"` – Double quote
 * `\\` – Backslash
@@ -101,7 +101,7 @@ Aether supports Kotlin-style backslash escape sequences inside double-quoted str
 ```kotlin
 fun main() {
     val escapedQuote = "Ele disse \"Ola\""
-    val backslash = "C:\\aether\\bin"
+    val backslash = "C:\\eiwa\\bin"
     val multiline = "Primeira Linha\nSegunda Linha"
     
     assert(escapedQuote.length == 15) // counts exact characters (excluding the backslash escape character)
@@ -114,7 +114,7 @@ The compiler's Type Checker automatically calculates the correct length of strin
 
 ## 5. Union Types & Compile-Time Null Safety
 
-Aether provides first-class support for **Union Types** (`Type1 | Type2`). Union types allow a variable, parameter, or generic collection to hold values of multiple distinct types statically.
+Eiwa provides first-class support for **Union Types** (`Type1 | Type2`). Union types allow a variable, parameter, or generic collection to hold values of multiple distinct types statically.
 
 ### 5.1 General Union Types (`T1 | T2`)
 
@@ -122,8 +122,8 @@ You can declare variables and generic containers with union types:
 
 ```kotlin
 // Variable holding either a String or an Int
-var payload: String | Int = "Aether"
-assert(payload == "Aether")
+var payload: String | Int = "Eiwa"
+assert(payload == "Eiwa")
 
 // Re-assigning to another valid variant type of the union
 payload = 42
@@ -139,19 +139,19 @@ import { MutableMap } from "std.collections"
 fun main() {
     // Map with values that can be String or Int
     val map: MutableMap<String, String | Int> = MutableMap()
-    map["name"] = "Aether"
+    map["name"] = "Eiwa"
     map["version"] = 1
     
-    assert(map["name"] == "Aether")
+    assert(map["name"] == "Eiwa")
     assert(map["version"] == 1)
 }
 ```
 
 ### 5.2 Compile-Time Null Safety (`T | Null`)
 
-Null Pointer Exceptions (NPEs) are the bane of native systems programming, often resulting in fatal `Segmentation Faults` in C/C++. Aether prevents this statically by modeling nullability as a Union Type (`T | Null` or `T?`).
+Null Pointer Exceptions (NPEs) are the bane of native systems programming, often resulting in fatal `Segmentation Faults` in C/C++. Eiwa prevents this statically by modeling nullability as a Union Type (`T | Null` or `T?`).
 
-In Aether, `null` is not a primitive value that can be assigned anywhere. It is a strictly enforced **Union Type**.
+In Eiwa, `null` is not a primitive value that can be assigned anywhere. It is a strictly enforced **Union Type**.
 
 ```kotlin
 // 'admin' is strictly a User. It CANNOT be null.
@@ -162,7 +162,7 @@ val guest: User? = null
 val guest: User | Null // equally valid syntax 
 ```
 
-If you try to access `guest.name`, the Aether compiler will **block the compilation**, because you are trying to access a property on something that might be `null`.
+If you try to access `guest.name`, the Eiwa compiler will **block the compilation**, because you are trying to access a property on something that might be `null`.
 
 **Safe Calls:**
 ```kotlin
@@ -178,7 +178,7 @@ val dangerousName = guest!!.name
 
 ## 6. Exception Handling (try-catch)
 
-Aether features a native structured exception handling system using `try` and `catch` blocks. There is no exception hierarchy: any type that implements the built-in `Throwable` contract can be thrown:
+Eiwa features a native structured exception handling system using `try` and `catch` blocks. There is no exception hierarchy: any type that implements the built-in `Throwable` contract can be thrown:
 
 ```kotlin
 type InvalidAgeException(val text: String) : Throwable {
@@ -197,7 +197,7 @@ fun checkAge(age: Int) {
 Exceptions propagate up function call frames until they encounter a matching handler.
 
 ### 6.1 Basic Usage
-Aether supports two forms of `try`. The standard form catches specific exception types:
+Eiwa supports two forms of `try`. The standard form catches specific exception types:
 ```kotlin
 try {
     checkAge(15)
@@ -206,7 +206,7 @@ try {
 }
 ```
 
-You can also write a bare `try` block **without any `catch` clause**. This is unique to Aether: any exception thrown inside is silently swallowed, making it ideal for optional or best-effort operations:
+You can also write a bare `try` block **without any `catch` clause**. This is unique to Eiwa: any exception thrown inside is silently swallowed, making it ideal for optional or best-effort operations:
 ```kotlin
 try {
     checkAge(15) // Exception is caught and ignored
@@ -246,7 +246,7 @@ try {
 
 ## 7. Collections (List, Map, Set)
 
-Aether comes with a rich, generic standard library of collection types in `std.collections`. Collections fall into two categories: **immutable** (safe, read-only snapshots) and **mutable** (full read-write).
+Eiwa comes with a rich, generic standard library of collection types in `std.collections`. Collections fall into two categories: **immutable** (safe, read-only snapshots) and **mutable** (full read-write).
 
 Import what you need:
 
@@ -336,11 +336,11 @@ A `Set<T>` is an unordered collection of **unique** values backed by a `Map<T, B
 ```kotlin
 val tags = MutableSet(items)   // inferred: MutableSet<String>
 
-tags.add("Aether")
+tags.add("Eiwa")
 tags.add("Zig")
-tags.add("Aether")  // duplicate is silently ignored
+tags.add("Eiwa")  // duplicate is silently ignored
 
-assert(tags.contains("Aether") == true)
+assert(tags.contains("Eiwa") == true)
 assert(tags.contains("Rust")   == false)
 ```
 
@@ -364,7 +364,7 @@ assert(tags.contains("Rust")   == false)
 
 ### 7.5 Mutability Conversion — `.mut()` and `.freeze()`
 
-Aether collections are **immutable by default**. When you need to mutate a snapshot, call `.mut()` to get a mutable view. When you're done mutating and want to hand off a safe read-only handle, call `.freeze()`.
+Eiwa collections are **immutable by default**. When you need to mutate a snapshot, call `.mut()` to get a mutable view. When you're done mutating and want to hand off a safe read-only handle, call `.freeze()`.
 
 | Method | From | To | Description |
 |---|---|---|---|
@@ -420,7 +420,7 @@ fun main() {
 
 ## 8. Ternary Operators
 
-Aether provides standard ternary conditional expressions and a unique short ternary operator to simplify conditional value assignments.
+Eiwa provides standard ternary conditional expressions and a unique short ternary operator to simplify conditional value assignments.
 
 ### 8.1 Standard Ternary Operator
 
@@ -435,7 +435,7 @@ fun max(a: Int, b: Int): Int {
 * **Type Safety:** The type of the ternary expression is inferred as the common compatible type of both branches. If the branches have incompatible types, the compiler will fail with a `TypeError`.
 * **Right-Associativity:** The operator associates to the right, meaning nested ternaries parse naturally:
 ```kotlin
-// In Aether, this evaluates as: a ? b : (c ? d : e)
+// In Eiwa, this evaluates as: a ? b : (c ? d : e)
 val result = a ? b : c ? d : e
 ```
 
@@ -461,9 +461,9 @@ cond ? print("hello")
 
 ## 9. Operator Overloading via Modifiers
 
-Kotlin allows you to overload mathematical operators (like `+` and `-`) by naming a function `plus` or `minus`. Aether takes this a step further to prevent accidental overloads.
+Kotlin allows you to overload mathematical operators (like `+` and `-`) by naming a function `plus` or `minus`. Eiwa takes this a step further to prevent accidental overloads.
 
-In Aether, naming a function `plus` is not enough. You **must** explicitly tag the function with the `operator` modifier. This acts as a clear contract to anyone reading the code that this function fundamentally alters the language's math operations for that type.
+In Eiwa, naming a function `plus` is not enough. You **must** explicitly tag the function with the `operator` modifier. This acts as a clear contract to anyone reading the code that this function fundamentally alters the language's math operations for that type.
 
 ```kotlin
 type Vector(val x: Int, val y: Int) {
@@ -485,7 +485,7 @@ fun main() {
 
 ## 10. Pattern Matching (when Expressions)
 
-Aether supports Kotlin-style `when` expressions for flexible conditional branching. It can act both as an expression (evaluating to a value) or as a statement (for side effects).
+Eiwa supports Kotlin-style `when` expressions for flexible conditional branching. It can act both as an expression (evaluating to a value) or as a statement (for side effects).
 
 ### 10.1 Basic Usage (With Subject)
 You can match a subject expression against multiple values separated by commas:
@@ -504,7 +504,7 @@ assert(message == "Not Found")
 * **Exhaustiveness:** If `when` is used as an expression (to assign a value), the `else` branch is **mandatory**. If used as a statement, `else` is optional.
 
 ### 10.2 Smart Casting via Type Check
-Aether integrates pattern matching with its contract-based polymorphism. If you match a stable variable against a type using `is Type`, the variable is automatically **smart-cast** inside that branch's scope:
+Eiwa integrates pattern matching with its contract-based polymorphism. If you match a stable variable against a type using `is Type`, the variable is automatically **smart-cast** inside that branch's scope:
 
 ```kotlin
 contract Shape
@@ -544,9 +544,9 @@ when {
 
 ## 11. The Composition Type System: `type`, `contract` & `skill`
 
-> **Since Phase 41 / ADR 25:** Aether uses a composition-based type system. There are no classes — `class`, `open`, `abstract` and `override` were removed from the language.
+> **Since Phase 41 / ADR 25:** Eiwa uses a composition-based type system. There are no classes — `class`, `open`, `abstract` and `override` were removed from the language.
 
-Aether has **no implementation inheritance**: no superclasses, no abstract classes, no `extends`. Instead, the type system is built on five declaration types, each with a single responsibility:
+Eiwa has **no implementation inheritance**: no superclasses, no abstract classes, no `extends`. Instead, the type system is built on five declaration types, each with a single responsibility:
 
 | Declaration | Owns state? | Has implementation? | Can be instantiated? |
 |-------------|:-----------:|:-------------------:|:--------------------:|
@@ -560,14 +560,14 @@ Aether has **no implementation inheritance**: no superclasses, no abstract class
 
 If you know Kotlin, Java, Rust or Scala, these concepts will feel familiar — but watch the differences:
 
-| Aether | Closest concept | Key difference |
+| Eiwa | Closest concept | Key difference |
 |--------|-----------------|----------------|
 | `type` | `class` (Kotlin/Java/C#) | Cannot be extended. There is no `open`, no subclassing — ever. |
 | `contract` | `interface` (Java/C#), `trait` signature part (Rust) | Pure signatures only. Contracts cannot require or extend other contracts — conformance is always flat. |
 | `skill` | `trait` (Rust/Scala), `mixin` | A skill does **not** implement the contracts it requires. It only *borrows* them: required methods are supplied by the consuming `type`, not by the skill. |
 | `object` | `object` (Kotlin), static-only class (Java/C#) | A true singleton with identity — it can hold mutable static state, not just static methods. |
 
-The mental shift is small but important: in Aether you never ask *"what does this type inherit from?"* — you ask *"which contracts does it implement (`:`) and which skills does it compose (`+`)?"*
+The mental shift is small but important: in Eiwa you never ask *"what does this type inherit from?"* — you ask *"which contracts does it implement (`:`) and which skills does it compose (`+`)?"*
 
 ### 11.1 `type` — State and Identity
 
@@ -587,7 +587,7 @@ type Button
 
 ### 11.2 `contract` — Behavioral Capabilities
 
-A `contract` defines a pure API: method signatures only. No state, no constructors, no implementation, no instantiation. Contracts are how Aether does polymorphism.
+A `contract` defines a pure API: method signatures only. No state, no constructors, no implementation, no instantiation. Contracts are how Eiwa does polymorphism.
 
 ```kotlin
 contract Drawable {
@@ -689,7 +689,7 @@ catch (e: Throwable) {
 
 ### 11.6 System Contracts & Automatic Type Synthesis
 
-Aether comes with core contracts and skills defined:
+Eiwa comes with core contracts and skills defined:
 
 * `contract Stringable { fun toString(): String }`
 * `contract Equatable { operator fun equals(other: Stringable): Bool }`
@@ -790,7 +790,7 @@ when (d) {
 
 ## 12. Objects & Boundless Namespaces
 
-Objects allow grouping static variables and functions under a type namespace. In Aether, this is declared using the `object` keyword.
+Objects allow grouping static variables and functions under a type namespace. In Eiwa, this is declared using the `object` keyword.
 
 ### 12.1 Named Standalone Objects (Singletons)
 You can also declare standalone named `object` blocks which act as singletons or modules:
@@ -816,7 +816,7 @@ fun main() {
 An anonymous `object` block that immediately follows or precedes a `type` definition binds its members to the type namespace.
 
 #### Same-Line Syntax Constraint
-To emphasize that the type-bound object/type definition is a continuation of the type/object scope, Aether enforces that the anonymous block **must start on the same line** as the closing brace `}` of the sibling block. Separating them with a newline will trigger a compile-time syntax error.
+To emphasize that the type-bound object/type definition is a continuation of the type/object scope, Eiwa enforces that the anonymous block **must start on the same line** as the closing brace `}` of the sibling block. Separating them with a newline will trigger a compile-time syntax error.
 
 #### Type-First Declaration
 When the type is declared first, the anonymous `object` block is declared immediately after the type closing brace `} object {`:
@@ -827,7 +827,7 @@ type File(val path: String) {
         return "Content of " + this.path
     }
 } object {
-    val defaultPath = "/tmp/aether.txt"
+    val defaultPath = "/tmp/eiwa.txt"
     
     fun create(path: String): File {
         return File(path)
@@ -840,7 +840,7 @@ fun main() {
     val file = File.create(path)
     
     // Access instance methods on the instantiated type
-    assert(file.read() == "Content of /tmp/aether.txt")
+    assert(file.read() == "Content of /tmp/eiwa.txt")
 }
 ```
 
@@ -877,7 +877,7 @@ fun main() {
 
 ## 13. Implicit Returns & Expression Bodies
 
-Like Kotlin, Aether heavily favors expressions. If a function is simple enough, you don't need curly braces or a `return` keyword.
+Like Kotlin, Eiwa heavily favors expressions. If a function is simple enough, you don't need curly braces or a `return` keyword.
 
 ```kotlin
 // Traditional block body
@@ -893,7 +893,7 @@ fun multiply(a: Int, b: Int) = a * b
 
 ## 14. Default Parameters
 
-Aether supports default values for parameters in functions, methods, and type constructors (both generic and non-generic). This reduces the need for overloading and simplifies constructor instantiations.
+Eiwa supports default values for parameters in functions, methods, and type constructors (both generic and non-generic). This reduces the need for overloading and simplifies constructor instantiations.
 
 ```kotlin
 // Function with default parameters
@@ -919,7 +919,7 @@ Statically typed defaults are evaluated and type-checked during function and typ
 
 ## 15. Lambda Expressions & Higher-Order Functions
 
-Aether supports functional programming paradigms via lambdas (anonymous function literals) and Higher-Order Functions (functions that accept functions as arguments or return them).
+Eiwa supports functional programming paradigms via lambdas (anonymous function literals) and Higher-Order Functions (functions that accept functions as arguments or return them).
 
 ### 15.1 Function Types
 A function type represents a reference to a function. Its syntax is `(ParamType1, ParamType2, ...) -> ReturnType`.
@@ -947,7 +947,7 @@ assert(triple(5) == 15)
 ```
 
 ### 15.3 Scope Capturing (Closures)
-Lambdas can capture variables from their surrounding lexical scope. If a captured variable is mutable (`var`), the Aether compiler automatically wraps it in a heap-allocated box so that changes are visible both inside the lambda and in the outer scope, even after the outer function exits.
+Lambdas can capture variables from their surrounding lexical scope. If a captured variable is mutable (`var`), the Eiwa compiler automatically wraps it in a heap-allocated box so that changes are visible both inside the lambda and in the outer scope, even after the outer function exits.
 
 ```kotlin
 fun makeCounter(): () -> Int {
@@ -986,10 +986,10 @@ fun main() {
     // Parentheses are completely omitted for the trailing lambda
     val result = html {
         body {
-            "Hello Aether DSL!"
+            "Hello Eiwa DSL!"
         }
     }
-    assert(result == "<html><body>Hello Aether DSL!</body></html>")
+    assert(result == "<html><body>Hello Eiwa DSL!</body></html>")
 }
 ```
 
@@ -997,15 +997,15 @@ fun main() {
 
 ## 16. C Interoperability & Annotations
 
-Because Aether transpiles to C, integrating with native C libraries is seamless. You can declare a `lib` block to map C functions into Aether without writing any wrapper code.
+Because Eiwa transpiles to C, integrating with native C libraries is seamless. You can declare a `lib` block to map C functions into Eiwa without writing any wrapper code.
 
 Annotations on `lib` blocks instruct the compiler and linker on how to process the native library:
 - **`@Header` (Compile-Time Includes)**: Instructs the C Transpiler to inject the corresponding `#include` directives at the top of the generated C file so that C compiler knows about the function signatures, structs, and constants.
-- **`@Link` (Linker-Time Libraries)**: Instructs the Aether compiler to append the corresponding `-l<library>` flag (e.g., `-lcurl`) during the linking phase, and injects `-DAETHER_USE_<LIBRARY>` preprocessor definitions into the C compiler.
-- **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Aether `camelCase` function names to the corresponding C `snake_case` library functions.
+- **`@Link` (Linker-Time Libraries)**: Instructs the Eiwa compiler to append the corresponding `-l<library>` flag (e.g., `-lcurl`) during the linking phase, and injects `-DAETHER_USE_<LIBRARY>` preprocessor definitions into the C compiler.
+- **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions.
 
 ```kotlin
-// http.ae (FFI declaration using Header, Link, and Alias)
+// http.ei (FFI declaration using Header, Link, and Alias)
 @Link("curl")
 @Header("<curl/curl.h>")
 lib NativeHttp {
@@ -1020,7 +1020,7 @@ lib NativeHttp {
 }
 ```
 
-You can then import and use these native functions exactly like standard Aether code:
+You can then import and use these native functions exactly like standard Eiwa code:
 
 ```kotlin
 import { NativeHttp } from "http"
@@ -1028,15 +1028,15 @@ import { NativeHttp } from "http"
 val curl = NativeHttp.curlEasyInit()
 ```
 
-*(Note: In the current phase, Annotations are structural compiler pragmas. In future phases, Aether will support declaring custom user-defined annotations natively).*
+*(Note: In the current phase, Annotations are structural compiler pragmas. In future phases, Eiwa will support declaring custom user-defined annotations natively).*
 
 ---
 
 ## 17. Standard Library Packages & Time API
 
-Aether organizes its standard library into virtual packages starting with `std.`. The compiler automatically maps these to the language's internal SDK.
+Eiwa organizes its standard library into virtual packages starting with `std.`. The compiler automatically maps these to the language's internal SDK.
 
-For example, manipulating Date and Time in Aether is done through the `std.time` package, which uses an ultra-fast **Epoch-First** architecture (inspired by Go). Instead of bloated objects containing Year/Month/Day properties, Aether's `Time` type is a zero-overhead wrapper around a simple Unix Epoch integer. 
+For example, manipulating Date and Time in Eiwa is done through the `std.time` package, which uses an ultra-fast **Epoch-First** architecture (inspired by Go). Instead of bloated objects containing Year/Month/Day properties, Eiwa's `Time` type is a zero-overhead wrapper around a simple Unix Epoch integer. 
 
 ```kotlin
 import { Time, Duration, now, date, hours, minutes, seconds } from "std.time"
@@ -1048,7 +1048,7 @@ fun main() {
     // Creating specific dates directly
     val birthday = date(1990, 7, 20)
     
-    // Time mathematics uses Aether's native Operator Overloading
+    // Time mathematics uses Eiwa's native Operator Overloading
     val dur = hours(48)
     val future = birthday + dur // Birthday + 48 hours
     
@@ -1069,7 +1069,7 @@ Because time math is just adding integers (`epoch + seconds`), it avoids the his
 The `std.env` module provides tools to load environment variables from `.env` files and interact with the process's environment. Like `std.core`, `std.io`, `std.system`, `std.exceptions`, `std.collections`, `std.time`, and `std.serde`, the `std.env` module is **implicitly imported** by the compiler into every program, so no `import` statement is required.
 
 ### 18.1 Loading `.env` files
-Use `Env.load()` to load an environment configuration. If no path is provided, Aether looks for `.env` in the current directory. This returns `false` silently if the file is not found.
+Use `Env.load()` to load an environment configuration. If no path is provided, Eiwa looks for `.env` in the current directory. This returns `false` silently if the file is not found.
 
 ```kotlin
 fun main() {
@@ -1082,7 +1082,7 @@ fun main() {
 ```
 
 ### 18.2 Reading Variables
-You can query variables using `Env.get`. If a get/check is performed before `Env.load()` is explicitly invoked, Aether automatically attempts to load the default `.env` file first.
+You can query variables using `Env.get`. If a get/check is performed before `Env.load()` is explicitly invoked, Eiwa automatically attempts to load the default `.env` file first.
 
 ```kotlin
 fun main() {
@@ -1097,7 +1097,7 @@ fun main() {
 ```
 
 ### 18.3 Global `env()` Helper
-For fast, zero-boilerplate configuration lookup, Aether provides overloaded global `env()` helper functions (which delegate directly to `Env.get`):
+For fast, zero-boilerplate configuration lookup, Eiwa provides overloaded global `env()` helper functions (which delegate directly to `Env.get`):
 
 ```kotlin
 fun main() {
@@ -1112,7 +1112,7 @@ fun main() {
 ```
 
 ### 18.4 Modifying and Checking Variables
-Aether allows setting, unsetting, and checking for the existence of environment variables:
+Eiwa allows setting, unsetting, and checking for the existence of environment variables:
 
 ```kotlin
 fun main() {
@@ -1130,10 +1130,10 @@ fun main() {
 
 ## 19. Native Testing
 
-Aether has a first-class, built-in testing system. You don't need external libraries or complex test runners. Just create a file with the suffix `_test.ae`, write a `test` block, and use the `assert` macro.
+Eiwa has a first-class, built-in testing system. You don't need external libraries or complex test runners. Just create a file with the suffix `_test.ei`, write a `test` block, and use the `assert` macro.
 
 ```kotlin
-// math_test.ae
+// math_test.ei
 import { add } from "math"
 
 test "should add two numbers correctly" {
@@ -1142,11 +1142,11 @@ test "should add two numbers correctly" {
 }
 ```
 
-Then, run `aether test` in your terminal. The compiler will automatically discover, group, and run all your tests in an isolated native binary.
+Then, run `eiwa test` in your terminal. The compiler will automatically discover, group, and run all your tests in an isolated native binary.
 
 ## 20. Serialization (JSON & YAML)
 
-Aether offers compile-time serialization without runtime reflection (ADR 27). You opt in by implementing the `Serializable` contract, then compose format skills (`+ Json`, `+ Yaml`) to add `toJson()`/`toYaml()` methods.
+Eiwa offers compile-time serialization without runtime reflection (ADR 27). You opt in by implementing the `Serializable` contract, then compose format skills (`+ Json`, `+ Yaml`) to add `toJson()`/`toYaml()` methods.
 
 ### 20.1 Basic Usage
 
@@ -1230,7 +1230,7 @@ type User(val fullName: String, val age: Int) : Serializable + Json {
 
 ### 20.6 Adding a New Format
 
-New formats (Toml, XML, binary) are skills written in pure Aether — zero compiler changes.
+New formats (Toml, XML, binary) are skills written in pure Eiwa — zero compiler changes.
 
 ```kotlin
 skill Toml : Serializable {
@@ -1252,7 +1252,7 @@ skill Toml : Serializable {
 
 ## 21. Standard Library Logging (`std.log`)
 
-Aether includes a native, structured logging package in `std.log` featuring lazy message evaluation, custom formatters, contextual key-value logging, and `Throwable` exception support.
+Eiwa includes a native, structured logging package in `std.log` featuring lazy message evaluation, custom formatters, contextual key-value logging, and `Throwable` exception support.
 
 ### 21.1 Basic Facade (`Log`)
 

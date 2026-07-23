@@ -8,9 +8,9 @@ const infer_decl_mod = @import("infer_decl.zig");
 
 const ASTNode = ast.ASTNode;
 const TypeChecker = core.TypeChecker;
-const AetherType = type_system.AetherType;
+const EiwaType = type_system.EiwaType;
 
-pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: []*const AetherType, mangled_name: []const u8) !void {
+pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8) !void {
     if (self.classes_ast.get(mangled_name) != null) return;
     
     var actual_base_name = self.alias_map.get(base_name) orelse base_name;
@@ -51,7 +51,7 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
     }
     
     // Create the generic map mapping (e.g. "T" -> .String)
-    var generic_map = std.StringHashMap(*const AetherType).init(self.allocator);
+    var generic_map = std.StringHashMap(*const EiwaType).init(self.allocator);
     defer generic_map.deinit();
     for (type_decl.generic_params, 0..) |param_name, i| {
         try generic_map.put(param_name, type_args[i]);
@@ -137,7 +137,7 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
     }
     
     // Register and trigger deep inference on the monomorphized class!
-    const class_type = try self.allocator.create(AetherType);
+    const class_type = try self.allocator.create(EiwaType);
     try infer_decl_mod.inferTypeDecl(self, new_node, &self.global_scope, class_type);
     
     for (type_decl.generic_params) |param_name| {

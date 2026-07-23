@@ -8,34 +8,34 @@ const core = @import("core.zig");
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
 const Scope = core.Scope;
-const AetherType = core.AetherType;
+const EiwaType = core.EiwaType;
 
 pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "core.ae", @embedFile("../../std/core.ae") },
-    .{ "io.ae", @embedFile("../../std/io.ae") },
-    .{ "system.ae", @embedFile("../../std/system.ae") },
-    .{ "exceptions.ae", @embedFile("../../std/exceptions.ae") },
-    .{ "time.ae", @embedFile("../../std/time.ae") },
-    .{ "math.ae", @embedFile("../../std/math.ae") },
-    .{ "fs.ae", @embedFile("../../std/fs.ae") },
-    .{ "collections.ae", @embedFile("../../std/collections.ae") },
-    .{ "net.ae", @embedFile("../../std/net.ae") },
-    .{ "http.ae", @embedFile("../../std/http.ae") },
-    .{ "env.ae", @embedFile("../../std/env.ae") },
-    .{ "serde.ae", @embedFile("../../std/serde.ae") },
-    .{ "json.ae", @embedFile("../../std/json.ae") },
-    .{ "yaml.ae", @embedFile("../../std/yaml.ae") },
-    .{ "log.ae", @embedFile("../../std/log.ae") },
+    .{ "core.ei", @embedFile("../../std/core.ei") },
+    .{ "io.ei", @embedFile("../../std/io.ei") },
+    .{ "system.ei", @embedFile("../../std/system.ei") },
+    .{ "exceptions.ei", @embedFile("../../std/exceptions.ei") },
+    .{ "time.ei", @embedFile("../../std/time.ei") },
+    .{ "math.ei", @embedFile("../../std/math.ei") },
+    .{ "fs.ei", @embedFile("../../std/fs.ei") },
+    .{ "collections.ei", @embedFile("../../std/collections.ei") },
+    .{ "net.ei", @embedFile("../../std/net.ei") },
+    .{ "http.ei", @embedFile("../../std/http.ei") },
+    .{ "env.ei", @embedFile("../../std/env.ei") },
+    .{ "serde.ei", @embedFile("../../std/serde.ei") },
+    .{ "json.ei", @embedFile("../../std/json.ei") },
+    .{ "yaml.ei", @embedFile("../../std/yaml.ei") },
+    .{ "log.ei", @embedFile("../../std/log.ei") },
 });
 
 pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log" };
 pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions" };
-pub const core_fallback_modules = &[_][]const u8{ "io.ae", "system.ae", "exceptions.ae" };
+pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 
 pub const auto_injected_contracts = &[_][]const u8{ "Stringable", "Equatable", "Hashable" };
 pub const auto_injected_skills = &[_][]const u8{ "Echoable" };
 
-pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     _ = scope;
     if (self.pass == .validation) {
         t.* = .Void;
@@ -45,8 +45,8 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     var i = &node.data.import_stmt;
     const dir_path = std.fs.path.dirname(self.filename) orelse ".";
     var actual_module_path: []const u8 = i.module_path;
-    if (!std.mem.endsWith(u8, actual_module_path, ".ae")) {
-        actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ae", .{actual_module_path});
+    if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
+        actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ei", .{actual_module_path});
     }
     var mod_path: []const u8 = undefined;
     var mod_source: []const u8 = undefined;
@@ -184,7 +184,7 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
                 }
             }
 
-            if (!found and (std.mem.endsWith(u8, mod_path, "core") or std.mem.endsWith(u8, mod_path, "core.ae")) and self.registry != null) {
+            if (!found and (std.mem.endsWith(u8, mod_path, "core") or std.mem.endsWith(u8, mod_path, "core.ei")) and self.registry != null) {
                 var mod_it = self.registry.?.modules.iterator();
                 while (mod_it.next()) |entry| {
                     const k = entry.key_ptr.*;
@@ -219,7 +219,7 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
                             break;
                         } else if (fb_tc.global_scope.symbols.get(sym)) |sym_info| {
                             if (sym_info.* == .Variable) {
-                                _ = self.global_scope.define(sym, sym_info.Variable.aether_type, false, false) catch {};
+                                _ = self.global_scope.define(sym, sym_info.Variable.eiwa_type, false, false) catch {};
                             }
                             if (fb_prefix.len > 0) {
                                 const aliased_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ fb_prefix, sym });
@@ -286,7 +286,7 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     t.* = .Void;
 }
 
-pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var c = &node.data.type_decl;
     if (c.resolved_c_name == null) {
         if (self.module_prefix) |prefix| {
@@ -299,7 +299,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
         }
     }
     const actual_c_name = c.resolved_c_name.?;
-    const class_type = try self.allocator.create(AetherType);
+    const class_type = try self.allocator.create(EiwaType);
     if (std.mem.eql(u8, c.name, "Int")) {
         class_type.* = .Int;
     } else if (std.mem.eql(u8, c.name, "Bool")) {
@@ -307,7 +307,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
     } else if (std.mem.eql(u8, c.name, "String")) {
         class_type.* = .{ .Custom = actual_c_name };
     } else if (std.mem.eql(u8, c.name, "OpaquePointer") or std.mem.eql(u8, c.name, "Pointer")) {
-        class_type.* = .{ .Pointer = try self.allocator.create(AetherType) };
+        class_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
         @constCast(class_type.Pointer).* = .Void;
     } else {
         class_type.* = .{ .Custom = actual_c_name };
@@ -386,7 +386,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
     for (c.methods) |method| {
         if (method.data == .fun_decl) {
             const m = &method.data.fun_decl;
-            var param_types = ArrayList(*const AetherType).init(self.allocator);
+            var param_types = ArrayList(*const EiwaType).init(self.allocator);
             for (m.params) |p| {
                 const p_t = if (p.type_ref) |tr| self.resolveTypeRef(tr) catch try self.resolveTypeName("Void", false) else try self.resolveTypeName("Void", false);
                 try param_types.append(p_t);
@@ -411,7 +411,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
             const m_c_name = try mangled.toOwnedSlice();
             m.resolved_c_name = m_c_name;
 
-            const fn_type = try self.allocator.create(AetherType);
+            const fn_type = try self.allocator.create(EiwaType);
             fn_type.* = .{ .Function = .{
                 .params = try param_types.toOwnedSlice(),
                 .return_type = ret_t,
@@ -601,7 +601,7 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
 
             // Return type compatibility (Void if omitted on either side)
             const contract_ret = if (cm.data.fun_decl.type_ref) |tr| try self.resolveTypeRef(tr) else blk: {
-                const v = try self.allocator.create(AetherType);
+                const v = try self.allocator.create(EiwaType);
                 v.* = .Void;
                 break :blk v;
             };
@@ -613,7 +613,7 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
                     // Body not inferred yet — skip the check for now.
                     break :blk contract_ret;
                 }
-                const v = try self.allocator.create(AetherType);
+                const v = try self.allocator.create(EiwaType);
                 v.* = .Void;
                 break :blk v;
             };
@@ -625,7 +625,7 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
     }
 }
 
-pub fn inferContractDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferContractDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var cd = &node.data.contract_decl;
     if (cd.resolved_c_name == null) {
         if (self.module_prefix) |prefix| {
@@ -636,7 +636,7 @@ pub fn inferContractDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
         }
     }
     const actual_c_name = cd.resolved_c_name.?;
-    const contract_type = try self.allocator.create(AetherType);
+    const contract_type = try self.allocator.create(EiwaType);
     contract_type.* = .{ .Custom = actual_c_name };
     try scope.define(cd.name, contract_type, false, false);
     if (!std.mem.eql(u8, cd.name, actual_c_name)) {
@@ -648,14 +648,14 @@ pub fn inferContractDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
     for (cd.methods) |method| {
         if (method.data != .fun_decl) continue;
         const m = &method.data.fun_decl;
-        var param_types = ArrayList(*const AetherType).init(self.allocator);
+        var param_types = ArrayList(*const EiwaType).init(self.allocator);
         for (m.params) |p| {
             const p_t = if (p.type_ref) |tr| try self.resolveTypeRef(tr) else try self.resolveTypeName("Void", false);
             try param_types.append(p_t);
         }
         const ret_t = if (m.type_ref) |tr| try self.resolveTypeRef(tr) else try self.resolveTypeName("Void", false);
         m.resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ actual_c_name, m.name });
-        const fn_type = try self.allocator.create(AetherType);
+        const fn_type = try self.allocator.create(EiwaType);
         fn_type.* = .{ .Function = .{
             .params = try param_types.toOwnedSlice(),
             .return_type = ret_t,
@@ -667,7 +667,7 @@ pub fn inferContractDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
     t.* = .Void;
 }
 
-pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     _ = scope;
     var sd = &node.data.skill_decl;
     if (sd.resolved_c_name == null) {
@@ -684,9 +684,9 @@ pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aet
     t.* = .Void;
 }
 
-pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var f = &node.data.fun_decl;
-    var param_types = ArrayList(*const AetherType).init(self.allocator);
+    var param_types = ArrayList(*const EiwaType).init(self.allocator);
     var mangled_name = ArrayList(u8).init(self.allocator);
     const is_method = scope.lookupVariable("this") != null;
     if (is_method) {
@@ -727,7 +727,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     defer fun_scope.deinit();
 
     for (f.params) |*p| {
-        var param_type: *AetherType = undefined;
+        var param_type: *EiwaType = undefined;
         if (p.type_ref) |tr| {
             param_type = try self.resolveTypeRef(tr);
 
@@ -736,7 +736,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                 try param_type.formatSafe(mangled_name.writer());
             }
         } else {
-            param_type = try self.allocator.create(AetherType);
+            param_type = try self.allocator.create(EiwaType);
             param_type.* = .Void;
             if (!is_method or is_overloaded) {
                 try mangled_name.appendSlice("_Void");
@@ -774,7 +774,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
         }
     }
 
-    var return_type: *const AetherType = undefined;
+    var return_type: *const EiwaType = undefined;
     var body_inferred = false;
 
     if (f.type_ref) |tr| {
@@ -784,12 +784,12 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
         body_inferred = true;
         return_type = f.body.resolved_type.?;
     } else {
-        const void_t = try self.allocator.create(AetherType);
+        const void_t = try self.allocator.create(EiwaType);
         void_t.* = .Void;
         return_type = void_t;
     }
 
-    const fn_type = try self.allocator.create(AetherType);
+    const fn_type = try self.allocator.create(EiwaType);
     fn_type.* = .{ .Function = .{
         .params = try param_types.toOwnedSlice(),
         .return_type = return_type,
@@ -817,18 +817,18 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     t.* = fn_type.*;
 }
 
-pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const v = &node.data.var_decl;
     if (self.current_class_name) |class_name| {
         const actual_class = self.alias_map.get(class_name) orelse class_name;
         @constCast(v).resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ actual_class, v.name });
     }
-    var declared: ?*const AetherType = null;
+    var declared: ?*const EiwaType = null;
     if (v.type_ref) |tr| {
         declared = try self.resolveTypeRef(tr);
     }
 
-    var inferred: ?*const AetherType = null;
+    var inferred: ?*const EiwaType = null;
     if (v.initializer) |init_node| {
         if (declared) |d| {
             init_node.expected_type = d;
@@ -845,7 +845,7 @@ pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     }
 
     const final_type = declared orelse (inferred orelse blk: {
-        const void_t = try self.allocator.create(AetherType);
+        const void_t = try self.allocator.create(EiwaType);
         void_t.* = .Void;
         break :blk void_t;
     });
@@ -859,9 +859,9 @@ pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     t.* = .Void;
 }
 
-pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const l = node.data.lib_decl;
-    const lib_type = try self.allocator.create(AetherType);
+    const lib_type = try self.allocator.create(EiwaType);
     lib_type.* = .{ .Custom = l.name };
     try scope.define(l.name, lib_type, false, false);
     try self.local_symbols.put(l.name, {});
@@ -870,11 +870,11 @@ pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
         const f = &func.data.fun_decl;
         const full_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ l.name, f.name });
 
-        var ret_type: *AetherType = undefined;
+        var ret_type: *EiwaType = undefined;
         if (f.type_ref) |tr| {
             ret_type = try self.resolveTypeRef(tr);
         } else {
-            ret_type = try self.allocator.create(AetherType);
+            ret_type = try self.allocator.create(EiwaType);
             ret_type.* = .Void;
         }
         var c_name = f.name;
@@ -892,7 +892,7 @@ pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     t.* = .Void;
 }
 
-pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var o = &node.data.object_decl;
     const name = o.name orelse {
         self.reportError(node.line, node.column, "TypeError: Companion object must have a resolved bound name.", .{});
@@ -908,7 +908,7 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
         }
     }
     const actual_c_name = o.resolved_c_name.?;
-    const obj_type = try self.allocator.create(AetherType);
+    const obj_type = try self.allocator.create(EiwaType);
     obj_type.* = .{ .Custom = actual_c_name };
     if (scope.lookupVariable(name) == null) {
         _ = scope.define(name, obj_type, false, false) catch {};
@@ -942,7 +942,7 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     t.* = .Void;
 }
 
-pub fn inferEnumDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferEnumDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var ed = &node.data.enum_decl;
     if (ed.resolved_c_name == null) {
         if (self.module_prefix) |prefix| {
@@ -953,7 +953,7 @@ pub fn inferEnumDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
         }
     }
     const actual_c_name = ed.resolved_c_name.?;
-    const enum_type = try self.allocator.create(AetherType);
+    const enum_type = try self.allocator.create(EiwaType);
     enum_type.* = .{ .Custom = actual_c_name };
 
     if (scope.lookupVariable(ed.name) == null) {
@@ -1106,7 +1106,7 @@ pub fn injectAutoContractsAndSkills(self: *TypeChecker, c: anytype) !void {
     }
 
     const basename = std.fs.path.basename(self.filename);
-    if (!std.mem.eql(u8, basename, "core.ae")) {
+    if (!std.mem.eql(u8, basename, "core.ei")) {
         for (auto_injected_skills) |skill_name| {
             var exists = false;
             for (c.skills) |existing| {
@@ -1613,7 +1613,7 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
     try mangled.appendSlice("_");
     try serde_field_type.formatSafe(mangled.writer());
     const mangled_name = try mangled.toOwnedSlice();
-    const list_serde_field_type = try self.allocator.create(AetherType);
+    const list_serde_field_type = try self.allocator.create(EiwaType);
     list_serde_field_type.* = .{ .Custom = self.alias_map.get(mangled_name) orelse mangled_name };
 
     const arr_node = try self.allocator.create(ASTNode);

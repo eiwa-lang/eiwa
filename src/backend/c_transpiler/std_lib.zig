@@ -1,1 +1,1 @@
-pub const std_lib_c = @embedFile("aether_runtime.h");
+pub const std_lib_c = @embedFile("eiwa_runtime.h");

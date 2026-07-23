@@ -1,6 +1,6 @@
 .{
-    .name = .aether,
-    .fingerprint = 0x27a0a7c051642fce,
+    .name = .eiwa,
+    .fingerprint = 0x3071967de8af3650,
     .version = "0.0.0",
     .dependencies = .{},
     .paths = .{

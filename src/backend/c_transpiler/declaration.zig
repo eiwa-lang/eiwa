@@ -49,9 +49,9 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
 
         // Emit Struct
         try self.header_writer.writer().print("typedef struct {s} {s};\n", .{actual_name, actual_name});
-        try self.header_writer.writer().print("extern const AetherTypeDescriptor {s}_descriptor;\n", .{actual_name});
+        try self.header_writer.writer().print("extern const EiwaTypeDescriptor {s}_descriptor;\n", .{actual_name});
         try self.header_writer.writer().print("struct {s} {{\n", .{actual_name});
-        try self.header_writer.writer().print("    const AetherTypeDescriptor* _desc;\n", .{});
+        try self.header_writer.writer().print("    const EiwaTypeDescriptor* _desc;\n", .{});
 
         for (type_decl.primary_constructor) |prop| {
             if (!prop.is_property) continue;
@@ -84,7 +84,7 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
             const contract_node = if (self.contracts_ast) |ca| ca.get(contract_c_name) orelse continue else continue;
 
             valid_contract_count += 1;
-            try self.header_writer.writer().print("extern const AetherContractDescriptor {s}_contract;\n", .{contract_c_name});
+            try self.header_writer.writer().print("extern const EiwaContractDescriptor {s}_contract;\n", .{contract_c_name});
 
             try self.writer.writer().print("void* {s}_{s}_vtable[] = {{\n", .{ actual_name, contract_c_name });
             for (contract_node.data.contract_decl.methods) |cm| {
@@ -109,16 +109,16 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
 
         // Emit the impl table + static descriptor definition
         if (valid_contract_count > 0) {
-            try self.writer.writer().print("const AetherContractImpl {s}_impls[] = {{\n", .{actual_name});
+            try self.writer.writer().print("const EiwaContractImpl {s}_impls[] = {{\n", .{actual_name});
             for (type_decl.contracts) |contract_src| {
                 const contract_c_name = if (self.alias_map) |am| (am.get(contract_src) orelse contract_src) else contract_src;
                 if (!self.isContract(contract_c_name) and !self.isContract(contract_src)) continue;
                 try self.writer.writer().print("    {{ &{s}_contract, {s}_{s}_vtable }},\n", .{ contract_c_name, actual_name, contract_c_name });
             }
             try self.writer.appendSlice("};\n");
-            try self.writer.writer().print("const AetherTypeDescriptor {s}_descriptor = {{ \"{s}\", {s}_impls, {d} }};\n\n", .{ actual_name, type_decl.name, actual_name, valid_contract_count });
+            try self.writer.writer().print("const EiwaTypeDescriptor {s}_descriptor = {{ \"{s}\", {s}_impls, {d} }};\n\n", .{ actual_name, type_decl.name, actual_name, valid_contract_count });
         } else {
-            try self.writer.writer().print("const AetherTypeDescriptor {s}_descriptor = {{ \"{s}\", 0, 0 }};\n\n", .{ actual_name, type_decl.name });
+            try self.writer.writer().print("const EiwaTypeDescriptor {s}_descriptor = {{ \"{s}\", 0, 0 }};\n\n", .{ actual_name, type_decl.name });
         }
 
         // Emit Allocator/Constructor Implementation
@@ -154,8 +154,8 @@ pub fn emitContractDecl(self: *CTranspiler, node: *ASTNode) !void {
     if (self.classes.contains(actual_name)) return;
     try self.classes.put(actual_name, {});
 
-    try self.header_writer.writer().print("extern const AetherContractDescriptor {s}_contract;\n", .{actual_name});
-    try self.writer.writer().print("const AetherContractDescriptor {s}_contract = {{ \"{s}\" }};\n\n", .{ actual_name, contract_decl.name });
+    try self.header_writer.writer().print("extern const EiwaContractDescriptor {s}_contract;\n", .{actual_name});
+    try self.writer.writer().print("const EiwaContractDescriptor {s}_contract = {{ \"{s}\" }};\n\n", .{ actual_name, contract_decl.name });
 }
 
 pub fn emitSkillDecl(self: *CTranspiler, node: *ASTNode) !void {
@@ -225,7 +225,7 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
     }
     try self.writer.appendSlice(") {\n");
 
-    // Emit #line directive so clang reports errors with the original .ae source location
+    // Emit #line directive so clang reports errors with the original .ei source location
     try self.writer.writer().print("#line {d} \"{s}\"\n", .{node.line, self.source_file});
 
     if (decl.is_expr_body) {
@@ -254,7 +254,7 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     }
     
     const actual_name = decl.resolved_c_name orelse decl.name;
-    const func_name = if (is_main) "aether_main" else actual_name;
+    const func_name = if (is_main) "eiwa_main" else actual_name;
     
     if (self.emitted_functions.contains(func_name)) return;
     try self.emitted_functions.put(func_name, {});
@@ -287,7 +287,7 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     try self.header_writer.writer().print("{s};\n", .{sig.items});
     try self.writer.writer().print("{s} {{\n", .{sig.items});
 
-    // Emit #line directive so clang reports errors with the original .ae source location
+    // Emit #line directive so clang reports errors with the original .ei source location
     try self.writer.writer().print("#line {d} \"{s}\"\n", .{node.line, self.source_file});
 
     if (decl.is_expr_body) {
@@ -316,7 +316,7 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
             try self.emitExpression(si.init);
             try self.writer.appendSlice(";\n");
         }
-        try self.writer.appendSlice("    return aether_main();\n}\n\n");
+        try self.writer.appendSlice("    return eiwa_main();\n}\n\n");
     }
 }
 
@@ -327,7 +327,7 @@ pub fn emitTestDecl(self: *CTranspiler, node: *ASTNode) !void {
     const test_id = self.test_count;
     self.test_count += 1;
     
-    try self.writer.writer().print("void aether_test_{d}() {{\n", .{test_id});
+    try self.writer.writer().print("void eiwa_test_{d}() {{\n", .{test_id});
     switch (decl.body.data) {
         .block => |b| {
             for (b.statements) |stmt| {
@@ -402,9 +402,9 @@ pub fn emitEnumDecl(self: *CTranspiler, node: *ASTNode) !void {
 
     // Struct & Type Descriptor in Header
     try hw.print("typedef struct {s} {s};\n", .{ actual_name, actual_name });
-    try hw.print("extern const AetherTypeDescriptor {s}_descriptor;\n", .{ actual_name });
+    try hw.print("extern const EiwaTypeDescriptor {s}_descriptor;\n", .{ actual_name });
     try hw.print("struct {s} {{\n", .{ actual_name });
-    try hw.print("    const AetherTypeDescriptor* _desc;\n", .{});
+    try hw.print("    const EiwaTypeDescriptor* _desc;\n", .{});
     try hw.print("    int ordinal;\n", .{});
     try hw.print("    core_String* name;\n", .{});
     try hw.print("}};\n\n", .{});
@@ -441,13 +441,13 @@ pub fn emitEnumDecl(self: *CTranspiler, node: *ASTNode) !void {
     try w.print("void* {s}_Hashable_vtable[] = {{ (void*)&{s}_hashCode }};\n", .{ actual_name, actual_name });
     try w.print("void* {s}_Equatable_vtable[] = {{ (void*)&{s}_equals }};\n", .{ actual_name, actual_name });
 
-    try w.print("const AetherContractImpl {s}_contract_impls[] = {{\n", .{ actual_name });
+    try w.print("const EiwaContractImpl {s}_contract_impls[] = {{\n", .{ actual_name });
     try w.print("    {{ &core_Stringable_contract, {s}_Stringable_vtable }},\n", .{ actual_name });
     try w.print("    {{ &core_Hashable_contract, {s}_Hashable_vtable }},\n", .{ actual_name });
     try w.print("    {{ &core_Equatable_contract, {s}_Equatable_vtable }},\n", .{ actual_name });
     try w.print("}};\n\n", .{});
 
-    try w.print("const AetherTypeDescriptor {s}_descriptor = {{\n", .{ actual_name });
+    try w.print("const EiwaTypeDescriptor {s}_descriptor = {{\n", .{ actual_name });
     try w.print("    .name = \"{s}\",\n", .{ actual_name });
     try w.print("    .impls = {s}_contract_impls,\n", .{ actual_name });
     try w.print("    .impl_count = 3,\n", .{});

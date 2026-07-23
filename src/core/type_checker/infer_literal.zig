@@ -8,9 +8,9 @@ const type_system = @import("../type_system.zig");
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
 const Scope = core.Scope;
-const AetherType = core.AetherType;
+const EiwaType = core.EiwaType;
 
-pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const a = node.data.array_literal;
     if (a.elements.len == 0) {
         if (node.expected_type) |expected| {
@@ -31,8 +31,8 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
         return error.TypeError;
     }
     
-    var first_type: *const AetherType = undefined;
-    var expected_elem_t: ?*const AetherType = null;
+    var first_type: *const EiwaType = undefined;
+    var expected_elem_t: ?*const EiwaType = null;
 
     if (node.expected_type) |exp| {
         const exp_base = type_system.extractBaseType(exp);
@@ -93,7 +93,7 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
             }
         }
     }
-    const array_type = try self.allocator.create(AetherType);
+    const array_type = try self.allocator.create(EiwaType);
     array_type.* = .{ .Array = first_type };
     
     // Simulate List<T> instantiation
@@ -104,7 +104,7 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
         return error.TypeError;
     }
     const type_decl = class_node.?.data.type_decl;
-    var type_args = try self.allocator.alloc(*const AetherType, 1);
+    var type_args = try self.allocator.alloc(*const EiwaType, 1);
     type_args[0] = first_type;
     
     // O mangled name deve ser baseado no nome importado (list_c_name), nao string "List"
@@ -118,7 +118,7 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
     t.* = .{ .Custom = self.alias_map.get(mangled_name) orelse mangled_name };
 }
 
-pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const m = node.data.map_literal;
     if (m.elements.len == 0) {
         self.reportError(node.line, node.column, "TypeError: Cannot infer type of empty map literal.", .{});
@@ -126,8 +126,8 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     }
     
     // Evaluate the first pair
-    var first_key_type: *const AetherType = undefined;
-    var first_value_type: *const AetherType = undefined;
+    var first_key_type: *const EiwaType = undefined;
+    var first_value_type: *const EiwaType = undefined;
     
     for (m.elements, 0..) |elem, i| {
         // Element is a `.kw_of` binary expression. Let's infer it, which transforms it into a Node constructor.
@@ -182,7 +182,7 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ae
     try first_value_type.formatSafe(mmap_mangled_str.writer());
     const mmap_mangled = try mmap_mangled_str.toOwnedSlice();
     
-    var type_args = try self.allocator.alloc(*const AetherType, 2);
+    var type_args = try self.allocator.alloc(*const EiwaType, 2);
     type_args[0] = first_key_type;
     type_args[1] = first_value_type;
     

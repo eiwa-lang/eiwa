@@ -5,19 +5,19 @@ const core = @import("core.zig");
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
 const Scope = core.Scope;
-const AetherType = core.AetherType;
+const EiwaType = core.EiwaType;
 
-fn inferBlockAsExpression(self: *TypeChecker, block_node: *ASTNode, scope: *Scope) anyerror!*const AetherType {
+fn inferBlockAsExpression(self: *TypeChecker, block_node: *ASTNode, scope: *Scope) anyerror!*const EiwaType {
     const b = block_node.data.block;
     var local_scope = Scope.init(self.allocator, scope);
     defer local_scope.deinit();
 
-    var last_type: ?*const AetherType = null;
+    var last_type: ?*const EiwaType = null;
     for (b.statements) |stmt| {
         last_type = try self.inferNode(stmt, &local_scope);
     }
 
-    const t = try self.allocator.create(AetherType);
+    const t = try self.allocator.create(EiwaType);
     if (last_type) |lt| {
         t.* = lt.*;
     } else {
@@ -27,15 +27,15 @@ fn inferBlockAsExpression(self: *TypeChecker, block_node: *ASTNode, scope: *Scop
     return t;
 }
 
-pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const w = &node.data.when_expr;
 
-    var subject_type: ?*const AetherType = null;
+    var subject_type: ?*const EiwaType = null;
     if (w.subject) |subj| {
         subject_type = try self.inferNode(subj, scope);
     }
 
-    var resolved_type: ?*const AetherType = null;
+    var resolved_type: ?*const EiwaType = null;
     var has_else = false;
 
     for (w.cases, 0..) |case, i| {
@@ -53,7 +53,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
                 if (cond.data == .is_type_cond) {
                     const type_cond = cond.data.is_type_cond;
                     const target_t = try self.resolveTypeRef(type_cond.type_ref);
-                    const r_t = try self.allocator.create(AetherType);
+                    const r_t = try self.allocator.create(EiwaType);
                     r_t.* = .Bool;
                     cond.resolved_type = r_t;
 
@@ -128,7 +128,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aeth
     }
 
     // Default to Void if empty
-    const void_type = AetherType{ .Void = {} };
+    const void_type = EiwaType{ .Void = {} };
     const final_t = resolved_type orelse &void_type;
 
     // 5. Exclusivity/Exhaustiveness check for expressions (non-Void return type)

@@ -25,9 +25,9 @@ updated: 2026-07-20
   (o sample atual declara `fun serialize(): String`).
 - Mecanismo de corpo gerado: provável anotação `@CompilerGenerated` na skill em std,
   ou codegen reconhecer as skills por nome qualificado (std.serde.Json).
-- Onde mora: novo `src/std/serde.ae` (ou `json.ae`/`yaml.ae` separados).
+- Onde mora: novo `src/std/serde.ei` (ou `json.ei`/`yaml.ei` separados).
 - Coleções (Array/Map de serializáveis): escopo da v1 ou v1.5?
 
 ## Conventions lembradas
 - Criar branch dedicada para mudanças grandes (default do projeto; user já dispensou uma vez).
-- Verificação: `zig build`, `zig build test`, `aether test samples/tests` (88/88 baseline).
+- Verificação: `zig build`, `zig build test`, `eiwa test samples/tests` (88/88 baseline).

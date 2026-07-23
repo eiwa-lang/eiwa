@@ -7,7 +7,7 @@ const parser = @import("frontend/parser/core.zig");
 const c_transpiler = @import("backend/c_transpiler/core.zig");
 const ast = @import("core/ast.zig");
 
-/// Main entry point for the Aether CLI.
+/// Main entry point for the Eiwa CLI.
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
@@ -21,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
     const args = args_list.items;
 
     if (args.len < 2 or (!std.mem.eql(u8, args[1], "run") and !std.mem.eql(u8, args[1], "build") and !std.mem.eql(u8, args[1], "test"))) {
-        std.debug.print("Usage: aether <run|build|test> [file.ae]\n", .{});
+        std.debug.print("Usage: eiwa <run|build|test> [file.ei]\n", .{});
         return;
     }
     const is_build = std.mem.eql(u8, args[1], "build");
@@ -30,7 +30,7 @@ pub fn main(init: std.process.Init) !void {
     var source_alloc = ArrayList(u8).init(allocator);
     defer source_alloc.deinit();
 
-    var filename: []const u8 = "synthetic_test.ae";
+    var filename: []const u8 = "synthetic_test.ei";
 
     const io = init.io;
 
@@ -39,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
         if (args.len > 2) {
             search_path = args[2];
         }
-        if (std.mem.endsWith(u8, search_path, ".ae")) {
+        if (std.mem.endsWith(u8, search_path, ".ei")) {
             try source_alloc.print("import {{}} from \"{s}\"\n", .{search_path});
         } else {
             var dir = std.Io.Dir.cwd().openDir(io, search_path, .{ .iterate = true }) catch |err| {
@@ -52,7 +52,7 @@ pub fn main(init: std.process.Init) !void {
 
             while (try walker.next(io)) |entry| {
                 if (entry.kind == .file) {
-                    if (std.mem.endsWith(u8, entry.basename, "_test.ae")) {
+                    if (std.mem.endsWith(u8, entry.basename, "_test.ei")) {
                         const full_import_path = try std.fs.path.join(allocator, &.{ search_path, entry.path });
                         defer allocator.free(full_import_path);
                         try source_alloc.print("import {{}} from \"{s}\"\n", .{full_import_path});
@@ -70,8 +70,8 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         filename = args[2];
-        if (!std.mem.endsWith(u8, filename, ".ae")) {
-            std.debug.print("Error: Unsupported file extension. Please use .ae files.\n", .{});
+        if (!std.mem.endsWith(u8, filename, ".ei")) {
+            std.debug.print("Error: Unsupported file extension. Please use .ei files.\n", .{});
             return;
         }
         const file_content = try std.Io.Dir.cwd().readFileAlloc(io, filename, allocator, .limited(1024 * 1024));
@@ -79,7 +79,7 @@ pub fn main(init: std.process.Init) !void {
         try source_alloc.appendSlice(file_content);
     }
     const source = source_alloc.items;
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = "synthetic_test.ae", .data = source });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = "synthetic_test.ei", .data = source });
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -113,7 +113,7 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("Error: Unknown standard library package 'std.{s}'\n", .{pkg_name});
                 std.process.exit(1);
             }
-        } else if (std.mem.eql(u8, cur_path, "synthetic_test.ae")) {
+        } else if (std.mem.eql(u8, cur_path, "synthetic_test.ei")) {
             source_content = source;
         } else {
             source_content = std.Io.Dir.cwd().readFileAlloc(io, cur_path, arena.allocator(), .limited(1024 * 1024)) catch |err| {
@@ -164,8 +164,8 @@ pub fn main(init: std.process.Init) !void {
                 if (stmt.data == .import_stmt) {
                     const i = &stmt.data.import_stmt;
                     var actual_module_path = i.module_path;
-                    if (!std.mem.endsWith(u8, actual_module_path, ".ae")) {
-                        actual_module_path = try std.fmt.allocPrint(arena.allocator(), "{s}.ae", .{actual_module_path});
+                    if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
+                        actual_module_path = try std.fmt.allocPrint(arena.allocator(), "{s}.ei", .{actual_module_path});
                     }
                     var import_resolved_path: []const u8 = undefined;
                     if (std.mem.startsWith(u8, actual_module_path, "std.")) {
@@ -294,7 +294,7 @@ pub fn main(init: std.process.Init) !void {
         const flag = try std.fmt.allocPrint(allocator, "-l{s}", .{lib_name.*});
         try cc_argv.append(flag);
 
-        const macro = try std.fmt.allocPrint(allocator, "-DAETHER_USE_{s}", .{lib_name.*});
+        const macro = try std.fmt.allocPrint(allocator, "-DEIWA_USE_{s}", .{lib_name.*});
         for (macro) |*c| {
             c.* = std.ascii.toUpper(c.*);
         }
@@ -314,7 +314,7 @@ pub fn main(init: std.process.Init) !void {
     if (result.term != .exited or result.term.exited != 0) {
         // Filter C stderr: show only semantic errors, hide internal C details.
         // With #line directives in the generated C, clang now reports errors as:
-        //   person.ae:2:172: error: ...
+        //   person.ei:2:172: error: ...
         // instead of temp_out.c:NNN:COL: error: ...
         var found_error = false;
         var lines = std.mem.splitScalar(u8, result.stderr, '\n');
@@ -334,13 +334,13 @@ pub fn main(init: std.process.Init) !void {
                     }
                     std.debug.print("  → {s}\n", .{msg});
                 }
-            } else if (std.mem.indexOf(u8, line, ".ae:")) |ae_pos| {
-                // Error mapped back to an Aether source file via #line directive
-                // Format: path/to/file.ae:LINE:COL: error: MESSAGE
-                const location_part = line[0 .. ae_pos + 3]; // e.g. "../../samples/person.ae"
+            } else if (std.mem.indexOf(u8, line, ".ei:")) |ae_pos| {
+                // Error mapped back to an Eiwa source file via #line directive
+                // Format: path/to/file.ei:LINE:COL: error: MESSAGE
+                const location_part = line[0 .. ae_pos + 3]; // e.g. "../../samples/person.ei"
                 // Extract just the basename for cleaner output
                 const ae_basename = std.fs.path.basename(location_part);
-                // Find line number after the .ae:
+                // Find line number after the .ei:
                 const after_ae = line[ae_pos + 4 ..];
                 var col_it = std.mem.splitScalar(u8, after_ae, ':');
                 const line_num = col_it.next() orelse "?";
@@ -398,7 +398,7 @@ test "imports" {
     _ = @import("backend/c_transpiler/core.zig");
 }
 
-/// Translate low-level C compiler error messages into user-friendly Aether errors.
+/// Translate low-level C compiler error messages into user-friendly Eiwa errors.
 /// Hides internal details like mangled names and C-specific type nomenclature.
 fn translateCError(msg: []const u8) []const u8 {
     // Int passed where String is expected (e.g. string concatenation without .toString())

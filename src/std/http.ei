@@ -13,25 +13,25 @@ lib NativeHttp {
     @Alias("curl_easy_cleanup")
     fun curlEasyCleanup(curl: OpaquePointer): Void
     
-    @Alias("aether_get_write_callback_ptr")
+    @Alias("eiwa_get_write_callback_ptr")
     fun getWriteCallbackPtr(): OpaquePointer
     
-    @Alias("aether_curl_buf_data")
+    @Alias("eiwa_curl_buf_data")
     fun curlBufData(buf: OpaquePointer): OpaquePointer
     
-    @Alias("aether_curl_buf_size")
+    @Alias("eiwa_curl_buf_size")
     fun curlBufSize(buf: OpaquePointer): Int
     
-    @Alias("aether_curl_get_status")
+    @Alias("eiwa_curl_get_status")
     fun curlGetStatus(curl: OpaquePointer): Int
     
-    @Alias("aether_curl_setopt_string")
+    @Alias("eiwa_curl_setopt_string")
     fun curlSetoptString(curl: OpaquePointer, option: Int, value: OpaquePointer): Int
     
-    @Alias("aether_curl_setopt_ptr")
+    @Alias("eiwa_curl_setopt_ptr")
     fun curlSetoptPtr(curl: OpaquePointer, option: Int, value: OpaquePointer): Int
     
-    @Alias("aether_curl_setopt_int")
+    @Alias("eiwa_curl_setopt_int")
     fun curlSetoptInt(curl: OpaquePointer, option: Int, value: Int): Int
 }
 

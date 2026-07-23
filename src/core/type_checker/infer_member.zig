@@ -9,11 +9,11 @@ const infer_call_mod = @import("infer_call.zig");
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
 const Scope = core.Scope;
-const AetherType = core.AetherType;
+const EiwaType = core.EiwaType;
 const isNullable = core.isNullable;
 const extractBaseType = core.extractBaseType;
 
-fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const AetherType, member_name: []const u8) ?*const AetherType {
+fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, member_name: []const u8) ?*const EiwaType {
     const base_type = extractBaseType(target_type);
     var name_opt: ?[]const u8 = null;
     switch (base_type.*) {
@@ -59,7 +59,7 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const AetherType,
                 } else if (method.data.fun_decl.is_expr_body) {
                     if (method.data.fun_decl.body.resolved_type) |rt| return rt;
                 }
-                const void_type = self.allocator.create(AetherType) catch return null;
+                const void_type = self.allocator.create(EiwaType) catch return null;
                 void_type.* = .Void;
                 return void_type;
             }
@@ -72,7 +72,7 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const AetherType,
                         if (method.data.fun_decl.type_ref) |tr| {
                             return self.resolveTypeRef(tr) catch null;
                         } else {
-                            const void_type = self.allocator.create(AetherType) catch return null;
+                            const void_type = self.allocator.create(EiwaType) catch return null;
                             void_type.* = .Void;
                             return void_type;
                         }
@@ -92,7 +92,7 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const AetherType,
                         } else if (method.data.fun_decl.is_expr_body) {
                             if (method.data.fun_decl.body.resolved_type) |rt| return rt;
                         }
-                        const void_type = self.allocator.create(AetherType) catch return null;
+                        const void_type = self.allocator.create(EiwaType) catch return null;
                         void_type.* = .Void;
                         return void_type;
                     }
@@ -103,7 +103,7 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const AetherType,
     return null;
 }
 
-pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var g = &node.data.get_expr;
 
     // Check if it's a lib method call (e.g. C.printf)
@@ -113,7 +113,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
             t.* = found_type.*;
             node.resolved_type = found_type;
 
-            const obj_t = try self.allocator.create(AetherType);
+            const obj_t = try self.allocator.create(EiwaType);
             obj_t.* = .{ .Custom = g.object.data.identifier.name };
             g.object.resolved_type = obj_t;
 
@@ -124,7 +124,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                 t.* = found_type.*;
                 node.resolved_type = found_type;
 
-                const obj_t = try self.allocator.create(AetherType);
+                const obj_t = try self.allocator.create(EiwaType);
                 obj_t.* = .{ .Custom = g.object.data.identifier.name };
                 g.object.resolved_type = obj_t;
 
@@ -143,10 +143,10 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                 if (self.skills_ast.get(skill_actual)) |sn| {
                     const qualified = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ sn.data.skill_decl.name, g.name });
                     g.name = qualified;
-                    const obj_t = try self.allocator.create(AetherType);
+                    const obj_t = try self.allocator.create(EiwaType);
                     obj_t.* = .{ .Custom = type_c_name };
                     g.object.resolved_type = obj_t;
-                    const this_t = try self.allocator.create(AetherType);
+                    const this_t = try self.allocator.create(EiwaType);
                     this_t.* = .{ .Custom = type_c_name };
                     g.object.data = .{ .identifier = .{ .name = "this", .resolved_c_name = null } };
                     g.object.resolved_type = this_t;
@@ -159,7 +159,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     }
 
     const obj_type = try self.inferNode(g.object, scope);
-    var prop_type: ?*const AetherType = null;
+    var prop_type: ?*const EiwaType = null;
     var is_static = false;
     if (g.object.data == .identifier) {
         const class_name = g.object.data.identifier.name;
@@ -196,13 +196,13 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
             const enum_node = self.enums_ast.get(actual_class_name).?;
             const ed = enum_node.data.enum_decl;
             if (std.mem.eql(u8, g.name, "values")) {
-                const fn_type = try self.allocator.create(AetherType);
-                const ret_type = try self.allocator.create(AetherType);
-                const elem_type = try self.allocator.create(AetherType);
+                const fn_type = try self.allocator.create(EiwaType);
+                const ret_type = try self.allocator.create(EiwaType);
+                const elem_type = try self.allocator.create(EiwaType);
                 elem_type.* = .{ .Custom = actual_class_name };
                 ret_type.* = .{ .GenericInstance = .{
                     .base_name = "List",
-                    .type_args = try self.allocator.dupe(*const AetherType, &.{elem_type}),
+                    .type_args = try self.allocator.dupe(*const EiwaType, &.{elem_type}),
                 }};
                 fn_type.* = .{ .Function = .{
                     .params = &.{},
@@ -215,7 +215,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                 for (ed.variants) |variant| {
                     if (std.mem.eql(u8, variant.name, g.name)) {
                         found_variant = true;
-                        const variant_type = try self.allocator.create(AetherType);
+                        const variant_type = try self.allocator.create(EiwaType);
                         variant_type.* = .{ .Custom = actual_class_name };
                         prop_type = variant_type;
                         break;
@@ -300,16 +300,16 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
         }
         if (self.enums_ast.get(actual_name) != null) {
             if (std.mem.eql(u8, g.name, "ordinal")) {
-                const int_t = try self.allocator.create(AetherType);
+                const int_t = try self.allocator.create(EiwaType);
                 int_t.* = .Int;
                 prop_type = int_t;
             } else if (std.mem.eql(u8, g.name, "name")) {
-                const str_t = try self.allocator.create(AetherType);
+                const str_t = try self.allocator.create(EiwaType);
                 str_t.* = .String;
                 prop_type = str_t;
             } else if (std.mem.eql(u8, g.name, "toString")) {
-                const fn_t = try self.allocator.create(AetherType);
-                const str_t = try self.allocator.create(AetherType);
+                const fn_t = try self.allocator.create(EiwaType);
+                const str_t = try self.allocator.create(EiwaType);
                 str_t.* = .String;
                 fn_t.* = .{ .Function = .{
                     .params = &.{},
@@ -318,8 +318,8 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                 }};
                 prop_type = fn_t;
             } else if (std.mem.eql(u8, g.name, "hashCode")) {
-                const fn_t = try self.allocator.create(AetherType);
-                const int_t = try self.allocator.create(AetherType);
+                const fn_t = try self.allocator.create(EiwaType);
+                const int_t = try self.allocator.create(EiwaType);
                 int_t.* = .Int;
                 fn_t.* = .{ .Function = .{
                     .params = &.{},
@@ -328,13 +328,13 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                 }};
                 prop_type = fn_t;
             } else if (std.mem.eql(u8, g.name, "equals")) {
-                const fn_t = try self.allocator.create(AetherType);
-                const bool_t = try self.allocator.create(AetherType);
+                const fn_t = try self.allocator.create(EiwaType);
+                const bool_t = try self.allocator.create(EiwaType);
                 bool_t.* = .Bool;
-                const param_t = try self.allocator.create(AetherType);
+                const param_t = try self.allocator.create(EiwaType);
                 param_t.* = .{ .Custom = "Stringable" };
                 fn_t.* = .{ .Function = .{
-                    .params = try self.allocator.dupe(*const AetherType, &.{param_t}),
+                    .params = try self.allocator.dupe(*const EiwaType, &.{param_t}),
                     .return_type = bool_t,
                     .c_name = try std.fmt.allocPrint(self.allocator, "{s}_equals", .{actual_name}),
                 }};
@@ -347,7 +347,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                     if (method.data.fun_decl.type_ref) |tr| {
                         prop_type = try self.resolveTypeRef(tr);
                     } else {
-                        const void_type = try self.allocator.create(AetherType);
+                        const void_type = try self.allocator.create(EiwaType);
                         void_type.* = .Void;
                         prop_type = void_type;
                     }
@@ -371,12 +371,12 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
                             if (method.data.fun_decl.body.resolved_type) |rt| {
                                 prop_type = rt;
                             } else {
-                                const void_type = try self.allocator.create(AetherType);
+                                const void_type = try self.allocator.create(EiwaType);
                                 void_type.* = .Void;
                                 prop_type = void_type;
                             }
                         } else {
-                            const void_type = try self.allocator.create(AetherType);
+                            const void_type = try self.allocator.create(EiwaType);
                             void_type.* = .Void;
                             prop_type = void_type;
                         }
@@ -387,16 +387,16 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
         }
     } else if (base_type.* == .Array) {
         if (std.mem.eql(u8, g.name, "length")) {
-            const int_t = try self.allocator.create(AetherType);
+            const int_t = try self.allocator.create(EiwaType);
             int_t.* = .Int;
             prop_type = int_t;
         } else if (std.mem.eql(u8, g.name, "push")) {
             // Returns a function type that takes T and returns Void
-            const fun_t = try self.allocator.create(AetherType);
-            var params = try self.allocator.alloc(*const AetherType, 1);
+            const fun_t = try self.allocator.create(EiwaType);
+            var params = try self.allocator.alloc(*const EiwaType, 1);
             params[0] = base_type.Array;
             
-            const void_t = try self.allocator.create(AetherType);
+            const void_t = try self.allocator.create(EiwaType);
             void_t.* = .Void;
             
             fun_t.* = .{ .Function = .{
@@ -407,16 +407,16 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
             prop_type = fun_t;
         } else if (std.mem.eql(u8, g.name, "set")) {
             // set(index: Int, val: T): Void
-            const fun_t = try self.allocator.create(AetherType);
-            var params = try self.allocator.alloc(*const AetherType, 2);
+            const fun_t = try self.allocator.create(EiwaType);
+            var params = try self.allocator.alloc(*const EiwaType, 2);
             
-            const int_t = try self.allocator.create(AetherType);
+            const int_t = try self.allocator.create(EiwaType);
             int_t.* = .Int;
             
             params[0] = int_t;
             params[1] = base_type.Array;
             
-            const void_t = try self.allocator.create(AetherType);
+            const void_t = try self.allocator.create(EiwaType);
             void_t.* = .Void;
             
             fun_t.* = .{ .Function = .{
@@ -429,8 +429,8 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     }
 
     if (prop_type == null and std.mem.eql(u8, g.name, "toString")) {
-        const fn_type = try self.allocator.create(AetherType);
-        const str_type = try self.allocator.create(AetherType);
+        const fn_type = try self.allocator.create(EiwaType);
+        const str_type = try self.allocator.create(EiwaType);
         const actual_str_name = self.alias_map.get("String") orelse "core_String";
         str_type.* = .{ .Custom = actual_str_name };
         fn_type.* = .{ .Function = .{
@@ -443,8 +443,8 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     }
 
     if (prop_type == null and std.mem.eql(u8, g.name, "hashCode")) {
-        const fn_type = try self.allocator.create(AetherType);
-        const int_type = try self.allocator.create(AetherType);
+        const fn_type = try self.allocator.create(EiwaType);
+        const int_type = try self.allocator.create(EiwaType);
         int_type.* = .Int;
         fn_type.* = .{ .Function = .{
             .params = &.{},
@@ -462,7 +462,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
             if (self.isCompatible(left_t.?, right_t.?)) {
                 prop_type = left_t.?;
             } else {
-                const union_res = try self.allocator.create(AetherType);
+                const union_res = try self.allocator.create(EiwaType);
                 union_res.* = .{ .Union = .{ .left = left_t.?, .right = right_t.? } };
                 prop_type = union_res;
             }
@@ -477,7 +477,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     if (isNullable(obj_type) and g.is_safe) {
         t.* = .{ .Union = .{
             .left = prop_type.?,
-            .right = try self.allocator.create(AetherType),
+            .right = try self.allocator.create(EiwaType),
         } };
         @constCast(t.Union.right).* = .Null;
     } else {
@@ -485,7 +485,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     }
 }
 
-pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var s = &node.data.set_expr;
     const obj_type = try self.inferNode(s.object, scope);
     const assigned_type = try self.inferNode(s.value, scope);
@@ -612,16 +612,16 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aethe
     t.* = assigned_type.*;
 }
 
-fn isNativeArrayType(t: *const AetherType) bool {
+fn isNativeArrayType(t: *const EiwaType) bool {
     switch (t.*) {
         .Array => return true,
-        .Custom => |n| return std.mem.startsWith(u8, n, "NativeArray") or std.mem.startsWith(u8, n, "AetherArray"),
+        .Custom => |n| return std.mem.startsWith(u8, n, "NativeArray") or std.mem.startsWith(u8, n, "EiwaArray"),
         .GenericInstance => |gi| return std.mem.startsWith(u8, gi.base_name, "NativeArray") or std.mem.startsWith(u8, gi.base_name, "Array"),
         else => return false,
     }
 }
 
-fn extractArrayElemType(self: *TypeChecker, obj_type: *const AetherType) !*const AetherType {
+fn extractArrayElemType(self: *TypeChecker, obj_type: *const EiwaType) !*const EiwaType {
     switch (obj_type.*) {
         .Array => |elem| return elem,
         .GenericInstance => |gi| {
@@ -637,12 +637,12 @@ fn extractArrayElemType(self: *TypeChecker, obj_type: *const AetherType) !*const
         },
         else => {},
     }
-    const void_t = try self.allocator.create(AetherType);
+    const void_t = try self.allocator.create(EiwaType);
     void_t.* = .Void;
     return void_t;
 }
 
-pub fn inferIndexExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferIndexExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const i = node.data.index_expr;
     const obj_type = try self.inferNode(i.object, scope);
     
@@ -677,7 +677,7 @@ pub fn inferIndexExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Aet
     t.* = (try extractArrayElemType(self, obj_type)).*;
 }
 
-pub fn inferIndexSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *AetherType) anyerror!void {
+pub fn inferIndexSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const i = node.data.index_set_expr;
     const obj_type = try self.inferNode(i.object, scope);
     

@@ -6,7 +6,7 @@ const parser_mod = @import("../../frontend/parser/core.zig");
 const type_system = @import("../type_system.zig");
 
 pub const ASTNode = ast.ASTNode;
-pub const AetherType = type_system.AetherType;
+pub const EiwaType = type_system.EiwaType;
 pub const Scope = type_system.Scope;
 
 const infer_expr_mod = @import("infer_expr.zig");
@@ -172,15 +172,15 @@ fn core_reportError(self: *TypeChecker, line: usize, column: usize, comptime mes
     std.debug.print("\x1b[0m\n\n", .{});
 }
 
-fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!*AetherType {
-    var base_type: AetherType = .Void;
+fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!*EiwaType {
+    var base_type: EiwaType = .Void;
     var actual_is_nullable = ref.is_nullable;
 
     if (ref.union_types.len > 0) {
         var acc = try self.resolveTypeRef(ref.union_types[0]);
         for (ref.union_types[1..]) |u_item| {
             const resolved_u = try self.resolveTypeRef(u_item);
-            const union_t = try self.allocator.create(AetherType);
+            const union_t = try self.allocator.create(EiwaType);
             union_t.* = .{ .Union = .{
                 .left = acc,
                 .right = resolved_u,
@@ -189,7 +189,7 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         }
         base_type = acc.*;
     } else if (ref.is_function) {
-        var params = ArrayList(*const AetherType).init(self.allocator);
+        var params = ArrayList(*const EiwaType).init(self.allocator);
         for (ref.generic_args) |arg| {
             try params.append(try self.resolveTypeRef(arg));
         }
@@ -207,7 +207,7 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         const inner_type = try self.resolveTypeRef(ref.generic_args[0]);
 
         const list_base = "List";
-        const type_args = try self.allocator.alloc(*const AetherType, 1);
+        const type_args = try self.allocator.alloc(*const EiwaType, 1);
         type_args[0] = inner_type;
 
         var mangled = ArrayList(u8).init(self.allocator);
@@ -241,12 +241,12 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         } else if (std.mem.eql(u8, alias, "Void") or std.mem.eql(u8, alias, "core_Void")) {
             base_type = .Void;
         } else if (std.mem.eql(u8, alias, "OpaquePointer")) {
-            base_type = .{ .Pointer = try self.allocator.create(AetherType) };
+            base_type = .{ .Pointer = try self.allocator.create(EiwaType) };
             @constCast(base_type.Pointer).* = .Void;
         } else if (std.mem.eql(u8, alias, "Null")) {
             base_type = .Null;
         } else if (ref.generic_args.len > 0) {
-            var args_list = ArrayList(*const AetherType).init(self.allocator);
+            var args_list = ArrayList(*const EiwaType).init(self.allocator);
             for (ref.generic_args) |arg| {
                 const arg_type = try self.resolveTypeRef(arg);
                 try args_list.append(arg_type);
@@ -288,7 +288,7 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
             const t1 = (self.resolveTypeName(raw_p1, false) catch null) orelse (if (std.mem.startsWith(u8, raw_p1, "core_")) self.resolveTypeName(raw_p1[5..], false) catch null else null);
             const t2 = (self.resolveTypeName(raw_p2, false) catch null) orelse (if (std.mem.startsWith(u8, raw_p2, "core_")) self.resolveTypeName(raw_p2[5..], false) catch null else null);
             if (t1 != null and t2 != null) {
-                const union_t = try self.allocator.create(AetherType);
+                const union_t = try self.allocator.create(EiwaType);
                 union_t.* = .{ .Union = .{ .left = t1.?, .right = t2.? } };
                 base_type = union_t.*;
             } else {
@@ -301,11 +301,11 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         }
     }
 
-    const t = try self.allocator.create(AetherType);
+    const t = try self.allocator.create(EiwaType);
     if (actual_is_nullable) {
         t.* = .{ .Union = .{
-            .left = try self.allocator.create(AetherType),
-            .right = try self.allocator.create(AetherType),
+            .left = try self.allocator.create(EiwaType),
+            .right = try self.allocator.create(EiwaType),
         } };
         @constCast(t.Union.left).* = base_type;
         @constCast(t.Union.right).* = .Null;
@@ -316,7 +316,7 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
     return t;
 }
 
-fn core_resolveTypeName(self: *TypeChecker, name: []const u8, is_nullable: bool) anyerror!*AetherType {
+fn core_resolveTypeName(self: *TypeChecker, name: []const u8, is_nullable: bool) anyerror!*EiwaType {
     var p = parser_mod.Parser.init(self.allocator, name);
     const ref = try p.parseType();
     if (is_nullable) {
@@ -329,11 +329,11 @@ fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void 
     const basename = std.fs.path.basename(self.filename);
     
     // std.core itself has absolutely no implicit imports
-    if (std.mem.eql(u8, basename, "core.ae")) return;
+    if (std.mem.eql(u8, basename, "core.ei")) return;
     
-    const implicit_imports = if (std.mem.eql(u8, basename, "io.ae"))
+    const implicit_imports = if (std.mem.eql(u8, basename, "io.ei"))
         &[_][]const u8{ "std.core" }
-    else if (std.mem.eql(u8, basename, "system.ae") or std.mem.eql(u8, basename, "exceptions.ae"))
+    else if (std.mem.eql(u8, basename, "system.ei") or std.mem.eql(u8, basename, "exceptions.ei"))
         &[_][]const u8{ "std.core", "std.io" }
     else if (std.mem.startsWith(u8, self.filename, "std/") or std.mem.indexOf(u8, self.filename, "std/") != null)
         infer_decl_mod.core_implicit_imports
@@ -383,8 +383,8 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                 if (self.registry) |reg| {
                     const dir_path = std.fs.path.dirname(self.filename) orelse ".";
                     var actual_module_path = stmt.data.import_stmt.module_path;
-                    if (!std.mem.endsWith(u8, actual_module_path, ".ae")) {
-                        actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ae", .{actual_module_path});
+                    if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
+                        actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ei", .{actual_module_path});
                     }
                     var mod_path: []const u8 = undefined;
                     if (std.mem.startsWith(u8, actual_module_path, "std.")) {
@@ -426,7 +426,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                             if (self.global_scope.symbols.get(entry.key_ptr.*) == null) {
                                 switch (entry.value_ptr.*.*) {
                                     .Variable => |vs| {
-                                        _ = self.global_scope.define(entry.key_ptr.*, vs.aether_type, vs.is_mut, false) catch {};
+                                        _ = self.global_scope.define(entry.key_ptr.*, vs.eiwa_type, vs.is_mut, false) catch {};
                                     },
                                     .Overloads => |ov_list| {
                                         for (ov_list.items) |ov_type| {
@@ -456,7 +456,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     }
                 }
                 const actual_c_name = c.resolved_c_name.?;
-                const class_type = try self.allocator.create(AetherType);
+                const class_type = try self.allocator.create(EiwaType);
                 if (std.mem.eql(u8, c.name, "Int")) {
                     class_type.* = .Int;
                 } else if (std.mem.eql(u8, c.name, "Bool")) {
@@ -464,7 +464,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                 } else if (std.mem.eql(u8, c.name, "String")) {
                     class_type.* = .{ .Custom = actual_c_name };
                 } else if (std.mem.eql(u8, c.name, "OpaquePointer") or std.mem.eql(u8, c.name, "Pointer")) {
-                    class_type.* = .{ .Pointer = try self.allocator.create(AetherType) };
+                    class_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
                     @constCast(class_type.Pointer).* = .Void;
                 } else {
                     class_type.* = .{ .Custom = actual_c_name };
@@ -487,7 +487,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     }
                 }
                 const actual_c_name = cd.resolved_c_name.?;
-                const contract_type = try self.allocator.create(AetherType);
+                const contract_type = try self.allocator.create(EiwaType);
                 contract_type.* = .{ .Custom = actual_c_name };
                 _ = self.global_scope.define(cd.name, contract_type, false, false) catch {};
                 if (!std.mem.eql(u8, cd.name, actual_c_name)) {
@@ -519,7 +519,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         }
                     }
                     const actual_c_name = o.resolved_c_name.?;
-                    const obj_type = try self.allocator.create(AetherType);
+                    const obj_type = try self.allocator.create(EiwaType);
                     obj_type.* = .{ .Custom = actual_c_name };
                     try self.objects_ast.put(actual_c_name, stmt);
                     try self.local_symbols.put(o_name, {});
@@ -541,7 +541,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     }
                 }
                 const actual_c_name = ed.resolved_c_name.?;
-                const enum_type = try self.allocator.create(AetherType);
+                const enum_type = try self.allocator.create(EiwaType);
                 enum_type.* = .{ .Custom = actual_c_name };
                 try self.enums_ast.put(actual_c_name, stmt);
                 try self.local_symbols.put(ed.name, {});
@@ -575,8 +575,8 @@ fn core_declareSignatures(self: *TypeChecker, node: *ASTNode) anyerror!void {
                 if (self.registry) |reg| {
                     const dir_path = std.fs.path.dirname(self.filename) orelse ".";
                     var actual_module_path = stmt.data.import_stmt.module_path;
-                    if (!std.mem.endsWith(u8, actual_module_path, ".ae")) {
-                        actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ae", .{actual_module_path});
+                    if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
+                        actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ei", .{actual_module_path});
                     }
                     var mod_path: []const u8 = undefined;
                     if (std.mem.startsWith(u8, actual_module_path, "std.")) {
@@ -626,13 +626,13 @@ fn core_resolveImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
                 if (self.registry) |reg| {
                     const dir_path = std.fs.path.dirname(self.filename) orelse ".";
                     var actual_module_path = stmt.data.import_stmt.module_path;
-                    if (!std.mem.endsWith(u8, actual_module_path, ".ae")) {
-                        actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ae", .{actual_module_path});
+                    if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
+                        actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ei", .{actual_module_path});
                     }
                     var mod_path: []const u8 = undefined;
                     if (std.mem.startsWith(u8, actual_module_path, "std.")) {
                         var pkg_name = actual_module_path[4..];
-                        if (std.mem.endsWith(u8, pkg_name, ".ae")) {
+                        if (std.mem.endsWith(u8, pkg_name, ".ei")) {
                             pkg_name = pkg_name[0 .. pkg_name.len - 3];
                         }
                         mod_path = try std.fmt.allocPrint(self.allocator, "std/{s}", .{pkg_name});
@@ -680,7 +680,7 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
     var mono_idx: usize = 0;
     while (mono_idx < self.monomorphized_nodes.items.len) : (mono_idx += 1) {
         const mono_node = self.monomorphized_nodes.items[mono_idx];
-        const class_type = try self.allocator.create(AetherType);
+        const class_type = try self.allocator.create(EiwaType);
         try infer_decl_mod.inferTypeDecl(self, mono_node, &self.global_scope, class_type);
     }
 
@@ -695,7 +695,7 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
     self.status = .validated;
 }
 
-fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*const AetherType {
+fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*const EiwaType {
     if (self.pass == .validation) {
         switch (node.data) {
             .program, .type_decl, .object_decl, .enum_decl, .fun_decl => {},
@@ -710,7 +710,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
             return rt;
         }
     }
-    const t = try self.allocator.create(AetherType);
+    const t = try self.allocator.create(EiwaType);
     switch (node.data) {
         .program => |p| {
             for (p.statements) |stmt| {
@@ -779,8 +779,8 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
                 .resolved_type = null,
                 .data = .{ .string_literal = literal_str },
             };
-            const ptr_type = try self.allocator.create(AetherType);
-            ptr_type.* = .{ .Pointer = try self.allocator.create(AetherType) };
+            const ptr_type = try self.allocator.create(EiwaType);
+            ptr_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
             @constCast(ptr_type.Pointer).* = .Void;
             ptr_node.resolved_type = ptr_type;
 
@@ -791,7 +791,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
                 .resolved_type = null,
                 .data = .{ .int_literal = @as(i64, @intCast(len)) },
             };
-            const int_type = try self.allocator.create(AetherType);
+            const int_type = try self.allocator.create(EiwaType);
             int_type.* = .Int;
             len_node.resolved_type = int_type;
 
@@ -805,7 +805,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
                 .resolved_type = null,
                 .data = .{ .identifier = .{ .name = "String", .resolved_c_name = actual_c_name, .is_class_property = false } },
             };
-            const callee_type = try self.allocator.create(AetherType);
+            const callee_type = try self.allocator.create(EiwaType);
             callee_type.* = .{ .Custom = actual_c_name };
             callee_node.resolved_type = callee_type;
 
@@ -861,7 +861,7 @@ fn core_implementsContract(self: *TypeChecker, type_name: []const u8, contract_n
     return false;
 }
 
-fn core_isCompatible(self: *TypeChecker, expected: *const AetherType, actual: *const AetherType) bool {
+fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *const EiwaType) bool {
     if (expected.* == .Unknown or actual.* == .Unknown) return true;
     if (isNullable(expected) and actual.* == .Null) return true;
     if (expected.* == .Custom and actual.* == .Custom and std.mem.eql(u8, expected.Custom, actual.Custom)) {

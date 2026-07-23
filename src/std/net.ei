@@ -1,18 +1,18 @@
 @Header("<sys/socket.h>", "<netinet/in.h>", "<arpa/inet.h>", "<unistd.h>")
 lib NativeNet {
-    @Alias("aether_tcp_bind")
+    @Alias("eiwa_tcp_bind")
     fun tcpBind(port: Int): Int
 
-    @Alias("aether_tcp_accept")
+    @Alias("eiwa_tcp_accept")
     fun tcpAccept(fd: Int): Int
 
-    @Alias("aether_socket_read")
+    @Alias("eiwa_socket_read")
     fun socketRead(fd: Int, buf: OpaquePointer, maxLen: Int): Int
 
-    @Alias("aether_socket_write")
+    @Alias("eiwa_socket_write")
     fun socketWrite(fd: Int, data: OpaquePointer, len: Int): Int
     
-    @Alias("aether_socket_close")
+    @Alias("eiwa_socket_close")
     fun socketClose(fd: Int): Void
 }
 
