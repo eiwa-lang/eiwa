@@ -289,3 +289,13 @@ Regras centrais:
 3. **Refatoração de `std.log`:** O módulo `src/std/log.ae` substituirá `object LogLevel` por `enum LogLevel`, e todas as assinaturas (`LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, e a fachada `object Log`) passarão a operar nativamente com o tipo `LogLevel` em vez de `Int`.
 **Razão:** Elimina constantes mágicas de inteiros, garante segurança de tipos em tempo de compilação para enumerações e eleva a ergonomia do módulo `std.log` e de toda a linguagem Aether.
 
+### ADR 34: Compiler Toolchain Migration to Zig 0.16.0
+**Status:** Aceito / Implementado
+**Data:** Fase 49 (Julho 2026)
+**Contexto:** O compilador Aether foi desenvolvido visando a versão 0.13.0 do Zig. No entanto, ambientes modernos de desenvolvimento (macOS Homebrew, Linux e Windows) utilizam a release Zig 0.16.0. A compilação do compilador sob o 0.16.0 falhava devido a breaking changes no build system (`build.zig.zon`, `root_module`), na remoção da versão managed de `std.ArrayList` e na reestruturação do subsistema de I/O (`std.Io`).
+**Decisão:**
+1. Atualizar o sistema de build ([build.zig.zon](file:///Users/leodouglas/Projects/dystral-lang/build.zig.zon) e [build.zig](file:///Users/leodouglas/Projects/dystral-lang/build.zig)) para o formato Zig 0.16.0 (`.name = .aether`, `.fingerprint`, `.root_module`).
+2. Criar uma camada de compatibilidade em [src/core/compat.zig](file:///Users/leodouglas/Projects/dystral-lang/src/core/compat.zig) que adapta a nova estrutura *unmanaged* do `std.ArrayList` do Zig 0.16.0 mantendo acesso direto à propriedade `.items` e métodos de escrita (`.print(...)`, `.writeAll(...)`), preservando a ergonomia do compilador.
+3. Atualizar a entrada do CLI para `pub fn main(init: std.process.Init)` e propagar o manipulador `std.Io` para chamadas de disco e subprocessos (`std.process.run`, `std.process.spawn`).
+**Razão:** Permite que desenvolvedores em Linux, macOS e Windows compilem o Aether nativamente utilizando a versão mais recente do Zig (0.16.0) sem quebrar o ecossistema existente.
+

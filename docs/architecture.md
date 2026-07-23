@@ -44,6 +44,7 @@ The most critical part of the compiler. It ensures mathematical and logical corr
 - **Module Visibility**: Non-destructured imports only re-export symbols declared in the module itself (`local_symbols`) — transitively imported symbols never leak (ADR 26).
 - **Enforcement**: Blocks compilation with rich terminal errors if incompatible types are assigned, or if `null` is accessed unsafely.
 - **AST Desugaring**: Transforms high-level constructs into low-level method calls (e.g., converting `a + b` to `a.plus(b)` dynamically).
+- **Compatibility Layer (`compat.zig`)**: Adapts Zig 0.16.0 unmanaged `std.ArrayList(T)` to provide managed-like ergonomics with direct `.items` slice access and formatted text writers (`.print(...)`, `.writeAll(...)`), isolating toolchain breaking changes from compiler passes.
 
 ---
 

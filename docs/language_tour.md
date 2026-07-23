@@ -757,6 +757,35 @@ type Counter(var count: Int = 0) {
 }
 ```
 
+### 11.9 First-Class Enum Types (`enum`)
+
+`enum` declarations define strongly typed, closed sets of constant variants with zero-overhead C transpilation:
+
+```kotlin
+enum Direction { NORTH, EAST, SOUTH, WEST }
+enum LogLevel { TRACE, DEBUG, INFO, WARN, ERROR, OFF }
+```
+
+**Synthesized Enum Members & Capabilities:**
+Every `enum` variant automatically provides built-in properties and contracts synthesized by the compiler:
+- `name: String`: The string identifier of the variant (e.g. `"NORTH"`).
+- `ordinal: Int`: Zero-based integer index of the variant (e.g. `0`).
+- `values(): List<EnumType>`: Returns a collection containing all enum instances.
+- Conformance to `Stringable`, `Equatable`, and `Hashable`.
+- Exhaustive pattern matching via `when (x)`.
+
+```kotlin
+val d = Direction.NORTH
+assert(d.name == "NORTH")
+assert(d.ordinal == 0)
+
+when (d) {
+    Direction.NORTH -> println("Heading North")
+    Direction.EAST  -> println("Heading East")
+    else            -> println("Other heading")
+}
+```
+
 ---
 
 ## 12. Objects & Boundless Namespaces
@@ -1218,3 +1247,92 @@ skill Toml : Serializable {
 - **No nullable field support** — nullable fields are skipped.
 - **No field customization** — rename/skip/format annotations are future work (override `serdeFields` as a workaround).
 - **Boxing overhead** — each field is boxed into `SerdeInt`/`SerdeString`/etc. at the point of `serdeFields()` construction. This is a one-time cost per call; the encoders themselves are pure function calls that walk the list with contract dispatch.
+
+---
+
+## 21. Standard Library Logging (`std.log`)
+
+Aether includes a native, structured logging package in `std.log` featuring lazy message evaluation, custom formatters, contextual key-value logging, and `Throwable` exception support.
+
+### 21.1 Basic Facade (`Log`)
+
+The global `Log` object provides standard logging functions across all log levels:
+
+```kotlin
+import { Log, LogLevel } from "std.log"
+
+fun main() {
+    Log.info { "Application started" }
+    Log.debug { "Debug info" }
+    Log.warn { "Warning message" }
+}
+```
+
+### 21.2 Log Levels (`LogLevel` Enum)
+
+Log levels are defined using the native `LogLevel` enum:
+
+- `LogLevel.TRACE` (ordinal 0)
+- `LogLevel.DEBUG` (ordinal 1)
+- `LogLevel.INFO` (ordinal 2)
+- `LogLevel.WARN` (ordinal 3)
+- `LogLevel.ERROR` (ordinal 4)
+- `LogLevel.OFF` (ordinal 5)
+
+You can set the minimum log level globally or on individual `Logger` instances:
+
+```kotlin
+Log.setLevel(LogLevel.WARN)
+Log.info { "This will NOT be printed" }
+Log.warn { "This WILL be printed" }
+```
+
+### 21.3 Lazy Evaluation via Lambdas
+
+All log functions accept a message closure (`() -> String`) instead of a raw string. If a log level is filtered out by the logger, **the closure is never executed**, eliminating string allocation and formatting overhead when logging is disabled:
+
+```kotlin
+Log.setLevel(LogLevel.INFO)
+Log.trace { 
+    // Heavy string calculation - NEVER executed when log level is INFO!
+    "Complex calculation: " + heavyComputation().toString() 
+}
+```
+
+### 21.4 Throwable Exception Logging
+
+Pass a `Throwable` exception as the first argument to `warn` or `error` to include exception details:
+
+```kotlin
+try {
+    throw Exception("Connection failed")
+} catch (e: Throwable) {
+    Log.error(e) { "Failed to connect to server" }
+}
+```
+
+### 21.5 Contextual Key-Value Logging (`with`)
+
+Create child loggers enriched with contextual fields using `Log.with(key, value)` or `Log.withFields(map)`:
+
+```kotlin
+val reqLogger = Log.with("req_id", "abc-123").with("user", "alice")
+reqLogger.info { "Processing request" }
+// Output: [2026-07-22 22:00:00] [INFO] Processing request {req_id=abc-123, user=alice}
+```
+
+### 21.6 Log Formatters (`TextFormatter` and `JsonFormatter`)
+
+The library includes two built-in formatters:
+- `StandardLogFormatter` (using `TextFormatter` skill): Human-readable terminal output with ANSI colors.
+- `JsonLogFormatter` (using `JsonFormatter` skill): Single-line structured JSON logs for log aggregators (Elasticsearch, Datadog).
+
+```kotlin
+import { Log, JsonLogFormatter } from "std.log"
+
+fun main() {
+    Log.setFormatter(JsonLogFormatter())
+    Log.info { "User logged in" }
+    // Output: {"timestamp":"2026-07-22 22:00:00","level":"INFO","message":"User logged in"}
+}
+```

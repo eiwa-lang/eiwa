@@ -6,7 +6,7 @@ Para desenvolver ou compilar o motor da linguagem **Aether**, você precisará p
 
 ### Zig (Compilador Principal)
 O código fonte do Aether é escrito em Zig. Você precisa do compilador do Zig para "compilar o nosso compilador".
-- **Versão Recomendada:** 0.13.0+
+- **Versão Suportada:** 0.16.0+
 - **Instalação Oficial:** [https://ziglang.org/download/](https://ziglang.org/download/)
 - Verifique a instalação rodando: `zig version`
 
