@@ -11,7 +11,7 @@ contract Awaitable<T> {
     fun await(): T
 }
 
-skill TaskLibaco : Awaitable<T> {
+skill TaskNeco : Awaitable<T> {
     implement fun await(): T { ... }
 }
 ```
@@ -211,22 +211,22 @@ fun task<T>(block: () -> T): Task<T> {
 
 Com monomorfização, `Task<Int>` vira struct concreta. O construtor `Task<Int>.new` chama libaco para criar a co-rotina de verdade.
 
-#### Task 50.2.2: Código da fibra vai pra `lib {}` (libaco)
+#### Task 50.2.2: Código da fibra vai pra `lib {}` (neco)
 
 Em vez de gerar `({ })` inline no transpiler, o construtor de `Task<T>` chama `lib {}`:
 
 ```eiwa
-lib Libaco {
-    fun aco_create(fn: OpaquePointer, stack_size: Int): OpaquePointer
-    fun aco_resume(aco: OpaquePointer)
-    fun aco_yield()
-    fun aco_destroy(aco: OpaquePointer)
+lib Neco {
+    fun neco_start(fn: OpaquePointer, argc: Int, ...): Int
+    fun neco_suspend(): Int
+    fun neco_resume(id: Int): Int
+    fun neco_lastid(): Int
 }
 ```
 
-O construtor `Task<T>.new(block)` aloca a Task, cria co-rotina via `aco_create`, armazena em `self.co`. A lambda `block` precisa ser convertida para ponteiro de função C via closure.
+O construtor `Task<T>.new(block)` aloca a Task, cria co-rotina via `neco_start`, armazena o `id` em `self.co_id`. A lambda `block` precisa ser convertida para ponteiro de função C via closure.
 
-Arquivo: `src/std/core.ei` + runtime `src/runtime/third_party/libaco/`
+Arquivo: `src/std/core.ei` + runtime `src/runtime/third_party/neco/`
 
 #### Task 50.2.3: Remover special cases do type checker
 
@@ -264,7 +264,7 @@ Após libaco integrado, remover todo `src/runtime/fiber.c` e `src/runtime/fiber.
 
 ---
 
-## Etapa 3 — Arquitetura Final: Contract + Skill + libaco
+## Etapa 3 — Arquitetura Final: Contract + Skill + neco
 
 ### Design final da linguagem
 
@@ -276,18 +276,18 @@ contract Awaitable<T> {
     fun await(): T
 }
 
-// Skill: implementa Awaitable usando libaco
-lib Libaco {
-    fun aco_create(fn: OpaquePointer, stack: Int): OpaquePointer
-    fun aco_resume(aco: OpaquePointer)
-    fun aco_yield()
-    fun aco_destroy(aco: OpaquePointer)
+// Skill: implementa Awaitable usando neco
+lib Neco {
+    fun neco_start(fn: OpaquePointer, argc: Int, ...): Int
+    fun neco_suspend(): Int
+    fun neco_resume(id: Int): Int
+    fun neco_lastid(): Int
 }
 
-skill TaskLibaco : Awaitable<T> {
+skill TaskNeco : Awaitable<T> {
     implement fun await(): T {
         while (!this.done) {
-            Libaco.resume(this.co)
+            Neco.neco_resume(this.co_id)
         }
         return *this.resultPtr
     }
@@ -295,10 +295,10 @@ skill TaskLibaco : Awaitable<T> {
 
 // Type concreto que compõe o skill
 type Task<T>(
-    val co: OpaquePointer,
+    val co_id: Int,
     var done: Bool,
     val resultPtr: OpaquePointer
-) + TaskLibaco
+) + TaskNeco
 
 // Factory function
 fun task<T>(block: () -> T): Task<T> {
@@ -310,38 +310,37 @@ fun task<T>(block: () -> T): Task<T> {
 
 #### Task 50.3.1: Skill methods acessarem `this.props` de `type`
 
-Skills precisam acessar as propriedades do `type` consumidor via `this`. Ex: em `TaskLibaco.await()`, `this.done` e `this.co` são props de `Task<T>`. Verificar se o mecanismo atual de skill → type resolve isso corretamente (já deve funcionar — skills recebem `this` do tipo consumidor).
+Skills precisam acessar as propriedades do `type` consumidor via `this`. Ex: em `TaskNeco.await()`, `this.done` e `this.co_id` são props de `Task<T>`. Verificar se o mecanismo atual de skill → type resolve isso corretamente (já deve funcionar — skills recebem `this` do tipo consumidor).
 
-#### Task 50.3.2: `lib {}` bindings de libaco
+#### Task 50.3.2: `lib {}` bindings de neco
 
-Criar `src/runtime/third_party/libaco/` com:
-- `aco.h` — header original
-- `aco.c` — implementação
-- `aco_asm.S` — assembly por plataforma
+Baixar neco em `src/runtime/third_party/neco/` (single-file: `neco.c` + `neco.h`):
+- `neco.h` — header público
+- `neco.c` — implementação completa (amalgamação, sem dependências)
 
-Criar binding `lib Libaco` em `src/std/core.ei` expondo as funções necessárias.
+Criar binding `lib Neco` em `src/std/core.ei` expondo as funções necessárias.
 
-#### Task 50.3.3: Construtor `Task<T>.new(block)` com libaco
+#### Task 50.3.3: Construtor `Task<T>.new(block)` com neco
 
 O construtor da type `Task<T>` deve:
 1. Alocar a Task via GC
 2. Criar lambda C a partir do `block` (closure)
-3. Chamar `aco_create(fn_ptr, stack_size)` com a lambda
-4. Armazenar `co` na Task
+3. Chamar `neco_start(fn_ptr, argc, ...)` com a lambda
+4. Armazenar `co_id` (retornado por `neco_lastid()`) na Task
 
 O closure packing (lambda → `{fn_ptr, env}`) já existe no transpiler para closures normais. O construtor precisa receber a lambda como `EiwaClosure` e extrair `fn_ptr` + `env`.
 
 #### Task 50.3.4: `await()` via skill implementado
 
-O método `await()` no skill `TaskLibaco`:
-1. Loop `while(!this.done)` chamando `Libaco.resume(this.co)`
+O método `await()` no skill `TaskNeco`:
+1. Loop `while(!this.done)` chamando `Neco.neco_resume(this.co_id)`
 2. Quando done, ler `this.resultPtr` e retornar valor tipado
 
 Isso substitui os `({ })` blocks do transpiler atual.
 
 #### Task 50.3.5: Remover runtime legado
 
-Após libaco + refatoração:
+Após neco + refatoração:
 - `src/runtime/fiber.c` — deletar
 - `src/runtime/fiber.h` — deletar
 - `src/main.zig` — remover `src/runtime/fiber.c` dos args de compilação
@@ -361,13 +360,12 @@ Após libaco + refatoração:
 src/
 ├── runtime/
 │   └── third_party/
-│       └── libaco/
+│       └── neco/
 │           ├── LICENSE
-│           ├── aco.c
-│           ├── aco.h
-│           └── aco_asm.S
+│           ├── neco.c
+│           └── neco.h
 ├── std/
-│   └── core.ei              ← Task<T>, Awaitable<T>, TaskLibaco, task<T>
+│   └── core.ei              ← Task<T>, Awaitable<T>, TaskNeco, task<T>
 ├── core/
 │   ├── ast.zig               ← generic_params em contract/skill/fun/type
 │   ├── monomorph.zig         ← NOVO: mecanismo de clonagem + substituição
@@ -399,7 +397,7 @@ Etapa 1 (Monomorfização) ─────────── necessário para Et
 Etapa 2 (Remover Special Cases) ──── necessário para Etapa 3
     │
     ▼
-Etapa 3 (Contract + Skill + libaco) ─ destino final
+Etapa 3 (Contract + Skill + neco) ─── destino final
 ```
 
 ## Cronograma Estimado
@@ -409,17 +407,17 @@ Etapa 3 (Contract + Skill + libaco) ─ destino final
 | 0 — Type params em contract/skill | 2 dias | Média |
 | 1 — Monomorfização | 3-5 dias | Alta |
 | 2 — Remover special cases | 1 dia | Baixa |
-| 3 — Contract + Skill + libaco | 2-3 dias | Média |
+| 3 — Contract + Skill + neco | 2-3 dias | Média |
 | **Total** | **8-11 dias** | |
 
 ## Checklist Final (100% do destino)
 
 - [ ] `contract Awaitable<T>` com type param
-- [ ] `skill TaskLibaco : Awaitable<T>` com type param
+- [ ] `skill TaskNeco : Awaitable<T>` com type param
 - [ ] Funções genéricas monomorfizadas (`fun task<T>`)
 - [ ] Tipos genéricos monomorfizados (`type Task<T>`)
-- [ ] libaco em `third_party/` com binding `lib {}`
-- [ ] `Task<T>` usando `skill TaskLibaco` + libaco no runtime
+- [ ] neco em `third_party/neco/` com binding `lib Neco`
+- [ ] `Task<T>` usando `skill TaskNeco` + neco no runtime
 - [ ] Nenhum special case `task`/`await` no compilador
 - [ ] `fiber.c`/`fiber.h` removidos
-- [ ] 123+ testes passando
+- [ ] 125+ testes passando
