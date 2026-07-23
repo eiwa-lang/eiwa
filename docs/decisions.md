@@ -128,7 +128,7 @@ Se o `when` retornar um valor não-Void, o compilador exige a presença de um ra
 **Decisão:** Adotar uma abordagem híbrida evolutiva:
 1. **Fase Inicial (Phase 35):** Implementar o cliente HTTP (`std.http.Client`) via FFI com a biblioteca C `libcurl`, e o servidor HTTP (`std.http.Server`) utilizando FFI com `libuv` (ou soquetes não-bloqueantes com wrappers leves em C compilados no runtime).
 2. **Fase de Concorrência Avançada (Phase 36):** Projetar uma infraestrutura de Fibers cooperativas no C runtime e um loop de eventos centralizado baseado em `epoll`/`kqueue`/`libevent`. Reimplementar soquetes da standard library para suspender as fibers em caso de bloqueio de I/O, entregando concorrência de altíssima performance no nível de Go e Crystal.
-**Razão:** A curto prazo, reutilizar `libcurl` e `libuv` através de FFI aproveita a performance máxima e maturidade dessas bibliotecas em C, minimizando o risco de falhas de segurança e reduzindo drasticamente o esforço de implementação. A longo prazo, a evolução para Fibers integradas e um loop de eventos central no runtime dará ao Eiwa a mesma ergonomia síncrona e escalabilidade em concorrência que Go e Crystal oferecem.
+**Razão:** A curto prazo, reutilizar `libcurl` e `libuv` através de FFI aproveita a performance máxima e maturidade dessas bibliotecas em C, minimizando o risco de falhas de segurança e reduzindo drasticamente o esforço de implementação. A longo prazo, a Fase 36 unificada (ver ADR 35) substitui esta abordagem por fibras nativas em Zig + task { }/await() + I/O não-bloqueante, dando ao Eiwa a mesma ergonomia síncrona e escalabilidade em concorrência que Go e Crystal.
 
 ## ADR 20: Lambda Expressions & Higher-Order Functions (Lambdas e Funções de Alta Ordem)
 **Data:** Fase 31
@@ -298,4 +298,32 @@ Regras centrais:
 2. Criar uma camada de compatibilidade em [src/core/compat.zig](file:///Users/leodouglas/Projects/dystral-lang/src/core/compat.zig) que adapta a nova estrutura *unmanaged* do `std.ArrayList` do Zig 0.16.0 mantendo acesso direto à propriedade `.items` e métodos de escrita (`.print(...)`, `.writeAll(...)`), preservando a ergonomia do compilador.
 3. Atualizar a entrada do CLI para `pub fn main(init: std.process.Init)` e propagar o manipulador `std.Io` para chamadas de disco e subprocessos (`std.process.run`, `std.process.spawn`).
 **Razão:** Permite que desenvolvedores em Linux, macOS e Windows compilem o Eiwa nativamente utilizando a versão mais recente do Zig (0.16.0) sem quebrar o ecossistema existente.
+
+## ADR 35: Concorrência Estruturada com Fibras e Tasks (Task/Fiber Unificado)
+**Data:** Fase 36/50 (Unificada)
+**Contexto:** O Eiwa não possuía concorrência nativa. `std.http.Client` bloqueava a thread inteira em chamadas `libcurl`, e servidores HTTP como `arest` processavam uma conexão por vez. Precisávamos de concorrência leve e ergonômica, similar a Kotlin Coroutines, sem a complexidade de um runtime de threads OS.
+
+**Decisão:**
+
+Fundir as antigas Fases 36 (Fiber-based Concurrency) e 50 (Structured Concurrency) em uma única fase unificada, implementada em três camadas:
+
+**Camada 1 — Runtime de Fibras (Zig, não C):**
+- Scheduler single-threaded com event loop (kqueue no macOS, epoll no Linux).
+- Fibras cooperativas implementadas em Zig (`src/runtime/fiber.zig`), usando `makecontext`/`swapcontext` (POSIX) ou assembly platform-specific.
+- Toda fibra tem uma pilha própria (4KB inicial, crescimento sob demanda).
+- O scheduler roda em uma única thread OS (sem locks, sem data races) — escalabilidade futura via Execution Contexts (estilo Crystal ADR 36/50).
+
+**Camada 2 — API `task { }` / `await()`:**
+- `task { expr }` é uma função da stdlib (`src/std/core.ei`), não uma keyword — o parser já suporta `ident { lambda }`.
+- Retorna `Task<T>`, tipo declarado na stdlib com tratamento especial no type checker (como `String`, `Int`).
+- `await()` é o **único** ponto de suspensão. Não existe `suspend fun`. Funções que chamam `await()` já estão rodando dentro de um `task { }`.
+- Structured concurrency: o escopo pai só completa quando todos os tasks filhos completam.
+- Sem `launch`, sem cancelamento, sem channels no MVP.
+
+**Camada 3 — I/O Não-Bloqueante:**
+- `std.net.Socket` se torna fiber-aware (yield ao invés de bloquear).
+- `std.http.Client` e `std.http.Server` refatorados para usar o event loop.
+- `arest` passa a servir múltiplas conexões concorrentemente em uma única thread.
+
+**Razão:** A separação em camadas permite entrega incremental: o runtime de fibras (Camada 1) é reutilizável pela stdlib antes mesmo da sintaxe `task { }` existir. A API Kotlin-style (Camada 2) é familiar e minimalista. O scheduler single-threaded elimina toda a complexidade de locks e data races, mantendo o modelo mental simples. A migração futura para Execution Contexts paralelos (Crystal-style) fica documentada como evolução, não como redesign.
 

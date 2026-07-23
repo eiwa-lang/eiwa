@@ -16,6 +16,14 @@ const extractBaseType = core.extractBaseType;
 fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, member_name: []const u8) ?*const EiwaType {
     const base_type = extractBaseType(target_type);
     var name_opt: ?[]const u8 = null;
+
+    if (base_type.* == .GenericInstance) {
+        const gi = base_type.GenericInstance;
+        if (std.mem.eql(u8, gi.base_name, "Task") and std.mem.eql(u8, member_name, "await")) {
+            return if (gi.type_args.len > 0) gi.type_args[0] else null;
+        }
+    }
+
     switch (base_type.*) {
         .Custom => |n| name_opt = n,
         .GenericInstance => |gi| {
@@ -236,6 +244,15 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         }
     }
     const base_type = extractBaseType(obj_type);
+
+    if (base_type.* == .GenericInstance) {
+        const resolved = inferGetExprForSingleType(self, base_type, g.name);
+        if (resolved) |rt| {
+            t.* = rt.*;
+            return;
+        }
+    }
+
     var lookup_name: ?[]const u8 = null;
     var base_name: ?[]const u8 = null;
     switch (base_type.*) {

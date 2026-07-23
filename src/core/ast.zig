@@ -165,6 +165,7 @@ pub const ASTNodeType = union(enum) {
         annotations: []const Annotation,
         modifiers: []const TokenType,
         name: []const u8,
+        generic_params: []const []const u8,
         params: []Param,
         type_ref: ?*const ASTTypeRef,
         body: *ASTNode,

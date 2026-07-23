@@ -13,6 +13,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+#include "fiber.h"
+
 static inline int eiwa_char_at(const char* str, int index) {
     return str[index];
 }

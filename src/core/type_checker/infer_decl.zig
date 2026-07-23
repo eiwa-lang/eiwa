@@ -686,6 +686,10 @@ pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 
 pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var f = &node.data.fun_decl;
+    if (f.generic_params.len > 0) {
+        t.* = .Void;
+        return;
+    }
     var param_types = ArrayList(*const EiwaType).init(self.allocator);
     var mangled_name = ArrayList(u8).init(self.allocator);
     const is_method = scope.lookupVariable("this") != null;
@@ -1240,7 +1244,9 @@ fn makeMemberCall(self: *TypeChecker, line: usize, col: usize, obj_name: []const
 }
 
 fn makeMemberCallOrNullFallback(self: *TypeChecker, line: usize, col: usize, obj_name: []const u8, prop: anytype, method_name: []const u8, null_fallback: *ASTNode) !*ASTNode {
-    if (!prop.type_ref.is_nullable) {
+    const prop_rt = prop.resolved_type orelse try self.resolveTypeRef(prop.type_ref);
+    const is_ptr_type = prop.type_ref.is_nullable or core.isNullable(prop_rt);
+    if (!is_ptr_type) {
         return try makeMemberCall(self, line, col, obj_name, prop.name, method_name, false);
     }
 
@@ -1344,6 +1350,7 @@ fn generateDefaultToString(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
                 .annotations = &.{},
                 .modifiers = &[_]ast.TokenType{ .kw_implement },
                 .name = "toString",
+                .generic_params = &[_][]const u8{},
                 .params = &.{},
                 .type_ref = ret_tr,
                 .body = body_node,
@@ -1412,6 +1419,7 @@ fn generateDefaultHashCode(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
                 .annotations = &.{},
                 .modifiers = &[_]ast.TokenType{ .kw_implement },
                 .name = "hashCode",
+                .generic_params = &[_][]const u8{},
                 .params = &.{},
                 .type_ref = ret_tr,
                 .body = body_node,
@@ -1532,6 +1540,7 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
                 .annotations = &.{},
                 .modifiers = &[_]ast.TokenType{ .kw_implement, .kw_operator },
                 .name = "equals",
+                .generic_params = &[_][]const u8{},
                 .params = params,
                 .type_ref = ret_tr,
                 .body = when_body,
@@ -1658,6 +1667,7 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
                 .annotations = &.{},
                 .modifiers = &[_]ast.TokenType{ .kw_implement },
                 .name = "serdeFields",
+                .generic_params = &[_][]const u8{},
                 .params = &.{},
                 .type_ref = list_ret_type_ref,
                 .body = arr_node,

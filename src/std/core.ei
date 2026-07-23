@@ -161,6 +161,17 @@ type Int : Stringable, Equatable, Hashable {
     }
 }
 
+type Task<T>(
+    val fiber: OpaquePointer,
+    val context: OpaquePointer,
+    var done: Bool,
+    val resultPtr: OpaquePointer
+)
+
+fun task<T>(block: () -> T): Task<T> {
+    return Task<T>(0 as OpaquePointer, 0 as OpaquePointer, false, 0 as OpaquePointer)
+}
+
 @Primitive("bool")
 type Bool : Stringable, Equatable, Hashable {
     implement fun toString(): String {

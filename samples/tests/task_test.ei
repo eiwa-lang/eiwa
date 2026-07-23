@@ -1,0 +1,63 @@
+import { assert } from "std.core"
+import { Task } from "std.core"
+
+test "task should execute and return a value" {
+    val t = task { 42 }
+    val result = t.await()
+    assert(result == 42)
+}
+
+test "task should return a string value" {
+    val t = task { "Eiwa" }
+    val result = t.await()
+    assert(result == "Eiwa")
+}
+
+test "multiple tasks should run concurrently" {
+    val t1 = task { 10 + 20 }
+    val t2 = task { 30 + 40 }
+
+    val r1 = t1.await()
+    val r2 = t2.await()
+
+    assert(r1 == 30)
+    assert(r2 == 70)
+}
+
+test "nested task should complete" {
+    val outer = task {
+        val inner = task { 7 * 6 }
+        inner.await() + 1
+    }
+    assert(outer.await() == 43)
+}
+
+test "task should work with List type" {
+    val t = task { [1, 2, 3] }
+    val result = t.await()
+    assert(result.size() == 3)
+    assert(result[0] == 1)
+    assert(result[1] == 2)
+    assert(result[2] == 3)
+}
+
+test "task should work with Map type" {
+    val t = task { ["a" of 1, "b" of 2] }
+    val result = t.await()
+    assert(result["a"] == 1)
+    assert(result["b"] == 2)
+}
+
+test "task lambda can capture outer scope" {
+    val multiplier = 10
+    val t = task { multiplier * 5 }
+    assert(t.await() == 50)
+}
+
+test "await on completed task should return immediately" {
+    val t = task { 99 }
+    val r1 = t.await()
+    val r2 = t.await()
+    assert(r1 == 99)
+    assert(r2 == 99)
+}

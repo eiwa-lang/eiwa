@@ -41,6 +41,26 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     if (c.callee.data == .identifier) {
         const name = c.callee.data.identifier.name;
 
+        if (std.mem.eql(u8, name, "task") and c.arguments.len == 1) {
+            _ = try self.inferNode(c.arguments[0], scope);
+            const arg_type = c.arguments[0].resolved_type orelse return error.TypeError;
+            const base_arg = extractBaseType(arg_type);
+            if (base_arg.* != .Function) {
+                self.reportError(node.line, node.column, "TypeError: task() requires a function argument, got {}.", .{arg_type.*});
+                return error.TypeError;
+            }
+            const lambda_return = base_arg.Function.return_type;
+            const type_args = try self.allocator.alloc(*const EiwaType, 1);
+            type_args[0] = lambda_return;
+            const gi = try self.allocator.create(EiwaType);
+            gi.* = .{ .GenericInstance = .{
+                .base_name = "Task",
+                .type_args = type_args,
+            }};
+            t.* = gi.*;
+            return;
+        }
+
         if (c.type_args.len > 0) {
             const class_name = self.alias_map.get(name) orelse name;
             const class_node = self.classes_ast.get(class_name) orelse {

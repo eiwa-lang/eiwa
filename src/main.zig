@@ -287,7 +287,7 @@ pub fn main(init: std.process.Init) !void {
     if (builtin.target.os.tag == .macos) {
         try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
     }
-    try cc_argv.appendSlice(&[_][]const u8{ out_c_filename, "-lgc" });
+    try cc_argv.appendSlice(&[_][]const u8{ "-Isrc/runtime", "src/runtime/fiber.c", out_c_filename, "-lgc" });
 
     var lib_it = transpiler.link_libraries.keyIterator();
     while (lib_it.next()) |lib_name| {

@@ -203,6 +203,18 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
     try self.consume(.identifier, "Expected function name.");
     const name = self.previous.lexeme;
 
+    var generic_params = ArrayList([]const u8).init(self.allocator);
+    if (self.match(.less)) {
+        if (!self.check(.greater)) {
+            while (true) {
+                try self.consume(.identifier, "Expected generic parameter name.");
+                try generic_params.append(self.previous.lexeme);
+                if (!self.match(.comma)) break;
+            }
+        }
+        try self.consume(.greater, "Expected '>' after generic parameters.");
+    }
+
     try self.consume(.l_paren, "Expected '(' after function name.");
     var params = ArrayList(Param).init(self.allocator);
     
@@ -254,6 +266,7 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
         .annotations = annotations,
         .modifiers = modifiers,
         .name = name,
+        .generic_params = try generic_params.toOwnedSlice(),
         .params = try params.toOwnedSlice(),
         .type_ref = parsed_ret,
         .body = body,

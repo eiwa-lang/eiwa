@@ -51,6 +51,12 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType)
             }
         },
         .Function => return "EiwaClosure",
+        .GenericInstance => |gi| {
+            if (std.mem.eql(u8, gi.base_name, "Task")) {
+                return "EiwaTask*";
+            }
+            return "void*";
+        },
         else => return "void*",
     }
 }
@@ -77,6 +83,7 @@ pub const CTranspiler = struct {
     alias_map: ?*std.StringHashMap([]const u8) = null,
     source_file: []const u8 = "<unknown>", // path to the .ei source file being transpiled
     static_initializers: ArrayList(StaticInitializer),
+    task_counter: usize = 0,
 
     pub const StaticInitializer = struct {
         name: []const u8,

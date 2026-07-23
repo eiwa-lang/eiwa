@@ -196,11 +196,32 @@ Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a
 - [x] **Task 35.3:** Implement `std.http.Server` utilizing `libuv` or lightweight non-blocking sockets with custom C wrappers for event dispatching.
 - [x] **Task 35.4:** Write integration tests and sample scripts verifying basic HTTP requests and responses.
 
-### Phase 36: Fiber-based Concurrency & Event Loop Runtime (PENDING)
-- [ ] **Task 36.1:** Update C runtime to support lightweight cooperative threads (Fibers/Green-Threads) with manual context switching (e.g., using `<ucontext.h>` or platform-specific assembly).
-- [ ] **Task 36.2:** Build an integrated Global Event Loop in the runtime using `epoll` (Linux) / `kqueue` (macOS/BSD) or `libevent` under the hood.
-- [ ] **Task 36.3:** Re-implement standard socket block functions in Eiwa FFI to yield execution of the running Fiber, resuming only when notified by the runtime event loop.
-- [ ] **Task 36.4:** Implement high-performance, non-blocking `std.http` on top of Fibers to achieve Go/Crystal-like concurrency.
+### Phase 36: Concorrência Estruturada — Fibras + Tasks (UNIFIED — merged former Phase 36 + Phase 50) (COMPLETED)
+> **Nota:** O runtime de fibras foi implementado em **C** (`fiber.c`/`fiber.h`) em vez de Zig, integrando-se diretamente com o C transpilado. A passagem de ponteiros para `makecontext` no macOS arm64 exigiu o workaround de empacotar ponteiros 64-bit como dois argumentos `int`.
+
+#### Camada 1 — Runtime de Fibras e Scheduler (C)
+- [x] **Task 36.1:** Implementar runtime de fibras cooperativas em C via `makecontext`/`swapcontext`. Fiber stack de 64KB. Scheduler single-threaded com fila round-robin.
+- [x] **Task 36.2:** Scheduler com `enqueue`/`dequeue` para fibers ready. Gestão de fiber finished com yield automático para `calling_fiber`.
+- [x] **Task 36.3:** Primitivas `eiwa_fiber_yield()`, `eiwa_fiber_resume()`, `eiwa_task_init()`. Fiber entry via função auxiliar que executa o callback, marca `finished`, e cede controle.
+- [x] **Verify:** Fibras executam e cedem corretamente sem bloqueio da thread.
+
+#### Camada 2 — API `task { }` / `await()`
+- [x] **Task 36.4:** `type Task<T>` declarado em `std/core.ei` com `Task<T>` tratado como GenericInstance no type checker. Codegen mapeia para `EiwaTask*` (heap-allocated via GC).
+- [x] **Task 36.5:** `fun task<T>(block: () -> T): Task<T>` declarado. Type checker intercepta `task { }` como caso especial em `infer_call.zig` (linha 44), inferindo `Task<T>` diretamente.
+  - ⚠️ **Dívida técnica:** Este caso especial deve ser substituído por monomorfização real quando disponível.
+- [x] **Task 36.6:** Codegen no CTranspiler: `task { }` heap-allocates `EiwaTask` via GC e cria fiber; `.await()` loop com `while(!done) eiwa_fiber_resume`.
+  - ⚠️ **Dívida técnica:** O special case no transpiler (`expression.zig:373`) e no type checker (`infer_call.zig:44`, `infer_member.zig`) devem ser removidos quando a monomorfização substituí-los.
+- [x] **Task 36.7:** Structured concurrency básico — fibers tracking via `calling_fiber`; fiber pai automaticamente cede para a fibra que a resume.
+- [x] **Verify:** `eiwa test samples/tests/task_test.ei` — todos os 8 testes passam (task simples, múltiplas tasks, nested, captura de escopo, tipos complexos).
+
+#### Camada 3 — I/O Não-Bloqueante e std.http
+- [ ] **Task 36.8:** Refatorar `std.net.Socket` para ser fiber-aware: operações de I/O que bloqueariam a thread agora yield a fibra e registram o fd no event loop.
+- [ ] **Task 36.9:** Refatorar `std.http.Client` e `std.http.Server` para usar o socket não-bloqueante, eliminando a dependência de `libcurl` para operações concorrentes.
+- [ ] **Task 36.10:** Atualizar `arest` (servidor HTTP de exemplo) para servir múltiplas conexões concorrentemente em uma única thread usando `task { }`.
+- [ ] **Verify:** Servidor `arest` aceita N conexões simultâneas; `std.http.Client` faz requisições paralelas sem bloquear.
+
+#### Evolução Futura (Execution Contexts)
+- [ ] **Task 36.11 (Future):** Implementar Execution Contexts (estilo Crystal ADR 36/50) — schedulers concorrentes (1 thread), paralelos (N threads com work-stealing) e isolados (1 fiber = 1 thread OS). Por default, o scheduler permanece single-threaded concorrente. Como Crystal
 
 ### Phase 37: Default Parameters (COMPLETED)
 - [x] **Task 37.1:** Update AST and Parser to support optional default initializers.
@@ -250,14 +271,6 @@ Replace implementation inheritance entirely with the composition model defined i
 
 > **Known trade-offs (accepted):** skill methods are cloned per consuming type (C++ template-style code duplication in exchange for zero-cost static dispatch); contract-typed values are erased to `void*` in C (the TypeChecker is the only type-safety layer for dynamic dispatch). Follow-ups live in Phases 42–44.
 
-### Phase 45: Serialization — `Serializable` Contract + JSON/YAML Skills (COMPLETED)
-Compile-time serialization without runtime reflection (ADR 27): the compiler generates `serdeFields(): List<SerdeField>` per `type` marked `: Serializable`; formats are pure-Eiwa skills (`+ Json`, `+ Yaml`) in a new `std.serde` module that walk the field list. Serialization only; deserialization is a future phase.
-- [x] **Task 45.1:** Create `src/std/serde.ei`: `contract Serializable`, `SerdeField`, `contract SerdeValue` + std boxes (`IntValue`, `FloatValue`, `BoolValue`, `StringValue`, `ObjectValue`, `ListValue`), and skills `Json`/`Yaml` with `toJson()`/`toYaml()` written 100% in Eiwa.
-- [x] **Task 45.2:** TypeChecker: accept the marker contract and resolve the generated `serdeFields()` signature; treat a user-provided `implement fun serdeFields()` as an override of the generated body.
-- [x] **Task 45.3:** Compiler codegen: for every `type` implementing `Serializable`, emit the `serdeFields()` body including only serializable fields — primitives, nested `Serializable` types (recursive via `ObjectValue`) and `List<T>` of serializable `T` (via `ListValue`); silently skip all other fields.
-- [x] **Task 45.4:** Samples: `samples/serialization_sample.ei` (nested objects, lists, skipped fields) and `samples/tests/serialization_test.ei` covering JSON and YAML output.
-- [x] **Verify:** Full suite passes (`zig build`, `zig build test`, `eiwa test samples/tests`); sample output matches expected JSON/YAML.
-
 ### Phase 42: Null Safety on Contract Receivers (PENDING)
 Contract-typed receivers are erased to `void*` and dispatch dynamically through `eiwa_find_vtable`. The safe-call path (`?.`) currently ignores the null check for contract method calls, and nullable contract types (`Drawable?`) are untested — a null receiver segfaults instead of short-circuiting.
 - [ ] **Task 42.1:** Emit the null short-circuit (`(obj) == 0 ? 0 : dispatch`) for `?.` calls on contract-typed receivers in the C Transpiler (`expression.zig` contract dispatch branch).
@@ -280,6 +293,14 @@ The composition model (Phase 41) currently has only 5 dedicated tests (`composit
 - [ ] **Task 44.4:** Negative tests as runnable fixtures: contract with state, contract instantiation, skill instantiation, missing `implement`, unresolved ambiguity, wrong signature/return type.
 - [ ] **Task 44.5:** Improve ambiguity error to list all conflicting skills when 3+ collide.
 - [ ] **Verify:** New tests pass; negative fixtures fail with the exact expected diagnostics.
+
+### Phase 45: Serialization — `Serializable` Contract + JSON/YAML Skills (COMPLETED)
+Compile-time serialization without runtime reflection (ADR 27): the compiler generates `serdeFields(): List<SerdeField>` per `type` marked `: Serializable`; formats are pure-Eiwa skills (`+ Json`, `+ Yaml`) in a new `std.serde` module that walk the field list. Serialization only; deserialization is a future phase.
+- [x] **Task 45.1:** Create `src/std/serde.ei`: `contract Serializable`, `SerdeField`, `contract SerdeValue` + std boxes (`IntValue`, `FloatValue`, `BoolValue`, `StringValue`, `ObjectValue`, `ListValue`), and skills `Json`/`Yaml` with `toJson()`/`toYaml()` written 100% in Eiwa.
+- [x] **Task 45.2:** TypeChecker: accept the marker contract and resolve the generated `serdeFields()` signature; treat a user-provided `implement fun serdeFields()` as an override of the generated body.
+- [x] **Task 45.3:** Compiler codegen: for every `type` implementing `Serializable`, emit the `serdeFields()` body including only serializable fields — primitives, nested `Serializable` types (recursive via `ObjectValue`) and `List<T>` of serializable `T` (via `ListValue`); silently skip all other fields.
+- [x] **Task 45.4:** Samples: `samples/serialization_sample.ei` (nested objects, lists, skipped fields) and `samples/tests/serialization_test.ei` covering JSON and YAML output.
+- [x] **Verify:** Full suite passes (`zig build`, `zig build test`, `eiwa test samples/tests`); sample output matches expected JSON/YAML.
 
 ### Phase 46: General Union Types & Multi-Type Collections (COMPLETED)
 General Union types (e.g., `String | Int` or `T1 | T2`) across variable declarations, function parameters, and generic collections like `Map<String, String | Int>`.
@@ -315,17 +336,46 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 49.4:** Refactor `src/std/log.ei`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
 - [x] **Task 49.5:** Update samples and tests (`log_sample.ei`, `log_test.ei`, `arest.ei`, `enum_sample.ei`, `enum_test.ei`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
 
-### Phase 50: Structured Concurrency and Tasks (PENDING)
-Introduce lightweight concurrent tasks with structured concurrency, allowing asynchronous execution without exposing threads, fibers or platform-specific primitives.
-- [ ] **Task 50.1:** Add the `task` keyword to the lexer, parser and AST, supporting `task { ... }` expressions.
-- [ ] **Task 50.2:** Introduce the built-in generic type `Task<T>` where `T` is inferred from the block's last expression.
-- [ ] **Task 50.3:** Implement the built-in `await()` operation to suspend until the task completes and return the computed value.
-- [ ] **Task 50.4:** Introduce the runtime scheduler using lightweight execution units, hiding implementation details behind the runtime.
-- [ ] **Task 50.5:** Propagate task failures so exceptions raised inside a task are rethrown when `await()` is called.
-- [ ] **Task 50.6:** Implement code generation with runtime calls for task creation and awaiting; initial backend may use native threads.
-- [ ] **Verify:** Execute multiple tasks concurrently, retrieve their results, and verify concurrent execution produces correct output.
 
----
+
+### Phase 50: Monomorphização + Refatoração de `Task<T>` (PENDING)
+> **Nota:** Plano detalhado em `docs/plano_mono_task.md`. A implementação tem 4 fases sequenciais. O destino final é `Task<T>` 100% em Eiwa via `contract + skill + lib {}` (libaco), com zero special cases no compilador.
+
+#### Fase 0 — Type Params em `contract` e `skill`
+- [ ] **Task 50.0.1:** Parser: `contract Awaitable<T>` e `skill Foo<T>` — `<T>` opcional após o nome
+- [ ] **Task 50.0.2:** AST: campo `generic_params` em `contract_decl` e `skill_decl`
+- [ ] **Task 50.0.3:** Type checker: registro de contracts/skills genéricos em `local_symbols`, early return no corpo
+- [ ] **Task 50.0.4:** Resolução de type params em constraints (`skill Foo : Awaitable<T>`)
+- [ ] **Verify:** Contract/skill com type param parseiam e registram corretamente
+
+#### Fase 1 — Monomorfização
+- [ ] **Task 50.1.1:** Mecanismo de clonagem de AST com substituição de type params
+- [ ] **Task 50.1.2:** Trigger no type checker: `inferCall` clona e type-check instância monomorfizada
+- [ ] **Task 50.1.3:** Transpiler: gera função C separada por instância (nome mangled)
+- [ ] **Task 50.1.4:** Cache de instâncias para evitar duplicação
+- [ ] **Task 50.1.5:** Tipos genéricos (`type Task<T>`) também monomorfizados
+- [ ] **Verify:** `eiwa test samples/tests/generics_test.ei` passa; funções/tipos com `T` funcionam
+
+#### Fase 2 — Remover Special Cases de `Task<T>`
+- [ ] **Task 50.2.1:** `fun task<T>` em std/core.ei usa monomorfização em vez de special case
+- [ ] **Task 50.2.2:** Construtor `Task<T>` usa `lib {}` (libaco) em vez de C inline `({ })`
+- [ ] **Task 50.2.3:** Remover special case `task()` em `infer_call.zig:44`
+- [ ] **Task 50.2.4:** Remover special case `.await()` em `infer_member.zig`
+- [ ] **Task 50.2.5:** Remover special case `Task` codegen em `expression.zig:373`
+- [ ] **Task 50.2.6:** Remover special case `.await()` codegen em `expression.zig:481`
+- [ ] **Task 50.2.7:** Remover special case `cType("Task")` em `core.zig:55`
+- [ ] **Task 50.2.8:** Remover `src/runtime/fiber.c` e `src/runtime/fiber.h` (substituído por libaco)
+- [ ] **Verify:** `eiwa test samples/tests/task_test.ei` passa sem special cases no compilador
+
+#### Fase 3 — Arquitetura Final: Contract + Skill + libaco
+- [ ] **Task 50.3.1:** `contract Awaitable<T>` em `std/core.ei`
+- [ ] **Task 50.3.2:** `skill TaskLibaco : Awaitable<T>` com `await()` via libaco
+- [ ] **Task 50.3.3:** `lib {}` binding para libaco em `src/runtime/third_party/libaco/`
+- [ ] **Task 50.3.4:** `type Task<T>` compõe `+ TaskLibaco`, construtor cria co-rotina via libaco
+- [ ] **Task 50.3.5:** `fun task<T>(block)` factory retorna `Task<T>`.new(block)
+- [ ] **Verify:** `eiwa test` — suite completa passa; `task_test.ei` passa; zero hacks no compilador
+
+> **Destino final:** `Task<T>` 100% em Eiwa, `contract Awaitable<T>` + `skill TaskLibaco` + libaco em third_party, zero special cases, zero `makecontext`/`_XOPEN_SOURCE`.
 
 ## ✅ Definition of Done (Per Phase)
 * [x] **Security/Lint:** No memory leaks in tests (utilizing `std.testing.allocator` across internal Zig modules).

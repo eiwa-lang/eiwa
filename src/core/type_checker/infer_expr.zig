@@ -270,7 +270,8 @@ pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
             return error.TypeError;
         }
     } else {
-        const is_compat = self.isCompatible(target_type, val_type) or (base_val.* == .Union and self.isCompatible(base_val, base_target));
+        const is_zero_to_ptr = base_val.* == .Int and base_target.* == .Pointer;
+        const is_compat = is_zero_to_ptr or self.isCompatible(target_type, val_type) or (base_val.* == .Union and self.isCompatible(base_val, base_target));
         if (!is_compat) {
             self.reportError(node.line, node.column, "TypeError: Cannot cast {} to {}.", .{ val_type.*, target_type.* });
             return error.TypeError;

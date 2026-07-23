@@ -247,6 +247,7 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
 
 pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     const decl = node.data.fun_decl;
+    if (decl.generic_params.len > 0) return; // Skip generic functions
     const is_main = std.mem.eql(u8, decl.name, "main");
     
     if (is_main and self.is_test_mode) {
