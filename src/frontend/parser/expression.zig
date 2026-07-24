@@ -310,6 +310,43 @@ pub fn call(self: *Parser) anyerror!*ASTNode {
             try self.consume(.identifier, "Expected property name.");
             const name = self.previous.lexeme;
             expr = try self.createNode(.{ .get_expr = .{ .object = expr, .name = name, .is_safe = is_safe } });
+            if (expr.data == .get_expr and self.check(.less)) {
+                const saved = self.*;
+                self.suppress_errors = true;
+                var type_args = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+                var ok = true;
+                _ = self.match(.less);
+                if (self.check(.greater)) {
+                    ok = false;
+                } else {
+                    while (true) {
+                        const arg = self.parseType() catch {
+                            ok = false;
+                            break;
+                        };
+                        try type_args.append(arg);
+                        if (!self.match(.comma)) break;
+                    }
+                }
+                if (ok and self.match(.greater) and self.check(.l_paren)) {
+                    self.suppress_errors = saved.suppress_errors;
+                    _ = self.match(.l_paren);
+                    expr = try self.finishCall(expr, try type_args.toOwnedSlice());
+                    if (self.match(.l_brace)) {
+                        const line = self.previous.line;
+                        const col = self.previous.column;
+                        const lambda = try parseLambdaLiteral(self, line, col);
+                        if (expr.data == .call_expr) {
+                            var new_args = ArrayList(*ASTNode).init(self.allocator);
+                            try new_args.appendSlice(expr.data.call_expr.arguments);
+                            try new_args.append(lambda);
+                            expr.data.call_expr.arguments = try new_args.toOwnedSlice();
+                        }
+                    }
+                } else {
+                    self.* = saved;
+                }
+            }
         } else if (self.match(.bang_bang)) {
             expr = try self.createNode(.{ .unary_expr = .{ .operator = .bang_bang, .operand = expr } });
         } else if (self.match(.l_bracket)) {

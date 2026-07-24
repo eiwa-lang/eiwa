@@ -386,6 +386,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     for (c.methods) |method| {
         if (method.data == .fun_decl) {
             const m = &method.data.fun_decl;
+            if (m.generic_params.len > 0) continue;
             var param_types = ArrayList(*const EiwaType).init(self.allocator);
             for (m.params) |p| {
                 const p_t = if (p.type_ref) |tr| self.resolveTypeRef(tr) catch try self.resolveTypeName("Void", false) else try self.resolveTypeName("Void", false);
@@ -781,17 +782,20 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         try param_types.append(param_type);
     }
 
-    if (std.mem.eql(u8, f.name, "main")) {
+    if (f.resolved_c_name != null) {
+        // Already set (e.g. by monomorphizeFunction) — just ensure it's in functions_ast
+        try self.functions_ast.put(f.resolved_c_name.?, node);
+    } else if (std.mem.eql(u8, f.name, "main")) {
         f.resolved_c_name = "main";
+        try self.functions_ast.put(f.resolved_c_name.?, node);
     } else {
         f.resolved_c_name = try mangled_name.toOwnedSlice();
-    }
-
-    try self.functions_ast.put(f.resolved_c_name.?, node);
-    if (!is_method and self.current_class_name == null) {
-        try self.local_symbols.put(f.name, {});
-        if (self.module_prefix != null) {
-            try self.alias_map.put(f.name, f.resolved_c_name.?);
+        try self.functions_ast.put(f.resolved_c_name.?, node);
+        if (!is_method and self.current_class_name == null) {
+            try self.local_symbols.put(f.name, {});
+            if (self.module_prefix != null) {
+                try self.alias_map.put(f.name, f.resolved_c_name.?);
+            }
         }
     }
 

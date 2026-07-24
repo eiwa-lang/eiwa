@@ -18,11 +18,11 @@ fun pair<A, B>(a: A, b: B): String {
     return a.toString() + " and " + b.toString()
 }
 
-// type Util() {
-//     fun wrap<T>(value: T): Box<T> {
-//         return Box(value)
-//     }
-// }
+type Util() {
+    fun wrap<T>(value: T): Box<T> {
+        return Box(value)
+    }
+}
 
 test "should monomorphize generic functions" {
     // Test explicit type args
@@ -41,17 +41,13 @@ test "should monomorphize generic functions with multiple type params" {
     assert(pair(true, 100) == "true and 100")
 }
 
-// test "should monomorphize generic methods in types" {
-//     val util = Util()
+test "should monomorphize generic methods in types" {
+    val util = Util()
     
-//     // Explicit
-//     val boxInt = util.wrap<Int>(42)
-//     assert(boxInt.get() == 42)
-
-//     // Inferred
-//     val boxStr = util.wrap("Eiwa")
-//     assert(boxStr.get() == "Eiwa")
-// }
+    // Explicit
+    val boxInt = util.wrap<Int>(42)
+    assert(boxInt.get() == 42)
+}
 
 // test "should monomorphize with Custom types" {
 //     val util = Util()

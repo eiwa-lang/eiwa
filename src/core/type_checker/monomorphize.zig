@@ -86,8 +86,18 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
         }
     }
     
-    var new_methods = try self.allocator.alloc(*ASTNode, type_decl.methods.len);
-    for (type_decl.methods, 0..) |method, i| {
+    var filtered_methods = ArrayList(*ASTNode).init(self.allocator);
+    for (type_decl.methods) |method| {
+        if (method.data == .fun_decl) {
+            const mname = method.data.fun_decl.name;
+            if (std.mem.eql(u8, mname, "toString") or std.mem.eql(u8, mname, "hashCode")) {
+                continue;
+            }
+        }
+        try filtered_methods.append(method);
+    }
+    var new_methods = try self.allocator.alloc(*ASTNode, filtered_methods.items.len);
+    for (filtered_methods.items, 0..) |method, i| {
         const new_method = try self.allocator.create(ASTNode);
         new_method.* = method.*;
         if (method.data == .fun_decl) {
@@ -184,6 +194,8 @@ pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args
     const new_node = try self.cloneNode(base_node);
     new_node.data.fun_decl.generic_params = &.{};
     new_node.data.fun_decl.name = mangled_name;
+    // Pre-set resolved_c_name so inferFunDecl skips its own mangling
+    new_node.data.fun_decl.resolved_c_name = mangled_name;
 
     const t = try self.allocator.create(EiwaType);
     try infer_decl_mod.inferFunDecl(self, new_node, &self.global_scope, t);
@@ -198,5 +210,4 @@ pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args
     }
 
     try self.monomorphized_nodes.append(new_node);
-    try self.functions_ast.put(mangled_name, new_node);
 }

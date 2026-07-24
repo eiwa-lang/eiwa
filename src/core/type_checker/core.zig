@@ -278,9 +278,29 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
                 }
                 const mangled_name = try mangled.toOwnedSlice();
 
-                try self.monomorphizeClass(alias, type_args, mangled_name);
+                // Check if any type arg is an unresolved generic parameter
+                var has_unresolved_generic = false;
+                if (self.classes_ast.get(actual_base)) |base_node| {
+                    if (base_node.data == .type_decl) {
+                        const base_decl = base_node.data.type_decl;
+                        for (type_args) |t_arg| {
+                            if (t_arg.* == .Custom) {
+                                for (base_decl.generic_params) |gp| {
+                                    if (std.mem.eql(u8, t_arg.Custom, gp)) {
+                                        has_unresolved_generic = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (has_unresolved_generic) break;
+                        }
+                    }
+                }
+                if (!has_unresolved_generic) {
+                    try self.monomorphizeClass(alias, type_args, mangled_name);
+                }
 
-                const actual_mangled = self.alias_map.get(mangled_name) orelse mangled_name;
+                const actual_mangled = self.alias_map.get(mangled_name) orelse if (has_unresolved_generic) alias else mangled_name;
                 base_type = .{ .Custom = actual_mangled };
             }
         } else if (self.classes_ast.contains(alias) or (self.alias_map.get(alias) != null and self.classes_ast.contains(self.alias_map.get(alias).?))) {

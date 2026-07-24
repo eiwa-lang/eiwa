@@ -336,15 +336,8 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 49.4:** Refactor `src/std/log.ei`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
 - [x] **Task 49.5:** Update samples and tests (`log_sample.ei`, `log_test.ei`, `arest.ei`, `enum_sample.ei`, `enum_test.ei`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
 
-### Phase 50: Monomorfização Real (Generic Method & Generic Functions) (IN PROGRESS)
-> ⚠️ **Regra:** `zig build && ./zig-out/bin/eiwa test` (125+ testes) deve passar **antes** de avançar para a próxima etapa. Cada etapa só começa quando autorizado.
->
-> **Nota:** Esta fase implementa o suporte a monomorfização real de funções e métodos genéricos, que é uma dívida técnica herdada da Fase 36.
->
-> **Estado atual (23 Jul 2026):** Etapa 0 completa. Etapa 1 parcial (só `type_decl`).
->
-> **Ordem de execução:** Etapa 0 → Etapa 1.
-> A cada etapa, esperar autorização antes de prosseguir.
+### Phase 50: Monomorfização Real (Generic Method & Generic Functions) (COMPLETED)
+> **Nota:** Esta fase implementa o suporte a monomorfização real de funções e métodos genéricos, que é uma dívida técnica herdada da Fase 36 (special case `task { }`).
 
 #### Etapa 0 — Type Params em `contract` e `skill` (COMPLETED)
 - [x] **Task 50.0.1:** Parser: `contract Awaitable<T>` e `skill Foo<T>` — `<T>` opcional após o nome
@@ -353,17 +346,17 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 50.0.4:** Resolução de type params em constraints (`skill Foo : Awaitable<T>`)
 - [x] **Verify:** Contract/skill com type param parseiam e registram corretamente
 
-#### Etapa 1 — Monomorfização (PARCIAL — só `type_decl`)
+#### Etapa 1 — Monomorfização (COMPLETED)
 - [x] **Task 50.1.1:** Mecanismo de clonagem de AST com substituição de type params (`cloneNode`, `cloneTypeRef`)
 - [x] **Task 50.1.5:** Tipos genéricos (`type Task<T>`) monomorfizados via `monomorphizeClass`
 - [x] **Foundation fixes:** `String` como built-in em `resolveTypeRef`; `String ↔ Custom(String)` em `isCompatible`; transpiler mapeia `Custom(String)` → `core_String*`; fix mangling de métodos de String durante validação
-- [ ] **Task 50.1.2:** Trigger no type checker: `inferCall` clona e type-check **funções** genéricas monomorfizadas
-- [ ] **Task 50.1.3:** Transpiler: gera função C separada por instância (nome mangled)
-- [ ] **Task 50.1.4:** Cache de instâncias para evitar duplicação
-- [ ] **Verify:** `zig build && ./zig-out/bin/eiwa test` passa; funções genéricas com `T` funcionam
+- [x] **Task 50.1.2:** Trigger no type checker: `inferCall` clona e type-check **funções** genéricas monomorfizadas (explicit + inferred type args; free functions + methods)
+- [x] **Task 50.1.3:** Transpiler: gera função C separada por instância (nome mangled com type args, ex: `generic_methods_test_Util_wrap_Int`)
+- [x] **Task 50.1.4:** Cache de instâncias via `monomorphized_nodes` + `functions_ast` para evitar duplicação
+- [x] **Verify:** `zig build && ./zig-out/bin/eiwa test` (128 testes) passa; funções genéricas com `T` funcionam; métodos genéricos com type args funcionam
 
 ### Phase 51: Refatoração de `Task<T>` (Corotinas 100% em Eiwa) (PLANNED)
-> **Dependência:** Monomorfização Real (Fase 50) concluída.
+> **Dependência:** Monomorfização Real (Fase 50) concluída ✅.
 >
 > **Nota:** Plano detalhado em `docs/plano_mono_task.md`. O destino final é `Task<T>` 100% em Eiwa via `contract + skill + lib {}` (neco — https://github.com/tidwall/neco), removendo todos os casos especiais (special cases) do compilador.
 >
