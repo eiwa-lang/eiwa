@@ -1451,3 +1451,86 @@ fun main() {
     // Output: {"timestamp":"2026-07-22 22:00:00","level":"INFO","message":"User logged in"}
 }
 ```
+
+---
+
+## 23. Generics & Monomorphization
+
+Eiwa supports generic functions, methods, and types using a **monomorphization** strategy: for every unique combination of concrete type arguments, the compiler generates a dedicated copy of the function or type (like C++ templates and Rust generics). This gives zero-cost abstraction — no boxing, no vtable dispatch for monomorphized calls.
+
+### 23.1 Generic Function Declarations
+
+Generic parameters are declared with `<T>` after the function name:
+
+```kotlin
+fun identity<T>(x: T): T {
+    return x
+}
+
+fun main() {
+    assert(identity(42) == 42)           // inferred: identity<Int>
+    assert(identity("hello") == "hello") // inferred: identity<String>
+}
+```
+
+Multiple type parameters are comma-separated:
+
+```kotlin
+fun pair<A, B>(a: A, b: B): Pair<A, B> {
+    return Pair(a, b)
+}
+```
+
+### 23.2 Explicit Type Arguments
+
+You can specify type arguments explicitly with `<Type>` immediately after the function name (before the argument parentheses):
+
+```kotlin
+fun main() {
+    val x = identity<Int>(42)
+    val y = identity<String>("hello")
+    val z = identity<String | Int>(42) // union type parameter
+}
+```
+
+### 23.3 Generic Methods on Types
+
+Methods on `type` declarations can also have their own generic parameters:
+
+```kotlin
+type Util {
+    fun wrap<T>(value: T): Pair<String, T> {
+        return Pair("wrapped", value)
+    }
+}
+
+fun main() {
+    val util = Util()
+
+    // Explicit type args
+    val p1 = util.wrap<Int>(42)
+    assert(p1.first == "wrapped")
+    assert(p1.second == 42)
+
+    // Inferred type args (from argument type)
+    val p2 = util.wrap("hello")
+    assert(p2.first == "wrapped")
+    assert(p2.second == "hello")
+}
+```
+
+### 23.4 Generic Types (`type Task<T>`)
+
+Types can declare generic parameters, and the monomorphizer generates a dedicated C struct per concrete instantiation:
+
+```kotlin
+type Box<T>(val value: T)
+
+fun main() {
+    val intBox = Box(42)     // type: Box<Int>
+    val strBox = Box("eiwa") // type: Box<String>
+
+    assert(intBox.value == 42)
+    assert(strBox.value == "eiwa")
+}
+```

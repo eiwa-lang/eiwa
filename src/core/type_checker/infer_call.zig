@@ -344,10 +344,12 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     c.arguments = new_args;
                 }
                 
-                // Now, infer all lambda arguments using the matched parameter types!
+                // Set expected types for all arguments (for C transpiler boxing)
                 for (c.arguments, 0..) |arg, arg_i| {
-                    if (arg.data == .lambda_expr) {
+                    if (arg_i < f.params.len) {
                         arg.expected_type = f.params[arg_i];
+                    }
+                    if (arg.data == .lambda_expr) {
                         _ = try self.inferNode(arg, scope);
                     }
                 }
