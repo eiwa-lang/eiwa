@@ -73,6 +73,7 @@ pub const CTranspiler = struct {
     link_libraries: std.StringHashMap(void),
     emitted_functions: std.StringHashMap(void),
     emitted_variables: std.StringHashMap(void),
+    emitted_lambdas: std.StringHashMap(void),
     emitted_modules: std.AutoHashMap(*ASTNode, void),
     is_test_mode: bool = false,
     test_names: ArrayList([]const u8),
@@ -85,6 +86,8 @@ pub const CTranspiler = struct {
     source_file: []const u8 = "<unknown>", // path to the .ei source file being transpiled
     static_initializers: ArrayList(StaticInitializer),
     task_counter: usize = 0,
+    // Stack of outer scope variables for lambda capture
+    outer_scope_vars: ArrayList(std.StringHashMap(void)),
 
     pub const StaticInitializer = struct {
         name: []const u8,
@@ -147,11 +150,13 @@ pub const CTranspiler = struct {
             .link_libraries = std.StringHashMap(void).init(allocator),
             .emitted_functions = std.StringHashMap(void).init(allocator),
             .emitted_variables = std.StringHashMap(void).init(allocator),
+            .emitted_lambdas = std.StringHashMap(void).init(allocator),
             .emitted_modules = std.AutoHashMap(*ASTNode, void).init(allocator),
             .is_test_mode = false,
             .test_names = ArrayList([]const u8).init(allocator),
             .test_count = 0,
             .static_initializers = ArrayList(StaticInitializer).init(allocator),
+            .outer_scope_vars = ArrayList(std.StringHashMap(void)).init(allocator),
         };
     }
 
@@ -166,8 +171,29 @@ pub const CTranspiler = struct {
         self.emitted_functions.deinit();
         self.emitted_variables.deinit();
         self.emitted_modules.deinit();
+        self.emitted_lambdas.deinit();
         self.test_names.deinit();
         self.static_initializers.deinit();
+        // Note: outer_scope_vars items are owned by the functions that pushed them
+        // and will be deinit'd when those functions clean up, so we just deinit the array
+        self.outer_scope_vars.deinit();
+    }
+
+    pub fn pushOuterScope(self: *CTranspiler, params: std.StringHashMap(void)) !void {
+        try self.outer_scope_vars.append(params);
+    }
+
+    pub fn popOuterScope(self: *CTranspiler) void {
+        if (self.outer_scope_vars.items.len > 0) {
+            self.outer_scope_vars.items.len -= 1;
+        }
+    }
+
+    pub fn getOuterScopeVars(self: *CTranspiler) ?std.StringHashMap(void) {
+        if (self.outer_scope_vars.items.len > 0) {
+            return self.outer_scope_vars.items[self.outer_scope_vars.items.len - 1];
+        }
+        return null;
     }
 
     pub fn transpile(self: *CTranspiler, node: *ASTNode) ![]const u8 {

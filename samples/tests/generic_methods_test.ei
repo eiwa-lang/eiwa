@@ -65,3 +65,25 @@ test "should monomorphize with Custom types" {
     val resFuncExplicit = identity<Person>(p)
     assert(resFuncExplicit.name == "Alice")
 }
+
+fun lambdaReturnInferred<T>(block: () -> T): T {
+    return block()
+}
+
+test "should monomorphize with Lambdas" {
+    val myFun = { "asd" }
+    assert(lambdaReturnInferred(myFun) == "asd")
+    assert(lambdaReturnInferred { "lambdaReturnInferred" } == "lambdaReturnInferred")
+}
+
+fun lambdaReturnInferredWithoutType<T>(block: () -> T) {
+    block()
+}
+
+test "should monomorphize with Lambdas without return type" {
+    val myFun = {    
+    }
+    lambdaReturnInferredWithoutType(myFun)
+    lambdaReturnInferredWithoutType({})
+    lambdaReturnInferredWithoutType {}
+}

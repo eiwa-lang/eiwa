@@ -57,3 +57,24 @@ test "lambdas: simple HTML builder DSL" {
     assert(result == "<html><body>Hello Eiwa DSL!</body></html>")
 }
 
+// TODO: erro ao monipular variaveis externas dentro de lambdas
+// test "Lambdas: return type Void" {
+//     var executed = false
+//     val myFun = { 
+//         executed = true
+//         echo("teste")
+//     }
+//     myFun()
+//     assert(executed == true)
+// }
+
+fun lambdaReturnVoid(block: () -> Void) {
+    block()
+}
+
+test "Lambdas: return type Void" {
+    val myFun = {
+    }
+    val result = lambdaReturnVoid(myFun)
+    assert(result is Void)
+}

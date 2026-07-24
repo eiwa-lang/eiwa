@@ -189,3 +189,45 @@ type Bool : Stringable, Equatable, Hashable {
         return false
     }
 }
+
+skill Scope<T> {
+
+    fun let<R>(block: (T) -> R): R {
+        return block(this)
+    }
+
+    fun also(block: (T) -> Void): T {
+        block(this)
+        return this
+    }
+
+    fun apply(block: (T) -> Void): T {
+        block(this)
+        return this
+    }
+
+    fun run<R>(block: (T) -> R): R {
+        return block(this)
+    }
+
+    fun takeIf(predicate: (T) -> Bool): T? {
+        if (predicate(this)) {
+            return this
+        } else {
+            return null
+        }
+    }
+
+    fun takeUnless(predicate: (T) -> Bool): T? {
+        if (!predicate(this)) {
+            return this
+        } else {
+            return null
+        }
+    }
+
+    fun with<R>(block: (T) -> R): R {
+        return block(this)
+    }
+
+}

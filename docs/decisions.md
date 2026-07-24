@@ -305,3 +305,24 @@ Regras centrais:
 **Decisão:** O MVP (Fase 36) implementou fibras em C via `ucontext.h` (`fiber.c`/`fiber.h`) com special cases hardcoded no compilador para `task{}`/`await()`. A Fase 51 substituirá este runtime C por **neco** (https://github.com/tidwall/neco) em `third_party/neco/`, usando a monomorfização real (Generic method) da Fase 50 como dependência direta para que `Task<T>` seja 100% implementado em Eiwa na stdlib via `contract Awaitable<T>` + `skill TaskNeco + lib Neco`, eliminando todos os special cases do compilador.
 **Razão:** neco foi escolhido sobre libaco por ser single-file (sem assembly platform-specific), usar kqueue/epoll nativamente, ter API limpa para suspend/resume por ID e ser MIT license. A dependência da monomorfização real (Generic method) desenvolvida na Fase 50 elimina a dívida técnica dos special cases da Fase 36 e permite que qualquer tipo/função genérica se beneficie do mesmo mecanismo.
 
+## ADR 36: Function Call Resolution — Local Scope First with Compatibility Fallback
+**Status:** Aceito / Implementado
+**Data:** Fase 51 (Julho 2026)
+
+**Contexto:** Ao chamar funções sem qualificação (`echo(name)`), o compilador precisava decidir qual escopo consultar primeiro: o escopo local (métodos de `this`, skills injetadas, lambdas com receiver) ou o escopo global (funções top-level como `echo(value: Stringable?)`, `print()`, `File()`).
+
+O problema original: a skill `Echoable` (injetada automaticamente em todo `type` via ADR 29) fornece um método `echo()` com 0 parâmetros. Dentro de `Person.echoName()`, a chamada `echo(name)` encontrava esse método local primeiro e falhava por aridade, em vez de cair para a função global compatível.
+
+**Decisão:** Implementar busca em duas fases no `inferCallExpr` (`src/core/type_checker/infer_call.zig`):
+
+1. **Fase 1 — Escopo Local (`scope.lookupFunctions`)**: Consulta apenas funções **com receiver** (métodos de `this`, skills, lambdas com receiver `T.() -> Void`). Se houver match **compatível** (aridade + tipos), usa esse.
+2. **Fase 2 — Escopo Global (`self.global_scope.lookupFunctions`)**: Se nenhum match local compatível, consulta apenas funções **sem receiver** (funções top-level). Se houver match compatível, usa esse.
+3. **Fallback**: Se nada compatível, continua para lógica existente de funções genéricas e lookup de variáveis (construtores de tipo como `File(path)`).
+
+**Comportamento de Shadowing (igual ao Kotlin):**
+- Método local **compatível** → ganha do global
+- Método local **incompatível** (aridade/tipos) → cai pro global
+- Construtores (`File(path)`, `Person("Leo", 30)`) → fallback para variable lookup
+
+**Razão:** Semântica previsível estilo Kotlin (escopo mais próximo vence) mas sem "shadowing acidental" que quebra chamadas válidas. Permite override intencional quando assinaturas são compatíveis, mas protege contra skills injetadas automaticamente com assinaturas incompatíveis (como `Echoable.echo()` sem parâmetros).
+

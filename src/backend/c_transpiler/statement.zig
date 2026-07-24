@@ -45,6 +45,16 @@ fn emitCatchTypeCheck(self: *CTranspiler, target_t: *const type_system.EiwaType)
 pub fn emitStatement(self: *CTranspiler, node: *ASTNode) anyerror!void {
     switch (node.data) {
         .var_decl => |v| {
+            if (node.resolved_type) |rt| {
+                if (rt.* == .Void) {
+                    if (v.initializer) |init_node| {
+                        try self.writer.appendSlice("    ");
+                        try self.emitExpression(init_node);
+                        try self.writer.appendSlice(";\n");
+                    }
+                    return;
+                }
+            }
             var type_str: []const u8 = "int";
             if (node.resolved_type) |rt| {
                 type_str = try self.cType(rt);
@@ -152,6 +162,16 @@ pub fn emitStatement(self: *CTranspiler, node: *ASTNode) anyerror!void {
             }
         },
         .return_stmt => |r| {
+            if (r.value) |v| {
+                if (v.resolved_type != null and v.resolved_type.?.* == .Void) {
+                    // Void-typed value (e.g. generic T instantiated as Void):
+                    // emit the expression for side effects, then a bare return.
+                    try self.writer.appendSlice("    ");
+                    try self.emitExpression(v);
+                    try self.writer.appendSlice(";\n    return;\n");
+                    return;
+                }
+            }
             try self.writer.appendSlice("    return ");
             if (r.value) |v| {
                 try self.emitExpression(v);

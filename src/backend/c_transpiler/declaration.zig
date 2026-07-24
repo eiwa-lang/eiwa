@@ -278,12 +278,17 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
         // main has no params or argc/argv if needed later
     } else if (node.resolved_type) |rt| {
         const fun_type = rt.Function;
+        var outer_params = std.StringHashMap(void).init(self.allocator);
+        defer outer_params.deinit();
         for (decl.params, 0..) |p, i| {
             if (i > 0) try sig.writer().print(", ", .{});
             const param_t_str = try self.cType(fun_type.params[i]);
             if (ts.extractBaseType(fun_type.params[i]).* == .Array) try self.emitArrayStruct(ts.extractBaseType(fun_type.params[i]).Array);
             try sig.writer().print("{s} {s}", .{ param_t_str, p.name });
+            try outer_params.put(p.name, {});
         }
+        try self.pushOuterScope(outer_params);
+        defer self.popOuterScope();
     }
     try sig.writer().print(")", .{});
 

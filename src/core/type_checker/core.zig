@@ -830,7 +830,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
                 .line = node.line,
                 .column = node.column,
                 .resolved_type = null,
-                .data = .{ .identifier = .{ .name = "String", .resolved_c_name = actual_c_name, .is_class_property = false } },
+                .data = .{ .identifier = .{ .name = "String", .resolved_c_name = actual_c_name, .is_class_property = true } },
             };
             const callee_type = try self.allocator.create(EiwaType);
             callee_type.* = .String;

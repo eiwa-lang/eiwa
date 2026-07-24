@@ -112,39 +112,18 @@ skill TaskNeco : Awaitable<T> {
     }
 }
 
-// Type concreto que compõe o skill
-type Task<T>(
-    val co_id: Int,
-    var done: Bool,
-    val resultPtr: OpaquePointer
-) + TaskNeco
-
-// Factory function
-fun task<T>(block: () -> T): Task<T> {
-    return Task<T>.new(block)
-}
+// Type concreto que compõe o skill o contrato e o type esta quase completo em (../samples/example.ei) so precisa bind com a lib Neco
 ```
 
 ### Tasks
 
-#### Task 51.2.1: Skill methods acessarem `this.props` de `type`
-Skills precisam acessar as propriedades do `type` consumidor via `this`. Ex: em `TaskNeco.await()`, `this.done` e `this.co_id` são props de `Task<T>`. Verificar se o mecanismo atual de skill → type resolve isso corretamente (já deve funcionar — skills recebem `this` do tipo consumidor).
-
-#### Task 51.2.2: `lib {}` bindings de neco
+#### Task 51.2.1: `lib {}` bindings de neco
 Baixar neco em `src/runtime/third_party/neco/` (single-file: `neco.c` + `neco.h`):
 - `neco.h` — header público
 - `neco.c` — implementação completa (amalgamação, sem dependências)
 Criar binding `lib Neco` em `src/std/core.ei` expondo as funções necessárias.
 
-#### Task 51.2.3: Construtor `Task<T>.new(block)` com neco
-O construtor da type `Task<T>` deve:
-1. Alocar a Task via GC
-2. Criar lambda C a partir do `block` (closure)
-3. Chamar `neco_start(fn_ptr, argc, ...)` com a lambda
-4. Armazenar `co_id` (retornado por `neco_lastid()`) na Task
-O closure packing (lambda → `{fn_ptr, env}`) já existe no transpiler para closures normais. O construtor precisa receber a lambda como `EiwaClosure` e extrair `fn_ptr` + `env`.
-
-#### Task 51.2.4: `await()` via skill implementado
+#### Task 51.2.2: `await()` via skill implementado
 O método `await()` no skill `TaskNeco`:
 1. Loop `while(!this.done)` chamando `Neco.neco_resume(this.co_id)`
 2. Quando done, ler `this.resultPtr` e retornar valor tipado
@@ -161,6 +140,9 @@ Após neco + refatoração:
 - O metodo task {} deve começar a executar imediatamente assim como em (Kotlin async {} e lauch {}), await() deve apenas bloquear até o resultado estar pronto.
 - Não deveria ser necessário codigos em zig que conheça neco, tudo deve ser gerenciado pelo eiwa
 - Se necessário podemos usar o arquivo third_wrapper.h/.c para fazer os bindings para as libs de eiwa.
+- Devemos tentar usar o minimo de zig e C possivel, tudo deve ser gerenciado pelo eiwa, nao pode haver grandes blocos de codigo em zig conhecendo as libs de eiwa, precisamos abstrair isso ao maximo.
+- Tudo que foi feito para o task anteriormente deve ser desfeito.
+- Devemos utilizar o sistema de tipos e contratos existente para implementar o task, nao devemos criar novas keywords ou sintaxes.
 
 #### Verificação
 
@@ -185,14 +167,10 @@ src/
 │   └── core.ei              ← Task<T>, Awaitable<T>, TaskNeco, task<T>
 ├── core/
 │   ├── ast.zig               ← generic_params em contract/skill/fun/type
-│   ├── monomorph.zig         ← NOVO: mecanismo de clonagem + substituição
 │   └── type_checker/
 │       ├── infer_call.zig    ← sem special cases
 │       ├── infer_member.zig  ← sem special cases
 │       └── ...
-├── frontend/
-│   └── parser/
-│       └── declaration.zig   ← <T> em contract, skill
 └── backend/
     └── c_transpiler/
         ├── expression.zig    ← sem special cases
@@ -205,13 +183,6 @@ src/
 ## Dependências Completas
 
 ```
-[Phase 50: Monomorfização Real]
-Etapa 0 (Contract/Skill Generics) ─── necessário para Etapa 3
-    │
-    ▼
-Etapa 1 (Monomorfização) ─────────── necessário para Etapas 2 e 3
-    │
-    ▼
 [Phase 51: Refatoração de Task<T>]
 Etapa 2 (Remover Special Cases) ──── necessário para Etapa 3
     │
@@ -223,20 +194,15 @@ Etapa 3 (Contract + Skill + neco) ─── destino final
 
 | Fase | Etapa | Esforço | Complexidade |
 |------|-------|---------|--------------|
-| **Phase 50** | 0 — Type params em contract/skill | 2 dias | Média |
-| **Phase 50** | 1 — Monomorfização | 3-5 dias | Alta |
-| **Phase 51** | 2 — Remover special cases | 1 dia | Baixa |
-| **Phase 51** | 3 — Contract + Skill + neco | 2-3 dias | Média |
-| **Total** | | **8-11 dias** | |
+| **Phase 51** | 1 — Contract + Skill + neco | 2-3 dias | Média |
+| **Total** | | **2-3 dias** | |
 
 ## Checklist Final (100% do destino)
 
 - [ ] `contract Awaitable<T>` com type param
 - [ ] `skill TaskNeco : Awaitable<T>` com type param
-- [ ] Funções genéricas monomorfizadas (`fun task<T>`)
-- [ ] Tipos genéricos monomorfizados (`type Task<T>`)
 - [ ] neco em `third_party/neco/` com binding `lib Neco`
 - [ ] `Task<T>` usando `skill TaskNeco` + neco no runtime
 - [ ] Nenhum special case `task`/`await` no compilador
 - [ ] `fiber.c`/`fiber.h` removidos
-- [ ] 125+ testes passando
+- [ ] todos testes passando

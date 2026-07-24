@@ -39,7 +39,9 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
         },
         .identifier => |i| {
             const name = i.resolved_c_name orelse i.name;
-            if (i.is_class_property) {
+            if (node.resolved_type != null and node.resolved_type.?.* == .Void) {
+                try self.writer.appendSlice("0");
+            } else if (i.is_class_property) {
                 try self.writer.writer().print("this->{s}", .{i.name});
             } else if (i.is_boxed) {
                 try self.writer.writer().print("{s}->value", .{name});
@@ -936,12 +938,17 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
         },
         .is_expr => |i| {
             const target_t = i.type_ref.resolved_type.?;
+            if (target_t.* == .Void) {
+                try self.writer.appendSlice(if (i.is_not) "0" else "1");
+                return;
+            }
             const target_c_name = switch (target_t.*) {
                 .Custom => |cname| cname,
                 .Int => "core_Int",
                 .Bool => "core_Bool",
                 .String => "core_String",
                 .Null => "core_Null",
+                .Void => "core_Void",
                 else => "unknown",
             };
             if (i.is_not) {
@@ -1083,6 +1090,12 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             const line = node.line;
             const col = node.column;
             
+            const lambda_key = try std.fmt.allocPrint(self.allocator, "{}_{}", .{line, col});
+            const is_new_lambda = !self.emitted_lambdas.contains(lambda_key);
+            if (is_new_lambda) {
+                try self.emitted_lambdas.put(lambda_key, {});
+            }
+            
             var param_names = ArrayList([]const u8).init(self.allocator);
             var param_types = ArrayList(*const ts.EiwaType).init(self.allocator);
             
@@ -1138,20 +1151,22 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             const env_struct_name = try std.fmt.allocPrint(self.allocator, "_env_{}_{}", .{line, col});
             const lambda_fn_name = try std.fmt.allocPrint(self.allocator, "_lambda_{}_{}", .{line, col});
             
-            if (captures.items.len > 0) {
-                var hw = self.header_writer.writer();
-                try hw.print("typedef struct {{\n", .{});
-                for (captures.items) |cap| {
-                    if (cap.is_boxed) {
-                        const box_type = try getBoxTypeName(self.allocator, cap.c_type);
-                        try hw.print("    {s}* {s};\n", .{box_type, cap.name});
-                    } else {
-                        try hw.print("    {s} {s};\n", .{cap.c_type, cap.name});
+            if (is_new_lambda) {
+                if (captures.items.len > 0) {
+                    var hw = self.header_writer.writer();
+                    try hw.print("typedef struct {{\n", .{});
+                    for (captures.items) |cap| {
+                        if (cap.is_boxed) {
+                            const box_type = try getBoxTypeName(self.allocator, cap.c_type);
+                            try hw.print("    {s}* {s};\n", .{box_type, cap.name});
+                        } else {
+                            try hw.print("    {s} {s};\n", .{cap.c_type, cap.name});
+                        }
                     }
+                    try hw.print("}} {s};\n\n", .{env_struct_name});
                 }
-                try hw.print("}} {s};\n\n", .{env_struct_name});
             }
-            
+
             var return_type_str: []const u8 = "void";
             if (node.resolved_type) |rt| {
                 const rt_base = ts.extractBaseType(rt);
@@ -1182,28 +1197,30 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             self.writer = old_writer;
             
             // Emit helper function header and body flatly into header_writer
-            var hw = self.header_writer.writer();
-            try hw.print("static inline {s} {s}(void* __env", .{return_type_str, lambda_fn_name});
-            for (param_names.items, param_types.items) |p_name, p_type| {
-                const p_c_type = try core.getCTypeStr(self.allocator, p_type);
-                try hw.print(", {s} {s}", .{p_c_type, p_name});
-            }
-            try hw.print(") {{\n", .{});
-            
-            if (captures.items.len > 0) {
-                try hw.print("    {s}* env = ({s}*)__env;\n", .{env_struct_name, env_struct_name});
-                for (captures.items) |cap| {
-                    if (cap.is_boxed) {
-                        const box_type = try getBoxTypeName(self.allocator, cap.c_type);
-                        try hw.print("    {s}* {s} = env->{s};\n", .{box_type, cap.name, cap.name});
-                    } else {
-                        try hw.print("    {s} {s} = env->{s};\n", .{cap.c_type, cap.name, cap.name});
+            if (is_new_lambda) {
+                var hw = self.header_writer.writer();
+                try hw.print("static inline {s} {s}(void* __env", .{return_type_str, lambda_fn_name});
+                for (param_names.items, param_types.items) |p_name, p_type| {
+                    const p_c_type = try core.getCTypeStr(self.allocator, p_type);
+                    try hw.print(", {s} {s}", .{p_c_type, p_name});
+                }
+                try hw.print(") {{\n", .{});
+                
+                if (captures.items.len > 0) {
+                    try hw.print("    {s}* env = ({s}*)__env;\n", .{env_struct_name, env_struct_name});
+                    for (captures.items) |cap| {
+                        if (cap.is_boxed) {
+                            const box_type = try getBoxTypeName(self.allocator, cap.c_type);
+                            try hw.print("    {s}* {s} = env->{s};\n", .{box_type, cap.name, cap.name});
+                        } else {
+                            try hw.print("    {s} {s} = env->{s};\n", .{cap.c_type, cap.name, cap.name});
+                        }
                     }
                 }
+                
+                try self.header_writer.appendSlice(body_writer.items);
+                try self.header_writer.appendSlice("}\n\n");
             }
-            
-            try self.header_writer.appendSlice(body_writer.items);
-            try self.header_writer.appendSlice("}\n\n");
             
             // Construct the EiwaClosure struct literal
             try self.writer.appendSlice("(EiwaClosure){ ");
@@ -1332,16 +1349,16 @@ pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.St
                 });
             }
         },
-        .unary_expr => |u| try self.collectCaptures(u.operand, locals, captures),
-        .binary_expr => |b| {
-            try self.collectCaptures(b.left, locals, captures);
-            try self.collectCaptures(b.right, locals, captures);
-        },
         .call_expr => |c| {
             try self.collectCaptures(c.callee, locals, captures);
             for (c.arguments) |arg| {
                 try self.collectCaptures(arg, locals, captures);
             }
+        },
+        .unary_expr => |u| try self.collectCaptures(u.operand, locals, captures),
+        .binary_expr => |b| {
+            try self.collectCaptures(b.left, locals, captures);
+            try self.collectCaptures(b.right, locals, captures);
         },
         .if_expr => |i| {
             try self.collectCaptures(i.condition, locals, captures);
