@@ -1,6 +1,6 @@
-import { add } from "../math"
+import { sum } from "../math"
 
-test "math.ae: should add two numbers correctly" {
-    val result = add(10, 5)
+test "math.ae: should sum two numbers correctly" {
+    val result = sum(10, 5)
     assert(result == 15)
 }

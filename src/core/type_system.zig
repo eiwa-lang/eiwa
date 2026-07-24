@@ -184,9 +184,17 @@ pub const VariableSymbol = struct {
     decl_node: ?*ast.ASTNode = null,
 };
 
-pub const Symbol = union(enum) {
-    Variable: VariableSymbol,
-    Overloads: ArrayList(*const EiwaType),
+pub const Symbol = struct {
+    variable: ?VariableSymbol = null,
+    overloads: ?ArrayList(*const EiwaType) = null,
+
+    pub fn isVariable(self: Symbol) bool {
+        return self.variable != null;
+    }
+
+    pub fn isOverloads(self: Symbol) bool {
+        return self.overloads != null;
+    }
 };
 
 pub const Scope = struct {
@@ -209,40 +217,45 @@ pub const Scope = struct {
     }
 
     pub fn define(self: *Scope, name: []const u8, t: *const EiwaType, is_mut: bool, is_func: bool) !void {
-        if (self.symbols.get(name)) |existing| {
+        if (self.symbols.getPtr(name)) |sym_ptr| {
+            var sym = sym_ptr.*;
+
             if (is_func) {
-                if (existing.* == .Overloads) {
-                    for (existing.Overloads.items) |ov| {
+                if (sym.overloads) |overloads| {
+                    for (overloads.items) |ov| {
                         if (isCompatible(ov, t)) return;
                     }
-                    try existing.Overloads.append(t);
+                    try (&sym.overloads.?).append(t);
                     return;
-                } else {
-                    std.debug.print("SymbolAlreadyDefined: {s} is not Overloads\n", .{name});
-                    return error.SymbolAlreadyDefined;
                 }
+                var list = ArrayList(*const EiwaType).init(self.allocator);
+                try list.append(t);
+                sym.overloads = list;
             } else {
-                if (existing.* == .Variable and isCompatible(existing.Variable.eiwa_type, t)) {
-                    return;
+                if (sym.variable) |existing| {
+                    if (isCompatible(existing.eiwa_type, t)) return;
                 }
-                return error.SymbolAlreadyDefined;
+                sym.variable = .{ .eiwa_type = t, .is_mut = is_mut };
             }
-        }
-
-        const sym = try self.allocator.create(Symbol);
-        if (is_func) {
-            var list = ArrayList(*const EiwaType).init(self.allocator);
-            try list.append(t);
-            sym.* = .{ .Overloads = list };
+            sym_ptr.* = sym;
         } else {
-            sym.* = .{ .Variable = .{ .eiwa_type = t, .is_mut = is_mut } };
+            const new_sym = try self.allocator.create(Symbol);
+            try self.symbols.put(name, new_sym);
+            var sym = Symbol{};
+            if (is_func) {
+                var list = ArrayList(*const EiwaType).init(self.allocator);
+                try list.append(t);
+                sym.overloads = list;
+            } else {
+                sym.variable = .{ .eiwa_type = t, .is_mut = is_mut };
+            }
+            new_sym.* = sym;
         }
-        try self.symbols.put(name, sym);
     }
 
     pub fn lookupVariableSymbol(self: *Scope, name: []const u8) ?*const VariableSymbol {
-        if (self.symbols.get(name)) |sym| {
-            if (sym.* == .Variable) return &sym.Variable;
+        if (self.symbols.getPtr(name)) |sym_ptr| {
+            if (sym_ptr.*.variable) |_| return &sym_ptr.*.variable.?;
         }
         if (self.parent) |p| {
             return p.lookupVariableSymbol(name);
@@ -251,15 +264,18 @@ pub const Scope = struct {
     }
 
     pub fn lookupVariable(self: *Scope, name: []const u8) ?*const EiwaType {
-        if (self.lookupVariableSymbol(name)) |vs| {
-            return vs.eiwa_type;
+        if (self.symbols.getPtr(name)) |sym_ptr| {
+            if (sym_ptr.*.variable) |v| return v.eiwa_type;
+        }
+        if (self.parent) |p| {
+            return p.lookupVariable(name);
         }
         return null;
     }
 
     pub fn lookupFunctions(self: *Scope, name: []const u8) ?[]const *const EiwaType {
-        if (self.symbols.get(name)) |sym| {
-            if (sym.* == .Overloads) return sym.Overloads.items;
+        if (self.symbols.getPtr(name)) |sym_ptr| {
+            if (sym_ptr.*.overloads) |overloads| return overloads.items;
         }
         if (self.parent) |p| {
             return p.lookupFunctions(name);

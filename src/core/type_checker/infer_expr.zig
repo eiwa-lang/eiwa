@@ -228,14 +228,18 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         if (captured) {
             var lookup_scope: ?*Scope = scope;
             while (lookup_scope) |s| {
-                if (s.symbols.get(i.name)) |sym| {
-                    if (sym.* == .Variable) {
-                        if (sym.Variable.is_mut) {
-                            sym.Variable.is_boxed = true;
+                if (s.symbols.getPtr(i.name)) |sym_ptr| {
+                    var sym = sym_ptr.*;
+                    if (sym.variable) |v| {
+                        if (v.is_mut) {
+                            var new_v = v;
+                            new_v.is_boxed = true;
+                            sym.variable = new_v;
                             i.is_boxed = true;
-                            if (sym.Variable.decl_node) |decl| {
+                            if (v.decl_node) |decl| {
                                 decl.data.var_decl.is_boxed = true;
                             }
+                            sym_ptr.* = sym;
                         }
                         break;
                     }

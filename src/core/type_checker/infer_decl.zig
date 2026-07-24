@@ -218,8 +218,8 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                             found = true;
                             break;
                         } else if (fb_tc.global_scope.symbols.get(sym)) |sym_info| {
-                            if (sym_info.* == .Variable) {
-                                _ = self.global_scope.define(sym, sym_info.Variable.eiwa_type, false, false) catch {};
+                            if (sym_info.variable) |vs| {
+                                _ = self.global_scope.define(sym, vs.eiwa_type, false, false) catch {};
                             }
                             if (fb_prefix.len > 0) {
                                 const aliased_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ fb_prefix, sym });
@@ -875,9 +875,13 @@ pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         break :blk void_t;
     });
     try scope.define(v.name, final_type, v.is_mut, false);
-    if (scope.symbols.get(v.name)) |sym| {
-        if (sym.* == .Variable) {
-            sym.Variable.decl_node = node;
+    if (scope.symbols.getPtr(v.name)) |sym_ptr| {
+        var sym = sym_ptr.*;
+        if (sym.variable) |v_sym| {
+            var new_v = v_sym;
+            new_v.decl_node = node;
+            sym.variable = new_v;
+            sym_ptr.* = sym;
         }
     }
     node.resolved_type = final_type;

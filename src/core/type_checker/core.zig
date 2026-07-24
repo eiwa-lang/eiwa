@@ -450,15 +450,14 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         var sym_it = m.checker.global_scope.symbols.iterator();
                         while (sym_it.next()) |entry| {
                             if (self.global_scope.symbols.get(entry.key_ptr.*) == null) {
-                                switch (entry.value_ptr.*.*) {
-                                    .Variable => |vs| {
-                                        _ = self.global_scope.define(entry.key_ptr.*, vs.eiwa_type, vs.is_mut, false) catch {};
-                                    },
-                                    .Overloads => |ov_list| {
-                                        for (ov_list.items) |ov_type| {
-                                            _ = self.global_scope.define(entry.key_ptr.*, ov_type, false, true) catch {};
-                                        }
-                                    },
+                                const sym = entry.value_ptr.*;
+                                if (sym.variable) |vs| {
+                                    _ = self.global_scope.define(entry.key_ptr.*, vs.eiwa_type, vs.is_mut, false) catch {};
+                                }
+                                if (sym.overloads) |ov_list| {
+                                    for (ov_list.items) |ov_type| {
+                                        _ = self.global_scope.define(entry.key_ptr.*, ov_type, false, true) catch {};
+                                    }
                                 }
                             }
                         }
