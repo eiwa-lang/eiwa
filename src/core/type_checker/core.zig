@@ -238,6 +238,8 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
             base_type = .Int;
         } else if (std.mem.eql(u8, alias, "Bool") or std.mem.eql(u8, alias, "core_Bool")) {
             base_type = .Bool;
+        } else if (std.mem.eql(u8, alias, "String") or std.mem.eql(u8, alias, "core_String")) {
+            base_type = .String;
         } else if (std.mem.eql(u8, alias, "Void") or std.mem.eql(u8, alias, "core_Void")) {
             base_type = .Void;
         } else if (std.mem.eql(u8, alias, "OpaquePointer")) {
@@ -462,7 +464,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                 } else if (std.mem.eql(u8, c.name, "Bool")) {
                     class_type.* = .Bool;
                 } else if (std.mem.eql(u8, c.name, "String")) {
-                    class_type.* = .{ .Custom = actual_c_name };
+                    class_type.* = .String;
                 } else if (std.mem.eql(u8, c.name, "OpaquePointer") or std.mem.eql(u8, c.name, "Pointer")) {
                     class_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
                     @constCast(class_type.Pointer).* = .Void;
@@ -806,7 +808,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
                 .data = .{ .identifier = .{ .name = "String", .resolved_c_name = actual_c_name, .is_class_property = false } },
             };
             const callee_type = try self.allocator.create(EiwaType);
-            callee_type.* = .{ .Custom = actual_c_name };
+            callee_type.* = .String;
             callee_node.resolved_type = callee_type;
 
             var args = try self.allocator.alloc(*ASTNode, 2);
@@ -814,7 +816,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
             args[1] = len_node;
 
             node.data = .{ .call_expr = .{ .callee = callee_node, .arguments = args } };
-            t.* = .{ .Custom = actual_c_name };
+            t.* = .String;
         },
         .bool_literal => t.* = .Bool,
         .null_literal => t.* = .Null,
@@ -893,6 +895,18 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
         if (type_name) |tname| {
             if (self.conformsTo(tname, exp_base.Custom)) return true;
         }
+    }
+
+    // String ↔ Custom("core_String") / Custom("String") bridge
+    if (exp_base.* == .String and act_base.* == .Custom and
+        (std.mem.eql(u8, act_base.Custom, "core_String") or std.mem.eql(u8, act_base.Custom, "String")))
+    {
+        return true;
+    }
+    if (exp_base.* == .Custom and act_base.* == .String and
+        (std.mem.eql(u8, exp_base.Custom, "core_String") or std.mem.eql(u8, exp_base.Custom, "String")))
+    {
+        return true;
     }
 
     if (std.meta.activeTag(exp_base.*) == std.meta.activeTag(act_base.*)) {

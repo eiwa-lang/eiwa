@@ -305,7 +305,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     } else if (std.mem.eql(u8, c.name, "Bool")) {
         class_type.* = .Bool;
     } else if (std.mem.eql(u8, c.name, "String")) {
-        class_type.* = .{ .Custom = actual_c_name };
+        class_type.* = .String;
     } else if (std.mem.eql(u8, c.name, "OpaquePointer") or std.mem.eql(u8, c.name, "Pointer")) {
         class_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
         @constCast(class_type.Pointer).* = .Void;
@@ -617,7 +617,18 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
                 v.* = .Void;
                 break :blk v;
             };
-            if (!self.isCompatible(contract_ret, impl_ret)) {
+
+            // Skip return type check if contract return type is a generic param
+            var skip_ret_check = false;
+            if (contract_ret.* == .Custom and cd.generic_params.len > 0) {
+                for (cd.generic_params) |gp| {
+                    if (std.mem.eql(u8, gp, contract_ret.Custom)) {
+                        skip_ret_check = true;
+                        break;
+                    }
+                }
+            }
+            if (!skip_ret_check and !self.isCompatible(contract_ret, impl_ret)) {
                 self.reportError(m.line, m.column, "TypeError: Method '{s}' returns {} but contract '{s}' requires {}.", .{ cm_name, impl_ret.*, cd.name, contract_ret.* });
                 return error.TypeError;
             }
@@ -701,7 +712,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     if (is_method) {
         const this_t = scope.lookupVariable("this").?;
         const base_t = core.extractBaseType(this_t);
-        const class_name = if (self.current_class_name) |cname| (self.alias_map.get(cname) orelse cname) else (if (base_t.* == .Custom) base_t.Custom else (if (base_t.* == .Pointer and base_t.Pointer.* == .Custom) base_t.Pointer.Custom else (if (base_t.* == .Int) "core_Int" else (if (base_t.* == .Bool) "core_Bool" else f.name))));
+        const class_name = if (self.current_class_name) |cname| (self.alias_map.get(cname) orelse cname) else (if (base_t.* == .Custom) base_t.Custom else (if (base_t.* == .Pointer and base_t.Pointer.* == .Custom) base_t.Pointer.Custom else (if (base_t.* == .Int) "core_Int" else (if (base_t.* == .Bool) "core_Bool" else (if (base_t.* == .String) "core_String" else f.name)))));
 
 
         try mangled_name.writer().print("{s}_{s}", .{ class_name, f.name });

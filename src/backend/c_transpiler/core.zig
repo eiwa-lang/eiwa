@@ -26,6 +26,7 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType)
         .Custom => |name| {
             if (std.mem.eql(u8, name, "Int")) return "int";
             if (std.mem.eql(u8, name, "Bool")) return "bool";
+            if (std.mem.eql(u8, name, "core_String") or std.mem.eql(u8, name, "String")) return "core_String*";
             if (std.mem.endsWith(u8, name, "Stringable") or std.mem.endsWith(u8, name, "Equatable") or std.mem.endsWith(u8, name, "Hashable") or std.mem.endsWith(u8, name, "Throwable") or std.mem.endsWith(u8, name, "Serializable") or std.mem.endsWith(u8, name, "SerdeValue") or std.mem.endsWith(u8, name, "SerdeList")) {
                 return "void*";
             }

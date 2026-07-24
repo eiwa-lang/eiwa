@@ -356,7 +356,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 #### Etapa 1 — Monomorfização (PARCIAL — só `type_decl`)
 - [x] **Task 50.1.1:** Mecanismo de clonagem de AST com substituição de type params (`cloneNode`, `cloneTypeRef`)
 - [x] **Task 50.1.5:** Tipos genéricos (`type Task<T>`) monomorfizados via `monomorphizeClass`
-- [ ] **Foundation fixes:** `String` como built-in em `resolveTypeRef`; `String ↔ Custom(String)` em `isCompatible`; transpiler mapeia `Custom(String)` → `core_String*`
+- [x] **Foundation fixes:** `String` como built-in em `resolveTypeRef`; `String ↔ Custom(String)` em `isCompatible`; transpiler mapeia `Custom(String)` → `core_String*`; fix mangling de métodos de String durante validação
 - [ ] **Task 50.1.2:** Trigger no type checker: `inferCall` clona e type-check **funções** genéricas monomorfizadas
 - [ ] **Task 50.1.3:** Transpiler: gera função C separada por instância (nome mangled)
 - [ ] **Task 50.1.4:** Cache de instâncias para evitar duplicação

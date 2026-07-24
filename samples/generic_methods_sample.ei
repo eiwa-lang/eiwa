@@ -1,31 +1,31 @@
-type Person(val name: String) {
-    implement fun toString(): String {
-        return name
-    }
-}
+// type Person(val name: String) {
+//     implement fun toString(): String {
+//         return name
+//     }
+// }
 
-fun printValue<T>(label: String, value: T) {
-    println(label + ": " + value.toString())
-}
+// fun printValue<T>(label: String, value: T) {
+//     println(label + ": " + value.toString())
+// }
 
-type Transformer() {
-    fun transform<T>(val1: T, val2: T): String {
-        return "Transformed: " + val1.toString() + " & " + val2.toString()
-    }
-}
+// type Transformer() {
+//     fun transform<T>(val1: T, val2: T): String {
+//         return "Transformed: " + val1.toString() + " & " + val2.toString()
+//     }
+// }
 
-fun main() {
-    // Test generic functions
-    printValue("Number", 42)
-    printValue("Message", "Hello Eiwa!")
-    printValue("Boolean", true)
+// fun main() {
+//     // Test generic functions
+//     printValue("Number", 42)
+//     printValue("Message", "Hello Eiwa!")
+//     printValue("Boolean", true)
     
-    val p = Person("Alice")
-    printValue("Custom Person", p)
+//     val p = Person("Alice")
+//     printValue("Custom Person", p)
 
-    // Test generic methods
-    val t = Transformer()
-    println(t.transform(10, 20))
-    println(t.transform("A", "B"))
-    println(t.transform(p, Person("Bob")))
-}
+//     // Test generic methods
+//     val t = Transformer()
+//     println(t.transform(10, 20))
+//     println(t.transform("A", "B"))
+//     println(t.transform(p, Person("Bob")))
+// }

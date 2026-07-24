@@ -577,12 +577,13 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         
         if (self.alias_map.get(name)) |c_name| {
             if (scope.lookupVariable(c_name)) |variable| {
-                if (variable.* == .Custom) {
-                    if (self.contracts_ast.contains(variable.Custom)) {
+                const resolved_name: ?[]const u8 = if (variable.* == .Custom) variable.Custom else if (variable.* == .String) @as([]const u8, "core_String") else null;
+                if (resolved_name) |rn| {
+                    if (self.contracts_ast.contains(rn)) {
                         self.reportError(node.line, node.column, "TypeError: Cannot instantiate contract '{s}'. Contracts define behavior only and have no state.", .{name});
                         return error.TypeError;
                     }
-                    const class_node = self.classes_ast.get(variable.Custom);
+                    const class_node = self.classes_ast.get(rn);
                     if (class_node) |cn| {
                         const type_decl = cn.data.type_decl;
                         if (c.arguments.len < type_decl.primary_constructor.len) {
@@ -610,7 +611,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
                     }
                     t.* = variable.*;
-                    c.callee.data.identifier.resolved_c_name = variable.Custom;
+                    c.callee.data.identifier.resolved_c_name = rn;
                     return;
                 }
             }
