@@ -703,6 +703,7 @@ pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var f = &node.data.fun_decl;
     if (f.generic_params.len > 0) {
+        try self.generic_functions_ast.put(f.name, node);
         t.* = .Void;
         return;
     }

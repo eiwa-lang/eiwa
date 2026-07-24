@@ -150,3 +150,53 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
 
     try self.monomorphized_nodes.append(new_node);
 }
+
+pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8) !void {
+    if (self.functions_ast.get(mangled_name) != null) return;
+
+    const base_node = self.generic_functions_ast.get(base_name) orelse {
+        self.reportError(0, 0, "TypeError: Generic function '{s}' not found.", .{base_name});
+        return error.TypeError;
+    };
+
+    const fun_decl = base_node.data.fun_decl;
+    if (fun_decl.generic_params.len != type_args.len) {
+        self.reportError(0, 0, "TypeError: Expected {} generic arguments for '{s}', got {}.", .{fun_decl.generic_params.len, base_name, type_args.len});
+        return error.TypeError;
+    }
+
+    var old_aliases = std.StringHashMap([]const u8).init(self.allocator);
+    defer old_aliases.deinit();
+
+    for (fun_decl.generic_params, 0..) |param_name, i| {
+        var conc_buf = ArrayList(u8).init(self.allocator);
+        try type_args[i].formatSafe(conc_buf.writer());
+        const conc_name = try conc_buf.toOwnedSlice();
+
+        if (self.alias_map.get(param_name)) |old_val| {
+            try old_aliases.put(param_name, old_val);
+        }
+        _ = self.global_scope.define(conc_name, type_args[i], false, false) catch {};
+        try self.alias_map.put(param_name, conc_name);
+        try self.alias_map.put(conc_name, conc_name);
+    }
+
+    const new_node = try self.cloneNode(base_node);
+    new_node.data.fun_decl.generic_params = &.{};
+    new_node.data.fun_decl.name = mangled_name;
+
+    const t = try self.allocator.create(EiwaType);
+    try infer_decl_mod.inferFunDecl(self, new_node, &self.global_scope, t);
+    new_node.resolved_type = t;
+
+    for (fun_decl.generic_params) |param_name| {
+        if (old_aliases.get(param_name)) |old_val| {
+            try self.alias_map.put(param_name, old_val);
+        } else {
+            _ = self.alias_map.remove(param_name);
+        }
+    }
+
+    try self.monomorphized_nodes.append(new_node);
+    try self.functions_ast.put(mangled_name, new_node);
+}

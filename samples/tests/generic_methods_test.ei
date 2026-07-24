@@ -1,22 +1,22 @@
-// import { assert } from "std.core"
+import { assert } from "std.core"
 
-// type Box<T>(val item: T) {
-//     fun get(): T = item
-// }
+type Box<T>(val item: T) {
+    fun get(): T = item
+}
 
-// type Person(val name: String) {
-//     implement fun toString(): String {
-//         return name
-//     }
-// }
+type Person(val name: String) {
+    implement fun toString(): String {
+        return name
+    }
+}
 
-// fun identity<T>(value: T): T {
-//     return value
-// }
+fun identity<T>(value: T): T {
+    return value
+}
 
-// fun pair<A, B>(a: A, b: B): String {
-//     return a.toString() + " and " + b.toString()
-// }
+fun pair<A, B>(a: A, b: B): String {
+    return a.toString() + " and " + b.toString()
+}
 
 // type Util() {
 //     fun wrap<T>(value: T): Box<T> {
@@ -24,22 +24,22 @@
 //     }
 // }
 
-// test "should monomorphize generic functions" {
-//     // Test explicit type args
-//     assert(identity<Int>(42) == 42)
-//     assert(identity<String>("Eiwa") == "Eiwa")
+test "should monomorphize generic functions" {
+    // Test explicit type args
+    assert(identity<Int>(42) == 42)
+    assert(identity<String>("Eiwa") == "Eiwa")
 
-//     // Test inferred type args
-//     assert(identity(100) == 100)
-//     assert(identity("Hello") == "Hello")
-// }
+    // Test inferred type args
+    assert(identity(100) == 100)
+    assert(identity("Hello") == "Hello")
+}
 
-// test "should monomorphize generic functions with multiple type params" {
-//     // Explicit
-//     assert(pair<Int, String>(1, "two") == "1 and two")
-//     // Inferred
-//     assert(pair(true, 100) == "true and 100")
-// }
+test "should monomorphize generic functions with multiple type params" {
+    // Explicit
+    assert(pair<Int, String>(1, "two") == "1 and two")
+    // Inferred
+    assert(pair(true, 100) == "true and 100")
+}
 
 // test "should monomorphize generic methods in types" {
 //     val util = Util()

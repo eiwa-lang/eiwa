@@ -65,6 +65,7 @@ pub const TypeChecker = struct {
     skills_ast: std.StringHashMap(*ASTNode),
     enums_ast: std.StringHashMap(*ASTNode),
     functions_ast: std.StringHashMap(*ASTNode),
+    generic_functions_ast: std.StringHashMap(*ASTNode),
     local_symbols: std.StringHashMap(void),
     monomorphized_nodes: ArrayList(*ASTNode),
     current_class_name: ?[]const u8 = null,
@@ -90,6 +91,7 @@ pub const TypeChecker = struct {
     pub const cloneTypeRef = @import("clone.zig").cloneTypeRef;
     pub const resolveTypeName = core_resolveTypeName;
     pub const monomorphizeClass = @import("monomorphize.zig").monomorphizeClass;
+    pub const monomorphizeFunction = @import("monomorphize.zig").monomorphizeFunction;
     pub const cloneNode = @import("clone.zig").cloneNode;
     pub const validate = core_validate;
     pub const declareTypes = core_declareTypes;
@@ -117,6 +119,7 @@ pub const TypeChecker = struct {
             .skills_ast = std.StringHashMap(*ASTNode).init(allocator),
             .enums_ast = std.StringHashMap(*ASTNode).init(allocator),
             .functions_ast = std.StringHashMap(*ASTNode).init(allocator),
+            .generic_functions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .local_symbols = std.StringHashMap(void).init(allocator),
             .monomorphized_nodes = ArrayList(*ASTNode).init(allocator),
             .current_class_name = null,
@@ -137,6 +140,7 @@ pub const TypeChecker = struct {
         self.skills_ast.deinit();
         self.enums_ast.deinit();
         self.functions_ast.deinit();
+        self.generic_functions_ast.deinit();
         self.local_symbols.deinit();
         self.monomorphized_nodes.deinit();
     }
@@ -678,15 +682,17 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
     self.pass = .validation;
     _ = try self.inferNode(node, &self.global_scope);
 
-    // Validate all dynamically monomorphized classes
+    // Validate all dynamically monomorphized nodes
     var mono_idx: usize = 0;
     while (mono_idx < self.monomorphized_nodes.items.len) : (mono_idx += 1) {
         const mono_node = self.monomorphized_nodes.items[mono_idx];
-        const class_type = try self.allocator.create(EiwaType);
-        try infer_decl_mod.inferTypeDecl(self, mono_node, &self.global_scope, class_type);
+        if (mono_node.data == .type_decl) {
+            const class_type = try self.allocator.create(EiwaType);
+            try infer_decl_mod.inferTypeDecl(self, mono_node, &self.global_scope, class_type);
+        }
     }
 
-    // Append any dynamically monomorphized classes to the AST
+    // Append any dynamically monomorphized nodes to the AST
     if (node.data == .program and self.monomorphized_nodes.items.len > 0) {
         var final_stmts = try self.allocator.alloc(*ASTNode, node.data.program.statements.len + self.monomorphized_nodes.items.len);
         @memcpy(final_stmts[0..node.data.program.statements.len], node.data.program.statements);
