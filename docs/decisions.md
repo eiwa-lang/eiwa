@@ -300,8 +300,8 @@ Regras centrais:
 **Razão:** Permite que desenvolvedores em Linux, macOS e Windows compilem o Eiwa nativamente utilizando a versão mais recente do Zig (0.16.0) sem quebrar o ecossistema existente.
 
 ## ADR 35: Concorrência Estruturada com Fibras e Tasks
-**Data:** Fase 36 (MVP) / Fase 50 (Refactoring com neco)
+**Data:** Fase 36 (MVP) / Fase 50 (Monomorfização Real) / Fase 51 (Refactoring com neco)
 **Contexto:** O Eiwa não possuía concorrência nativa. Precisávamos de concorrência leve ergonômica similar a Kotlin Coroutines, sem runtime de threads OS.
-**Decisão:** O MVP (Fase 36) implementou fibras em C via `ucontext.h` (`fiber.c`/`fiber.h`) com special cases hardcoded no compilador para `task{}`/`await()`. A Fase 50 substituirá este runtime C por **neco** (https://github.com/tidwall/neco) em `third_party/neco/`, usando monomorfização para que `Task<T>` seja 100% implementado em Eiwa na stdlib via `contract Awaitable<T>` + `skill TaskNeco + lib Neco`, eliminando todos os special cases.
-**Razão:** neco foi escolhido sobre libaco por ser single-file (sem assembly platform-specific), usar kqueue/epoll nativamente, ter API limpa para suspend/resume por ID e ser MIT license. A monomorfização elimina a dívida técnica dos special cases da Fase 36 e permite que qualquer tipo/função genérica se beneficie do mesmo mecanismo.
+**Decisão:** O MVP (Fase 36) implementou fibras em C via `ucontext.h` (`fiber.c`/`fiber.h`) com special cases hardcoded no compilador para `task{}`/`await()`. A Fase 51 substituirá este runtime C por **neco** (https://github.com/tidwall/neco) em `third_party/neco/`, usando a monomorfização real (Generic method) da Fase 50 como dependência direta para que `Task<T>` seja 100% implementado em Eiwa na stdlib via `contract Awaitable<T>` + `skill TaskNeco + lib Neco`, eliminando todos os special cases do compilador.
+**Razão:** neco foi escolhido sobre libaco por ser single-file (sem assembly platform-specific), usar kqueue/epoll nativamente, ter API limpa para suspend/resume por ID e ser MIT license. A dependência da monomorfização real (Generic method) desenvolvida na Fase 50 elimina a dívida técnica dos special cases da Fase 36 e permite que qualquer tipo/função genérica se beneficie do mesmo mecanismo.
 

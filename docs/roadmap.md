@@ -208,7 +208,7 @@ Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a
 #### Camada 2 — API `task { }` / `await()`
 - [x] **Task 36.4:** `type Task<T>` declarado em `std/core.ei` com `Task<T>` tratado como GenericInstance no type checker. Codegen mapeia para `EiwaTask*` (heap-allocated via GC).
 - [x] **Task 36.5:** `fun task<T>(block: () -> T): Task<T>` declarado. Type checker intercepta `task { }` como caso especial em `infer_call.zig` (linha 44), inferindo `Task<T>` diretamente.
-  - ⚠️ **Dívida técnica:** Este caso especial deve ser substituído por monomorfização real quando disponível.
+  - ⚠️ **Dívida técnica:** Este caso especial deve ser substituído por monomorfização real (Generic method) quando disponível.
 - [x] **Task 36.6:** Codegen no CTranspiler: `task { }` heap-allocates `EiwaTask` via GC e cria fiber; `.await()` loop com `while(!done) eiwa_fiber_resume`.
   - ⚠️ **Dívida técnica:** O special case no transpiler (`expression.zig:373`) e no type checker (`infer_call.zig:44`, `infer_member.zig`) devem ser removidos quando a monomorfização substituí-los.
 - [x] **Task 36.7:** Structured concurrency básico — fibers tracking via `calling_fiber`; fiber pai automaticamente cede para a fibra que a resume.
@@ -336,14 +336,14 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 49.4:** Refactor `src/std/log.ei`: Replace `object LogLevel` with native `enum LogLevel`, updating `LogFormatter`, `TextFormatter`, `JsonFormatter`, `Logger`, and `Log` facade to operate on `LogLevel` enum variants instead of raw `Int`s.
 - [x] **Task 49.5:** Update samples and tests (`log_sample.ei`, `log_test.ei`, `arest.ei`, `enum_sample.ei`, `enum_test.ei`) to use `LogLevel` enum variants (e.g., `LogLevel.DEBUG`, `LogLevel.INFO`).
 
-### Phase 50: Monomorphização + Refatoração de `Task<T>` (IN PROGRESS)
+### Phase 50: Monomorfização Real (Generic Method & Generic Functions) (IN PROGRESS)
 > ⚠️ **Regra:** `zig build && ./zig-out/bin/eiwa test` (125+ testes) deve passar **antes** de avançar para a próxima etapa. Cada etapa só começa quando autorizado.
 >
-> **Nota:** Plano detalhado em `docs/plano_mono_task.md`. A implementação tem 4 etapas sequenciais. O destino final é `Task<T>` 100% em Eiwa via `contract + skill + lib {}` (neco — https://github.com/tidwall/neco), com zero special cases no compilador.
+> **Nota:** Esta fase implementa o suporte a monomorfização real de funções e métodos genéricos, que é uma dívida técnica herdada da Fase 36.
 >
-> **Estado atual (23 Jul 2026):** Etapa 0 completa. Etapa 1 parcial (só `type_decl`). Etapas 2–3 não iniciadas.
+> **Estado atual (23 Jul 2026):** Etapa 0 completa. Etapa 1 parcial (só `type_decl`).
 >
-> **Ordem de execução:** Etapa 0 → Etapa 1 → Etapa 2 → Etapa 3.
+> **Ordem de execução:** Etapa 0 → Etapa 1.
 > A cada etapa, esperar autorização antes de prosseguir.
 
 #### Etapa 0 — Type Params em `contract` e `skill` (COMPLETED)
@@ -352,6 +352,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 50.0.3:** Type checker: registro de contracts/skills genéricos em `local_symbols`, early return no corpo
 - [x] **Task 50.0.4:** Resolução de type params em constraints (`skill Foo : Awaitable<T>`)
 - [x] **Verify:** Contract/skill com type param parseiam e registram corretamente
+
 #### Etapa 1 — Monomorfização (PARCIAL — só `type_decl`)
 - [x] **Task 50.1.1:** Mecanismo de clonagem de AST com substituição de type params (`cloneNode`, `cloneTypeRef`)
 - [x] **Task 50.1.5:** Tipos genéricos (`type Task<T>`) monomorfizados via `monomorphizeClass`
@@ -360,22 +361,31 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [ ] **Task 50.1.3:** Transpiler: gera função C separada por instância (nome mangled)
 - [ ] **Task 50.1.4:** Cache de instâncias para evitar duplicação
 - [ ] **Verify:** `zig build && ./zig-out/bin/eiwa test` passa; funções genéricas com `T` funcionam
-#### Etapa 2 — Remover Special Cases de `Task<T>`
-- [ ] **Task 50.2.1:** `fun task<T>` em std/core.ei usa monomorfização em vez de special case
-- [ ] **Task 50.2.2:** Construtor `Task<T>` usa `lib {}` (neco) em vez de C inline `({ })`
-- [ ] **Task 50.2.3:** Remover special case `task()` em `infer_call.zig:44`
-- [ ] **Task 50.2.4:** Remover special case `.await()` em `infer_member.zig`
-- [ ] **Task 50.2.5:** Remover special case `Task` codegen em `expression.zig:373`
-- [ ] **Task 50.2.6:** Remover special case `.await()` codegen em `expression.zig:481`
-- [ ] **Task 50.2.7:** Remover special case `cType("Task")` em `core.zig:55`
-- [ ] **Task 50.2.8:** Remover `src/runtime/fiber.c` e `src/runtime/fiber.h` (substituído por neco)
+
+### Phase 51: Refatoração de `Task<T>` (Corotinas 100% em Eiwa) (PLANNED)
+> **Dependência:** Monomorfização Real (Fase 50) concluída.
+>
+> **Nota:** Plano detalhado em `docs/plano_mono_task.md`. O destino final é `Task<T>` 100% em Eiwa via `contract + skill + lib {}` (neco — https://github.com/tidwall/neco), removendo todos os casos especiais (special cases) do compilador.
+>
+> **Ordem de execução:** Etapa 1 (Remover Special Cases) → Etapa 2 (Arquitetura Final).
+
+#### Etapa 1 — Remover Special Cases de `Task<T>`
+- [ ] **Task 51.1.1:** `fun task<T>` em std/core.ei usa monomorfização em vez de special case
+- [ ] **Task 51.1.2:** Construtor `Task<T>` usa `lib {}` (neco) em vez de C inline `({ })`
+- [ ] **Task 51.1.3:** Remover special case `task()` em `infer_call.zig:44`
+- [ ] **Task 51.1.4:** Remover special case `.await()` em `infer_member.zig`
+- [ ] **Task 51.1.5:** Remover special case `Task` codegen em `expression.zig:373`
+- [ ] **Task 51.1.6:** Remover special case `.await()` codegen em `expression.zig:481`
+- [ ] **Task 51.1.7:** Remover special case `cType("Task")` em `core.zig:55`
+- [ ] **Task 51.1.8:** Remover `src/runtime/fiber.c` e `src/runtime/fiber.h` (substituído por neco)
 - [ ] **Verify:** `zig build && ./zig-out/bin/eiwa test` passa; `task_test.ei` passa sem special cases
-#### Etapa 3 — Arquitetura Final: Contract + Skill + neco
-- [ ] **Task 50.3.1:** `contract Awaitable<T>` em `std/core.ei`
-- [ ] **Task 50.3.2:** `skill TaskNeco : Awaitable<T>` com `await()` via neco
-- [ ] **Task 50.3.3:** `lib {}` binding para neco em `src/runtime/third_party/neco/`
-- [ ] **Task 50.3.4:** `type Task<T>` compõe `+ TaskNeco`, construtor cria co-rotina via neco
-- [ ] **Task 50.3.5:** `fun task<T>(block)` factory retorna `Task<T>`.new(block)
+
+#### Etapa 2 — Arquitetura Final: Contract + Skill + neco
+- [ ] **Task 51.2.1:** `contract Awaitable<T>` em `std/core.ei`
+- [ ] **Task 51.2.2:** `skill TaskNeco : Awaitable<T>` com `await()` via neco
+- [ ] **Task 51.2.3:** `lib {}` binding para neco em `src/runtime/third_party/neco/`
+- [ ] **Task 51.2.4:** `type Task<T>` compõe `+ TaskNeco`, construtor cria co-rotina via neco
+- [ ] **Task 51.2.5:** `fun task<T>(block)` factory retorna `Task<T>`.new(block)
 - [ ] **Verify:** `zig build && ./zig-out/bin/eiwa test` — suite completa passa; zero hacks no compilador
 
 > **Destino final:** `Task<T>` 100% em Eiwa, `contract Awaitable<T>` + `skill TaskNeco` + neco em third_party, zero special cases, zero `makecontext`/`_XOPEN_SOURCE`.
