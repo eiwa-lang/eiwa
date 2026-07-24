@@ -49,19 +49,19 @@ test "should monomorphize generic methods in types" {
     assert(boxInt.get() == 42)
 }
 
-// test "should monomorphize with Custom types" {
-//     val util = Util()
-//     val p = Person("Alice")
+test "should monomorphize with Custom types" {
+    val util = Util()
+    val p = Person("Alice")
 
-//     // Inferred generic function with Custom Type
-//     val resFunc = identity(p)
-//     assert(resFunc.name == "Alice")
+    // Inferred generic function with Custom Type
+    val resFunc = identity(p)
+    assert(resFunc.name == "Alice")
 
-//     // Inferred generic method with Custom Type
-//     val boxPerson = util.wrap(Person("Bob"))
-//     assert(boxPerson.get().name == "Bob")
+    // Inferred generic method with Custom Type
+    val boxPerson = util.wrap(Person("Bob"))
+    assert(boxPerson.get().name == "Bob")
 
-//     // Explicit generic call with Custom Type
-//     val resFuncExplicit = identity<Person>(p)
-//     assert(resFuncExplicit.name == "Alice")
-// }
+    // Explicit generic call with Custom Type
+    val resFuncExplicit = identity<Person>(p)
+    assert(resFuncExplicit.name == "Alice")
+}

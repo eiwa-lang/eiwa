@@ -1031,6 +1031,55 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     
                     if (found_method) |m| {
                         const f = &m.data.fun_decl;
+
+                        // Handle generic method with inferred type args
+                        if (f.generic_params.len > 0 and c.type_args.len == 0 and c.arguments.len >= f.params.len) {
+                            var type_args = try self.allocator.alloc(*const EiwaType, f.generic_params.len);
+                            for (f.generic_params, 0..) |param_name, i| {
+                                var found_type: ?*const EiwaType = null;
+                                for (f.params, 0..) |p, arg_i| {
+                                    if (arg_i < c.arguments.len) {
+                                        if (p.type_ref) |tr| {
+                                            if (std.mem.eql(u8, tr.name, param_name) and tr.generic_args.len == 0) {
+                                                const arg_t = c.arguments[arg_i].resolved_type orelse continue;
+                                                found_type = arg_t;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                type_args[i] = found_type orelse {
+                                    self.reportError(node.line, node.column, "TypeError: Could not infer generic parameter '{s}' for method '{s}.{s}'.", .{ param_name, type_decl.name, g.name });
+                                    return error.TypeError;
+                                };
+                            }
+
+                            var mangled = ArrayList(u8).init(self.allocator);
+                            try mangled.appendSlice(class_name);
+                            try mangled.appendSlice("_");
+                            try mangled.appendSlice(g.name);
+                            for (type_args) |ta| {
+                                try mangled.appendSlice("_");
+                                try ta.formatSafe(mangled.writer());
+                            }
+                            const final_mangled = try mangled.toOwnedSlice();
+
+                            try self.monomorphizeFunction(g.name, type_args, final_mangled);
+
+                            const func_node = self.functions_ast.get(final_mangled) orelse {
+                                self.reportError(node.line, node.column, "TypeError: Monomorphized method '{s}.{s}' not found.", .{ type_decl.name, g.name });
+                                return error.TypeError;
+                            };
+                            const ret_type = func_node.resolved_type.?.Function.return_type;
+
+                            c.callee.data = .{ .identifier = .{
+                                .name = g.name,
+                                .resolved_c_name = final_mangled,
+                            } };
+                            t.* = ret_type.*;
+                            return;
+                        }
+
                         if (f.resolved_c_name) |rcn| {
                             c.callee.data.get_expr.resolved_c_name = rcn;
                         }
