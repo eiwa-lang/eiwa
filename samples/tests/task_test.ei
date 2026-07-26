@@ -60,9 +60,21 @@ test "await on completed task should return immediately" {
 }
 
 test "task without return value should complete" {
+    var bool = false
     val t = task {
-        echo("fire-and-forget")
+        bool = true
     }
     t.await()
     assert(t.isDone())
+    assert(bool)
+}
+
+test "task with explicit type argument and trailing lambda" {
+    val t = task<Int> { 40 + 2 }
+    assert(t.await() == 42)
+}
+
+test "task with explicit type argument and trailing lambda returning string" {
+    val t = task<String> { "hello" }
+    assert(t.await() == "hello")
 }

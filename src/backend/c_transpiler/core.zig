@@ -12,6 +12,26 @@ pub const expr_mod = @import("expression.zig");
 pub const stmt_mod = @import("statement.zig");
 pub const decl_mod = @import("declaration.zig");
 
+const c_reserved_words = std.StaticStringMap(void).initComptime(.{
+    .{ "auto" },     .{ "break" },    .{ "case" },     .{ "char" },
+    .{ "const" },    .{ "continue" }, .{ "default" },  .{ "do" },
+    .{ "double" },   .{ "else" },     .{ "enum" },     .{ "extern" },
+    .{ "float" },    .{ "for" },      .{ "goto" },     .{ "if" },
+    .{ "inline" },   .{ "int" },      .{ "long" },     .{ "register" },
+    .{ "restrict" }, .{ "return" },   .{ "short" },    .{ "signed" },
+    .{ "sizeof" },   .{ "static" },   .{ "struct" },   .{ "switch" },
+    .{ "typedef" },  .{ "union" },    .{ "unsigned" }, .{ "void" },
+    .{ "volatile" }, .{ "while" },    .{ "bool" },     .{ "true" },
+    .{ "false" },    .{ "NULL" },
+});
+
+pub fn cIdent(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    if (c_reserved_words.has(name)) {
+        return try std.fmt.allocPrint(allocator, "eiwa_{s}", .{name});
+    }
+    return name;
+}
+
 pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType) ![]const u8 {
     switch (t.*) {
         .Int => return "int",

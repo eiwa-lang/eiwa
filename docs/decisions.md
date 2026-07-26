@@ -326,3 +326,22 @@ O problema original: a skill `Echoable` (injetada automaticamente em todo `type`
 
 **Razão:** Semântica previsível estilo Kotlin (escopo mais próximo vence) mas sem "shadowing acidental" que quebra chamadas válidas. Permite override intencional quando assinaturas são compatíveis, mas protege contra skills injetadas automaticamente com assinaturas incompatíveis (como `Echoable.echo()` sem parâmetros).
 
+## ADR 37: Escape de Palavras Reservadas do C no Transpiler (`cIdent`)
+**Status:** Aceito / Implementado
+**Data:** Julho 2026
+
+**Contexto:** Identificadores Eiwa válidos como `var bool = false` colidiam com palavras reservadas do C (`bool` via stdbool.h, `int`, `char`, etc.), gerando erros obscuros do compilador C no código emitido.
+
+**Decisão:** Introduzir `cIdent()` em `src/backend/c_transpiler/core.zig`, que prefixa identificadores reservados com `eiwa_` (ex.: `bool` → `eiwa_bool`). Aplicado de forma consistente em todos os pontos de emissão de nomes de usuário: `var_decl`, `identifier`, `assignment`, parâmetros de função e captures de lambda (campos do env struct e variáveis locais da lambda). Propriedades de tipos (`this->prop`) e nomes mangled (`resolved_c_name`) não precisam de escape, pois já passam por name mangling ou são qualificados.
+
+**Razão:** O usuário não deve precisar conhecer a lista de palavras reservadas do C para nomear variáveis em Eiwa. O escape centralizado num único helper evita espalhar a lista de reservadas pelo transpiler.
+
+## ADR 39: Boxing de Capturas por Atribuição em Closures
+**Status:** Aceito / Implementado
+**Data:** Julho 2026
+
+**Contexto:** A detecção de captura de variáveis mutáveis (que promove a variável a uma box heap-allocated compartilhada com a closure) só existia no caminho de leitura (`inferIdentifier`). Uma variável capturada **exclusivamente por atribuição** (ex.: `{ flag = true }`) nunca era boxed: o C gerado copiava o valor para dentro da lambda e a mutação era invisível fora dela — quebrando semântica de closure em qualquer contexto, não apenas em tasks.
+
+**Decisão:** Espelhar a lógica de detecção de captura em `inferAssignment` (`src/core/type_checker/infer_expr.zig`): ao atribuir a uma variável definida além de uma fronteira de função (`is_function_boundary`), marcar o símbolo e o `var_decl` como `is_boxed`, fazendo o transpiler emitir acesso via ponteiro de box (`box->value`) tanto na declaração quanto na closure.
+
+**Razão:** Semântica correta de closures (compartilhamento por referência de variáveis mutáveis capturadas, como Kotlin/Swift) independente de a variável ser lida ou apenas escrita dentro da lambda.

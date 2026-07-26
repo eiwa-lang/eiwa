@@ -1,0 +1,29 @@
+test "transpiler: variable named 'bool' should not collide with C keyword" {
+    var bool = false
+    bool = true
+    assert(bool)
+}
+
+test "transpiler: variables named after C type keywords" {
+    val int = 5
+    val char = 10
+    val double = int + char
+    assert(double == 15)
+}
+
+test "transpiler: C-reserved names captured by closures" {
+    var bool = false
+    val flip = { bool = !bool }
+    flip()
+    assert(bool)
+    flip()
+    assert(!bool)
+}
+
+fun pick(switch: Int): Int {
+    return switch * 2
+}
+
+test "transpiler: C-reserved names as function parameters" {
+    assert(pick(21) == 42)
+}

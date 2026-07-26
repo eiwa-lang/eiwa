@@ -56,6 +56,38 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         }
         a.is_boxed = vs.is_boxed;
 
+        var cap_scope: ?*Scope = scope;
+        var cap_crossed = false;
+        var cap_target: ?*Scope = null;
+        while (cap_scope) |s| {
+            if (s.symbols.contains("this")) break;
+            if (s.symbols.contains(a.name)) {
+                cap_target = s;
+                break;
+            }
+            if (s.is_function_boundary) cap_crossed = true;
+            cap_scope = s.parent;
+        }
+        if (cap_crossed) {
+            if (cap_target) |ts_scope| {
+                if (ts_scope.symbols.getPtr(a.name)) |sym_ptr| {
+                    var sym = sym_ptr.*;
+                    if (sym.variable) |v| {
+                        if (v.is_mut) {
+                            var new_v = v;
+                            new_v.is_boxed = true;
+                            sym.variable = new_v;
+                            a.is_boxed = true;
+                            if (v.decl_node) |decl| {
+                                decl.data.var_decl.is_boxed = true;
+                            }
+                            sym_ptr.* = sym;
+                        }
+                    }
+                }
+            }
+        }
+
         if (self.current_class_props) |props| {
             if (props.contains(a.name)) {
                 var is_shadowed = false;

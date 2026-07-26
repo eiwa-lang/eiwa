@@ -1,0 +1,34 @@
+test "closure: assignment-only capture should box the variable" {
+    var flag = false
+    val setFlag = { flag = true }
+    setFlag()
+    assert(flag)
+}
+
+test "closure: assignment-only capture should persist across multiple calls" {
+    var count = 0
+    val bump = { count = count + 1 }
+    bump()
+    bump()
+    bump()
+    assert(count == 3)
+}
+
+test "closure: two closures should share the same captured variable" {
+    var shared = 0
+    val inc = { shared = shared + 1 }
+    val dec = { shared = shared - 1 }
+    inc()
+    inc()
+    inc()
+    dec()
+    assert(shared == 2)
+}
+
+test "closure: write-only captured var should be visible after closure runs" {
+    var result = 0
+    val compute = { result = 6 * 7 }
+    assert(result == 0)
+    compute()
+    assert(result == 42)
+}

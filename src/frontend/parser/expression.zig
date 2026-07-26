@@ -261,10 +261,14 @@ pub fn call(self: *Parser) anyerror!*ASTNode {
             }
         }
 
-        if (ok and self.match(.greater) and self.check(.l_paren)) {
+        if (ok and self.match(.greater) and (self.check(.l_paren) or self.check(.l_brace))) {
             self.suppress_errors = saved.suppress_errors;
-            _ = self.match(.l_paren);
-            expr = try self.finishCall(expr, try type_args.toOwnedSlice());
+            const owned_type_args = try type_args.toOwnedSlice();
+            if (self.match(.l_paren)) {
+                expr = try self.finishCall(expr, owned_type_args);
+            } else {
+                expr = try self.createNodeAt(.{ .call_expr = .{ .callee = expr, .arguments = &.{}, .type_args = owned_type_args } }, self.previous.line, self.previous.column);
+            }
             if (self.match(.l_brace)) {
                 const line = self.previous.line;
                 const col = self.previous.column;

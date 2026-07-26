@@ -65,16 +65,17 @@ pub fn emitStatement(self: *CTranspiler, node: *ASTNode) anyerror!void {
                     try self.classes.put(box_type, {});
                     try self.header_writer.writer().print("typedef struct {{\n    {s} value;\n}} {s};\n\n", .{type_str, box_type});
                 }
-                
-                try self.writer.writer().print("    {s}* {s} = GC_MALLOC(sizeof({s}))", .{box_type, v.name, box_type});
+
+                const var_name = try core.cIdent(self.allocator, v.name);
+                try self.writer.writer().print("    {s}* {s} = GC_MALLOC(sizeof({s}))", .{box_type, var_name, box_type});
                 if (v.initializer) |init_node| {
                     try self.writer.appendSlice(";\n");
-                    try self.writer.writer().print("    {s}->value = ", .{v.name});
+                    try self.writer.writer().print("    {s}->value = ", .{var_name});
                     try self.emitExpression(init_node);
                 }
                 try self.writer.appendSlice(";\n");
             } else {
-                try self.writer.writer().print("    {s} {s}", .{type_str, v.name});
+                try self.writer.writer().print("    {s} {s}", .{ type_str, try core.cIdent(self.allocator, v.name) });
                 if (v.initializer) |init_node| {
                     try self.writer.appendSlice(" = ");
                     if (std.mem.eql(u8, type_str, "void*") and init_node.resolved_type != null and (init_node.resolved_type.?.* == .Int or init_node.resolved_type.?.* == .Bool)) {

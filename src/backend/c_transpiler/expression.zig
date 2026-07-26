@@ -38,7 +38,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             try self.writer.writer().print("\"{s}\"", .{val});
         },
         .identifier => |i| {
-            const name = i.resolved_c_name orelse i.name;
+            const name = try core.cIdent(self.allocator, i.resolved_c_name orelse i.name);
             if (node.resolved_type != null and node.resolved_type.?.* == .Void) {
                 try self.writer.appendSlice("0");
             } else if (i.is_class_property) {
@@ -203,9 +203,9 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             if (a.is_class_property) {
                 try self.writer.writer().print("this->{s} = ", .{a.name});
             } else if (a.is_boxed) {
-                try self.writer.writer().print("{s}->value = ", .{a.name});
+                try self.writer.writer().print("{s}->value = ", .{try core.cIdent(self.allocator, a.name)});
             } else {
-                try self.writer.writer().print("{s} = ", .{a.name});
+                try self.writer.writer().print("{s} = ", .{try core.cIdent(self.allocator, a.name)});
             }
             if (a.value.resolved_type) |vrt| {
                 const val_base = ts.extractBaseType(vrt);
@@ -1081,7 +1081,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     if (rt_base.* == .Function) {
                         const f = rt_base.Function;
                         for (l.params, 0..) |p, i| {
-                            try param_names.append(p.name);
+                            try param_names.append(try core.cIdent(self.allocator, p.name));
                             try param_types.append(f.params[i]);
                             try locals.put(p.name, {});
                         }
@@ -1117,11 +1117,12 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     var hw = self.header_writer.writer();
                     try hw.print("typedef struct {{\n", .{});
                     for (captures.items) |cap| {
+                        const cap_c_name = try core.cIdent(self.allocator, cap.name);
                         if (cap.is_boxed) {
                             const box_type = try getBoxTypeName(self.allocator, cap.c_type);
-                            try hw.print("    {s}* {s};\n", .{box_type, cap.name});
+                            try hw.print("    {s}* {s};\n", .{box_type, cap_c_name});
                         } else {
-                            try hw.print("    {s} {s};\n", .{cap.c_type, cap.name});
+                            try hw.print("    {s} {s};\n", .{cap.c_type, cap_c_name});
                         }
                     }
                     try hw.print("}} {s};\n\n", .{env_struct_name});
@@ -1170,11 +1171,12 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 if (captures.items.len > 0) {
                     try hw.print("    {s}* env = ({s}*)__env;\n", .{env_struct_name, env_struct_name});
                     for (captures.items) |cap| {
+                        const cap_c_name = try core.cIdent(self.allocator, cap.name);
                         if (cap.is_boxed) {
                             const box_type = try getBoxTypeName(self.allocator, cap.c_type);
-                            try hw.print("    {s}* {s} = env->{s};\n", .{box_type, cap.name, cap.name});
+                            try hw.print("    {s}* {s} = env->{s};\n", .{box_type, cap_c_name, cap_c_name});
                         } else {
-                            try hw.print("    {s} {s} = env->{s};\n", .{cap.c_type, cap.name, cap.name});
+                            try hw.print("    {s} {s} = env->{s};\n", .{cap.c_type, cap_c_name, cap_c_name});
                         }
                     }
                 }
@@ -1190,7 +1192,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 try self.writer.writer().print("({{\n", .{});
                 try self.writer.writer().print("        {s}* _tmp_env = GC_MALLOC(sizeof({s}));\n", .{env_struct_name, env_struct_name});
                 for (captures.items) |cap| {
-                    try self.writer.writer().print("        _tmp_env->{s} = {s};\n", .{cap.name, cap.name});
+                    try self.writer.writer().print("        _tmp_env->{s} = {s};\n", .{ try core.cIdent(self.allocator, cap.name), try core.cIdent(self.allocator, cap.name) });
                 }
                 try self.writer.writer().print("        _tmp_env;\n", .{});
                 try self.writer.writer().print("    }})", .{});

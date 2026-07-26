@@ -194,7 +194,7 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
         for (decl.params, 0..) |p, i| {
             try self.header_writer.appendSlice(", ");
             const param_t_str = try self.cType(fun_type.params[i]);
-            try self.header_writer.writer().print("{s} {s}", .{ param_t_str, p.name });
+            try self.header_writer.writer().print("{s} {s}", .{ param_t_str, try core.cIdent(self.allocator, p.name) });
         }
     }
     try self.header_writer.appendSlice(");\n");
@@ -221,7 +221,7 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
             try self.writer.appendSlice(", ");
             const param_t_str = try self.cType(fun_type.params[i]);
             if (ts.extractBaseType(fun_type.params[i]).* == .Array) try self.emitArrayStruct(ts.extractBaseType(fun_type.params[i]).Array);
-            try self.writer.writer().print("{s} {s}", .{ param_t_str, p.name });
+            try self.writer.writer().print("{s} {s}", .{ param_t_str, try core.cIdent(self.allocator, p.name) });
         }
     }
     try self.writer.appendSlice(") {\n");
@@ -288,7 +288,7 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
             if (i > 0) try sig.writer().print(", ", .{});
             const param_t_str = try self.cType(fun_type.params[i]);
             if (ts.extractBaseType(fun_type.params[i]).* == .Array) try self.emitArrayStruct(ts.extractBaseType(fun_type.params[i]).Array);
-            try sig.writer().print("{s} {s}", .{ param_t_str, p.name });
+            try sig.writer().print("{s} {s}", .{ param_t_str, try core.cIdent(self.allocator, p.name) });
             try outer_params.put(p.name, {});
         }
         try self.pushOuterScope(outer_params);
