@@ -48,7 +48,7 @@ lib Neco {
     fun neco_lastid(): Int
 }
 ```
-O construtor `Task<T>.new(block)` aloca a Task, cria co-rotina via `neco_start`, armazena o `id` em `self.co_id`. A lambda `block` precisa ser convertida para ponteiro de função C via closure.
+O construtor `Task<T>.new(block)` aloca a Task, cria co-rotina via `neco_start`, armazena o identificador retornado em `self.id`. A lambda `block` precisa ser convertida para ponteiro de função C via closure.
 Arquivo: `src/std/core.ei` + runtime `src/runtime/third_party/neco/`
 
 #### Task 51.1.3: Remover special case `task()` em `infer_call.zig:44`
@@ -106,7 +106,7 @@ lib Neco {
 skill TaskNeco : Awaitable<T> {
     implement fun await(): T {
         while (!this.done) {
-            Neco.neco_resume(this.co_id)
+            Neco.neco_resume(this.id)
         }
         return *this.resultPtr
     }
@@ -125,7 +125,7 @@ Criar binding `lib Neco` em `src/std/core.ei` expondo as funções necessárias.
 
 #### Task 51.2.2: `await()` via skill implementado
 O método `await()` no skill `TaskNeco`:
-1. Loop `while(!this.done)` chamando `Neco.neco_resume(this.co_id)`
+1. Loop `while(!this.done)` chamando `Neco.neco_resume(this.id)`
 2. Quando done, ler `this.resultPtr` e retornar valor tipado
 Isso substitui os `({ })` blocks do transpiler atual.
 
@@ -139,7 +139,7 @@ Após neco + refatoração:
 
 - O metodo task {} deve começar a executar imediatamente assim como em (Kotlin async {} e lauch {}), await() deve apenas bloquear até o resultado estar pronto.
 - Não deveria ser necessário codigos em zig que conheça neco, tudo deve ser gerenciado pelo eiwa
-- Se necessário podemos usar o arquivo third_wrapper.h/.c para fazer os bindings para as libs de eiwa.
+- Bindings C ficam em `<lib>/<lib>_wrapper.{h,c}` ao lado de cada lib vendorada, referenciados direto pelo `@Header` do bloco `lib`.
 - Devemos tentar usar o minimo de zig e C possivel, tudo deve ser gerenciado pelo eiwa, nao pode haver grandes blocos de codigo em zig conhecendo as libs de eiwa, precisamos abstrair isso ao maximo.
 - Tudo que foi feito para o task anteriormente deve ser desfeito.
 - Devemos utilizar o sistema de tipos e contratos existente para implementar o task, nao devemos criar novas keywords ou sintaxes.
@@ -206,3 +206,29 @@ Etapa 3 (Contract + Skill + neco) ─── destino final
 - [ ] Nenhum special case `task`/`await` no compilador
 - [ ] `fiber.c`/`fiber.h` removidos
 - [ ] todos testes passando
+
+---
+
+## ✅ Resultado (executado — Phase 51 DONE)
+
+Implementado com as seguintes divergências do plano original:
+
+- **`skill TaskNeco` não criado:** skills não têm acesso verificado aos campos do `type`
+  consumidor, então `await()` ficou no próprio `type Task<T>` (`std/core.ei`).
+- **Campo único `id`** (fundido; sem `taskId`/`co_id`).
+- **`lib Neco`** em `std/core.ei` com `@Alias` para wrappers C em
+  `src/runtime/third_party/neco/neco_wrapper.c` (trampolim de closure `() -> Void`,
+  macro `main` própria que roda o main do usuário dentro do runtime neco, e cola
+  Boehm GC ↔ stacks de corotina: stacks ≥64KB do env allocator viram raízes do GC e
+  o stackbottom é re-apontado a cada troca de corotina).
+- **Patch `EIWA PATCH` em `neco.c`:** `stack_get_`/`stack_put_` usam o env allocator
+  (upstream usava `malloc`/`free` crus, invisíveis ao tracking de stacks).
+- **Fixes habilitadores no compilador:** sufixo por função nos nomes C de lambda/env
+  (colisão entre instâncias monomorfizadas causava SEGV — ex: `task<Int>` + `task<String>`
+  no mesmo programa); `T?` vira `Union(T, Null)` em `monomorphizeClass`; import de função
+  genérica (`import { task }`) via `generic_functions_ast`; `Task<Void>` suportado via erasure de Void no
+  backend C (campo/param `int` dummy em `cStorageType`, store de valor Void apagado,
+  `return <void>` vira `return;`).
+- **Verificação:** `zig build test` ✅, `./zig-out/bin/eiwa test` 132 PASS / 0 FAIL ✅,
+  `task_test.ei` 9/9 ✅, grep zero de special cases (`task`, `await`, `EiwaTask`, `fiber`)
+  no checker/transpiler ✅.

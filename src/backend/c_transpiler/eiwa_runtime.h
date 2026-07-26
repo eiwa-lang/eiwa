@@ -191,7 +191,7 @@ typedef struct EiwaClosure {
     void* _pad;
 } EiwaClosure;
 
-#include "third_wrapper.h"
+#include "neco/neco_wrapper.h"
 
 struct core_String;
 typedef struct core_String core_String;

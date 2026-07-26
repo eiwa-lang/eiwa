@@ -1002,7 +1002,20 @@ Because Eiwa transpiles to C, integrating with native C libraries is seamless. Y
 Annotations on `lib` blocks instruct the compiler and linker on how to process the native library:
 - **`@Header` (Compile-Time Includes)**: Instructs the C Transpiler to inject the corresponding `#include` directives at the top of the generated C file so that C compiler knows about the function signatures, structs, and constants.
 - **`@Link` (Linker-Time Libraries)**: Instructs the Eiwa compiler to append the corresponding `-l<library>` flag (e.g., `-lcurl`) during the linking phase, and injects `-DEIWA_USE_<LIBRARY>` preprocessor definitions into the C compiler.
+- **`@Source` (Vendored C Sources)**: Appends a C source file (path relative to the working directory) to the compilation, e.g. `@Source("src/runtime/third_party/neco/neco.c")`. Use for vendored libraries that are compiled together with the program instead of linked.
+- **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag to the C compiler, e.g. `@Include("src/runtime/third_party/neco")`.
+- **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag to the C compiler, e.g. `@Define("NECO_STACKSIZE=262144")`.
 - **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions.
+
+A `lib` block is therefore self-contained: everything the C toolchain needs to build the binding is declared next to it, with no hardcoded flags in the compiler:
+
+```kotlin
+@Header("neco/neco_wrapper.h")
+@Include("src/runtime/third_party/neco")
+@Define("NECO_USEHEAPSTACK")
+@Source("src/runtime/third_party/neco/neco.c")
+lib Neco { ... }
+```
 
 ```kotlin
 // http.ei (FFI declaration using Header, Link, and Alias)

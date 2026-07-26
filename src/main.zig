@@ -287,7 +287,26 @@ pub fn main(init: std.process.Init) !void {
     if (builtin.target.os.tag == .macos) {
         try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
     }
-    try cc_argv.appendSlice(&[_][]const u8{ "-Isrc/runtime", "src/runtime/fiber.c", out_c_filename, "-lgc" });
+    try cc_argv.appendSlice(&[_][]const u8{
+        "-Isrc/backend/c_transpiler",
+        "-Isrc/runtime/third_party",
+        out_c_filename,
+        "-lgc",
+    });
+
+    // Build requirements declared by `lib` annotations in Eiwa sources.
+    var inc_it = transpiler.c_includes.keyIterator();
+    while (inc_it.next()) |dir| {
+        try cc_argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{dir.*}));
+    }
+    var def_it = transpiler.c_defines.keyIterator();
+    while (def_it.next()) |def| {
+        try cc_argv.append(try std.fmt.allocPrint(allocator, "-D{s}", .{def.*}));
+    }
+    var src_it = transpiler.c_sources.keyIterator();
+    while (src_it.next()) |src| {
+        try cc_argv.append(src.*);
+    }
 
     var lib_it = transpiler.link_libraries.keyIterator();
     while (lib_it.next()) |lib_name| {

@@ -377,6 +377,21 @@ pub fn emitLibDecl(self: *CTranspiler, node: *ASTNode) !void {
             for (ann.arguments) |arg| {
                 try self.link_libraries.put(arg, {});
             }
+        } else if (std.mem.eql(u8, ann.name, "Source")) {
+            // C source file to compile and link (path relative to cwd).
+            for (ann.arguments) |arg| {
+                try self.c_sources.put(arg, {});
+            }
+        } else if (std.mem.eql(u8, ann.name, "Include")) {
+            // Extra -I directory for the C compiler.
+            for (ann.arguments) |arg| {
+                try self.c_includes.put(arg, {});
+            }
+        } else if (std.mem.eql(u8, ann.name, "Define")) {
+            // Preprocessor -D flag (NAME or NAME=value).
+            for (ann.arguments) |arg| {
+                try self.c_defines.put(arg, {});
+            }
         }
     }
     try self.writer.appendSlice("\n");

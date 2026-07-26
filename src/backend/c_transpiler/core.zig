@@ -66,6 +66,11 @@ pub const CTranspiler = struct {
     known_constructors: std.StringHashMap(void), // pre-registered, not yet emitted
     libs: std.StringHashMap(void),
     link_libraries: std.StringHashMap(void),
+    // Build requirements declared by `lib` annotations (@Source/@Include/@Define),
+    // consumed by the CLI when assembling the C compiler invocation.
+    c_sources: std.StringHashMap(void),
+    c_includes: std.StringHashMap(void),
+    c_defines: std.StringHashMap(void),
     emitted_functions: std.StringHashMap(void),
     emitted_variables: std.StringHashMap(void),
     emitted_lambdas: std.StringHashMap(void),
@@ -155,6 +160,9 @@ pub const CTranspiler = struct {
             .known_constructors = std.StringHashMap(void).init(allocator),
             .libs = std.StringHashMap(void).init(allocator),
             .link_libraries = std.StringHashMap(void).init(allocator),
+            .c_sources = std.StringHashMap(void).init(allocator),
+            .c_includes = std.StringHashMap(void).init(allocator),
+            .c_defines = std.StringHashMap(void).init(allocator),
             .emitted_functions = std.StringHashMap(void).init(allocator),
             .emitted_variables = std.StringHashMap(void).init(allocator),
             .emitted_lambdas = std.StringHashMap(void).init(allocator),
@@ -175,6 +183,9 @@ pub const CTranspiler = struct {
         self.known_constructors.deinit();
         self.libs.deinit();
         self.link_libraries.deinit();
+        self.c_sources.deinit();
+        self.c_includes.deinit();
+        self.c_defines.deinit();
         self.emitted_functions.deinit();
         self.emitted_variables.deinit();
         self.emitted_modules.deinit();

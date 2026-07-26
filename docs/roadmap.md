@@ -376,7 +376,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 #### Etapa 2 — Arquitetura Final: Contract + neco
 - [x] **Task 51.2.1:** `contract Awaitable<T>` em `std/core.ei`
 - [x] ~~**Task 51.2.2:** `skill TaskNeco : Awaitable<T>` com `await()` via neco~~ (ver divergência acima: `await()` ficou em `type Task<T>`)
-- [x] **Task 51.2.3:** `lib Neco` binding para neco em `src/runtime/third_party/neco/` (+ `third_wrapper.c`: trampolim de closure, macro `main` própria, cola Boehm GC ↔ stacks de corotina; patch `EIWA PATCH` no `neco.c` para rotear alocação de stacks pelo env allocator)
+- [x] **Task 51.2.3:** `lib Neco` binding para neco em `src/runtime/third_party/neco/` (+ `neco/neco_wrapper.c`, referenciado direto pelo `@Header` do `lib Neco`: trampolim de closure, macro `main` própria, cola Boehm GC ↔ stacks de corotina; patch `EIWA PATCH` no `neco.c` para rotear alocação de stacks pelo env allocator)
 - [x] **Task 51.2.4:** `type Task<T>(var id: Int, var done: Bool, var result: T?, val block: () -> T) : Awaitable<T>`
 - [x] **Task 51.2.5:** `fun task<T>(block)` factory retorna `Task<T>` e inicia a corotina via `Neco.start`
 - [x] **Verify:** `zig build && ./zig-out/bin/eiwa test` — suite completa passa (132 testes); zero hacks no compilador
