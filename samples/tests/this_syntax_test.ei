@@ -44,3 +44,48 @@ test "this_syntax: parameter shadowing separates local param from this.count" {
     c.setCount(10)
     assert(c.count == 10)
 }
+
+contract Steppable {
+    fun step(): Int
+}
+
+skill Stepper : Steppable {
+    fun stepTwice(): Int {
+        return step() + step()
+    }
+}
+
+type Wheel(var pos: Int = 0): Steppable + Stepper {
+    implement fun step(): Int {
+        pos = pos + 1
+        return pos
+    }
+
+    fun advance(): Int {
+        return stepTwice()
+    }
+}
+
+type Box<T>(var item: T) {
+    fun replace(value: T) {
+        item = value
+    }
+
+    fun reset() {
+        replace(item)
+    }
+}
+
+test "this_syntax: skill method callable without this. inside type" {
+    val w = Wheel()
+    assert(w.advance() == 3)
+    assert(w.pos == 2)
+}
+
+test "this_syntax: sibling method call without this. in generic type" {
+    val b = Box<Int>(5)
+    b.reset()
+    assert(b.item == 5)
+    b.replace(9)
+    assert(b.item == 9)
+}

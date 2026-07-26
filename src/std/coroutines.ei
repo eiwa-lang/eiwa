@@ -47,7 +47,7 @@ type Task<T>(
 
     implement fun await(): T {
         if (!done) {
-            this.join(id) //TODO should not need .this
+            join(id)
             done = true
         }
         return result!!

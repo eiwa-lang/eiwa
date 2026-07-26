@@ -422,6 +422,9 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
             const m_c_name = try mangled.toOwnedSlice();
             m.resolved_c_name = m_c_name;
+            if (self.functions_ast.get(m_c_name) == null) {
+                try self.functions_ast.put(m_c_name, method);
+            }
 
             const fn_type = try self.allocator.create(EiwaType);
             fn_type.* = .{ .Function = .{
