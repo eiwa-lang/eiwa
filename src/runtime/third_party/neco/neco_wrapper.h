@@ -26,6 +26,13 @@ int eiwa_neco_join(int id);
 // Yields the current coroutine to the scheduler.
 int eiwa_neco_yield(void);
 
+// Waits until file descriptor `fd` is readable (NECO_WAIT_READ) or writable
+// (NECO_WAIT_WRITE) without blocking the OS thread. Yields the coroutine until
+// the event occurs, then resumes it. Used by I/O drivers (e.g. PostgreSQL) to
+// integrate non-blocking sockets with the neco scheduler.
+int eiwa_neco_wait_readable(int fd);
+int eiwa_neco_wait_writable(int fd);
+
 // Sleeps the current coroutine for nanosecs nanoseconds.
 // Wraps neco_sleep + eiwa_gc_fix_stackbottom (same pattern as yield/join).
 int eiwa_neco_sleep(int64_t nanosecs);
