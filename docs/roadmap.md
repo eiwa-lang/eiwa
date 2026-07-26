@@ -381,35 +381,24 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 51.2.5:** `fun task<T>(block)` factory retorna `Task<T>` e inicia a corotina via `Neco.start`
 - [x] **Verify:** `zig build && ./zig-out/bin/eiwa test` — suite completa passa (132 testes); zero hacks no compilador
 
-### Phase 52: Captura de `var` por referência em lambdas (boxed captures) (PLANNED)
-> **Motivação:** hoje toda captura de variável por lambda é **por valor**. Mutar uma `var`
-> capturada dentro da lambda não propaga para o escopo externo — quebra o padrão
-> fire-and-forget de tasks (ex: sinalizar conclusão, acumular resultado).
->
-> **Evidência (2026-07-26):**
-> ```kotlin
-> var executed = false
-> val f: () -> Void = { executed = true; echo("ran") }
-> f()
-> echo(executed.toString())  // imprime "false" — esperado "true"
-> ```
-> O C gerado mostra `_env_* { bool executed; }` (cópia) em vez de `Box_bool*`.
->
-> **Estado atual:** a infraestrutura de boxing **existe mas não dispara**:
-> - Checker: `infer_expr.zig` (~L220-249) marca `is_boxed` em símbolo/identificador/decl
->   quando uma `var` mutável é capturada cruzando `is_function_boundary` — não está
->   sendo ativado para corpos de lambda (escopo da lambda provavelmente não é marcado
->   como function boundary, ou a resolução do identificador não passa por esse caminho).
-> - Transpiler: `expression.zig` já emite `Box_<tipo>*` para captures com `is_boxed`
->   (`getBoxTypeName`, env struct, leitura/escrita via `->value`) — caminho nunca exercitado.
->
-> **Tarefas:**
-> - [ ] **Task 52.1:** Diagnosticar por que `is_boxed` não é setado (escopo da lambda × `is_function_boundary` em `infer_expr.zig`).
-> - [ ] **Task 52.2:** Checker: marcar como boxed toda `var` mutável referenciada dentro de lambda (inclui lambdas aninhadas e corpos de `task {}`).
-> - [ ] **Task 52.3:** Transpiler: decl da `var` boxed (`Box_T* x = box_new(v)`), leituras `x->value`, escritas `x->value = ...`, capture no env como ponteiro (sem cópia).
-> - [ ] **Task 52.4:** `val` (imutável) NÃO boxed — manter cópia por valor (sem regressão de performance/semântica).
-> - [ ] **Task 52.5:** Interação com `task {}`: mutação de `var` capturada visível após `await()` (memória compartilhada entre corotinas via GC — Box alocado com `GC_MALLOC`).
-> - [ ] **Verify:** probes `box1`/`box2` imprimem `true`; novo teste em `task_test.ei` (mutação de `var` capturada visível após `await`); suite completa verde.
+### Phase 52: Captura de `var` por referência em lambdas (boxed captures) (COMPLETED)
+ **Motivação:** toda captura de variável por lambda era **por valor**. Mutar uma `var`
+ capturada dentro da lambda não propagava para o escopo externo — quebrava o padrão
+ fire-and-forget de tasks (ex: sinalizar conclusão, acumular resultado).
+
+ **Causa raiz encontrada (2026-07-26):** a detecção de captura existia apenas no caminho
+ de **leitura** (`inferIdentifier`). Uma `var` capturada **exclusivamente por atribuição**
+ (ex: `{ flag = true }`) nunca passava por esse caminho, então `is_boxed` não era setado
+ e o transpiler emitia cópia por valor no env struct. Resolução: espelhar a detecção de
+ captura em `inferAssignment` (`infer_expr.zig`) — ADR 39.
+
+ **Tarefas:**
+ - [x] **Task 52.1:** Diagnosticar por que `is_boxed` não é setado → `inferAssignment` não tinha detecção de captura (só `inferIdentifier`).
+ - [x] **Task 52.2:** Checker marca como boxed toda `var` mutável atribuída dentro de lambda (cruzando `is_function_boundary`), incluindo corpos de `task {}`.
+ - [x] **Task 52.3:** Transpiler emite decl boxed, leituras/escritas via `->value` e capture por ponteiro (caminho já existente, agora exercitado).
+ - [x] **Task 52.4:** `val` (imutável) NÃO boxed — cópia por valor preservada.
+ - [x] **Task 52.5:** `task {}`: mutação de `var` capturada visível após `await()` — teste "task without return value should complete" passa.
+ - [x] **Verify:** novos testes em `closure_capture_test.ei` (4 casos) e `task_test.ei`; suite completa verde (147 testes).
 
 ## ✅ Definition of Done (Per Phase)
 * [x] **Security/Lint:** No memory leaks in tests (utilizing `std.testing.allocator` across internal Zig modules).
@@ -419,6 +408,11 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 ---
 
 ## 🛠️ Historic Bugfixes & Tools
+* **Concurrency Module Extraction (July 26, 2026):** Moved all concurrency infrastructure (`lib Neco`, `Taskable`, `TaskableNeco`, `Task<T>`, `task()`) from `std.core` to the new `std.coroutines` module, keeping `Awaitable<T>` in core. Non-destructured imports now also re-export `generic_functions_ast` of local symbols (ADR 37).
+* **Trailing Lambda with Explicit Type Args (July 26, 2026):** Parser accepted trailing lambda only after `(...)`; `task<Int> { }` now creates the `call_expr` with `type_args` directly when `{` follows `>`.
+* **C Reserved Word Escaping (July 26, 2026):** User identifiers colliding with C keywords (`var bool = false`) broke the generated C. New `cIdent()` helper in the transpiler prefixes reserved names with `eiwa_` across var decls, identifiers, assignments, function params and lambda captures (ADR 38).
+* **Closure Capture-by-Assignment Boxing (July 26, 2026):** Mutable vars captured **only by assignment** inside lambdas were never boxed (capture detection existed only in `inferIdentifier`), so mutations were invisible outside. Mirrored detection into `inferAssignment` — completes Phase 52 (ADR 39).
+* **Sibling Calls to Skill/Forward Methods (July 26, 2026):** Method pre-registration in `class_scope` did not populate `functions_ast`, so unqualified calls to later-defined methods (e.g. skill-composed `exec`/`join`) failed without `this.`. Pre-registration now also inserts into `functions_ast` (ADR 36a).
 * **C Transpiler `.if_expr` (July 9, 2026):** Fixed C transpiler to emit statements for `if/else` instead of C ternary operators `?:` when in Statement mode, resolving compilation issues with complex blocks (e.g., `return`).
 * **Runtime Stream (July 9, 2026):** Updated `eiwa run` command to output `stdout` in real-time (unbuffered) using `child.spawn()` with stream inheritance (`.Inherit`), allowing long-running loops to execute correctly without blocking the TTY.
 * **Method Resolution Name Mangling (July 9, 2026):** Resolved a compiler bug where primitive method resolution failed on `Int`, `Bool`, etc., because the type checker searched for the raw type names in `classes_ast` instead of using the mangled name `system_Int`.
