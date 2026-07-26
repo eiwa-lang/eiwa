@@ -1266,7 +1266,6 @@ pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.St
         .identifier => |i| {
             if (locals.contains(i.name)) return;
             if (i.is_class_property) return;
-            if (std.mem.eql(u8, i.name, "this")) return;
             
             const name = i.resolved_c_name orelse i.name;
             if (self.classes.contains(name) or self.classes.contains(i.name)) return;
