@@ -26,9 +26,10 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "json.ei", @embedFile("../../std/json.ei") },
     .{ "yaml.ei", @embedFile("../../std/yaml.ei") },
     .{ "log.ei", @embedFile("../../std/log.ei") },
+    .{ "coroutines.ei", @embedFile("../../std/coroutines.ei") },
 });
 
-pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log" };
+pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines" };
 pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions" };
 pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 
@@ -120,6 +121,11 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         while (alias_it.next()) |entry| {
             if (!tc.local_symbols.contains(entry.key_ptr.*)) continue;
             try self.alias_map.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var gen_fn_it = tc.generic_functions_ast.iterator();
+        while (gen_fn_it.next()) |entry| {
+            if (!tc.local_symbols.contains(entry.key_ptr.*)) continue;
+            try self.generic_functions_ast.put(entry.key_ptr.*, entry.value_ptr.*);
         }
         var class_ast_it = tc.classes_ast.iterator();
         while (class_ast_it.next()) |entry| {

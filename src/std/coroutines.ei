@@ -1,0 +1,70 @@
+@Header("neco/neco_wrapper.h")
+@Define("NECO_NOWORKERS")
+@Define("NECO_NOSIGNALS")
+@Define("NECO_USEHEAPSTACK")
+@Define("NECO_STACKSIZE=262144")
+@Source("src/runtime/third_party/neco/neco.c")
+@Source("src/runtime/third_party/neco/neco_wrapper.c")
+@Include("src/runtime/third_party/neco")
+lib Neco {
+    @Alias("eiwa_neco_start_closure")
+    fun start(closure: () -> Void): Int
+
+    @Alias("eiwa_neco_join")
+    fun join(id: Int): Int
+
+    @Alias("eiwa_neco_yield")
+    fun yield(): Int
+
+    @Alias("eiwa_neco_sleep")
+    fun sleep(nanosecs: Int): Int
+}
+
+contract Taskable<T> {
+    fun exec(): Int
+    fun join(id: Int)
+}
+
+skill TaskableNeco<T> : Taskable<T>, Runnable {
+
+    implement fun exec(): Int {
+        return Neco.start { 
+            run() 
+        }
+    }
+
+    implement fun join(id: Int) {
+        Neco.join(id)
+    }
+}
+
+type Task<T>(
+    var id: Int?,
+    var done: Bool,
+    var result: T?,
+    val block: () -> T
+): Awaitable<T>, Runnable, Taskable<T> + TaskableNeco {
+
+    implement fun await(): T {
+        if (!done) {
+            this.join(id) //TODO should not need .this
+            done = true
+        }
+        return result!!
+    }
+
+    implement fun run() {
+        result = block()
+        done = true
+    }
+
+    implement fun start(): Awaitable<T> {
+        id = this.exec()
+        return this
+    }
+
+    implement fun isDone() = done
+
+}
+
+fun task<T>(block: () -> T) = Task<T>(null, false, null, block).start()

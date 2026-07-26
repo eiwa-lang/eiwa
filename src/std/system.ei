@@ -1,3 +1,5 @@
+import { Neco } from "std.coroutines"
+
 @Header("<unistd.h>")
 lib Posix {
     fun sleep(seconds: Int): Int
