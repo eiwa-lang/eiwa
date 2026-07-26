@@ -191,6 +191,8 @@ typedef struct EiwaClosure {
     void* _pad;
 } EiwaClosure;
 
+#include "neco/neco_wrapper.h"
+
 struct core_String;
 typedef struct core_String core_String;
 extern const EiwaContractDescriptor core_Stringable_contract;

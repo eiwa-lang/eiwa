@@ -65,6 +65,7 @@ pub const TypeChecker = struct {
     skills_ast: std.StringHashMap(*ASTNode),
     enums_ast: std.StringHashMap(*ASTNode),
     functions_ast: std.StringHashMap(*ASTNode),
+    generic_functions_ast: std.StringHashMap(*ASTNode),
     local_symbols: std.StringHashMap(void),
     monomorphized_nodes: ArrayList(*ASTNode),
     current_class_name: ?[]const u8 = null,
@@ -90,6 +91,8 @@ pub const TypeChecker = struct {
     pub const cloneTypeRef = @import("clone.zig").cloneTypeRef;
     pub const resolveTypeName = core_resolveTypeName;
     pub const monomorphizeClass = @import("monomorphize.zig").monomorphizeClass;
+    pub const monomorphizeFunction = @import("monomorphize.zig").monomorphizeFunction;
+    pub const lookupGenericFunction = @import("monomorphize.zig").lookupGenericFunction;
     pub const cloneNode = @import("clone.zig").cloneNode;
     pub const validate = core_validate;
     pub const declareTypes = core_declareTypes;
@@ -117,6 +120,7 @@ pub const TypeChecker = struct {
             .skills_ast = std.StringHashMap(*ASTNode).init(allocator),
             .enums_ast = std.StringHashMap(*ASTNode).init(allocator),
             .functions_ast = std.StringHashMap(*ASTNode).init(allocator),
+            .generic_functions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .local_symbols = std.StringHashMap(void).init(allocator),
             .monomorphized_nodes = ArrayList(*ASTNode).init(allocator),
             .current_class_name = null,
@@ -137,6 +141,7 @@ pub const TypeChecker = struct {
         self.skills_ast.deinit();
         self.enums_ast.deinit();
         self.functions_ast.deinit();
+        self.generic_functions_ast.deinit();
         self.local_symbols.deinit();
         self.monomorphized_nodes.deinit();
     }
@@ -238,6 +243,8 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
             base_type = .Int;
         } else if (std.mem.eql(u8, alias, "Bool") or std.mem.eql(u8, alias, "core_Bool")) {
             base_type = .Bool;
+        } else if (std.mem.eql(u8, alias, "String") or std.mem.eql(u8, alias, "core_String")) {
+            base_type = .String;
         } else if (std.mem.eql(u8, alias, "Void") or std.mem.eql(u8, alias, "core_Void")) {
             base_type = .Void;
         } else if (std.mem.eql(u8, alias, "OpaquePointer")) {
@@ -272,9 +279,29 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
                 }
                 const mangled_name = try mangled.toOwnedSlice();
 
-                try self.monomorphizeClass(alias, type_args, mangled_name);
+                // Check if any type arg is an unresolved generic parameter
+                var has_unresolved_generic = false;
+                if (self.classes_ast.get(actual_base)) |base_node| {
+                    if (base_node.data == .type_decl) {
+                        const base_decl = base_node.data.type_decl;
+                        for (type_args) |t_arg| {
+                            if (t_arg.* == .Custom) {
+                                for (base_decl.generic_params) |gp| {
+                                    if (std.mem.eql(u8, t_arg.Custom, gp)) {
+                                        has_unresolved_generic = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (has_unresolved_generic) break;
+                        }
+                    }
+                }
+                if (!has_unresolved_generic) {
+                    try self.monomorphizeClass(alias, type_args, mangled_name);
+                }
 
-                const actual_mangled = self.alias_map.get(mangled_name) orelse mangled_name;
+                const actual_mangled = self.alias_map.get(mangled_name) orelse if (has_unresolved_generic) alias else mangled_name;
                 base_type = .{ .Custom = actual_mangled };
             }
         } else if (self.classes_ast.contains(alias) or (self.alias_map.get(alias) != null and self.classes_ast.contains(self.alias_map.get(alias).?))) {
@@ -424,15 +451,14 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         var sym_it = m.checker.global_scope.symbols.iterator();
                         while (sym_it.next()) |entry| {
                             if (self.global_scope.symbols.get(entry.key_ptr.*) == null) {
-                                switch (entry.value_ptr.*.*) {
-                                    .Variable => |vs| {
-                                        _ = self.global_scope.define(entry.key_ptr.*, vs.eiwa_type, vs.is_mut, false) catch {};
-                                    },
-                                    .Overloads => |ov_list| {
-                                        for (ov_list.items) |ov_type| {
-                                            _ = self.global_scope.define(entry.key_ptr.*, ov_type, false, true) catch {};
-                                        }
-                                    },
+                                const sym = entry.value_ptr.*;
+                                if (sym.variable) |vs| {
+                                    _ = self.global_scope.define(entry.key_ptr.*, vs.eiwa_type, vs.is_mut, false) catch {};
+                                }
+                                if (sym.overloads) |ov_list| {
+                                    for (ov_list.items) |ov_type| {
+                                        _ = self.global_scope.define(entry.key_ptr.*, ov_type, false, true) catch {};
+                                    }
                                 }
                             }
                         }
@@ -462,7 +488,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                 } else if (std.mem.eql(u8, c.name, "Bool")) {
                     class_type.* = .Bool;
                 } else if (std.mem.eql(u8, c.name, "String")) {
-                    class_type.* = .{ .Custom = actual_c_name };
+                    class_type.* = .String;
                 } else if (std.mem.eql(u8, c.name, "OpaquePointer") or std.mem.eql(u8, c.name, "Pointer")) {
                     class_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
                     @constCast(class_type.Pointer).* = .Void;
@@ -676,19 +702,31 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
     self.pass = .validation;
     _ = try self.inferNode(node, &self.global_scope);
 
-    // Validate all dynamically monomorphized classes
+    // Validate all dynamically monomorphized nodes
     var mono_idx: usize = 0;
     while (mono_idx < self.monomorphized_nodes.items.len) : (mono_idx += 1) {
         const mono_node = self.monomorphized_nodes.items[mono_idx];
-        const class_type = try self.allocator.create(EiwaType);
-        try infer_decl_mod.inferTypeDecl(self, mono_node, &self.global_scope, class_type);
+        if (mono_node.data == .type_decl) {
+            const class_type = try self.allocator.create(EiwaType);
+            try infer_decl_mod.inferTypeDecl(self, mono_node, &self.global_scope, class_type);
+        }
     }
 
-    // Append any dynamically monomorphized classes to the AST
+    // Insert any dynamically monomorphized nodes into the AST right after the
+    // import statements. They must precede user code so the transpiler emits
+    // their C prototypes before any lambdas that call them, but they must
+    // come *after* imports so lib/type declarations from imported modules are
+    // already registered when they are emitted.
     if (node.data == .program and self.monomorphized_nodes.items.len > 0) {
-        var final_stmts = try self.allocator.alloc(*ASTNode, node.data.program.statements.len + self.monomorphized_nodes.items.len);
-        @memcpy(final_stmts[0..node.data.program.statements.len], node.data.program.statements);
-        @memcpy(final_stmts[node.data.program.statements.len..], self.monomorphized_nodes.items);
+        var insert_idx: usize = 0;
+        for (node.data.program.statements, 0..) |stmt, i| {
+            if (stmt.data == .import_stmt) insert_idx = i + 1;
+        }
+        const old_stmts = node.data.program.statements;
+        var final_stmts = try self.allocator.alloc(*ASTNode, old_stmts.len + self.monomorphized_nodes.items.len);
+        @memcpy(final_stmts[0..insert_idx], old_stmts[0..insert_idx]);
+        @memcpy(final_stmts[insert_idx..][0..self.monomorphized_nodes.items.len], self.monomorphized_nodes.items);
+        @memcpy(final_stmts[insert_idx + self.monomorphized_nodes.items.len ..], old_stmts[insert_idx..]);
         node.data.program.statements = final_stmts;
     }
 
@@ -803,10 +841,10 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
                 .line = node.line,
                 .column = node.column,
                 .resolved_type = null,
-                .data = .{ .identifier = .{ .name = "String", .resolved_c_name = actual_c_name, .is_class_property = false } },
+                .data = .{ .identifier = .{ .name = "String", .resolved_c_name = actual_c_name, .is_class_property = true } },
             };
             const callee_type = try self.allocator.create(EiwaType);
-            callee_type.* = .{ .Custom = actual_c_name };
+            callee_type.* = .String;
             callee_node.resolved_type = callee_type;
 
             var args = try self.allocator.alloc(*ASTNode, 2);
@@ -814,7 +852,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
             args[1] = len_node;
 
             node.data = .{ .call_expr = .{ .callee = callee_node, .arguments = args } };
-            t.* = .{ .Custom = actual_c_name };
+            t.* = .String;
         },
         .bool_literal => t.* = .Bool,
         .null_literal => t.* = .Null,
@@ -893,6 +931,18 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
         if (type_name) |tname| {
             if (self.conformsTo(tname, exp_base.Custom)) return true;
         }
+    }
+
+    // String ↔ Custom("core_String") / Custom("String") bridge
+    if (exp_base.* == .String and act_base.* == .Custom and
+        (std.mem.eql(u8, act_base.Custom, "core_String") or std.mem.eql(u8, act_base.Custom, "String")))
+    {
+        return true;
+    }
+    if (exp_base.* == .Custom and act_base.* == .String and
+        (std.mem.eql(u8, exp_base.Custom, "core_String") or std.mem.eql(u8, exp_base.Custom, "String")))
+    {
+        return true;
     }
 
     if (std.meta.activeTag(exp_base.*) == std.meta.activeTag(act_base.*)) {

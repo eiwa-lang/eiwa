@@ -79,15 +79,37 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
         new_props[i] = prop;
         new_props[i].type_ref = try self.cloneTypeRef(prop.type_ref);
         if (generic_map.get(prop.type_ref.name)) |g_type| {
-            new_props[i].resolved_type = g_type;
+            if (prop.type_ref.is_nullable) {
+                // T? must become `Concrete | null`, not bare Concrete
+                const union_t = try self.allocator.create(EiwaType);
+                union_t.* = .{ .Union = .{
+                    .left = try self.allocator.create(EiwaType),
+                    .right = try self.allocator.create(EiwaType),
+                } };
+                @constCast(union_t.Union.left).* = g_type.*;
+                @constCast(union_t.Union.right).* = .Null;
+                new_props[i].resolved_type = union_t;
+            } else {
+                new_props[i].resolved_type = g_type;
+            }
         }
         if (prop.initializer) |init_node| {
             new_props[i].initializer = try self.cloneNode(init_node);
         }
     }
     
-    var new_methods = try self.allocator.alloc(*ASTNode, type_decl.methods.len);
-    for (type_decl.methods, 0..) |method, i| {
+    var filtered_methods = ArrayList(*ASTNode).init(self.allocator);
+    for (type_decl.methods) |method| {
+        if (method.data == .fun_decl) {
+            const mname = method.data.fun_decl.name;
+            if (std.mem.eql(u8, mname, "toString") or std.mem.eql(u8, mname, "hashCode")) {
+                continue;
+            }
+        }
+        try filtered_methods.append(method);
+    }
+    var new_methods = try self.allocator.alloc(*ASTNode, filtered_methods.items.len);
+    for (filtered_methods.items, 0..) |method, i| {
         const new_method = try self.allocator.create(ASTNode);
         new_method.* = method.*;
         if (method.data == .fun_decl) {
@@ -141,6 +163,72 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
     try infer_decl_mod.inferTypeDecl(self, new_node, &self.global_scope, class_type);
     
     for (type_decl.generic_params) |param_name| {
+        if (old_aliases.get(param_name)) |old_val| {
+            try self.alias_map.put(param_name, old_val);
+        } else {
+            _ = self.alias_map.remove(param_name);
+        }
+    }
+
+    try self.monomorphized_nodes.append(new_node);
+}
+
+// Cross-module lookup for generic functions: same registry fallback
+// monomorphizeClass uses for classes, imported into the local map on first hit.
+pub fn lookupGenericFunction(self: *TypeChecker, name: []const u8) ?*ASTNode {
+    if (self.generic_functions_ast.get(name)) |n| return n;
+    if (self.registry) |reg| {
+        var mod_it = reg.modules.iterator();
+        while (mod_it.next()) |entry| {
+            if (entry.value_ptr.checker.generic_functions_ast.get(name)) |n| {
+                self.generic_functions_ast.put(name, n) catch {};
+                return n;
+            }
+        }
+    }
+    return null;
+}
+
+pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8) !void {    if (self.functions_ast.get(mangled_name) != null) return;
+
+    const base_node = self.generic_functions_ast.get(base_name) orelse {
+        self.reportError(0, 0, "TypeError: Generic function '{s}' not found.", .{base_name});
+        return error.TypeError;
+    };
+
+    const fun_decl = base_node.data.fun_decl;
+    if (fun_decl.generic_params.len != type_args.len) {
+        self.reportError(0, 0, "TypeError: Expected {} generic arguments for '{s}', got {}.", .{fun_decl.generic_params.len, base_name, type_args.len});
+        return error.TypeError;
+    }
+
+    var old_aliases = std.StringHashMap([]const u8).init(self.allocator);
+    defer old_aliases.deinit();
+
+    for (fun_decl.generic_params, 0..) |param_name, i| {
+        var conc_buf = ArrayList(u8).init(self.allocator);
+        try type_args[i].formatSafe(conc_buf.writer());
+        const conc_name = try conc_buf.toOwnedSlice();
+
+        if (self.alias_map.get(param_name)) |old_val| {
+            try old_aliases.put(param_name, old_val);
+        }
+        _ = self.global_scope.define(conc_name, type_args[i], false, false) catch {};
+        try self.alias_map.put(param_name, conc_name);
+        try self.alias_map.put(conc_name, conc_name);
+    }
+
+    const new_node = try self.cloneNode(base_node);
+    new_node.data.fun_decl.generic_params = &.{};
+    new_node.data.fun_decl.name = mangled_name;
+    // Pre-set resolved_c_name so inferFunDecl skips its own mangling
+    new_node.data.fun_decl.resolved_c_name = mangled_name;
+
+    const t = try self.allocator.create(EiwaType);
+    try infer_decl_mod.inferFunDecl(self, new_node, &self.global_scope, t);
+    new_node.resolved_type = t;
+
+    for (fun_decl.generic_params) |param_name| {
         if (old_aliases.get(param_name)) |old_val| {
             try self.alias_map.put(param_name, old_val);
         } else {

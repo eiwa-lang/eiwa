@@ -231,6 +231,7 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
                 .annotations = f.annotations,
                 .modifiers = f.modifiers,
                 .name = f.name,
+                .generic_params = f.generic_params,
                 .params = new_params,
                 .type_ref = if (f.type_ref) |tr| try self.cloneTypeRef(tr) else null,
                 .body = try self.cloneNode(f.body),

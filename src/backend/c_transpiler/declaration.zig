@@ -48,7 +48,7 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
         }
 
         // Emit Struct
-        try self.header_writer.writer().print("typedef struct {s} {s};\n", .{actual_name, actual_name});
+        try self.header_writer.writer().print("typedef struct {s} {s};\n", .{ actual_name, actual_name });
         try self.header_writer.writer().print("extern const EiwaTypeDescriptor {s}_descriptor;\n", .{actual_name});
         try self.header_writer.writer().print("struct {s} {{\n", .{actual_name});
         try self.header_writer.writer().print("    const EiwaTypeDescriptor* _desc;\n", .{});
@@ -57,24 +57,24 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
             if (!prop.is_property) continue;
             var t_str: []const u8 = "void*";
             if (prop.resolved_type) |rt| {
-                t_str = try self.cType(rt);
+                t_str = try self.cStorageType(rt);
             }
-            try self.header_writer.writer().print("    {s} {s};\n", .{t_str, prop.name});
+            try self.header_writer.writer().print("    {s} {s};\n", .{ t_str, prop.name });
         }
         try self.header_writer.writer().print("}};\n\n", .{});
 
         // Emit Allocator/Constructor Declaration
-        try self.header_writer.writer().print("{s}* {s}_new(", .{actual_name, actual_name});
+        try self.header_writer.writer().print("{s}* {s}_new(", .{ actual_name, actual_name });
         for (type_decl.primary_constructor, 0..) |prop, i| {
             if (i > 0) try self.header_writer.appendSlice(", ");
             var t_str: []const u8 = "void*";
             if (prop.resolved_type) |rt| {
-                t_str = try self.cType(rt);
+                t_str = try self.cStorageType(rt);
             }
-            try self.header_writer.writer().print("{s} {s}", .{t_str, prop.name});
+            try self.header_writer.writer().print("{s} {s}", .{ t_str, prop.name });
         }
         try self.header_writer.appendSlice(");\n");
-        try self.header_writer.writer().print("{s}* {s}_constructor({s}* this);\n", .{actual_name, actual_name, actual_name});
+        try self.header_writer.writer().print("{s}* {s}_constructor({s}* this);\n", .{ actual_name, actual_name, actual_name });
 
         // Emit vtables for implemented contracts
         var valid_contract_count: usize = 0;
@@ -122,28 +122,29 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
         }
 
         // Emit Allocator/Constructor Implementation
-        try self.writer.writer().print("{s}* {s}_new(", .{actual_name, actual_name});
+        try self.writer.writer().print("{s}* {s}_new(", .{ actual_name, actual_name });
         for (type_decl.primary_constructor, 0..) |prop, i| {
             if (i > 0) try self.writer.appendSlice(", ");
             var t_str: []const u8 = "void*";
             if (prop.resolved_type) |rt| {
-                t_str = try self.cType(rt);
+                t_str = try self.cStorageType(rt);
                 if (ts.extractBaseType(rt).* == .Array) try self.emitArrayStruct(ts.extractBaseType(rt).Array);
             }
-            try self.writer.writer().print("{s} {s}", .{t_str, prop.name});
+            try self.writer.writer().print("{s} {s}", .{ t_str, prop.name });
         }
         try self.writer.writer().print(") {{\n", .{});
-        try self.writer.writer().print("    {s}* instance = ({s}*)GC_MALLOC(sizeof({s}));\n", .{actual_name, actual_name, actual_name});
+        try self.writer.writer().print("    {s}* instance = ({s}*)GC_MALLOC(sizeof({s}));\n", .{ actual_name, actual_name, actual_name });
         try self.writer.writer().print("    instance->_desc = &{s}_descriptor;\n", .{actual_name});
 
         for (type_decl.primary_constructor) |prop| {
             if (!prop.is_property) continue;
-            try self.writer.writer().print("    instance->{s} = {s};\n", .{prop.name, prop.name});
+            try self.writer.writer().print("    instance->{s} = {s};\n", .{ prop.name, prop.name });
         }
         try self.writer.appendSlice("    return instance;\n}\n\n");
     }
 
     for (type_decl.methods) |method| {
+        if (method.data.fun_decl.generic_params.len > 0) continue;
         try self.emitMethodDecl(actual_name, method, primitive_type);
     }
 }
@@ -166,34 +167,34 @@ pub fn emitSkillDecl(self: *CTranspiler, node: *ASTNode) !void {
 
 pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode, primitive_type: ?[]const u8) !void {
     const decl = node.data.fun_decl;
-    const fn_c_name = decl.resolved_c_name orelse try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{class_name, decl.name});
-    
+    const fn_c_name = decl.resolved_c_name orelse try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ class_name, decl.name });
+
     // 1. Emit the signature to header_writer
     if (node.resolved_type) |rt| {
         const fun_type = rt.Function;
         const ret_base = ts.extractBaseType(fun_type.return_type);
         // Forward-declare Custom return types that may not be defined yet
         if (ret_base.* == .Custom and !self.classes.contains(ret_base.Custom)) {
-            try self.forward_writer.writer().print("typedef struct {s} {s};\n", .{ret_base.Custom, ret_base.Custom});
+            try self.forward_writer.writer().print("typedef struct {s} {s};\n", .{ ret_base.Custom, ret_base.Custom });
         }
         const ret_str = try self.cType(fun_type.return_type);
         try self.header_writer.writer().print("{s} ", .{ret_str});
     } else {
         try self.header_writer.appendSlice("void ");
     }
-    
+
     if (primitive_type) |pt| {
-        try self.header_writer.writer().print("{s}({s} this", .{fn_c_name, pt});
+        try self.header_writer.writer().print("{s}({s} this", .{ fn_c_name, pt });
     } else {
-        try self.header_writer.writer().print("{s}({s}* this", .{fn_c_name, class_name});
+        try self.header_writer.writer().print("{s}({s}* this", .{ fn_c_name, class_name });
     }
-    
+
     if (node.resolved_type) |rt| {
         const fun_type = rt.Function;
         for (decl.params, 0..) |p, i| {
             try self.header_writer.appendSlice(", ");
             const param_t_str = try self.cType(fun_type.params[i]);
-            try self.header_writer.writer().print("{s} {s}", .{param_t_str, p.name});
+            try self.header_writer.writer().print("{s} {s}", .{ param_t_str, p.name });
         }
     }
     try self.header_writer.appendSlice(");\n");
@@ -207,11 +208,11 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
     } else {
         try self.writer.appendSlice("void ");
     }
-    
+
     if (primitive_type) |pt| {
-        try self.writer.writer().print("{s}({s} this", .{fn_c_name, pt});
+        try self.writer.writer().print("{s}({s} this", .{ fn_c_name, pt });
     } else {
-        try self.writer.writer().print("{s}({s}* this", .{fn_c_name, class_name});
+        try self.writer.writer().print("{s}({s}* this", .{ fn_c_name, class_name });
     }
 
     if (node.resolved_type) |rt| {
@@ -220,13 +221,17 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
             try self.writer.appendSlice(", ");
             const param_t_str = try self.cType(fun_type.params[i]);
             if (ts.extractBaseType(fun_type.params[i]).* == .Array) try self.emitArrayStruct(ts.extractBaseType(fun_type.params[i]).Array);
-            try self.writer.writer().print("{s} {s}", .{param_t_str, p.name});
+            try self.writer.writer().print("{s} {s}", .{ param_t_str, p.name });
         }
     }
     try self.writer.appendSlice(") {\n");
 
+    const old_fn_c_name = self.current_fn_c_name;
+    self.current_fn_c_name = fn_c_name;
+    defer self.current_fn_c_name = old_fn_c_name;
+
     // Emit #line directive so clang reports errors with the original .ei source location
-    try self.writer.writer().print("#line {d} \"{s}\"\n", .{node.line, self.source_file});
+    try self.writer.writer().print("#line {d} \"{s}\"\n", .{ node.line, self.source_file });
 
     if (decl.is_expr_body) {
         try self.writer.appendSlice("    return ");
@@ -247,15 +252,16 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
 
 pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     const decl = node.data.fun_decl;
+    if (decl.generic_params.len > 0) return; // Skip generic functions
     const is_main = std.mem.eql(u8, decl.name, "main");
-    
+
     if (is_main and self.is_test_mode) {
         return; // Skip user-defined main in test mode
     }
-    
+
     const actual_name = decl.resolved_c_name orelse decl.name;
     const func_name = if (is_main) "eiwa_main" else actual_name;
-    
+
     if (self.emitted_functions.contains(func_name)) return;
     try self.emitted_functions.put(func_name, {});
 
@@ -270,25 +276,35 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     } else {
         try sig.writer().print("void ", .{});
     }
-    
+
     try sig.writer().print("{s}(", .{func_name});
     if (is_main) {
         // main has no params or argc/argv if needed later
-    } else if (node.resolved_type) |rt| {        const fun_type = rt.Function;
+    } else if (node.resolved_type) |rt| {
+        const fun_type = rt.Function;
+        var outer_params = std.StringHashMap(void).init(self.allocator);
+        defer outer_params.deinit();
         for (decl.params, 0..) |p, i| {
             if (i > 0) try sig.writer().print(", ", .{});
             const param_t_str = try self.cType(fun_type.params[i]);
             if (ts.extractBaseType(fun_type.params[i]).* == .Array) try self.emitArrayStruct(ts.extractBaseType(fun_type.params[i]).Array);
-            try sig.writer().print("{s} {s}", .{param_t_str, p.name});
+            try sig.writer().print("{s} {s}", .{ param_t_str, p.name });
+            try outer_params.put(p.name, {});
         }
+        try self.pushOuterScope(outer_params);
+        defer self.popOuterScope();
     }
     try sig.writer().print(")", .{});
 
     try self.header_writer.writer().print("{s};\n", .{sig.items});
     try self.writer.writer().print("{s} {{\n", .{sig.items});
 
+    const old_fn_c_name = self.current_fn_c_name;
+    self.current_fn_c_name = func_name;
+    defer self.current_fn_c_name = old_fn_c_name;
+
     // Emit #line directive so clang reports errors with the original .ei source location
-    try self.writer.writer().print("#line {d} \"{s}\"\n", .{node.line, self.source_file});
+    try self.writer.writer().print("#line {d} \"{s}\"\n", .{ node.line, self.source_file });
 
     if (decl.is_expr_body) {
         try self.writer.appendSlice("    return ");
@@ -310,7 +326,7 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     try self.writer.appendSlice("}\n\n");
 
     if (is_main) {
-        try self.writer.appendSlice("int main() {\n    GC_init();\n");
+        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    (void)argc;\n    (void)argv;\n");
         for (self.static_initializers.items) |si| {
             try self.writer.writer().print("    {s} = ", .{si.name});
             try self.emitExpression(si.init);
@@ -322,12 +338,16 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
 
 pub fn emitTestDecl(self: *CTranspiler, node: *ASTNode) !void {
     const decl = node.data.test_decl;
-    
+
     try self.test_names.append(decl.name);
     const test_id = self.test_count;
     self.test_count += 1;
-    
+
     try self.writer.writer().print("void eiwa_test_{d}() {{\n", .{test_id});
+
+    const old_fn_c_name = self.current_fn_c_name;
+    self.current_fn_c_name = try std.fmt.allocPrint(self.allocator, "eiwa_test_{d}", .{test_id});
+    defer self.current_fn_c_name = old_fn_c_name;
     switch (decl.body.data) {
         .block => |b| {
             for (b.statements) |stmt| {
@@ -357,6 +377,21 @@ pub fn emitLibDecl(self: *CTranspiler, node: *ASTNode) !void {
             for (ann.arguments) |arg| {
                 try self.link_libraries.put(arg, {});
             }
+        } else if (std.mem.eql(u8, ann.name, "Source")) {
+            // C source file to compile and link (path relative to cwd).
+            for (ann.arguments) |arg| {
+                try self.c_sources.put(arg, {});
+            }
+        } else if (std.mem.eql(u8, ann.name, "Include")) {
+            // Extra -I directory for the C compiler.
+            for (ann.arguments) |arg| {
+                try self.c_includes.put(arg, {});
+            }
+        } else if (std.mem.eql(u8, ann.name, "Define")) {
+            // Preprocessor -D flag (NAME or NAME=value).
+            for (ann.arguments) |arg| {
+                try self.c_defines.put(arg, {});
+            }
         }
     }
     try self.writer.appendSlice("\n");
@@ -372,17 +407,17 @@ pub fn emitObjectDecl(self: *CTranspiler, node: *ASTNode) anyerror!void {
             const var_name = v.resolved_c_name orelse v.name;
             if (self.emitted_variables.contains(var_name)) continue;
             try self.emitted_variables.put(var_name, {});
-            
+
             var type_str: []const u8 = "int";
             if (member.resolved_type) |rt| {
                 type_str = try self.cType(rt);
             }
             // Declarations in header
-            try self.header_writer.writer().print("extern {s} {s};\n", .{type_str, var_name});
-            
+            try self.header_writer.writer().print("extern {s} {s};\n", .{ type_str, var_name });
+
             // Definitions in writer initialized to zero / default
-            try self.writer.writer().print("{s} {s} = 0;\n", .{type_str, var_name});
-            
+            try self.writer.writer().print("{s} {s} = 0;\n", .{ type_str, var_name });
+
             // Queue static initializer
             if (v.initializer) |init_node| {
                 try self.static_initializers.append(.{ .name = var_name, .init = init_node });
@@ -402,8 +437,8 @@ pub fn emitEnumDecl(self: *CTranspiler, node: *ASTNode) !void {
 
     // Struct & Type Descriptor in Header
     try hw.print("typedef struct {s} {s};\n", .{ actual_name, actual_name });
-    try hw.print("extern const EiwaTypeDescriptor {s}_descriptor;\n", .{ actual_name });
-    try hw.print("struct {s} {{\n", .{ actual_name });
+    try hw.print("extern const EiwaTypeDescriptor {s}_descriptor;\n", .{actual_name});
+    try hw.print("struct {s} {{\n", .{actual_name});
     try hw.print("    const EiwaTypeDescriptor* _desc;\n", .{});
     try hw.print("    int ordinal;\n", .{});
     try hw.print("    core_String* name;\n", .{});
@@ -441,15 +476,15 @@ pub fn emitEnumDecl(self: *CTranspiler, node: *ASTNode) !void {
     try w.print("void* {s}_Hashable_vtable[] = {{ (void*)&{s}_hashCode }};\n", .{ actual_name, actual_name });
     try w.print("void* {s}_Equatable_vtable[] = {{ (void*)&{s}_equals }};\n", .{ actual_name, actual_name });
 
-    try w.print("const EiwaContractImpl {s}_contract_impls[] = {{\n", .{ actual_name });
-    try w.print("    {{ &core_Stringable_contract, {s}_Stringable_vtable }},\n", .{ actual_name });
-    try w.print("    {{ &core_Hashable_contract, {s}_Hashable_vtable }},\n", .{ actual_name });
-    try w.print("    {{ &core_Equatable_contract, {s}_Equatable_vtable }},\n", .{ actual_name });
+    try w.print("const EiwaContractImpl {s}_contract_impls[] = {{\n", .{actual_name});
+    try w.print("    {{ &core_Stringable_contract, {s}_Stringable_vtable }},\n", .{actual_name});
+    try w.print("    {{ &core_Hashable_contract, {s}_Hashable_vtable }},\n", .{actual_name});
+    try w.print("    {{ &core_Equatable_contract, {s}_Equatable_vtable }},\n", .{actual_name});
     try w.print("}};\n\n", .{});
 
-    try w.print("const EiwaTypeDescriptor {s}_descriptor = {{\n", .{ actual_name });
-    try w.print("    .name = \"{s}\",\n", .{ actual_name });
-    try w.print("    .impls = {s}_contract_impls,\n", .{ actual_name });
+    try w.print("const EiwaTypeDescriptor {s}_descriptor = {{\n", .{actual_name});
+    try w.print("    .name = \"{s}\",\n", .{actual_name});
+    try w.print("    .impls = {s}_contract_impls,\n", .{actual_name});
     try w.print("    .impl_count = 3,\n", .{});
     try w.print("}};\n\n", .{});
 

@@ -156,6 +156,11 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             } else if (tc.global_scope.lookupVariable(sym)) |variable| {
                 try self.global_scope.define(sym, variable, false, false);
                 found = true;
+            } else if (tc.generic_functions_ast.get(sym)) |gen_decl| {
+                // Generic functions are not in global_scope; importing one
+                // makes it visible to lookupGenericFunction locally.
+                try self.generic_functions_ast.put(sym, gen_decl);
+                found = true;
             }
 
             if (!found) {
@@ -218,8 +223,8 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                             found = true;
                             break;
                         } else if (fb_tc.global_scope.symbols.get(sym)) |sym_info| {
-                            if (sym_info.* == .Variable) {
-                                _ = self.global_scope.define(sym, sym_info.Variable.eiwa_type, false, false) catch {};
+                            if (sym_info.variable) |vs| {
+                                _ = self.global_scope.define(sym, vs.eiwa_type, false, false) catch {};
                             }
                             if (fb_prefix.len > 0) {
                                 const aliased_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ fb_prefix, sym });
@@ -305,7 +310,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     } else if (std.mem.eql(u8, c.name, "Bool")) {
         class_type.* = .Bool;
     } else if (std.mem.eql(u8, c.name, "String")) {
-        class_type.* = .{ .Custom = actual_c_name };
+        class_type.* = .String;
     } else if (std.mem.eql(u8, c.name, "OpaquePointer") or std.mem.eql(u8, c.name, "Pointer")) {
         class_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
         @constCast(class_type.Pointer).* = .Void;
@@ -386,6 +391,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     for (c.methods) |method| {
         if (method.data == .fun_decl) {
             const m = &method.data.fun_decl;
+            if (m.generic_params.len > 0) continue;
             var param_types = ArrayList(*const EiwaType).init(self.allocator);
             for (m.params) |p| {
                 const p_t = if (p.type_ref) |tr| self.resolveTypeRef(tr) catch try self.resolveTypeName("Void", false) else try self.resolveTypeName("Void", false);
@@ -617,7 +623,18 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
                 v.* = .Void;
                 break :blk v;
             };
-            if (!self.isCompatible(contract_ret, impl_ret)) {
+
+            // Skip return type check if contract return type is a generic param
+            var skip_ret_check = false;
+            if (contract_ret.* == .Custom and cd.generic_params.len > 0) {
+                for (cd.generic_params) |gp| {
+                    if (std.mem.eql(u8, gp, contract_ret.Custom)) {
+                        skip_ret_check = true;
+                        break;
+                    }
+                }
+            }
+            if (!skip_ret_check and !self.isCompatible(contract_ret, impl_ret)) {
                 self.reportError(m.line, m.column, "TypeError: Method '{s}' returns {} but contract '{s}' requires {}.", .{ cm_name, impl_ret.*, cd.name, contract_ret.* });
                 return error.TypeError;
             }
@@ -643,6 +660,11 @@ pub fn inferContractDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
         try scope.define(actual_c_name, contract_type, false, false);
     }
     try self.contracts_ast.put(actual_c_name, node);
+
+    if (cd.generic_params.len > 0) {
+        t.* = .Void;
+        return;
+    }
 
     // Register method signatures only (contracts have no bodies to check).
     for (cd.methods) |method| {
@@ -686,13 +708,18 @@ pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 
 pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var f = &node.data.fun_decl;
+    if (f.generic_params.len > 0) {
+        try self.generic_functions_ast.put(f.name, node);
+        t.* = .Void;
+        return;
+    }
     var param_types = ArrayList(*const EiwaType).init(self.allocator);
     var mangled_name = ArrayList(u8).init(self.allocator);
     const is_method = scope.lookupVariable("this") != null;
     if (is_method) {
         const this_t = scope.lookupVariable("this").?;
         const base_t = core.extractBaseType(this_t);
-        const class_name = if (self.current_class_name) |cname| (self.alias_map.get(cname) orelse cname) else (if (base_t.* == .Custom) base_t.Custom else (if (base_t.* == .Pointer and base_t.Pointer.* == .Custom) base_t.Pointer.Custom else (if (base_t.* == .Int) "core_Int" else (if (base_t.* == .Bool) "core_Bool" else f.name))));
+        const class_name = if (self.current_class_name) |cname| (self.alias_map.get(cname) orelse cname) else (if (base_t.* == .Custom) base_t.Custom else (if (base_t.* == .Pointer and base_t.Pointer.* == .Custom) base_t.Pointer.Custom else (if (base_t.* == .Int) "core_Int" else (if (base_t.* == .Bool) "core_Bool" else (if (base_t.* == .String) "core_String" else f.name)))));
 
 
         try mangled_name.writer().print("{s}_{s}", .{ class_name, f.name });
@@ -760,17 +787,20 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         try param_types.append(param_type);
     }
 
-    if (std.mem.eql(u8, f.name, "main")) {
+    if (f.resolved_c_name != null) {
+        // Already set (e.g. by monomorphizeFunction) — just ensure it's in functions_ast
+        try self.functions_ast.put(f.resolved_c_name.?, node);
+    } else if (std.mem.eql(u8, f.name, "main")) {
         f.resolved_c_name = "main";
+        try self.functions_ast.put(f.resolved_c_name.?, node);
     } else {
         f.resolved_c_name = try mangled_name.toOwnedSlice();
-    }
-
-    try self.functions_ast.put(f.resolved_c_name.?, node);
-    if (!is_method and self.current_class_name == null) {
-        try self.local_symbols.put(f.name, {});
-        if (self.module_prefix != null) {
-            try self.alias_map.put(f.name, f.resolved_c_name.?);
+        try self.functions_ast.put(f.resolved_c_name.?, node);
+        if (!is_method and self.current_class_name == null) {
+            try self.local_symbols.put(f.name, {});
+            if (self.module_prefix != null) {
+                try self.alias_map.put(f.name, f.resolved_c_name.?);
+            }
         }
     }
 
@@ -850,9 +880,13 @@ pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         break :blk void_t;
     });
     try scope.define(v.name, final_type, v.is_mut, false);
-    if (scope.symbols.get(v.name)) |sym| {
-        if (sym.* == .Variable) {
-            sym.Variable.decl_node = node;
+    if (scope.symbols.getPtr(v.name)) |sym_ptr| {
+        var sym = sym_ptr.*;
+        if (sym.variable) |v_sym| {
+            var new_v = v_sym;
+            new_v.decl_node = node;
+            sym.variable = new_v;
+            sym_ptr.* = sym;
         }
     }
     node.resolved_type = final_type;
@@ -1240,7 +1274,9 @@ fn makeMemberCall(self: *TypeChecker, line: usize, col: usize, obj_name: []const
 }
 
 fn makeMemberCallOrNullFallback(self: *TypeChecker, line: usize, col: usize, obj_name: []const u8, prop: anytype, method_name: []const u8, null_fallback: *ASTNode) !*ASTNode {
-    if (!prop.type_ref.is_nullable) {
+    const prop_rt = prop.resolved_type orelse try self.resolveTypeRef(prop.type_ref);
+    const is_ptr_type = prop.type_ref.is_nullable or core.isNullable(prop_rt);
+    if (!is_ptr_type) {
         return try makeMemberCall(self, line, col, obj_name, prop.name, method_name, false);
     }
 
@@ -1344,6 +1380,7 @@ fn generateDefaultToString(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
                 .annotations = &.{},
                 .modifiers = &[_]ast.TokenType{ .kw_implement },
                 .name = "toString",
+                .generic_params = &[_][]const u8{},
                 .params = &.{},
                 .type_ref = ret_tr,
                 .body = body_node,
@@ -1412,6 +1449,7 @@ fn generateDefaultHashCode(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
                 .annotations = &.{},
                 .modifiers = &[_]ast.TokenType{ .kw_implement },
                 .name = "hashCode",
+                .generic_params = &[_][]const u8{},
                 .params = &.{},
                 .type_ref = ret_tr,
                 .body = body_node,
@@ -1532,6 +1570,7 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
                 .annotations = &.{},
                 .modifiers = &[_]ast.TokenType{ .kw_implement, .kw_operator },
                 .name = "equals",
+                .generic_params = &[_][]const u8{},
                 .params = params,
                 .type_ref = ret_tr,
                 .body = when_body,
@@ -1658,6 +1697,7 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
                 .annotations = &.{},
                 .modifiers = &[_]ast.TokenType{ .kw_implement },
                 .name = "serdeFields",
+                .generic_params = &[_][]const u8{},
                 .params = &.{},
                 .type_ref = list_ret_type_ref,
                 .body = arr_node,

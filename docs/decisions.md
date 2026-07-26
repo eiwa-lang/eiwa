@@ -128,7 +128,7 @@ Se o `when` retornar um valor não-Void, o compilador exige a presença de um ra
 **Decisão:** Adotar uma abordagem híbrida evolutiva:
 1. **Fase Inicial (Phase 35):** Implementar o cliente HTTP (`std.http.Client`) via FFI com a biblioteca C `libcurl`, e o servidor HTTP (`std.http.Server`) utilizando FFI com `libuv` (ou soquetes não-bloqueantes com wrappers leves em C compilados no runtime).
 2. **Fase de Concorrência Avançada (Phase 36):** Projetar uma infraestrutura de Fibers cooperativas no C runtime e um loop de eventos centralizado baseado em `epoll`/`kqueue`/`libevent`. Reimplementar soquetes da standard library para suspender as fibers em caso de bloqueio de I/O, entregando concorrência de altíssima performance no nível de Go e Crystal.
-**Razão:** A curto prazo, reutilizar `libcurl` e `libuv` através de FFI aproveita a performance máxima e maturidade dessas bibliotecas em C, minimizando o risco de falhas de segurança e reduzindo drasticamente o esforço de implementação. A longo prazo, a evolução para Fibers integradas e um loop de eventos central no runtime dará ao Eiwa a mesma ergonomia síncrona e escalabilidade em concorrência que Go e Crystal oferecem.
+**Razão:** A curto prazo, reutilizar `libcurl` e `libuv` através de FFI aproveita a performance máxima e maturidade dessas bibliotecas em C, minimizando o risco de falhas de segurança e reduzindo drasticamente o esforço de implementação. A longo prazo, a Fase 36 unificada (ver ADR 35) substitui esta abordagem por fibras nativas em Zig + task { }/await() + I/O não-bloqueante, dando ao Eiwa a mesma ergonomia síncrona e escalabilidade em concorrência que Go e Crystal.
 
 ## ADR 20: Lambda Expressions & Higher-Order Functions (Lambdas e Funções de Alta Ordem)
 **Data:** Fase 31
@@ -298,4 +298,31 @@ Regras centrais:
 2. Criar uma camada de compatibilidade em [src/core/compat.zig](file:///Users/leodouglas/Projects/dystral-lang/src/core/compat.zig) que adapta a nova estrutura *unmanaged* do `std.ArrayList` do Zig 0.16.0 mantendo acesso direto à propriedade `.items` e métodos de escrita (`.print(...)`, `.writeAll(...)`), preservando a ergonomia do compilador.
 3. Atualizar a entrada do CLI para `pub fn main(init: std.process.Init)` e propagar o manipulador `std.Io` para chamadas de disco e subprocessos (`std.process.run`, `std.process.spawn`).
 **Razão:** Permite que desenvolvedores em Linux, macOS e Windows compilem o Eiwa nativamente utilizando a versão mais recente do Zig (0.16.0) sem quebrar o ecossistema existente.
+
+## ADR 35: Concorrência Estruturada com Fibras e Tasks
+**Data:** Fase 36 (MVP) / Fase 50 (Monomorfização Real) / Fase 51 (Refactoring com neco)
+**Contexto:** O Eiwa não possuía concorrência nativa. Precisávamos de concorrência leve ergonômica similar a Kotlin Coroutines, sem runtime de threads OS.
+**Decisão:** O MVP (Fase 36) implementou fibras em C via `ucontext.h` (`fiber.c`/`fiber.h`) com special cases hardcoded no compilador para `task{}`/`await()`. A Fase 51 substituirá este runtime C por **neco** (https://github.com/tidwall/neco) em `third_party/neco/`, usando a monomorfização real (Generic method) da Fase 50 como dependência direta para que `Task<T>` seja 100% implementado em Eiwa na stdlib via `contract Awaitable<T>` + `skill TaskNeco + lib Neco`, eliminando todos os special cases do compilador.
+**Razão:** neco foi escolhido sobre libaco por ser single-file (sem assembly platform-specific), usar kqueue/epoll nativamente, ter API limpa para suspend/resume por ID e ser MIT license. A dependência da monomorfização real (Generic method) desenvolvida na Fase 50 elimina a dívida técnica dos special cases da Fase 36 e permite que qualquer tipo/função genérica se beneficie do mesmo mecanismo.
+
+## ADR 36: Function Call Resolution — Local Scope First with Compatibility Fallback
+**Status:** Aceito / Implementado
+**Data:** Fase 51 (Julho 2026)
+
+**Contexto:** Ao chamar funções sem qualificação (`echo(name)`), o compilador precisava decidir qual escopo consultar primeiro: o escopo local (métodos de `this`, skills injetadas, lambdas com receiver) ou o escopo global (funções top-level como `echo(value: Stringable?)`, `print()`, `File()`).
+
+O problema original: a skill `Echoable` (injetada automaticamente em todo `type` via ADR 29) fornece um método `echo()` com 0 parâmetros. Dentro de `Person.echoName()`, a chamada `echo(name)` encontrava esse método local primeiro e falhava por aridade, em vez de cair para a função global compatível.
+
+**Decisão:** Implementar busca em duas fases no `inferCallExpr` (`src/core/type_checker/infer_call.zig`):
+
+1. **Fase 1 — Escopo Local (`scope.lookupFunctions`)**: Consulta apenas funções **com receiver** (métodos de `this`, skills, lambdas com receiver `T.() -> Void`). Se houver match **compatível** (aridade + tipos), usa esse.
+2. **Fase 2 — Escopo Global (`self.global_scope.lookupFunctions`)**: Se nenhum match local compatível, consulta apenas funções **sem receiver** (funções top-level). Se houver match compatível, usa esse.
+3. **Fallback**: Se nada compatível, continua para lógica existente de funções genéricas e lookup de variáveis (construtores de tipo como `File(path)`).
+
+**Comportamento de Shadowing (igual ao Kotlin):**
+- Método local **compatível** → ganha do global
+- Método local **incompatível** (aridade/tipos) → cai pro global
+- Construtores (`File(path)`, `Person("Leo", 30)`) → fallback para variable lookup
+
+**Razão:** Semântica previsível estilo Kotlin (escopo mais próximo vence) mas sem "shadowing acidental" que quebra chamadas válidas. Permite override intencional quando assinaturas são compatíveis, mas protege contra skills injetadas automaticamente com assinaturas incompatíveis (como `Echoable.echo()` sem parâmetros).
 

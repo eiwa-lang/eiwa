@@ -1002,7 +1002,20 @@ Because Eiwa transpiles to C, integrating with native C libraries is seamless. Y
 Annotations on `lib` blocks instruct the compiler and linker on how to process the native library:
 - **`@Header` (Compile-Time Includes)**: Instructs the C Transpiler to inject the corresponding `#include` directives at the top of the generated C file so that C compiler knows about the function signatures, structs, and constants.
 - **`@Link` (Linker-Time Libraries)**: Instructs the Eiwa compiler to append the corresponding `-l<library>` flag (e.g., `-lcurl`) during the linking phase, and injects `-DEIWA_USE_<LIBRARY>` preprocessor definitions into the C compiler.
+- **`@Source` (Vendored C Sources)**: Appends a C source file (path relative to the working directory) to the compilation, e.g. `@Source("src/runtime/third_party/neco/neco.c")`. Use for vendored libraries that are compiled together with the program instead of linked.
+- **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag to the C compiler, e.g. `@Include("src/runtime/third_party/neco")`.
+- **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag to the C compiler, e.g. `@Define("NECO_STACKSIZE=262144")`.
 - **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions.
+
+A `lib` block is therefore self-contained: everything the C toolchain needs to build the binding is declared next to it, with no hardcoded flags in the compiler:
+
+```kotlin
+@Header("neco/neco_wrapper.h")
+@Include("src/runtime/third_party/neco")
+@Define("NECO_USEHEAPSTACK")
+@Source("src/runtime/third_party/neco/neco.c")
+lib Neco { ... }
+```
 
 ```kotlin
 // http.ei (FFI declaration using Header, Link, and Alias)
@@ -1144,11 +1157,126 @@ test "should add two numbers correctly" {
 
 Then, run `eiwa test` in your terminal. The compiler will automatically discover, group, and run all your tests in an isolated native binary.
 
-## 20. Serialization (JSON & YAML)
+## 20. Concorrência Estruturada (`task` / `await`)
+
+> **Nota:** Esta seção descreve a API pública de concorrência do Eiwa. O runtime subjacente usa fibras cooperativas sobre um event loop single-threaded (kqueue/epoll). Para detalhes da implementação, consulte o ADR 35.
+
+Eiwa oferece concorrência leve e estruturada através de duas funções da stdlib: `task { }` e `.await()`. Não existem keywords especiais, threads expostas, ou callbacks — apenas lambdas e tipos genéricos.
+
+### 20.1 Conceitos Básicos
+
+- `task { expr }` — função da stdlib que recebe uma lambda e retorna `Task<T>`. A lambda é executada em uma fibra separada, concorrentemente à fibra atual.
+- `task.await()` — método em `Task<T>` que suspende a fibra atual até o resultado da task estar disponível. É o **único ponto de suspensão** na linguagem.
+- `Task<T>` — tipo genérico declarado na stdlib com tratamento especial pelo compilador.
+
+```kotlin
+import { Task } from "std.core"
+
+fun fetchUsers(): List<String> {
+    return ["Alice", "Bob"]
+}
+
+fun fetchConfig(): String {
+    return "config-data"
+}
+
+fun main() {
+    // Dispara duas tasks em paralelo
+    val usersTask = task { fetchUsers() }
+    val configTask = task { fetchConfig() }
+
+    // Aguarda ambas — a fibra atual é suspensa, não a thread OS
+    val users = usersTask.await()
+    val config = configTask.await()
+
+    println(users.toString())
+    println(config)
+}
+```
+
+### 20.2 Múltiplas Tasks
+
+Tasks são executadas concorrentemente. O scheduler alterna entre fibras quando uma delas suspende (via `await()` ou I/O).
+
+```kotlin
+fun main() {
+    val t1 = task { 10 + 20 }
+    val t2 = task { 30 + 40 }
+
+    val r1 = t1.await()
+    val r2 = t2.await()
+
+    assert(r1 == 30)
+    assert(r2 == 70)
+}
+```
+
+### 20.3 Tasks Aninhadas
+
+Tasks podem conter outras tasks. O `await()` interno suspende apenas a fibra da task externa, não a thread principal.
+
+```kotlin
+fun main() {
+    val outer = task {
+        val inner = task { 7 * 6 }
+        inner.await() + 1
+    }
+
+    assert(outer.await() == 43)
+}
+```
+
+### 20.4 Captura de Escopo
+
+Assim como lambdas comuns, o bloco de `task { }` captura variáveis do escopo léxico externo.
+
+```kotlin
+fun main() {
+    val multiplier = 10
+    val t = task { multiplier * 5 }
+    assert(t.await() == 50)
+}
+```
+
+### 20.5 Task com Tipos Complexos
+
+`Task<T>` funciona com qualquer tipo, incluindo coleções:
+
+```kotlin
+fun main() {
+    val listTask = task { [1, 2, 3] }
+    val mapTask = task { ["a" of 1, "b" of 2] }
+
+    assert(listTask.await().size() == 3)
+    assert(mapTask.await()["a"] == 1)
+}
+```
+
+### 20.6 Structured Concurrency
+
+O Eiwa segue o modelo de **structured concurrency**: uma função que cria tasks filhas só retorna quando todas as filhas completarem. Isso previne "tasks vazadas" que continuam rodando após o escopo pai terminar.
+
+```kotlin
+fun process() {
+    val t = task { fetchData() }
+    // process() só retorna quando t completar
+    val data = t.await()
+    // ...
+}
+```
+
+### 20.7 Limitações do MVP
+
+- **Sem cancelamento** — `task.cancel()` fica para uma fase futura.
+- **Single-threaded** — todas as tasks rodam em uma única thread OS (scheduler concorrente). Paralelismo real (Execution Contexts) é uma evolução futura documentada no roadmap.
+
+---
+
+## 21. Serialization (JSON & YAML)
 
 Eiwa offers compile-time serialization without runtime reflection (ADR 27). You opt in by implementing the `Serializable` contract, then compose format skills (`+ Json`, `+ Yaml`) to add `toJson()`/`toYaml()` methods.
 
-### 20.1 Basic Usage
+### 21.1 Basic Usage
 
 ```kotlin
 import { Json } from "std.json"
@@ -1163,7 +1291,7 @@ fun main() {
 }
 ```
 
-### 20.2 Nested Objects
+### 21.2 Nested Objects
 
 Any field whose type also implements `Serializable` is wrapped and serialized recursively.
 
@@ -1180,7 +1308,7 @@ fun main() {
 }
 ```
 
-### 20.3 Fields with Lists
+### 21.3 Fields with Lists
 
 `List<T>` fields where `T` is serializable are serialized as JSON arrays / YAML sequences.
 
@@ -1196,7 +1324,7 @@ fun main() {
 }
 ```
 
-### 20.4 Fields Are Filtered
+### 21.4 Fields Are Filtered
 
 Only serializable types (primitives, `: Serializable` types, and `List<T>` of these) appear in the output. Other fields are silently skipped — no annotations needed.
 
@@ -1213,7 +1341,7 @@ fun main() {
 }
 ```
 
-### 20.5 Custom `serdeFields()`
+### 21.5 Custom `serdeFields()`
 
 You can override `serdeFields()` manually to rename, reorder, or omit fields — no annotation system needed.
 
@@ -1228,7 +1356,7 @@ type User(val fullName: String, val age: Int) : Serializable + Json {
 }
 ```
 
-### 20.6 Adding a New Format
+### 21.6 Adding a New Format
 
 New formats (Toml, XML, binary) are skills written in pure Eiwa — zero compiler changes.
 
@@ -1240,7 +1368,7 @@ skill Toml : Serializable {
 // Then use: type Config : Serializable + Toml
 ```
 
-### 20.7 Limitations (v1)
+### 21.7 Limitations (v1)
 
 - **Serialization only** — deserialization (`fromJson`/`fromYaml`) is a future phase.
 - **No `Map<K,V>` support** — only primitive fields, nested `: Serializable` objects, and `List<T>`.
@@ -1250,11 +1378,11 @@ skill Toml : Serializable {
 
 ---
 
-## 21. Standard Library Logging (`std.log`)
+## 22. Standard Library Logging (`std.log`)
 
 Eiwa includes a native, structured logging package in `std.log` featuring lazy message evaluation, custom formatters, contextual key-value logging, and `Throwable` exception support.
 
-### 21.1 Basic Facade (`Log`)
+### 22.1 Basic Facade (`Log`)
 
 The global `Log` object provides standard logging functions across all log levels:
 
@@ -1268,7 +1396,7 @@ fun main() {
 }
 ```
 
-### 21.2 Log Levels (`LogLevel` Enum)
+### 22.2 Log Levels (`LogLevel` Enum)
 
 Log levels are defined using the native `LogLevel` enum:
 
@@ -1287,7 +1415,7 @@ Log.info { "This will NOT be printed" }
 Log.warn { "This WILL be printed" }
 ```
 
-### 21.3 Lazy Evaluation via Lambdas
+### 22.3 Lazy Evaluation via Lambdas
 
 All log functions accept a message closure (`() -> String`) instead of a raw string. If a log level is filtered out by the logger, **the closure is never executed**, eliminating string allocation and formatting overhead when logging is disabled:
 
@@ -1299,7 +1427,7 @@ Log.trace {
 }
 ```
 
-### 21.4 Throwable Exception Logging
+### 22.4 Throwable Exception Logging
 
 Pass a `Throwable` exception as the first argument to `warn` or `error` to include exception details:
 
@@ -1311,7 +1439,7 @@ try {
 }
 ```
 
-### 21.5 Contextual Key-Value Logging (`with`)
+### 22.5 Contextual Key-Value Logging (`with`)
 
 Create child loggers enriched with contextual fields using `Log.with(key, value)` or `Log.withFields(map)`:
 
@@ -1321,7 +1449,7 @@ reqLogger.info { "Processing request" }
 // Output: [2026-07-22 22:00:00] [INFO] Processing request {req_id=abc-123, user=alice}
 ```
 
-### 21.6 Log Formatters (`TextFormatter` and `JsonFormatter`)
+### 22.6 Log Formatters (`TextFormatter` and `JsonFormatter`)
 
 The library includes two built-in formatters:
 - `StandardLogFormatter` (using `TextFormatter` skill): Human-readable terminal output with ANSI colors.
@@ -1334,5 +1462,88 @@ fun main() {
     Log.setFormatter(JsonLogFormatter())
     Log.info { "User logged in" }
     // Output: {"timestamp":"2026-07-22 22:00:00","level":"INFO","message":"User logged in"}
+}
+```
+
+---
+
+## 23. Generics & Monomorphization
+
+Eiwa supports generic functions, methods, and types using a **monomorphization** strategy: for every unique combination of concrete type arguments, the compiler generates a dedicated copy of the function or type (like C++ templates and Rust generics). This gives zero-cost abstraction — no boxing, no vtable dispatch for monomorphized calls.
+
+### 23.1 Generic Function Declarations
+
+Generic parameters are declared with `<T>` after the function name:
+
+```kotlin
+fun identity<T>(x: T): T {
+    return x
+}
+
+fun main() {
+    assert(identity(42) == 42)           // inferred: identity<Int>
+    assert(identity("hello") == "hello") // inferred: identity<String>
+}
+```
+
+Multiple type parameters are comma-separated:
+
+```kotlin
+fun pair<A, B>(a: A, b: B): Pair<A, B> {
+    return Pair(a, b)
+}
+```
+
+### 23.2 Explicit Type Arguments
+
+You can specify type arguments explicitly with `<Type>` immediately after the function name (before the argument parentheses):
+
+```kotlin
+fun main() {
+    val x = identity<Int>(42)
+    val y = identity<String>("hello")
+    val z = identity<String | Int>(42) // union type parameter
+}
+```
+
+### 23.3 Generic Methods on Types
+
+Methods on `type` declarations can also have their own generic parameters:
+
+```kotlin
+type Util {
+    fun wrap<T>(value: T): Pair<String, T> {
+        return Pair("wrapped", value)
+    }
+}
+
+fun main() {
+    val util = Util()
+
+    // Explicit type args
+    val p1 = util.wrap<Int>(42)
+    assert(p1.first == "wrapped")
+    assert(p1.second == 42)
+
+    // Inferred type args (from argument type)
+    val p2 = util.wrap("hello")
+    assert(p2.first == "wrapped")
+    assert(p2.second == "hello")
+}
+```
+
+### 23.4 Generic Types (`type Task<T>`)
+
+Types can declare generic parameters, and the monomorphizer generates a dedicated C struct per concrete instantiation:
+
+```kotlin
+type Box<T>(val value: T)
+
+fun main() {
+    val intBox = Box(42)     // type: Box<Int>
+    val strBox = Box("eiwa") // type: Box<String>
+
+    assert(intBox.value == 42)
+    assert(strBox.value == "eiwa")
 }
 ```

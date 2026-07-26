@@ -54,6 +54,35 @@ type ApplicationCall(
     }
 }
 
+fun handleConnection(conn: ServerConnection, builder: ArestBuilder) {
+    val req = conn.readRequest()
+    
+    // Match route
+    var found = false
+    var i = 0
+    val routes = builder.routingBuilder.routes
+    while (i < routes.size()) {
+        val route = routes.get(i)
+        if (route is Route) {
+            val r = route
+            if (r.method == req.method && r.path == req.path) {
+                val call = ApplicationCall(conn, req, builder)
+                Log.info { "[Arest] HTTP " + req.method + " " + req.path + " -> 200 OK" }
+                r.handler(call)
+                found = true
+            }
+        }
+        i = i + 1
+    }
+    
+    if (found == false) {
+        Log.warn { "[Arest] HTTP " + req.method + " " + req.path + " -> 404 Not Found" }
+        conn.writeResponse(404, "text/plain", "Not Found")
+    }
+    
+    conn.close()
+}
+
 fun arest(port: Int, init: ArestBuilder.() -> Void) {
     val builder = ArestBuilder(port)
     init(builder)
@@ -65,33 +94,10 @@ fun arest(port: Int, init: ArestBuilder.() -> Void) {
         while (builder.running) {
             try {
                 val conn = server.accept()
-                if (conn != null) {
-                    val req = conn!!.readRequest()
-                    
-                    // Match route
-                    var found = false
-                    var i = 0
-                    val routes = builder.routingBuilder.routes
-                    while (i < routes.size()) {
-                        val route = routes.get(i)
-                        if (route != null) {
-                            val r = route!!
-                            if (r.method == req.method && r.path == req.path) {
-                                val call = ApplicationCall(conn!!, req, builder)
-                                Log.info { "[Arest] HTTP " + req.method + " " + req.path + " -> 200 OK" }
-                                r.handler(call)
-                                found = true
-                            }
-                        }
-                        i = i + 1
-                    }
-                    
-                    if (found == false) {
-                        Log.warn { "[Arest] HTTP " + req.method + " " + req.path + " -> 404 Not Found" }
-                        conn!!.writeResponse(404, "text/plain", "Not Found")
-                    }
-                    
-                    conn!!.close()
+                if (conn is ServerConnection) {
+                    task { 
+                        handleConnection(conn, builder) 
+                    }.await()
                 }
             } catch (e) {
                 Log.error(e) { "[Arest] Error processing connection" }

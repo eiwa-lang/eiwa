@@ -26,6 +26,7 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType)
         .Custom => |name| {
             if (std.mem.eql(u8, name, "Int")) return "int";
             if (std.mem.eql(u8, name, "Bool")) return "bool";
+            if (std.mem.eql(u8, name, "core_String") or std.mem.eql(u8, name, "String")) return "core_String*";
             if (std.mem.endsWith(u8, name, "Stringable") or std.mem.endsWith(u8, name, "Equatable") or std.mem.endsWith(u8, name, "Hashable") or std.mem.endsWith(u8, name, "Throwable") or std.mem.endsWith(u8, name, "Serializable") or std.mem.endsWith(u8, name, "SerdeValue") or std.mem.endsWith(u8, name, "SerdeList")) {
                 return "void*";
             }
@@ -51,6 +52,7 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType)
             }
         },
         .Function => return "EiwaClosure",
+        .GenericInstance => return "void*",
         else => return "void*",
     }
 }
@@ -64,8 +66,18 @@ pub const CTranspiler = struct {
     known_constructors: std.StringHashMap(void), // pre-registered, not yet emitted
     libs: std.StringHashMap(void),
     link_libraries: std.StringHashMap(void),
+    // Build requirements declared by `lib` annotations (@Source/@Include/@Define),
+    // consumed by the CLI when assembling the C compiler invocation.
+    c_sources: std.StringHashMap(void),
+    c_includes: std.StringHashMap(void),
+    c_defines: std.StringHashMap(void),
     emitted_functions: std.StringHashMap(void),
     emitted_variables: std.StringHashMap(void),
+    emitted_lambdas: std.StringHashMap(void),
+    // Mangled C name of the function currently being emitted; suffixes lambda
+    // names so monomorphized instantiations of the same generic function
+    // (whose lambda nodes share line/col) emit distinct C symbols.
+    current_fn_c_name: []const u8 = "",
     emitted_modules: std.AutoHashMap(*ASTNode, void),
     is_test_mode: bool = false,
     test_names: ArrayList([]const u8),
@@ -77,6 +89,8 @@ pub const CTranspiler = struct {
     alias_map: ?*std.StringHashMap([]const u8) = null,
     source_file: []const u8 = "<unknown>", // path to the .ei source file being transpiled
     static_initializers: ArrayList(StaticInitializer),
+    // Stack of outer scope variables for lambda capture
+    outer_scope_vars: ArrayList(std.StringHashMap(void)),
 
     pub const StaticInitializer = struct {
         name: []const u8,
@@ -119,6 +133,15 @@ pub const CTranspiler = struct {
         return getCTypeStr(self.allocator, t);
     }
 
+    // Like cType, but for storage positions (struct fields, constructor params).
+    // C has no void values, so a Void-typed field (generic T instantiated as
+    // Void) is stored as a dummy int that is never meaningfully read.
+    pub fn cStorageType(self: *CTranspiler, t: *const type_system.EiwaType) ![]const u8 {
+        const ct = try self.cType(t);
+        if (std.mem.eql(u8, ct, "void")) return "int";
+        return ct;
+    }
+
     pub fn isContract(self: *CTranspiler, name: []const u8) bool {
         if (self.contracts_ast) |ca| {
             const lookup = if (self.alias_map) |am| (am.get(name) orelse name) else name;
@@ -137,13 +160,18 @@ pub const CTranspiler = struct {
             .known_constructors = std.StringHashMap(void).init(allocator),
             .libs = std.StringHashMap(void).init(allocator),
             .link_libraries = std.StringHashMap(void).init(allocator),
+            .c_sources = std.StringHashMap(void).init(allocator),
+            .c_includes = std.StringHashMap(void).init(allocator),
+            .c_defines = std.StringHashMap(void).init(allocator),
             .emitted_functions = std.StringHashMap(void).init(allocator),
             .emitted_variables = std.StringHashMap(void).init(allocator),
+            .emitted_lambdas = std.StringHashMap(void).init(allocator),
             .emitted_modules = std.AutoHashMap(*ASTNode, void).init(allocator),
             .is_test_mode = false,
             .test_names = ArrayList([]const u8).init(allocator),
             .test_count = 0,
             .static_initializers = ArrayList(StaticInitializer).init(allocator),
+            .outer_scope_vars = ArrayList(std.StringHashMap(void)).init(allocator),
         };
     }
 
@@ -155,11 +183,35 @@ pub const CTranspiler = struct {
         self.known_constructors.deinit();
         self.libs.deinit();
         self.link_libraries.deinit();
+        self.c_sources.deinit();
+        self.c_includes.deinit();
+        self.c_defines.deinit();
         self.emitted_functions.deinit();
         self.emitted_variables.deinit();
         self.emitted_modules.deinit();
+        self.emitted_lambdas.deinit();
         self.test_names.deinit();
         self.static_initializers.deinit();
+        // Note: outer_scope_vars items are owned by the functions that pushed them
+        // and will be deinit'd when those functions clean up, so we just deinit the array
+        self.outer_scope_vars.deinit();
+    }
+
+    pub fn pushOuterScope(self: *CTranspiler, params: std.StringHashMap(void)) !void {
+        try self.outer_scope_vars.append(params);
+    }
+
+    pub fn popOuterScope(self: *CTranspiler) void {
+        if (self.outer_scope_vars.items.len > 0) {
+            self.outer_scope_vars.items.len -= 1;
+        }
+    }
+
+    pub fn getOuterScopeVars(self: *CTranspiler) ?std.StringHashMap(void) {
+        if (self.outer_scope_vars.items.len > 0) {
+            return self.outer_scope_vars.items[self.outer_scope_vars.items.len - 1];
+        }
+        return null;
     }
 
     pub fn transpile(self: *CTranspiler, node: *ASTNode) ![]const u8 {
@@ -314,7 +366,7 @@ pub const CTranspiler = struct {
                     }
 
                     if (self.is_test_mode) {
-                        try self.writer.appendSlice("int main() {\n    GC_init();\n");
+                        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    (void)argc;\n    (void)argv;\n");
                         for (self.static_initializers.items) |si| {
                             try self.writer.writer().print("    {s} = ", .{si.name});
                             try self.emitExpression(si.init);

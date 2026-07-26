@@ -1,11 +1,10 @@
 import { Person } from "person"
-import { add } from "math"
+import { sum } from "math"
 
-val r = add(10, 5)
-print(r)
+val r = sum(10, 5)
+echo(r)
 
 val v = Person("John", 30)
-print(v.name)
-print(v.age)
-print(v.greet())
-
+echo(v.name)
+echo(v.age)
+echo(v.greet())

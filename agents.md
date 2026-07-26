@@ -40,6 +40,7 @@ zig build test
 * [src/core/types.zig](src/core/types.zig): Type Checker and Scope Resolver. Resolves types, desugars operators (`+` to `.plus()`), and manages symbols.
 * [src/backend/c_transpiler.zig](src/backend/c_transpiler.zig): Generates the C output.
 * [src/backend/c_transpiler/eiwa_runtime.h](src/backend/c_transpiler/eiwa_runtime.h): Core runtime definitions, structures (e.g., `EiwaString`), and GC integration.
+* [src/runtime/third_party/](src/runtime/third_party/): Vendored C libraries and Eiwa C wrappers. Each library's `lib` block points `@Header` directly at its own wrapper.
 * [src/std/](src/std/): The Eiwa Standard Library package (written in Eiwa). Includes `std/core.ei` and `std/time.ei`.
 * [samples/](samples/): Example scripts and syntax tests.
 * [tests/](tests/): Automated toolchain test cases.

@@ -161,6 +161,59 @@ type Int : Stringable, Equatable, Hashable {
     }
 }
 
+contract Awaitable<T> {
+    fun await(): T
+}
+
+@Header("neco/neco_wrapper.h")
+@Define("NECO_NOWORKERS")
+@Define("NECO_NOSIGNALS")
+@Define("NECO_USEHEAPSTACK")
+@Define("NECO_STACKSIZE=262144")
+@Source("src/runtime/third_party/neco/neco.c")
+@Source("src/runtime/third_party/neco/neco_wrapper.c")
+@Include("src/runtime/third_party/neco")
+lib Neco {
+    @Alias("eiwa_neco_start_closure")
+    fun start(closure: () -> Void): Int
+
+    @Alias("eiwa_neco_join")
+    fun join(id: Int): Int
+
+    @Alias("eiwa_neco_yield")
+    fun yield(): Int
+}
+
+type Task<T>(
+    var id: Int?,
+    var done: Bool,
+    var result: T?,
+    val block: () -> T
+) : Awaitable<T> {
+
+    implement fun await(): T {
+        if (!done) {
+            Neco.join(id)
+            done = true
+        }
+        return result!!
+    }
+
+    fun run() {
+        result = block()
+        done = true
+    }
+
+    fun start(): Task<T> {
+        val self = this //TODO remove this
+        val runner = { self.run() } 
+        id = Neco.start(runner) //TODO pass the closure directly without wrapper
+        return this
+    }
+}
+
+fun task<T>(block: () -> T) = Task<T>(null, false, null, block).start()
+
 @Primitive("bool")
 type Bool : Stringable, Equatable, Hashable {
     implement fun toString(): String {
@@ -177,4 +230,46 @@ type Bool : Stringable, Equatable, Hashable {
         }
         return false
     }
+}
+
+skill Scope<T> {
+
+    fun let<R>(block: (T) -> R): R {
+        return block(this)
+    }
+
+    fun also(block: (T) -> Void): T {
+        block(this)
+        return this
+    }
+
+    fun apply(block: (T) -> Void): T {
+        block(this)
+        return this
+    }
+
+    fun run<R>(block: (T) -> R): R {
+        return block(this)
+    }
+
+    fun takeIf(predicate: (T) -> Bool): T? {
+        if (predicate(this)) {
+            return this
+        } else {
+            return null
+        }
+    }
+
+    fun takeUnless(predicate: (T) -> Bool): T? {
+        if (!predicate(this)) {
+            return this
+        } else {
+            return null
+        }
+    }
+
+    fun with<R>(block: (T) -> R): R {
+        return block(this)
+    }
+
 }

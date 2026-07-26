@@ -1,0 +1,89 @@
+import { assert } from "std.core"
+
+type Box<T>(val item: T) {
+    fun get(): T = item
+}
+
+type Person(val name: String) {
+    implement fun toString(): String {
+        return name
+    }
+}
+
+fun identity<T>(value: T): T {
+    return value
+}
+
+fun pair<A, B>(a: A, b: B): String {
+    return a.toString() + " and " + b.toString()
+}
+
+type Util() {
+    fun wrap<T>(value: T): Box<T> {
+        return Box(value)
+    }
+}
+
+test "should monomorphize generic functions" {
+    // Test explicit type args
+    assert(identity<Int>(42) == 42)
+    assert(identity<String>("Eiwa") == "Eiwa")
+
+    // Test inferred type args
+    assert(identity(100) == 100)
+    assert(identity("Hello") == "Hello")
+}
+
+test "should monomorphize generic functions with multiple type params" {
+    // Explicit
+    assert(pair<Int, String>(1, "two") == "1 and two")
+    // Inferred
+    assert(pair(true, 100) == "true and 100")
+}
+
+test "should monomorphize generic methods in types" {
+    val util = Util()
+    
+    // Explicit
+    val boxInt = util.wrap<Int>(42)
+    assert(boxInt.get() == 42)
+}
+
+test "should monomorphize with Custom types" {
+    val util = Util()
+    val p = Person("Alice")
+
+    // Inferred generic function with Custom Type
+    val resFunc = identity(p)
+    assert(resFunc.name == "Alice")
+
+    // Inferred generic method with Custom Type
+    val boxPerson = util.wrap(Person("Bob"))
+    assert(boxPerson.get().name == "Bob")
+
+    // Explicit generic call with Custom Type
+    val resFuncExplicit = identity<Person>(p)
+    assert(resFuncExplicit.name == "Alice")
+}
+
+fun lambdaReturnInferred<T>(block: () -> T): T {
+    return block()
+}
+
+test "should monomorphize with Lambdas" {
+    val myFun = { "asd" }
+    assert(lambdaReturnInferred(myFun) == "asd")
+    assert(lambdaReturnInferred { "lambdaReturnInferred" } == "lambdaReturnInferred")
+}
+
+fun lambdaReturnInferredWithoutType<T>(block: () -> T) {
+    block()
+}
+
+test "should monomorphize with Lambdas without return type" {
+    val myFun = {    
+    }
+    lambdaReturnInferredWithoutType(myFun)
+    lambdaReturnInferredWithoutType({})
+    lambdaReturnInferredWithoutType {}
+}

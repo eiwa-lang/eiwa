@@ -203,6 +203,18 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
     try self.consume(.identifier, "Expected function name.");
     const name = self.previous.lexeme;
 
+    var generic_params = ArrayList([]const u8).init(self.allocator);
+    if (self.match(.less)) {
+        if (!self.check(.greater)) {
+            while (true) {
+                try self.consume(.identifier, "Expected generic parameter name.");
+                try generic_params.append(self.previous.lexeme);
+                if (!self.match(.comma)) break;
+            }
+        }
+        try self.consume(.greater, "Expected '>' after generic parameters.");
+    }
+
     try self.consume(.l_paren, "Expected '(' after function name.");
     var params = ArrayList(Param).init(self.allocator);
     
@@ -254,6 +266,7 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
         .annotations = annotations,
         .modifiers = modifiers,
         .name = name,
+        .generic_params = try generic_params.toOwnedSlice(),
         .params = try params.toOwnedSlice(),
         .type_ref = parsed_ret,
         .body = body,
@@ -335,12 +348,36 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
             while (true) {
                 try self.consume(.identifier, "Expected contract name after ':'.");
                 try contracts.append(self.previous.lexeme);
+                if (self.match(.less)) {
+                    var depth: usize = 1;
+                    while (depth > 0 and !self.check(.eof)) {
+                        if (self.match(.less)) {
+                            depth += 1;
+                        } else if (self.match(.greater)) {
+                            depth -= 1;
+                        } else {
+                            _ = self.advance();
+                        }
+                    }
+                }
                 if (!self.match(.comma)) break;
             }
         } else if (self.match(.plus)) {
             while (true) {
                 try self.consume(.identifier, "Expected skill name after '+'.");
                 try skills.append(self.previous.lexeme);
+                if (self.match(.less)) {
+                    var depth: usize = 1;
+                    while (depth > 0 and !self.check(.eof)) {
+                        if (self.match(.less)) {
+                            depth += 1;
+                        } else if (self.match(.greater)) {
+                            depth -= 1;
+                        } else {
+                            _ = self.advance();
+                        }
+                    }
+                }
                 if (!self.match(.comma)) break;
             }
         } else {
@@ -385,6 +422,18 @@ pub fn contractDeclaration(self: *Parser, annotations: []ast.Annotation) anyerro
     try self.consume(.identifier, "Expected contract name.");
     const name = self.previous.lexeme;
 
+    var generic_params = ArrayList([]const u8).init(self.allocator);
+    if (self.match(.less)) {
+        if (!self.check(.greater)) {
+            while (true) {
+                try self.consume(.identifier, "Expected generic parameter name.");
+                try generic_params.append(self.previous.lexeme);
+                if (!self.match(.comma)) break;
+            }
+        }
+        try self.consume(.greater, "Expected '>' after generic parameters.");
+    }
+
     var methods = ArrayList(*ASTNode).init(self.allocator);
     // Braces are optional for empty (marker) contracts: `contract Animal`
     if (self.match(.l_brace)) {
@@ -413,6 +462,7 @@ pub fn contractDeclaration(self: *Parser, annotations: []ast.Annotation) anyerro
     return try self.createNodeAt(.{ .contract_decl = .{
         .annotations = annotations,
         .name = name,
+        .generic_params = try generic_params.toOwnedSlice(),
         .methods = try methods.toOwnedSlice(),
         .resolved_c_name = null,
     } }, line, col);
@@ -425,11 +475,35 @@ pub fn skillDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*
     try self.consume(.identifier, "Expected skill name.");
     const name = self.previous.lexeme;
 
+    var generic_params = ArrayList([]const u8).init(self.allocator);
+    if (self.match(.less)) {
+        if (!self.check(.greater)) {
+            while (true) {
+                try self.consume(.identifier, "Expected generic parameter name.");
+                try generic_params.append(self.previous.lexeme);
+                if (!self.match(.comma)) break;
+            }
+        }
+        try self.consume(.greater, "Expected '>' after generic parameters.");
+    }
+
     var required_contracts = ArrayList([]const u8).init(self.allocator);
     if (self.match(.colon)) {
         while (true) {
             try self.consume(.identifier, "Expected contract name after ':'.");
             try required_contracts.append(self.previous.lexeme);
+            if (self.match(.less)) {
+                var depth: usize = 1;
+                while (depth > 0 and !self.check(.eof)) {
+                    if (self.match(.less)) {
+                        depth += 1;
+                    } else if (self.match(.greater)) {
+                        depth -= 1;
+                    } else {
+                        _ = self.advance();
+                    }
+                }
+            }
             if (!self.match(.comma)) break;
         }
     }
@@ -454,6 +528,7 @@ pub fn skillDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*
     return try self.createNodeAt(.{ .skill_decl = .{
         .annotations = annotations,
         .name = name,
+        .generic_params = try generic_params.toOwnedSlice(),
         .required_contracts = try required_contracts.toOwnedSlice(),
         .methods = try methods.toOwnedSlice(),
         .resolved_c_name = null,

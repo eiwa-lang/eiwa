@@ -4,6 +4,4 @@ test "string_ops.ae: should concatenate two strings correctly" {
     val a = "Hello, "
     val b = "World!"
     val full: String = combine(a, b)
-    // Wait, we don't have == for strings implemented natively yet?
-    // Let's just call it to ensure it compiles and runs without crashing
 }

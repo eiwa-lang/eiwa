@@ -57,27 +57,74 @@ fun fail(): Int {
     throw BoomException("boom")
 }
 
-test "composicao: type implementa contract" {
+test "composition: type implements contract" {
     val button = Button("OK")
     assert(button.draw() == "draw OK")
 }
 
-test "composicao: skill usa contract do tipo consumidor" {
+test "composition: skill uses consumer type contract" {
     val button = Button("OK")
     assert(button.render() == "draw OK + shadow")
 }
 
-test "composicao: conflito de skills resolvido explicitamente" {
+test "composition: skill method conflict resolved explicitly" {
     val button = Button("OK")
     assert(button.click() == "mouse click")
 }
 
-test "composicao: polimorfismo via contract" {
+test "composition: polymorphism via contract" {
     val d: Drawable = Button("Save")
     assert(d.draw() == "draw Save")
 }
 
-test "composicao: excecao via contract Throwable" {
+contract Transformer<T, R> {
+    fun transform(value: T): R
+}
+
+skill IntToStringTransformer : Transformer<Int, String> {
+    implement fun transform(value: Int): String {
+        return "Value: " + value.toString()
+    }
+}
+
+type NumberFormatter : Transformer<Int, String> + IntToStringTransformer
+
+contract ValueHolder<T> {
+    fun getValue(): T
+}
+
+skill FormattedHolderSkill : ValueHolder<String> {
+    fun getFormatted(): String {
+        return "Formatted(" + getValue() + ")"
+    }
+}
+
+type StringHolder(val content: String) : ValueHolder<String> + FormattedHolderSkill {
+    implement fun getValue(): String {
+        return content
+    }
+}
+
+contract Awaitable<T> {
+    fun await(): T
+}
+
+skill TaskLibaco<T> : Awaitable<T> {
+}
+
+test "generic contract with multiple type parameters" {
+    val formatter = NumberFormatter()
+    val res = formatter.transform(42)
+    assert(res == "Value: 42")
+}
+
+test "skill requiring generic contract instantiated with concrete type" {
+    val holder = StringHolder("eiwa")
+    assert(holder.getValue() == "eiwa")
+    assert(holder.getFormatted() == "Formatted(eiwa)")
+}
+
+test "composition: exception handling via Throwable contract" {
     var caught = ""
     try {
         fail()

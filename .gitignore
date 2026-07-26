@@ -2,5 +2,4 @@
 zig-out/
 temp_out.c
 test_runner
-serialization
-
+synthetic_test.ei
