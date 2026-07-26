@@ -899,6 +899,7 @@ pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     lib_type.* = .{ .Custom = l.name };
     try scope.define(l.name, lib_type, false, false);
     try self.local_symbols.put(l.name, {});
+    try self.lib_symbols.put(l.name, {});
 
     for (l.functions) |func| {
         const f = &func.data.fun_decl;
@@ -919,7 +920,23 @@ pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 }
             }
         }
-        try scope.define(full_name, ret_type, false, true);
+        var param_types = ArrayList(*const EiwaType).init(self.allocator);
+        for (f.params) |p| {
+            const p_t = if (p.type_ref) |tr| try self.resolveTypeRef(tr) else blk: {
+                const v = try self.allocator.create(EiwaType);
+                v.* = .Void;
+                break :blk v;
+            };
+            try param_types.append(p_t);
+        }
+        const fn_type = try self.allocator.create(EiwaType);
+        fn_type.* = .{ .Function = .{
+            .params = try param_types.toOwnedSlice(),
+            .return_type = ret_type,
+            .c_name = c_name,
+            .receiver = null,
+        } };
+        try scope.define(full_name, fn_type, false, true);
         try self.alias_map.put(full_name, c_name);
         try self.local_symbols.put(full_name, {});
     }

@@ -1176,21 +1176,33 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             const rt_base = extractBaseType(rt);
             if (rt_base.* == .Function) {
                 const f = rt_base.Function;
+                // Lib functions (e.g. variadic C printf) are exempt from
+                // strict arity/type checks, but lambda args still need
+                // inference so the transpiler sees their resolved types.
+                var is_lib_call = false;
+                if (g.object.resolved_type) |obj_rt| {
+                    const obj_base = extractBaseType(obj_rt);
+                    if (obj_base.* == .Custom and self.lib_symbols.contains(obj_base.Custom)) {
+                        is_lib_call = true;
+                    }
+                }
                 // Infer lambda arguments:
                 for (c.arguments, 0..) |arg, arg_i| {
                     if (arg_i < f.params.len) {
                         arg.expected_type = f.params[arg_i];
                     }
-                    if (arg.data == .lambda_expr) {
+                    if (arg.data == .lambda_expr or (is_lib_call and arg.resolved_type == null)) {
                         _ = try self.inferNode(arg, scope);
                     }
                 }
-                // Check compatibility:
-                for (c.arguments, 0..) |arg, arg_i| {
-                    if (arg_i < f.params.len) {
-                        if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
-                            self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
-                            return error.TypeError;
+                if (!is_lib_call) {
+                    // Check compatibility:
+                    for (c.arguments, 0..) |arg, arg_i| {
+                        if (arg_i < f.params.len) {
+                            if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
+                                self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
+                                return error.TypeError;
+                            }
                         }
                     }
                 }

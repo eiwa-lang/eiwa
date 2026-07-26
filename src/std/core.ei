@@ -199,8 +199,9 @@ contract Taskable<T> {
 skill TaskableNeco<T> : Taskable<T>, Runnable {
 
     implement fun exec(): Int {
-        val runner = { run() }
-        return Neco.start(runner) //TODO pass the closure directly without wrapper
+        return Neco.start { 
+            run() 
+        }
     }
 
     implement fun join(id: Int) {

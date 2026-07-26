@@ -67,6 +67,7 @@ pub const TypeChecker = struct {
     functions_ast: std.StringHashMap(*ASTNode),
     generic_functions_ast: std.StringHashMap(*ASTNode),
     local_symbols: std.StringHashMap(void),
+    lib_symbols: std.StringHashMap(void),
     monomorphized_nodes: ArrayList(*ASTNode),
     current_class_name: ?[]const u8 = null,
     current_class_methods: ?[]const *ASTNode = null,
@@ -122,6 +123,7 @@ pub const TypeChecker = struct {
             .functions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .generic_functions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .local_symbols = std.StringHashMap(void).init(allocator),
+            .lib_symbols = std.StringHashMap(void).init(allocator),
             .monomorphized_nodes = ArrayList(*ASTNode).init(allocator),
             .current_class_name = null,
             .registry = null,
@@ -143,6 +145,7 @@ pub const TypeChecker = struct {
         self.functions_ast.deinit();
         self.generic_functions_ast.deinit();
         self.local_symbols.deinit();
+        self.lib_symbols.deinit();
         self.monomorphized_nodes.deinit();
     }
 };
