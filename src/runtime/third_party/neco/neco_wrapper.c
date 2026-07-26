@@ -126,3 +126,21 @@ int eiwa_neco_yield(void) {
     eiwa_gc_fix_stackbottom();
     return ret;
 }
+
+int eiwa_neco_sleep(int64_t nanosecs) {
+    int ret = neco_sleep(nanosecs);
+    eiwa_gc_fix_stackbottom();
+    return ret;
+}
+
+int eiwa_neco_wait_readable(int fd) {
+    int ret = neco_wait(fd, NECO_WAIT_READ);
+    eiwa_gc_fix_stackbottom();
+    return ret;
+}
+
+int eiwa_neco_wait_writable(int fd) {
+    int ret = neco_wait(fd, NECO_WAIT_WRITE);
+    eiwa_gc_fix_stackbottom();
+    return ret;
+}

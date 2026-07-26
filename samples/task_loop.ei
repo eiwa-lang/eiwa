@@ -1,0 +1,12 @@
+task {
+    loop {
+        echo("test1")
+        sleep(1)
+    }
+}
+task {
+    loop {
+        echo("test2")
+        sleep(1)
+    }
+}

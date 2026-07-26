@@ -95,9 +95,9 @@ fun arest(port: Int, init: ArestBuilder.() -> Void) {
             try {
                 val conn = server.accept()
                 if (conn is ServerConnection) {
-                    task { 
+                    task {
                         handleConnection(conn, builder) 
-                    }.await()
+                    }
                 }
             } catch (e) {
                 Log.error(e) { "[Arest] Error processing connection" }

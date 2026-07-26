@@ -1,5 +1,3 @@
-import { Task } from "std.core"
-
 fun fetchUsers(): List<String> {
     return ["Alice", "Bob", "Charlie"]
 }
