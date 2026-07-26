@@ -163,6 +163,8 @@ type Int : Stringable, Equatable, Hashable {
 
 contract Awaitable<T> {
     fun await(): T
+    fun start(): Awaitable<T>
+    fun isDone(): Bool
 }
 
 contract Runnable {
@@ -214,7 +216,7 @@ type Task<T>(
     var done: Bool,
     var result: T?,
     val block: () -> T
-) : Awaitable<T>, Runnable, Taskable<T> + TaskableNeco{
+) : Awaitable<T>, Runnable, Taskable<T> + TaskableNeco {
 
     implement fun await(): T {
         if (!done) {
@@ -229,10 +231,13 @@ type Task<T>(
         done = true
     }
 
-    fun start(): Task<T> {
+    implement fun start(): Awaitable<T> {
         id = this.exec()
         return this
     }
+
+    implement fun isDone() = done
+
 }
 
 fun task<T>(block: () -> T) = Task<T>(null, false, null, block).start()

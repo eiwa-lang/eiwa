@@ -300,12 +300,20 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
                         }
                     }
                 }
-                if (!has_unresolved_generic) {
-                    try self.monomorphizeClass(alias, type_args, mangled_name);
-                }
+                // Contracts are pure signatures: never monomorphize them.
+                // Keep the GenericInstance so member lookup can substitute
+                // the contract's generic params with the concrete type args.
+                const is_contract = self.contracts_ast.contains(actual_base);
+                if (is_contract) {
+                    base_type = .{ .GenericInstance = .{ .base_name = actual_base, .type_args = type_args } };
+                } else {
+                    if (!has_unresolved_generic) {
+                        try self.monomorphizeClass(alias, type_args, mangled_name);
+                    }
 
-                const actual_mangled = self.alias_map.get(mangled_name) orelse if (has_unresolved_generic) alias else mangled_name;
-                base_type = .{ .Custom = actual_mangled };
+                    const actual_mangled = self.alias_map.get(mangled_name) orelse if (has_unresolved_generic) alias else mangled_name;
+                    base_type = .{ .Custom = actual_mangled };
+                }
             }
         } else if (self.classes_ast.contains(alias) or (self.alias_map.get(alias) != null and self.classes_ast.contains(self.alias_map.get(alias).?))) {
             const actual_class = self.alias_map.get(alias) orelse alias;
@@ -933,6 +941,25 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
         };
         if (type_name) |tname| {
             if (self.conformsTo(tname, exp_base.Custom)) return true;
+        }
+    }
+
+    // Contract-typed generic instance (e.g. Awaitable<Int>) on the expected side:
+    // any type conforming to the base contract is acceptable.
+    if (exp_base.* == .GenericInstance and self.contracts_ast.contains(exp_base.GenericInstance.base_name)) {
+        const contract_base = exp_base.GenericInstance.base_name;
+        switch (act_base.*) {
+            .Custom => |name| {
+                if (self.conformsTo(name, contract_base)) return true;
+            },
+            .GenericInstance => |act_gi| {
+                if (std.mem.eql(u8, act_gi.base_name, contract_base)) return true;
+                if (self.conformsTo(act_gi.base_name, contract_base)) return true;
+            },
+            .Int => if (self.conformsTo("Int", contract_base)) return true,
+            .Bool => if (self.conformsTo("Bool", contract_base)) return true,
+            .String => if (self.conformsTo("String", contract_base)) return true,
+            else => {},
         }
     }
 

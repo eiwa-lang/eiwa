@@ -13,8 +13,83 @@ const EiwaType = core.EiwaType;
 const isNullable = core.isNullable;
 const extractBaseType = core.extractBaseType;
 
-fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, member_name: []const u8) ?*const EiwaType {
-    const base_type = extractBaseType(target_type);
+// Substitute contract generic params (e.g. T) with concrete type args
+// throughout a resolved type, for member access on Awaitable<Int>-style types.
+fn substituteGenericParams(self: *TypeChecker, t: *const EiwaType, params: []const []const u8, args: []const *const EiwaType) anyerror!*const EiwaType {
+    switch (t.*) {
+        .Custom => |n| {
+            for (params, 0..) |p, i| {
+                if (std.mem.eql(u8, n, p)) return args[i];
+            }
+            return t;
+        },
+        .GenericInstance => |gi| {
+            var new_args = try self.allocator.alloc(*const EiwaType, gi.type_args.len);
+            for (gi.type_args, 0..) |a, i| {
+                new_args[i] = try substituteGenericParams(self, a, params, args);
+            }
+            const out = try self.allocator.create(EiwaType);
+            out.* = .{ .GenericInstance = .{ .base_name = gi.base_name, .type_args = new_args } };
+            return out;
+        },
+        .Function => |f| {
+            var new_params = try self.allocator.alloc(*const EiwaType, f.params.len);
+            for (f.params, 0..) |p, i| {
+                new_params[i] = try substituteGenericParams(self, p, params, args);
+            }
+            const out = try self.allocator.create(EiwaType);
+            out.* = .{ .Function = .{
+                .params = new_params,
+                .return_type = try substituteGenericParams(self, f.return_type, params, args),
+                .receiver = if (f.receiver) |r| try substituteGenericParams(self, r, params, args) else null,
+                .c_name = f.c_name,
+            } };
+            return out;
+        },
+        .Union => |u| {
+            const out = try self.allocator.create(EiwaType);
+            out.* = .{ .Union = .{
+                .left = try substituteGenericParams(self, u.left, params, args),
+                .right = try substituteGenericParams(self, u.right, params, args),
+            } };
+            return out;
+        },
+        .Array => |elem| {
+            const out = try self.allocator.create(EiwaType);
+            out.* = .{ .Array = try substituteGenericParams(self, elem, params, args) };
+            return out;
+        },
+        .Pointer => |elem| {
+            const out = try self.allocator.create(EiwaType);
+            out.* = .{ .Pointer = try substituteGenericParams(self, elem, params, args) };
+            return out;
+        },
+        else => return t,
+    }
+}
+
+// Member lookup on a generic contract instance (e.g. `x.await()` where
+// `x: Awaitable<Int>`): resolves the contract method signature and
+// substitutes the contract's generic params with the instance's type args.
+fn inferContractMember(self: *TypeChecker, base_name: []const u8, type_args: []const *const EiwaType, member_name: []const u8) ?*const EiwaType {
+    const contract_node = self.contracts_ast.get(base_name) orelse return null;
+    const cd = contract_node.data.contract_decl;
+    for (cd.methods) |method| {
+        if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, member_name)) {
+            if (method.data.fun_decl.type_ref) |tr| {
+                const resolved = self.resolveTypeRef(tr) catch return null;
+                return substituteGenericParams(self, resolved, cd.generic_params, type_args) catch null;
+            } else {
+                const void_type = self.allocator.create(EiwaType) catch return null;
+                void_type.* = .Void;
+                return void_type;
+            }
+        }
+    }
+    return null;
+}
+
+fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, member_name: []const u8) ?*const EiwaType {    const base_type = extractBaseType(target_type);
     var name_opt: ?[]const u8 = null;
 
     switch (base_type.*) {
@@ -239,6 +314,13 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     const base_type = extractBaseType(obj_type);
 
     if (base_type.* == .GenericInstance) {
+        const gi = base_type.GenericInstance;
+        if (self.contracts_ast.contains(gi.base_name)) {
+            if (inferContractMember(self, gi.base_name, gi.type_args, g.name)) |rt| {
+                t.* = rt.*;
+                return;
+            }
+        }
         const resolved = inferGetExprForSingleType(self, base_type, g.name);
         if (resolved) |rt| {
             t.* = rt.*;

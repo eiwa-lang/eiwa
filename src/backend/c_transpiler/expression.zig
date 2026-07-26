@@ -542,6 +542,10 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     } else if (rt.Union.left.* == .Custom) {
                         class_name = rt.Union.left.Custom;
                     }
+                } else if (rt.* == .GenericInstance) {
+                    if (self.isContract(rt.GenericInstance.base_name)) {
+                        class_name = rt.GenericInstance.base_name;
+                    }
                 }
                 
                 var is_contract_call = false;
@@ -571,6 +575,26 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                             for (crt.Function.params) |p| {
                                 try params_str.appendSlice(", ");
                                 try params_str.appendSlice(try self.cType(p));
+                            }
+                        }
+                    }
+                    // Generic contract methods carry no resolved signature; use the
+                    // call site's substituted types (e.g. await(): T -> Int).
+                    if (node.resolved_type) |nrt| {
+                        const nrt_base = ts.extractBaseType(nrt);
+                        if (nrt_base.* != .Custom or !std.mem.eql(u8, nrt_base.Custom, "T")) {
+                            ret_str = try self.cType(nrt_base);
+                        }
+                    }
+                    if (cm.resolved_type == null) {
+                        params_str.items = &.{};
+                        for (c.arguments) |arg| {
+                            try params_str.appendSlice(", ");
+                            const at = if (arg.resolved_type) |art| ts.extractBaseType(art) else null;
+                            if (at) |a| {
+                                try params_str.appendSlice(try self.cType(a));
+                            } else {
+                                try params_str.appendSlice("void*");
                             }
                         }
                     }

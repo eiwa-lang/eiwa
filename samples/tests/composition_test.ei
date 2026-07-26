@@ -28,11 +28,7 @@ skill TouchInput {
 
 }
 
-type Button(val label: String)
-    : Drawable
-    + Shadow
-    + MouseInput
-    + TouchInput {
+type Button(val label: String): Drawable + Shadow + MouseInput + TouchInput {
 
     implement fun draw(): String {
         return "draw " + label
@@ -55,6 +51,10 @@ type BoomException(val text: String) : Throwable {
 
 fun fail(): Int {
     throw BoomException("boom")
+}
+
+fun returnDrawable(): Drawable {
+    return Button("OK")
 }
 
 test "composition: type implements contract" {
@@ -133,4 +133,9 @@ test "composition: exception handling via Throwable contract" {
         caught = e.message()
     }
     assert(caught == "boom")
+}
+
+test "composition: test polymorphic method call" {
+    val d = returnDrawable()
+    assert(d.draw() == "draw OK")
 }

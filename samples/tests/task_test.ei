@@ -67,5 +67,5 @@ test "task without return value should complete" {
         echo("fire-and-forget")
     }
     t.await()
-    assert(t.done)
+    assert(t.isDone())
 }

@@ -1,7 +1,13 @@
-import { assert } from "std.core"
+contract Shape<T> {
+    fun build(): Shape<T>
+}
 
-type Box<T>(val item: T) {
+type Box<T>(val item: T): Shape<T> {
     fun get(): T = item
+
+    implement fun build(): Shape<T> {
+        return this
+    }
 }
 
 test "should create generic classes" {
@@ -12,10 +18,11 @@ test "should create generic classes" {
     assert(boxString.get() == "Eiwa")
 }
 
-//  test "should union types works in generic classes" {
-//      val boxUnion: Box<Int | String> = Box(10)
-//      assert(boxUnion.get() == 10)
-
-//      val boxUnionString: Box<Int | String> = Box("Eiwa")
-//      assert(boxUnionString.get() == "Eiwa")
-//  }
+test "should build generic contract" {
+    val shape = Box("Eiwa")
+    assert(shape.build() is Box<String>)
+    val box = shape.build()
+    when (box) {
+        is Box<String> -> assert(box.get() == "Eiwa")
+    }
+}
