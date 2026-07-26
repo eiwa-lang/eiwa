@@ -39,11 +39,11 @@ fun retry(times: Int, block: (Int) -> Void) {
 }
 
 fun sleep(seconds: Int): Void {
-    Posix.sleep(seconds)
+    Neco.sleep(seconds * 1000000000)
 }
 
 fun sleepMs(ms: Int): Void {
-    Posix.usleep(ms * 1000)
+    Neco.sleep(ms * 1000000)
 }
 
 fun exit(code: Int): Void {

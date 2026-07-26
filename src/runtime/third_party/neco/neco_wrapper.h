@@ -26,6 +26,10 @@ int eiwa_neco_join(int id);
 // Yields the current coroutine to the scheduler.
 int eiwa_neco_yield(void);
 
+// Sleeps the current coroutine for nanosecs nanoseconds.
+// Wraps neco_sleep + eiwa_gc_fix_stackbottom (same pattern as yield/join).
+int eiwa_neco_sleep(int64_t nanosecs);
+
 // Run the whole program inside the neco runtime: the generated `main`
 // becomes the first coroutine. Without this, the first `neco_start` call
 // would block until that coroutine and all of its children finish, making
