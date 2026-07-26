@@ -355,7 +355,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 50.1.4:** Cache de instâncias via `monomorphized_nodes` + `functions_ast` para evitar duplicação
 - [x] **Verify:** `zig build && ./zig-out/bin/eiwa test` (128 testes) passa; funções genéricas com `T` funcionam; métodos genéricos com type args funcionam
 
-### Phase 51: Refatoração de `Task<T>` (Corotinas 100% em Eiwa) (PLANNED)
+### Phase 51: Refatoração de `Task<T>` (Corotinas 100% em Eiwa) (DONE)
 > **Dependência:** Monomorfização Real (Fase 50) concluída ✅.
 >
 > **Nota:** Plano detalhado em `docs/plano_mono_task.md`. O destino final é `Task<T>` 100% em Eiwa via `contract + skill + lib {}` (neco — https://github.com/tidwall/neco), removendo todos os casos especiais (special cases) do compilador.
@@ -363,25 +363,53 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 > **Ordem de execução:** Etapa 1 (Remover Special Cases) → Etapa 2 (Arquitetura Final).
 
 #### Etapa 1 — Remover Special Cases de `Task<T>`
-- [ ] **Task 51.1.1:** `fun task<T>` em std/core.ei usa monomorfização em vez de special case
-- [ ] **Task 51.1.2:** Construtor `Task<T>` usa `lib {}` (neco) em vez de C inline `({ })`
-- [ ] **Task 51.1.3:** Remover special case `task()` em `infer_call.zig:44`
-- [ ] **Task 51.1.4:** Remover special case `.await()` em `infer_member.zig`
-- [ ] **Task 51.1.5:** Remover special case `Task` codegen em `expression.zig:373`
-- [ ] **Task 51.1.6:** Remover special case `.await()` codegen em `expression.zig:481`
-- [ ] **Task 51.1.7:** Remover special case `cType("Task")` em `core.zig:55`
-- [ ] **Task 51.1.8:** Remover `src/runtime/fiber.c` e `src/runtime/fiber.h` (substituído por neco)
-- [ ] **Verify:** `zig build && ./zig-out/bin/eiwa test` passa; `task_test.ei` passa sem special cases
+- [x] **Task 51.1.1:** `fun task<T>` em std/core.ei usa monomorfização em vez de special case
+- [x] **Task 51.1.2:** Construtor `Task<T>` usa `lib {}` (neco) em vez de C inline `({ })`
+- [x] **Task 51.1.3:** Remover special case `task()` em `infer_call.zig:44`
+- [x] **Task 51.1.4:** Remover special case `.await()` em `infer_member.zig`
+- [x] **Task 51.1.5:** Remover special case `Task` codegen em `expression.zig:373`
+- [x] **Task 51.1.6:** Remover special case `.await()` codegen em `expression.zig:481`
+- [x] **Task 51.1.7:** Remover special case `cType("Task")` em `core.zig:55`
+- [x] **Task 51.1.8:** Remover `src/runtime/fiber.c` e `src/runtime/fiber.h` (substituído por neco)
+- [x] **Verify:** `zig build && ./zig-out/bin/eiwa test` passa; `task_test.ei` passa sem special cases
 
-#### Etapa 2 — Arquitetura Final: Contract + Skill + neco
-- [ ] **Task 51.2.1:** `contract Awaitable<T>` em `std/core.ei`
-- [ ] **Task 51.2.2:** `skill TaskNeco : Awaitable<T>` com `await()` via neco
-- [ ] **Task 51.2.3:** `lib {}` binding para neco em `src/runtime/third_party/neco/`
-- [ ] **Task 51.2.4:** `type Task<T>` compõe `+ TaskNeco`, construtor cria co-rotina via neco
-- [ ] **Task 51.2.5:** `fun task<T>(block)` factory retorna `Task<T>`.new(block)
-- [ ] **Verify:** `zig build && ./zig-out/bin/eiwa test` — suite completa passa; zero hacks no compilador
+#### Etapa 2 — Arquitetura Final: Contract + neco
+- [x] **Task 51.2.1:** `contract Awaitable<T>` em `std/core.ei`
+- [x] ~~**Task 51.2.2:** `skill TaskNeco : Awaitable<T>` com `await()` via neco~~ (ver divergência acima: `await()` ficou em `type Task<T>`)
+- [x] **Task 51.2.3:** `lib Neco` binding para neco em `src/runtime/third_party/neco/` (+ `third_wrapper.c`: trampolim de closure, macro `main` própria, cola Boehm GC ↔ stacks de corotina; patch `EIWA PATCH` no `neco.c` para rotear alocação de stacks pelo env allocator)
+- [x] **Task 51.2.4:** `type Task<T>(var id: Int, var done: Bool, var result: T?, val block: () -> T) : Awaitable<T>`
+- [x] **Task 51.2.5:** `fun task<T>(block)` factory retorna `Task<T>` e inicia a corotina via `Neco.start`
+- [x] **Verify:** `zig build && ./zig-out/bin/eiwa test` — suite completa passa (132 testes); zero hacks no compilador
 
-> **Destino final:** `Task<T>` 100% em Eiwa, `contract Awaitable<T>` + `skill TaskNeco` + neco em third_party, zero special cases, zero `makecontext`/`_XOPEN_SOURCE`.
+### Phase 52: Captura de `var` por referência em lambdas (boxed captures) (PLANNED)
+> **Motivação:** hoje toda captura de variável por lambda é **por valor**. Mutar uma `var`
+> capturada dentro da lambda não propaga para o escopo externo — quebra o padrão
+> fire-and-forget de tasks (ex: sinalizar conclusão, acumular resultado).
+>
+> **Evidência (2026-07-26):**
+> ```kotlin
+> var executed = false
+> val f: () -> Void = { executed = true; echo("ran") }
+> f()
+> echo(executed.toString())  // imprime "false" — esperado "true"
+> ```
+> O C gerado mostra `_env_* { bool executed; }` (cópia) em vez de `Box_bool*`.
+>
+> **Estado atual:** a infraestrutura de boxing **existe mas não dispara**:
+> - Checker: `infer_expr.zig` (~L220-249) marca `is_boxed` em símbolo/identificador/decl
+>   quando uma `var` mutável é capturada cruzando `is_function_boundary` — não está
+>   sendo ativado para corpos de lambda (escopo da lambda provavelmente não é marcado
+>   como function boundary, ou a resolução do identificador não passa por esse caminho).
+> - Transpiler: `expression.zig` já emite `Box_<tipo>*` para captures com `is_boxed`
+>   (`getBoxTypeName`, env struct, leitura/escrita via `->value`) — caminho nunca exercitado.
+>
+> **Tarefas:**
+> - [ ] **Task 52.1:** Diagnosticar por que `is_boxed` não é setado (escopo da lambda × `is_function_boundary` em `infer_expr.zig`).
+> - [ ] **Task 52.2:** Checker: marcar como boxed toda `var` mutável referenciada dentro de lambda (inclui lambdas aninhadas e corpos de `task {}`).
+> - [ ] **Task 52.3:** Transpiler: decl da `var` boxed (`Box_T* x = box_new(v)`), leituras `x->value`, escritas `x->value = ...`, capture no env como ponteiro (sem cópia).
+> - [ ] **Task 52.4:** `val` (imutável) NÃO boxed — manter cópia por valor (sem regressão de performance/semântica).
+> - [ ] **Task 52.5:** Interação com `task {}`: mutação de `var` capturada visível após `await()` (memória compartilhada entre corotinas via GC — Box alocado com `GC_MALLOC`).
+> - [ ] **Verify:** probes `box1`/`box2` imprimem `true`; novo teste em `task_test.ei` (mutação de `var` capturada visível após `await`); suite completa verde.
 
 ## ✅ Definition of Done (Per Phase)
 * [x] **Security/Lint:** No memory leaks in tests (utilizing `std.testing.allocator` across internal Zig modules).

@@ -128,6 +128,15 @@ pub const CTranspiler = struct {
         return getCTypeStr(self.allocator, t);
     }
 
+    // Like cType, but for storage positions (struct fields, constructor params).
+    // C has no void values, so a Void-typed field (generic T instantiated as
+    // Void) is stored as a dummy int that is never meaningfully read.
+    pub fn cStorageType(self: *CTranspiler, t: *const type_system.EiwaType) ![]const u8 {
+        const ct = try self.cType(t);
+        if (std.mem.eql(u8, ct, "void")) return "int";
+        return ct;
+    }
+
     pub fn isContract(self: *CTranspiler, name: []const u8) bool {
         if (self.contracts_ast) |ca| {
             const lookup = if (self.alias_map) |am| (am.get(name) orelse name) else name;

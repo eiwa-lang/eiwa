@@ -192,6 +192,14 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
         },
 
         .assignment => |a| {
+            if (a.value.resolved_type) |vrt| {
+                if (ts.extractBaseType(vrt).* == .Void) {
+                    // Void values have no C storage: evaluate for the side
+                    // effect and drop the store (see cStorageType).
+                    try self.emitExpression(a.value);
+                    return;
+                }
+            }
             if (a.is_class_property) {
                 try self.writer.writer().print("this->{s} = ", .{a.name});
             } else if (a.is_boxed) {
@@ -270,6 +278,14 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             }
         },
         .set_expr => |s| {
+            if (s.value.resolved_type) |vrt| {
+                if (ts.extractBaseType(vrt).* == .Void) {
+                    // Void values have no C storage: evaluate for the side
+                    // effect and drop the store (see cStorageType).
+                    try self.emitExpression(s.value);
+                    return;
+                }
+            }
             if (self.objects_ast) |oa| {
                 if (s.object.data == .identifier) {
                     const class_name = s.object.data.identifier.name;

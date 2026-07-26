@@ -2477,9 +2477,17 @@ static void stack_release_group(struct stack_group *group, bool nofreelist) {
 }
 #endif
 
+// EIWA PATCH: forward declarations so stack_get_/stack_put_ can route
+// coroutine stack allocation through the env allocator (see below).
+void *neco_malloc(size_t nbytes);
+void neco_free(void *ptr);
+
 static int stack_get_(struct stack_mgr0 *mgr, struct stack0 *stack) {
     if (mgr->onlymalloc) {
-        void *addr = malloc(mgr->stacksz);
+        // EIWA PATCH: route stack allocation through the env allocator
+        // (neco_env_setallocator) so the Eiwa runtime can track coroutine
+        // stacks for GC integration. Upstream used raw malloc() here.
+        void *addr = neco_malloc(mgr->stacksz);
         if (!addr) {
             return -1;
         }
@@ -2555,7 +2563,8 @@ int stack_get(struct stack_mgr *mgr, struct stack *stack) {
 
 static void stack_put_(struct stack_mgr0 *mgr, struct stack0 *stack) {
     if (mgr->onlymalloc) {
-        free(stack->addr);
+        // EIWA PATCH: matches the neco_malloc() call in stack_get_ above.
+        neco_free(stack->addr);
         return;
     }
 #ifndef _WIN32

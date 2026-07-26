@@ -49,12 +49,6 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
         self.reportError(0, 0, "TypeError: Expected {} generic arguments for '{s}', got {}.", .{type_decl.generic_params.len, base_name, type_args.len});
         return error.TypeError;
     }
-    for (type_args) |arg| {
-        if (type_system.extractBaseType(arg).* == .Void) {
-            self.reportError(0, 0, "TypeError: Generic type '{s}' cannot be instantiated with Void.", .{base_name});
-            return error.TypeError;
-        }
-    }
     
     // Create the generic map mapping (e.g. "T" -> .String)
     var generic_map = std.StringHashMap(*const EiwaType).init(self.allocator);

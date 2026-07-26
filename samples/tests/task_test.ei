@@ -61,3 +61,11 @@ test "await on completed task should return immediately" {
     assert(r1 == 99)
     assert(r2 == 99)
 }
+
+test "task without return value should complete" {
+    val t = task {
+        echo("fire-and-forget")
+    }
+    t.await()
+    assert(t.done)
+}

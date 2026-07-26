@@ -57,7 +57,7 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
             if (!prop.is_property) continue;
             var t_str: []const u8 = "void*";
             if (prop.resolved_type) |rt| {
-                t_str = try self.cType(rt);
+                t_str = try self.cStorageType(rt);
             }
             try self.header_writer.writer().print("    {s} {s};\n", .{ t_str, prop.name });
         }
@@ -69,7 +69,7 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
             if (i > 0) try self.header_writer.appendSlice(", ");
             var t_str: []const u8 = "void*";
             if (prop.resolved_type) |rt| {
-                t_str = try self.cType(rt);
+                t_str = try self.cStorageType(rt);
             }
             try self.header_writer.writer().print("{s} {s}", .{ t_str, prop.name });
         }
@@ -127,7 +127,7 @@ pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
             if (i > 0) try self.writer.appendSlice(", ");
             var t_str: []const u8 = "void*";
             if (prop.resolved_type) |rt| {
-                t_str = try self.cType(rt);
+                t_str = try self.cStorageType(rt);
                 if (ts.extractBaseType(rt).* == .Array) try self.emitArrayStruct(ts.extractBaseType(rt).Array);
             }
             try self.writer.writer().print("{s} {s}", .{ t_str, prop.name });
