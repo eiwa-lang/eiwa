@@ -52,12 +52,7 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType)
             }
         },
         .Function => return "EiwaClosure",
-        .GenericInstance => |gi| {
-            if (std.mem.eql(u8, gi.base_name, "Task")) {
-                return "EiwaTask*";
-            }
-            return "void*";
-        },
+        .GenericInstance => return "void*",
         else => return "void*",
     }
 }
@@ -74,6 +69,10 @@ pub const CTranspiler = struct {
     emitted_functions: std.StringHashMap(void),
     emitted_variables: std.StringHashMap(void),
     emitted_lambdas: std.StringHashMap(void),
+    // Mangled C name of the function currently being emitted; suffixes lambda
+    // names so monomorphized instantiations of the same generic function
+    // (whose lambda nodes share line/col) emit distinct C symbols.
+    current_fn_c_name: []const u8 = "",
     emitted_modules: std.AutoHashMap(*ASTNode, void),
     is_test_mode: bool = false,
     test_names: ArrayList([]const u8),
@@ -85,7 +84,6 @@ pub const CTranspiler = struct {
     alias_map: ?*std.StringHashMap([]const u8) = null,
     source_file: []const u8 = "<unknown>", // path to the .ei source file being transpiled
     static_initializers: ArrayList(StaticInitializer),
-    task_counter: usize = 0,
     // Stack of outer scope variables for lambda capture
     outer_scope_vars: ArrayList(std.StringHashMap(void)),
 
@@ -348,7 +346,7 @@ pub const CTranspiler = struct {
                     }
 
                     if (self.is_test_mode) {
-                        try self.writer.appendSlice("int main() {\n    GC_init();\n");
+                        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    (void)argc;\n    (void)argv;\n");
                         for (self.static_initializers.items) |si| {
                             try self.writer.writer().print("    {s} = ", .{si.name});
                             try self.emitExpression(si.init);

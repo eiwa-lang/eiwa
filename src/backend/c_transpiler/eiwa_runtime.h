@@ -13,8 +13,6 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
-#include "fiber.h"
-
 static inline int eiwa_char_at(const char* str, int index) {
     return str[index];
 }
@@ -192,6 +190,8 @@ typedef struct EiwaClosure {
     void* env;
     void* _pad;
 } EiwaClosure;
+
+#include "third_wrapper.h"
 
 struct core_String;
 typedef struct core_String core_String;

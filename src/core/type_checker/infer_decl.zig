@@ -156,6 +156,11 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             } else if (tc.global_scope.lookupVariable(sym)) |variable| {
                 try self.global_scope.define(sym, variable, false, false);
                 found = true;
+            } else if (tc.generic_functions_ast.get(sym)) |gen_decl| {
+                // Generic functions are not in global_scope; importing one
+                // makes it visible to lookupGenericFunction locally.
+                try self.generic_functions_ast.put(sym, gen_decl);
+                found = true;
             }
 
             if (!found) {

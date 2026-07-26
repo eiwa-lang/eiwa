@@ -92,6 +92,7 @@ pub const TypeChecker = struct {
     pub const resolveTypeName = core_resolveTypeName;
     pub const monomorphizeClass = @import("monomorphize.zig").monomorphizeClass;
     pub const monomorphizeFunction = @import("monomorphize.zig").monomorphizeFunction;
+    pub const lookupGenericFunction = @import("monomorphize.zig").lookupGenericFunction;
     pub const cloneNode = @import("clone.zig").cloneNode;
     pub const validate = core_validate;
     pub const declareTypes = core_declareTypes;
@@ -711,11 +712,21 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
         }
     }
 
-    // Append any dynamically monomorphized nodes to the AST
+    // Insert any dynamically monomorphized nodes into the AST right after the
+    // import statements. They must precede user code so the transpiler emits
+    // their C prototypes before any lambdas that call them, but they must
+    // come *after* imports so lib/type declarations from imported modules are
+    // already registered when they are emitted.
     if (node.data == .program and self.monomorphized_nodes.items.len > 0) {
-        var final_stmts = try self.allocator.alloc(*ASTNode, node.data.program.statements.len + self.monomorphized_nodes.items.len);
-        @memcpy(final_stmts[0..node.data.program.statements.len], node.data.program.statements);
-        @memcpy(final_stmts[node.data.program.statements.len..], self.monomorphized_nodes.items);
+        var insert_idx: usize = 0;
+        for (node.data.program.statements, 0..) |stmt, i| {
+            if (stmt.data == .import_stmt) insert_idx = i + 1;
+        }
+        const old_stmts = node.data.program.statements;
+        var final_stmts = try self.allocator.alloc(*ASTNode, old_stmts.len + self.monomorphized_nodes.items.len);
+        @memcpy(final_stmts[0..insert_idx], old_stmts[0..insert_idx]);
+        @memcpy(final_stmts[insert_idx..][0..self.monomorphized_nodes.items.len], self.monomorphized_nodes.items);
+        @memcpy(final_stmts[insert_idx + self.monomorphized_nodes.items.len ..], old_stmts[insert_idx..]);
         node.data.program.statements = final_stmts;
     }
 

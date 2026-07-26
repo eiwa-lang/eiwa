@@ -226,6 +226,10 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
     }
     try self.writer.appendSlice(") {\n");
 
+    const old_fn_c_name = self.current_fn_c_name;
+    self.current_fn_c_name = fn_c_name;
+    defer self.current_fn_c_name = old_fn_c_name;
+
     // Emit #line directive so clang reports errors with the original .ei source location
     try self.writer.writer().print("#line {d} \"{s}\"\n", .{ node.line, self.source_file });
 
@@ -295,6 +299,10 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     try self.header_writer.writer().print("{s};\n", .{sig.items});
     try self.writer.writer().print("{s} {{\n", .{sig.items});
 
+    const old_fn_c_name = self.current_fn_c_name;
+    self.current_fn_c_name = func_name;
+    defer self.current_fn_c_name = old_fn_c_name;
+
     // Emit #line directive so clang reports errors with the original .ei source location
     try self.writer.writer().print("#line {d} \"{s}\"\n", .{ node.line, self.source_file });
 
@@ -318,7 +326,7 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     try self.writer.appendSlice("}\n\n");
 
     if (is_main) {
-        try self.writer.appendSlice("int main() {\n    GC_init();\n");
+        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    (void)argc;\n    (void)argv;\n");
         for (self.static_initializers.items) |si| {
             try self.writer.writer().print("    {s} = ", .{si.name});
             try self.emitExpression(si.init);
@@ -336,6 +344,10 @@ pub fn emitTestDecl(self: *CTranspiler, node: *ASTNode) !void {
     self.test_count += 1;
 
     try self.writer.writer().print("void eiwa_test_{d}() {{\n", .{test_id});
+
+    const old_fn_c_name = self.current_fn_c_name;
+    self.current_fn_c_name = try std.fmt.allocPrint(self.allocator, "eiwa_test_{d}", .{test_id});
+    defer self.current_fn_c_name = old_fn_c_name;
     switch (decl.body.data) {
         .block => |b| {
             for (b.statements) |stmt| {

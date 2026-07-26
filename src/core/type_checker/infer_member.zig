@@ -17,13 +17,6 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, m
     const base_type = extractBaseType(target_type);
     var name_opt: ?[]const u8 = null;
 
-    if (base_type.* == .GenericInstance) {
-        const gi = base_type.GenericInstance;
-        if (std.mem.eql(u8, gi.base_name, "Task") and std.mem.eql(u8, member_name, "await")) {
-            return if (gi.type_args.len > 0) gi.type_args[0] else null;
-        }
-    }
-
     switch (base_type.*) {
         .Custom => |n| name_opt = n,
         .GenericInstance => |gi| {

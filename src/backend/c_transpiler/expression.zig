@@ -372,43 +372,6 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     try self.emitExpression(arg);
                 }
                 try self.writer.appendSlice(")");
-            } else if (c.callee.data == .identifier and c.arguments.len == 1 and if (node.resolved_type) |rt| blk: {
-                const base = ts.extractBaseType(rt);
-                break :blk base.* == .GenericInstance and std.mem.eql(u8, base.GenericInstance.base_name, "Task");
-            } else false) {
-                const task_counter = self.task_counter;
-                self.task_counter += 1;
-
-                const gi = (node.resolved_type orelse unreachable).GenericInstance;
-                const result_type = if (gi.type_args.len > 0) gi.type_args[0] else &ts.EiwaType{ .Void = {} };
-                const result_c_type = try self.cType(result_type);
-                const is_void = std.mem.eql(u8, result_c_type, "void");
-
-                try self.header_writer.writer().print("static void _task_fiber_{d}(void* arg) {{\n", .{task_counter});
-                try self.header_writer.writer().print("    EiwaTask* t = (EiwaTask*)arg;\n", .{});
-                try self.header_writer.writer().print("    EiwaClosure* cl = (EiwaClosure*)t->context;\n", .{});
-                if (is_void) {
-                    try self.header_writer.writer().print("    ((void (*)(void*))cl->fn_ptr)(cl->env);\n", .{});
-                } else {
-                    try self.header_writer.writer().print("    {s} res = (({s} (*)(void*))cl->fn_ptr)(cl->env);\n", .{ result_c_type, result_c_type });
-                    try self.header_writer.writer().print("    memcpy(t->result_ptr, &res, sizeof({s}));\n", .{ result_c_type });
-                }
-                try self.header_writer.writer().print("    t->done = 1;\n", .{});
-                try self.header_writer.writer().print("}}\n\n", .{});
-
-                try self.writer.writer().print("({{\n", .{});
-                try self.writer.writer().print("    EiwaTask* _task_{d} = GC_MALLOC(sizeof(EiwaTask));\n", .{task_counter});
-                try self.writer.writer().print("    EiwaClosure* _task_heap_cl_{d} = GC_MALLOC(sizeof(EiwaClosure));\n", .{task_counter});
-                try self.writer.writer().print("    *_task_heap_cl_{d} = ", .{task_counter});
-                try self.emitExpression(c.arguments[0]);
-                try self.writer.appendSlice(";\n");
-                if (is_void) {
-                    try self.writer.writer().print("    eiwa_task_init(_task_{d}, _task_fiber_{d}, _task_heap_cl_{d}, 0);\n", .{ task_counter, task_counter, task_counter });
-                } else {
-                    try self.writer.writer().print("    eiwa_task_init(_task_{d}, _task_fiber_{d}, _task_heap_cl_{d}, sizeof({s}));\n", .{ task_counter, task_counter, task_counter, result_c_type });
-                }
-                try self.writer.writer().print("    _task_{d};\n", .{task_counter});
-                try self.writer.appendSlice("})");
             } else if (c.callee.data == .identifier) {
                 const raw_c_name = c.callee.data.identifier.resolved_c_name orelse c.callee.data.identifier.name;
                 const c_name = if (self.alias_map) |am| am.get(raw_c_name) orelse raw_c_name else raw_c_name;
@@ -477,27 +440,6 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     }
                     try self.writer.appendSlice(")");
                     return;
-                }
-
-                if (std.mem.eql(u8, g.name, "await")) {
-                    const rt_base = ts.extractBaseType(rt);
-                    if (rt_base.* == .GenericInstance and std.mem.eql(u8, rt_base.GenericInstance.base_name, "Task")) {
-                        const result_type = if (rt_base.GenericInstance.type_args.len > 0) rt_base.GenericInstance.type_args[0] else &ts.EiwaType{ .Void = {} };
-                        const result_c_type = try self.cType(result_type);
-                        const is_void = std.mem.eql(u8, result_c_type, "void");
-
-                        try self.writer.writer().print("({{\n", .{});
-                        try self.writer.writer().print("    EiwaTask* _t_await = (", .{});
-                        try self.emitExpression(g.object);
-                        try self.writer.writer().print(");\n", .{});
-                        try self.writer.writer().print("    while (!_t_await->done) eiwa_fiber_resume(_t_await->fiber);\n", .{});
-                        if (!is_void) {
-                            try self.writer.writer().print("    {s} _r = *({s}*)_t_await->result_ptr;\n", .{ result_c_type, result_c_type });
-                            try self.writer.writer().print("    _r;\n", .{});
-                        }
-                        try self.writer.appendSlice("})");
-                        return;
-                    }
                 }
 
                 if (std.mem.eql(u8, g.name, "toString")) {
@@ -616,27 +558,6 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                             }
                         }
                     }
-                if (std.mem.eql(u8, g.name, "await")) {
-                    const rt_base = ts.extractBaseType(rt);
-                    if (rt_base.* == .GenericInstance and std.mem.eql(u8, rt_base.GenericInstance.base_name, "Task")) {
-                        const result_type = if (rt_base.GenericInstance.type_args.len > 0) rt_base.GenericInstance.type_args[0] else &ts.EiwaType{ .Void = {} };
-                        const result_c_type = try self.cType(result_type);
-                        const is_void = std.mem.eql(u8, result_c_type, "void");
-
-                        try self.writer.writer().print("({{\n", .{});
-                        try self.writer.writer().print("    EiwaTask* _t_await = (", .{});
-                        try self.emitExpression(g.object);
-                        try self.writer.writer().print(");\n", .{});
-                        try self.writer.writer().print("    while (!_t_await->done) eiwa_fiber_resume(_t_await->fiber);\n", .{});
-                        if (!is_void) {
-                            try self.writer.writer().print("    {s} _r = *({s}*)_t_await->result_ptr;\n", .{ result_c_type, result_c_type });
-                            try self.writer.writer().print("    _r;\n", .{});
-                        }
-                        try self.writer.appendSlice("})");
-                        return;
-                    }
-                }
-
                 if (std.mem.eql(u8, g.name, "toString")) {
                         try self.writer.appendSlice("eiwa_to_string((void*)(");
                         try self.emitExpression(g.object);
@@ -1090,7 +1011,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             const line = node.line;
             const col = node.column;
             
-            const lambda_key = try std.fmt.allocPrint(self.allocator, "{}_{}", .{line, col});
+            const lambda_key = try std.fmt.allocPrint(self.allocator, "{}_{}_{s}", .{ line, col, self.current_fn_c_name });
             const is_new_lambda = !self.emitted_lambdas.contains(lambda_key);
             if (is_new_lambda) {
                 try self.emitted_lambdas.put(lambda_key, {});
@@ -1148,8 +1069,8 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 try self.collectCaptures(stmt, &locals, &captures);
             }
             
-            const env_struct_name = try std.fmt.allocPrint(self.allocator, "_env_{}_{}", .{line, col});
-            const lambda_fn_name = try std.fmt.allocPrint(self.allocator, "_lambda_{}_{}", .{line, col});
+            const env_struct_name = try std.fmt.allocPrint(self.allocator, "_env_{}_{}_{s}", .{ line, col, self.current_fn_c_name });
+            const lambda_fn_name = try std.fmt.allocPrint(self.allocator, "_lambda_{}_{}_{s}", .{ line, col, self.current_fn_c_name });
             
             if (is_new_lambda) {
                 if (captures.items.len > 0) {
