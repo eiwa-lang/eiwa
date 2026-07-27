@@ -469,6 +469,76 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     t.* = .Void;
 }
 
+fn substituteSkillTypeRef(self: *TypeChecker, tr: *const ast.ASTTypeRef, params: []const []const u8, self_ref: *const ast.ASTTypeRef) anyerror!*const ast.ASTTypeRef {
+    const out = try self.allocator.create(ast.ASTTypeRef);
+    out.* = tr.*;
+    out.resolved_type = null;
+    if (!tr.is_function and tr.generic_args.len == 0) {
+        for (params) |p| {
+            if (std.mem.eql(u8, tr.name, p)) {
+                const was_nullable = tr.is_nullable;
+                out.* = self_ref.*;
+                out.is_nullable = was_nullable;
+                return out;
+            }
+        }
+    }
+    if (tr.generic_args.len > 0) {
+        const args = try self.allocator.alloc(*const ast.ASTTypeRef, tr.generic_args.len);
+        for (tr.generic_args, 0..) |a, i| {
+            args[i] = try substituteSkillTypeRef(self, a, params, self_ref);
+        }
+        out.generic_args = args;
+    }
+    if (tr.return_type) |rt| {
+        out.return_type = try substituteSkillTypeRef(self, rt, params, self_ref);
+    }
+    if (tr.receiver_type) |rt| {
+        out.receiver_type = try substituteSkillTypeRef(self, rt, params, self_ref);
+    }
+    if (tr.union_types.len > 0) {
+        const uts = try self.allocator.alloc(*const ast.ASTTypeRef, tr.union_types.len);
+        for (tr.union_types, 0..) |u, i| {
+            uts[i] = try substituteSkillTypeRef(self, u, params, self_ref);
+        }
+        out.union_types = uts;
+    }
+    return out;
+}
+
+fn bindSkillGenericParams(self: *TypeChecker, cloned: *ASTNode, orig: *ASTNode, skill_params: []const []const u8, c: anytype) anyerror!void {
+    if (skill_params.len == 0) return;
+    const self_ref = try self.allocator.create(ast.ASTTypeRef);
+    self_ref.* = .{
+        .name = c.name,
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+    if (c.generic_params.len > 0) {
+        const g_args = try self.allocator.alloc(*const ast.ASTTypeRef, c.generic_params.len);
+        for (c.generic_params, 0..) |gp, i| {
+            const gp_ref = try self.allocator.create(ast.ASTTypeRef);
+            gp_ref.* = .{ .name = gp, .generic_args = &.{}, .is_array = false, .is_nullable = false };
+            g_args[i] = gp_ref;
+        }
+        self_ref.generic_args = g_args;
+    }
+    // Build substituted refs from the ORIGINAL skill method refs: cloneTypeRef
+    // applies alias_map rewrites (e.g. stale T -> Int), so the clone's refs can
+    // no longer be matched against the skill's generic param names.
+    const om = &orig.data.fun_decl;
+    var m = &cloned.data.fun_decl;
+    if (om.type_ref) |tr| {
+        m.type_ref = try substituteSkillTypeRef(self, tr, skill_params, self_ref);
+    }
+    for (om.params, 0..) |op, i| {
+        if (op.type_ref) |tr| {
+            m.params[i].type_ref = try substituteSkillTypeRef(self, tr, skill_params, self_ref);
+        }
+    }
+}
+
 fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
     if (c.skills.len == 0) return;
 
@@ -527,6 +597,7 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
                     const renamed = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ s.name, fname });
                     const cloned = try self.cloneNode(m);
                     @constCast(&cloned.data.fun_decl).name = renamed;
+                    try bindSkillGenericParams(self, cloned, m, s.generic_params, c);
                     try final_methods.append(cloned);
                 } else {
                     // Two skills provide the same member without an explicit resolution.
@@ -536,6 +607,7 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
             } else {
                 try provided.put(fname, s.name);
                 const cloned = try self.cloneNode(m);
+                try bindSkillGenericParams(self, cloned, m, s.generic_params, c);
                 try final_methods.append(cloned);
             }
         }
@@ -1162,6 +1234,26 @@ pub fn injectAutoContractsAndSkills(self: *TypeChecker, c: anytype) !void {
             }
             new_contracts[c.contracts.len] = contract_name;
             c.contracts = new_contracts;
+        }
+    }
+
+    // Scope<T> is injected universally (incl. std.core primitives) — every type
+    // gets Kotlin-style scope functions with T bound to itself (ADR 40).
+    {
+        var scope_exists = false;
+        for (c.skills) |existing| {
+            if (std.mem.eql(u8, existing, "Scope")) {
+                scope_exists = true;
+                break;
+            }
+        }
+        if (!scope_exists) {
+            var new_skills = try self.allocator.alloc([]const u8, c.skills.len + 1);
+            for (c.skills, 0..) |item, i| {
+                new_skills[i] = item;
+            }
+            new_skills[c.skills.len] = "Scope";
+            c.skills = new_skills;
         }
     }
 

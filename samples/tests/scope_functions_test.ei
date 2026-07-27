@@ -1,0 +1,78 @@
+type Person(var name: String, var age: Int)
+
+fun empty() {
+    //Do nothing
+}
+
+test "scope: let on primitive transforms value" {
+    assert(5.let { it * 2 } == 10)
+}
+
+test "scope: let on custom type" {
+    val p = Person("Leo", 30)
+    assert(p.let { it.name } == "Leo")
+    assert(p.let { it.name + " is " + it.age.toString() } == "Leo is 30")
+}
+
+test "scope: let chains" {
+    val r = 5.let { it * 2 }.let { it + 1 }
+    assert(r == 11)
+}
+
+test "scope: run returns lambda result" {
+    val p = Person("Leo", 30)
+    assert(p.run { it.name + "!" } == "Leo!")
+}
+
+test "scope: also returns receiver after side effect" {
+    val p = Person("Leo", 30)
+    val q = p.also {
+        it.age = it.age + 1
+        empty()
+    }
+    assert(q.age == 31)
+}
+
+test "scope: apply returns receiver" {
+    val p = Person("Leo", 30)
+    val q = p.apply {
+        it.name = "Ana"
+        empty()
+    }
+    assert(q.name == "Ana")
+}
+
+test "scope: takeIf returns value when predicate holds" {
+    val p = Person("Leo", 30)
+    assert(p.takeIf { it.age > 18 } != null)
+}
+
+test "scope: takeIf returns null when predicate fails" {
+    val p = Person("Leo", 10)
+    assert(p.takeIf { it.age > 18 } == null)
+}
+
+test "scope: takeUnless returns null when predicate holds" {
+    val p = Person("Leo", 30)
+    assert(p.takeUnless { it.age > 18 } == null)
+}
+
+test "scope: takeUnless returns value when predicate fails" {
+    val p = Person("Leo", 10)
+    assert(p.takeUnless { it.age > 18 } != null)
+}
+
+test "scope: takeIf on String" {
+    assert(("abc".takeIf { it.length > 2 } != null) == true)
+    assert(("ab".takeIf { it.length > 2 } == null) == true)
+}
+
+test "scope: with as top-level function" {
+    val p = Person("Leo", 31)
+    val r = with(p) { it.name + " is " + it.age.toString() }
+    assert(r == "Leo is 31")
+}
+
+test "scope: with on primitive" {
+    assert(with(20) { it + 22 } == 42)
+}

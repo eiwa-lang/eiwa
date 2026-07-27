@@ -1547,3 +1547,69 @@ fun main() {
     assert(strBox.value == "eiwa")
 }
 ```
+---
+
+## 24. Scope Functions (`let`, `run`, `also`, `apply`, `takeIf`, `takeUnless`, `with`)
+
+Kotlin-style scope functions are available on **every type** — primitives included — via the auto-injected `Scope<T>` skill from `std.core` (ADR 40). The lambda receives the receiver as the implicit `it` parameter.
+
+### 24.1 `let` — Transform a Value
+
+`let` returns the lambda's result:
+
+```kotlin
+val doubled = 5.let { it * 2 }        // 10
+val name = person.let { it.name }     // extracts a property
+val chained = 5.let { it * 2 }.let { it + 1 }  // 11
+```
+
+### 24.2 `run` — Execute and Return
+
+`run` behaves like `let` (returns the lambda result); use it for grouping operations:
+
+```kotlin
+val greeting = person.run { it.name + "!" }
+```
+
+### 24.3 `also` / `apply` — Side Effects, Return the Receiver
+
+Both return the receiver itself, useful for configuration or mutation chains. Note that a lambda whose last statement is an assignment returns the assigned value, so end the lambda with a `Void` expression (e.g. `println`) when the expected type is `(T) -> Void`:
+
+```kotlin
+val p = Person("Leo", 30).also {
+    it.age = it.age + 1
+    println(it.age.toString())   // last expression is Void
+}
+// p.age == 31
+
+val q = person.apply {
+    it.name = "Ana"
+    println(it.name)
+}
+```
+
+### 24.4 `takeIf` / `takeUnless` — Nullable Filtering
+
+Returns the receiver (`T?`) when the predicate holds (`takeIf`) or fails (`takeUnless`), otherwise `null`:
+
+```kotlin
+val adult = person.takeIf { it.age > 18 }       // Person | Null
+val kid   = person.takeUnless { it.age > 18 }   // Person | Null
+
+if (adult != null) {
+    println(adult!!.name)
+}
+```
+
+### 24.5 `with` — Top-Level Function
+
+Unlike the others, `with` is a top-level generic function (not a method):
+
+```kotlin
+val summary = with(person) { it.name + " is " + it.age.toString() }
+val answer  = with(20) { it + 22 }   // 42
+```
+
+### 24.6 Name Conflicts
+
+If a type declares its own `let`, `run`, etc., the type's explicit method wins; the scope function remains available qualified as `Scope_let`, `Scope_run`, etc. (same rule as `toString` vs `Stringable` — see 11.6).

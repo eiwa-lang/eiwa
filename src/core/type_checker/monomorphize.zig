@@ -189,7 +189,7 @@ pub fn lookupGenericFunction(self: *TypeChecker, name: []const u8) ?*ASTNode {
     return null;
 }
 
-pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8) !void {    if (self.functions_ast.get(mangled_name) != null) return;
+pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8, receiver: ?*const EiwaType) !void {    if (self.functions_ast.get(mangled_name) != null) return;
 
     const base_node = self.generic_functions_ast.get(base_name) orelse {
         self.reportError(0, 0, "TypeError: Generic function '{s}' not found.", .{base_name});
@@ -225,7 +225,14 @@ pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args
     new_node.data.fun_decl.resolved_c_name = mangled_name;
 
     const t = try self.allocator.create(EiwaType);
-    try infer_decl_mod.inferFunDecl(self, new_node, &self.global_scope, t);
+    if (receiver) |rec| {
+        var method_scope = type_system.Scope.init(self.allocator, &self.global_scope);
+        defer method_scope.deinit();
+        try method_scope.define("this", rec, false, false);
+        try infer_decl_mod.inferFunDecl(self, new_node, &method_scope, t);
+    } else {
+        try infer_decl_mod.inferFunDecl(self, new_node, &self.global_scope, t);
+    }
     new_node.resolved_type = t;
 
     for (fun_decl.generic_params) |param_name| {

@@ -345,3 +345,17 @@ O problema original: a skill `Echoable` (injetada automaticamente em todo `type`
 **Decisão:** Espelhar a lógica de detecção de captura em `inferAssignment` (`src/core/type_checker/infer_expr.zig`): ao atribuir a uma variável definida além de uma fronteira de função (`is_function_boundary`), marcar o símbolo e o `var_decl` como `is_boxed`, fazendo o transpiler emitir acesso via ponteiro de box (`box->value`) tanto na declaração quanto na closure.
 
 **Razão:** Semântica correta de closures (compartilhamento por referência de variáveis mutáveis capturadas, como Kotlin/Swift) independente de a variável ser lida ou apenas escrita dentro da lambda.
+
+## ADR 40: Scope Functions Estilo Kotlin — Auto-Injeção de `Scope<T>` e Generic Methods com Receiver
+**Status:** Aceito / Implementado
+**Data:** Julho 2026
+
+**Contexto:** A skill `Scope<T>` (let/run/also/apply/takeIf/takeUnless) existia na stdlib mas não era injetada em nenhum tipo — scope functions eram inutilizáveis. Três lacunas do compilador impediam o uso: (1) skills genéricas não tinham seus type params ligados ao tipo consumidor, (2) a inferência de generic methods não cobria type params em posição de retorno de function type (`R` em `(T) -> R`), (3) métodos genéricos monomorfizados não suportavam `this` (receiver).
+
+**Decisão:**
+1. **Auto-injeção universal:** todo `type` recebe a skill `Scope` automaticamente (como `Stringable`), incl. primitivos de `std.core`. A skill foi movida de `std.system` para `std.core` e `with` virou função top-level (`with(x) { }`). Conflitos de nome seguem a regra existente de `composeSkills` (método explícito do tipo vence, versão da skill fica qualificada como `Scope_let`).
+2. **Binding T=Self:** `composeSkills` agora substitui os generic params da skill pelos type refs do tipo consumidor, construídos a partir dos refs **originais** do método da skill — `cloneTypeRef` aplica `alias_map` e pode reescrever `T` para um alias stale (ex.: `Int`) antes do binding.
+3. **Inferência de generic methods:** estendida para type params em retorno de function type — a lambda é inferida com parâmetros concretos e retorno `Unknown` (compatível com tudo), e `R` é lido do tipo resolvido da lambda. O mesmo truque foi aplicado à dedução de funções genéricas top-level (necessário para `with`). O lookup do nó base em `monomorphizeFunction` é escopado à classe dona do método (o mapa global `generic_functions_ast` colide entre classes — toda classe tem um `let<R>` composto).
+4. **Receiver em métodos monomorfizados:** `monomorphizeFunction` aceita um receiver opcional (define `this` no escopo de inferência), o transpiler emite `this` como primeiro parâmetro C quando `fn_type.receiver != null`, e a chamada reescrita passa o objeto como primeiro argumento. Member lookup no call site agora mapeia primitivos (`.Int` → `core_Int`).
+
+**Razão:** Paridade com as scope functions do Kotlin (`5.let { it * 2 }`, `p.also { ... }`, `p.takeIf { ... }`) sem extension functions (Fase 34), reutilizando o sistema de composição (ADR 25) e a monomorfização (Fase 50).
