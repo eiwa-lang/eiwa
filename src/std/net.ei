@@ -1,4 +1,6 @@
-@Header("<sys/socket.h>", "<netinet/in.h>", "<arpa/inet.h>", "<unistd.h>")
+import { Neco } from "std.coroutines"
+
+@Header("<sys/socket.h>", "<netinet/in.h>", "<arpa/inet.h>", "<unistd.h>", "<fcntl.h>")
 lib NativeNet {
     @Alias("eiwa_tcp_bind")
     fun tcpBind(port: Int): Int
@@ -12,6 +14,9 @@ lib NativeNet {
     @Alias("eiwa_socket_write")
     fun socketWrite(fd: Int, data: OpaquePointer, len: Int): Int
     
+    @Alias("eiwa_tcp_set_nonblocking")
+    fun setNonblocking(fd: Int): Int
+    
     @Alias("eiwa_socket_close")
     fun socketClose(fd: Int): Void
 }
@@ -19,6 +24,7 @@ lib NativeNet {
 type Socket(val fd: Int) {
     fun read(maxLen: Int): String {
         val buf = Standard.gcMalloc(maxLen + 1)
+        Neco.waitReadable(this.fd)
         val n = NativeNet.socketRead(this.fd, buf, maxLen)
         if (n <= 0) {
             return ""
@@ -28,6 +34,7 @@ type Socket(val fd: Int) {
     }
     
     fun write(data: String): Int {
+        Neco.waitWritable(this.fd)
         return NativeNet.socketWrite(this.fd, data.ptr, data.length)
     }
     
@@ -39,6 +46,9 @@ type Socket(val fd: Int) {
 type TCPServer(var fd: Int = -1) {
     fun bind(port: Int): Bool {
         this.fd = NativeNet.tcpBind(port)
+        if (this.fd >= 0) {
+            NativeNet.setNonblocking(this.fd)
+        }
         return this.fd >= 0
     }
     
@@ -46,10 +56,12 @@ type TCPServer(var fd: Int = -1) {
         if (this.fd < 0) {
             return null
         }
+        Neco.waitReadable(this.fd)
         val clientFd = NativeNet.tcpAccept(this.fd)
         if (clientFd < 0) {
             return null
         }
+        NativeNet.setNonblocking(clientFd)
         return Socket(clientFd)
     }
     

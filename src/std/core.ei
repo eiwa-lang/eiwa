@@ -7,26 +7,26 @@ lib Standard {
 
     @Alias("GC_REALLOC")
     fun gcRealloc(ptr: OpaquePointer, newSize: Int): OpaquePointer
-    
+
     fun exit(code: Int): Void
 }
 
 @Header("<string.h>")
 lib NativeString {
     fun strcmp(s1: OpaquePointer, s2: OpaquePointer): Int
-    
+
     fun strstr(haystack: OpaquePointer, needle: OpaquePointer): OpaquePointer
-    
+
     fun strcpy(dest: OpaquePointer, src: OpaquePointer): OpaquePointer
-    
+
     fun strncpy(dest: OpaquePointer, src: OpaquePointer, n: Int): OpaquePointer
-    
+
     fun strlen(s: OpaquePointer): Int
-    
+
     //TODO: Remove this, they are only for internal usage
     @Alias("eiwa_char_at")
     fun charAt(s: OpaquePointer, index: Int): Int
-    
+
     @Alias("eiwa_terminate")
     fun terminate(s: OpaquePointer, index: Int): Void
 }
@@ -45,6 +45,10 @@ contract Hashable {
 
 contract Runnable {
     fun run()
+}
+
+contract Closeable {
+    fun close()
 }
 
 skill Scope<T> {
@@ -89,6 +93,20 @@ fun with<T, R>(receiver: T, block: (T) -> R): R {
     return block(receiver)
 }
 
+fun use<T>(receiver: T, block: (T) -> Void): Void {
+    try {
+        block(receiver)
+        if (receiver is Closeable) {
+            receiver.close()
+        }
+    } catch (e: Throwable) {
+        if (receiver is Closeable) {
+            receiver.close()
+        }
+        throw e
+    }
+}
+
 @Primitive("pointer")
 type OpaquePointer {}
 
@@ -112,7 +130,7 @@ type String(val ptr: OpaquePointer, val length: Int) : Stringable, Equatable, Ha
         var count = 0
         var curr = this.ptr
         var searching = true
-        
+
         while (searching) {
             val match = NativeString.strstr(curr, old.ptr)
             if (match != null) {
@@ -122,34 +140,34 @@ type String(val ptr: OpaquePointer, val length: Int) : Stringable, Equatable, Ha
                 searching = false
             }
         }
-        
+
         if (count == 0) { return this }
-        
+
         val newLen = this.length + (count * (newStr.length - old.length))
         val res = Standard.gcMalloc(newLen + 1)
-        
+
         curr = this.ptr
         var resCurr = res
         searching = true
-        
+
         while (searching) {
             val match = NativeString.strstr(curr, old.ptr)
             if (match != null) {
                 val prefixLen = match - curr
                 NativeString.strncpy(resCurr, curr, prefixLen)
                 resCurr = resCurr + prefixLen
-                
+
                 NativeString.strcpy(resCurr, newStr.ptr)
                 resCurr = resCurr + newStr.length
-                
+
                 curr = match + old.length
             } else {
                 NativeString.strcpy(resCurr, curr)
                 searching = false
             }
         }
-        
-        
+
+
         return String(res, newLen)
     }
 

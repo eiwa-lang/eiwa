@@ -18,6 +18,12 @@ lib Neco {
 
     @Alias("eiwa_neco_sleep")
     fun sleep(nanosecs: Int): Int
+
+    @Alias("eiwa_neco_wait_readable")
+    fun waitReadable(fd: Int): Int
+
+    @Alias("eiwa_neco_wait_writable")
+    fun waitWritable(fd: Int): Int
 }
 
 contract Taskable<T> {

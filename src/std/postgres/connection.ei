@@ -1,0 +1,114 @@
+// postgres/connection.ei — PgConnection: concrete database connection.
+//
+// Uses libpq async API for no-param queries:
+//   PQsendQuery → PQsocket → Neco.waitReadable(fd) → PQconsumeInput → PQgetResult
+//
+// Parameterized queries use the synchronous wrapper eiwa_pq_exec_params
+// which converts List<String> to char** and calls PQexecParams.
+
+import { Standard, NativeString } from "std.core"
+import { DbError, Connection, Statement, Result } from "std.db"
+import { NativePg, PgStatus } from "std.postgres.native"
+import { Neco } from "std.coroutines"
+import { PgResult } from "std.postgres.result"
+import { PgStatement } from "std.postgres.statement"
+import { Log } from "std.log"
+
+type PgConnection(val conn: OpaquePointer): Connection, Closeable {
+
+    // Async path for no-param queries: yields the fiber until socket is ready.
+    //TODO: porque retornar OpaquePointer?
+    fun asyncQuery(sql: String): OpaquePointer {
+        val fd = NativePg.socket(conn)
+        NativePg.sendQuery(conn, sql.ptr)
+        Neco.waitReadable(fd)
+        NativePg.consumeInput(conn)
+        while (NativePg.isBusy(conn) != 0) {
+            Neco.waitReadable(fd)
+            NativePg.consumeInput(conn)
+        }
+        var raw = NativePg.getResult(conn)
+        var extra = NativePg.getResult(conn)
+        while (extra != null) {
+            NativePg.clear(extra)
+            extra = NativePg.getResult(conn)
+        }
+        return raw
+    }
+
+    implement fun execute(sql: String, params: List<String> = []): Result {
+        if (params.size() == 0) {
+            return PgResult.fromNative(asyncQuery(sql), conn)
+        }
+        return PgResult.fromNative(NativePg.execParams(conn, sql.ptr, params), conn)
+    }
+
+    implement fun query(sql: String, params: List<String> = []): Result {
+        if (params.size() == 0) {
+            return PgResult.fromNative(asyncQuery(sql), conn)
+        }
+        return PgResult.fromNative(NativePg.execParams(conn, sql.ptr, params), conn)
+    }
+
+    // Count $1 .. $N parameters in a SQL string for PQprepare/PQexecPrepared.
+    fun countSqlParams(sql: String): Int {
+        var count = 0
+        var i = 0
+        val len = sql.length
+        while (i < len) {
+            val c = NativeString.charAt(sql.ptr, i)
+            if (c == 36) { // '$' = ASCII 36
+                i = i + 1
+                // Skip any following digits
+                var skip = true
+                while (skip && i < len) {
+                    val d = NativeString.charAt(sql.ptr, i)
+                    if (d >= 48 && d <= 57) { // '0'..'9'
+                        i = i + 1
+                    } else {
+                        skip = false
+                    }
+                }
+                count = count + 1
+            } else {
+                i = i + 1
+            }
+        }
+        return count
+    }
+
+    implement fun prepare(sql: String): Statement {
+        val stmtName = "eiwa_stmt_" + sql.hashCode().toString()
+        val nparams = countSqlParams(sql)
+        val raw = NativePg.prepare(conn, stmtName.ptr, sql.ptr, nparams, null)
+        if (raw != null) {
+            if (NativePg.resultStatus(raw) == PgStatus.PGRES_FATAL_ERROR) {
+                val errPtr = NativePg.errorMessage(conn)
+                val errMsg = String(errPtr, 256)
+                NativePg.clear(raw)
+                throw DbError(errMsg)
+            }
+            NativePg.clear(raw)
+        }
+        return PgStatement(conn, stmtName)
+    }
+
+    // implement fun transaction(block: () -> Void) {
+    //     val beginRaw = NativePg.exec(conn, "BEGIN")
+    //     if (beginRaw != null) NativePg.clear(beginRaw)
+    //     try {
+    //         block()
+    //         val commitRaw = NativePg.exec(conn, "COMMIT")
+    //         if (commitRaw != null) NativePg.clear(commitRaw)
+    //     } catch (e: Throwable) {
+    //         val rollbackRaw = NativePg.exec(conn, "ROLLBACK")
+    //         if (rollbackRaw != null) NativePg.clear(rollbackRaw)
+    //         throw e
+    //     }
+    // }
+
+    implement fun close() {
+        Log.debug {"Closing connection"}
+        NativePg.finish(conn)
+    }
+}

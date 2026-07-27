@@ -359,3 +359,21 @@ O problema original: a skill `Echoable` (injetada automaticamente em todo `type`
 4. **Receiver em métodos monomorfizados:** `monomorphizeFunction` aceita um receiver opcional (define `this` no escopo de inferência), o transpiler emite `this` como primeiro parâmetro C quando `fn_type.receiver != null`, e a chamada reescrita passa o objeto como primeiro argumento. Member lookup no call site agora mapeia primitivos (`.Int` → `core_Int`).
 
 **Razão:** Paridade com as scope functions do Kotlin (`5.let { it * 2 }`, `p.also { ... }`, `p.takeIf { ... }`) sem extension functions (Fase 34), reutilizando o sistema de composição (ADR 25) e a monomorfização (Fase 50).
+
+## ADR 38: Driver PostgreSQL — Contratos `std.db` + Implementação 100% Eiwa
+**Data:** Phase 53 (Julho 2026)
+**Contexto:** O Eiwa precisava de acesso a bancos de dados SQL. A abordagem ingênua seria criar um driver monolítico com bindings C diretos. Porém, isso acoplaria o usuário a uma implementação específica, repetiria o padrão ruim de bibliotecas HTTP antigas (pré-ADR 19) e impediria que futuros drivers (MySQL, SQLite) compartilhassem a mesma API.
+
+**Decisão:**
+1. **Contracts provider-independentes em `std.db`:** Criar `src/std/db.ei` com `contract Database`, `contract Connection`, `contract Statement`, `contract Result` e `contract Row`. Toda aplicação Eiwa depende **somente de `std.db`** — nunca do driver diretamente.
+2. **Entry point via `object Postgres`:** O ponto de entrada é `Postgres.connect(url)` — um `object` singleton (ADR 21), seguindo o padrão de Crystal (`DB.open`), Kotlin Exposed (`Database.connect`) e Go pgx (`pgx.Connect`). Sem instância de driver intermediária. O `contract Database` existe para **injeção de dependência** (ex: mocks em testes), não para o fluxo normal de uso.
+3. **Implementação 100% Eiwa:** O driver PostgreSQL (`src/postgres/`) é Eiwa puro. A única camada C são dois helpers de glue:
+   - `eiwa_neco_wait_readable(fd)` / `eiwa_neco_wait_writable(fd)` em `neco_wrapper.c` — necessários para o loop async non-blocking.
+   - `eiwa_pq_exec_params` em `libpq_wrapper.h` — converte `EiwaArray<String>` para `char**` antes de chamar `PQexecParams`.
+4. **Async via Neco (sem busy-wait):** O driver usa `PQsendQuery → PQsocket → Neco.waitReadable(fd)` para ceder a fibra enquanto aguarda o PostgreSQL, retomando apenas quando o socket estiver pronto. Nunca poleia em loop. Segue o mesmo padrão do `neco_sleep` e `neco_join` já estabelecidos na Phase 51.
+5. **Eager result collection:** Após `PQgetResult`, os dados são copiados imediatamente para `List<PgRow>` em memória Eiwa gerenciada pelo Boehm GC e `PQclear()` é chamado logo em seguida. O `PGresult*` não vive além da construção do `PgResult`. Isso elimina o risco de vazamento de recursos nativos e mantém a GC como única fonte de verdade de lifetime.
+6. **Params via `List<String>`:** `fun execute(sql: String, params: List<String>)` em vez de varargs. Varargs são postergados para uma fase futura após suporte nativo ao nível do compilador.
+7. **Transaction com rollback automático:** `db.transaction { }` recebe um trailing lambda. Em caso de exceção, o `ROLLBACK` é emitido automaticamente antes do rethrow — comportamento transparente para o usuário.
+
+**Razão:** Mantém a filosofia do Eiwa de composição e camadas limpas (ADR 25). A separação `std.db` (contracts) vs `std.postgres` (implementação) garante que futuros drivers (MySQL, SQLite, SQL Server) partilhem a mesma API sem mudanças na camada de aplicação, idêntico ao padrão JDBC/Kotlin Exposed. A escolha de eager collection (vs cursor lazy) simplifica o lifetime management sem GC finalizers — decisão pragmática aceitável na v1, revisável quando cursores de streaming forem necessários.
+

@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 static inline int eiwa_char_at(const char* str, int index) {
     return str[index];
@@ -127,6 +128,12 @@ static inline int eiwa_socket_read(int fd, char* buf, int max_len) {
 
 static inline int eiwa_socket_write(int fd, const char* data, int len) {
     return write(fd, data, len);
+}
+
+static inline int eiwa_tcp_set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return -1;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
 static inline void eiwa_socket_close(int fd) {

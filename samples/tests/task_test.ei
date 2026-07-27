@@ -1,3 +1,5 @@
+import { Person } from "../Person"
+
 test "task should execute and return a value" {
     val t = task { 42 }
     val result = t.await()
@@ -77,4 +79,14 @@ test "task with explicit type argument and trailing lambda" {
 test "task with explicit type argument and trailing lambda returning string" {
     val t = task<String> { "hello" }
     assert(t.await() == "hello")
+}
+
+test "task with `with` block" {
+    val t = task {
+        val person = Person("Leo", 31)
+        with(person) {
+            it.name + " is " + it.age.toString()
+        }
+    }
+    assert(t.await() == "Leo is 31")
 }

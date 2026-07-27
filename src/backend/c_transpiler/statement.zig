@@ -131,7 +131,7 @@ pub fn emitStatement(self: *CTranspiler, node: *ASTNode) anyerror!void {
         .for_stmt => |f| {
             if (f.iterable.resolved_type) |rt| {
                 if (rt.* == .Array) {
-                    const inner_c_type = try core.getCTypeStr(self.allocator, rt.Array);
+                    const inner_c_type = try self.cType(rt.Array);
                     var safe_inner = ArrayList(u8).init(self.allocator);
                     for (inner_c_type) |c| {
                         if (c == '*') continue;

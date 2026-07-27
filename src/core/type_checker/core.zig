@@ -74,17 +74,7 @@ pub const TypeChecker = struct {
     current_type_c_name: ?[]const u8 = null,
     registry: ?*ModuleRegistry = null,
     pass: enum { declaration, validation } = .validation,
-    status: enum {
-        unvisited,
-        declaring_types,
-        declared_types,
-        declaring_signatures,
-        declared_signatures,
-        resolving_imports,
-        resolved_imports,
-        validating,
-        validated
-    } = .unvisited,
+    status: enum { unvisited, declaring_types, declared_types, declaring_signatures, declared_signatures, resolving_imports, resolved_imports, validating, validated } = .unvisited,
 
     pub const inferNode = core_inferNode;
     pub const reportError = core_reportError;
@@ -149,6 +139,27 @@ pub const TypeChecker = struct {
         self.monomorphized_nodes.deinit();
     }
 };
+
+pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, actual_module_path: []const u8) ![]const u8 {
+    if (std.mem.startsWith(u8, actual_module_path, "std.")) {
+        var pkg_name = actual_module_path[4..];
+        if (std.mem.endsWith(u8, pkg_name, ".ei")) {
+            pkg_name = pkg_name[0 .. pkg_name.len - 3];
+        }
+        const pkg_buf = try allocator.alloc(u8, pkg_name.len);
+        @memcpy(pkg_buf, pkg_name);
+        for (pkg_buf) |*ch| {
+            if (ch.* == '.') ch.* = '/';
+        }
+        return try std.fmt.allocPrint(allocator, "std/{s}.ei", .{pkg_buf});
+    } else {
+        if (std.mem.eql(u8, dir_path, ".")) {
+            return actual_module_path;
+        } else {
+            return try std.fs.path.join(allocator, &.{ dir_path, actual_module_path });
+        }
+    }
+}
 
 fn core_reportError(self: *TypeChecker, line: usize, column: usize, comptime message: []const u8, args: anytype) void {
     std.debug.print("\n\x1b[31mError\x1b[0m in {s}:{}:{}:\n", .{ self.filename, line, column });
@@ -365,22 +376,25 @@ fn core_resolveTypeName(self: *TypeChecker, name: []const u8, is_nullable: bool)
 
 fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
     const basename = std.fs.path.basename(self.filename);
-    
+
     // std.core itself has absolutely no implicit imports
     if (std.mem.eql(u8, basename, "core.ei")) return;
-    
+
     const implicit_imports = if (std.mem.eql(u8, basename, "io.ei"))
-        &[_][]const u8{ "std.core" }
+        &[_][]const u8{"std.core"}
     else if (std.mem.eql(u8, basename, "system.ei") or std.mem.eql(u8, basename, "exceptions.ei"))
         &[_][]const u8{ "std.core", "std.io" }
+    else if (std.mem.indexOf(u8, self.filename, "std/postgres") != null or //TODO: remove this gambiarra
+        std.mem.indexOf(u8, self.filename, "std/db") != null)
+        infer_decl_mod.driver_implicit_imports
     else if (std.mem.startsWith(u8, self.filename, "std/") or std.mem.indexOf(u8, self.filename, "std/") != null)
         infer_decl_mod.core_implicit_imports
     else
         infer_decl_mod.user_implicit_imports;
-    
+
     const import_count = implicit_imports.len;
     var new_stmts = try self.allocator.alloc(*ASTNode, node.data.program.statements.len + import_count);
-    
+
     for (implicit_imports, 0..) |imp_path, i| {
         const import_node = try self.allocator.create(ASTNode);
         import_node.* = .{
@@ -397,7 +411,7 @@ fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void 
         };
         new_stmts[i] = import_node;
     }
-    
+
     for (node.data.program.statements, 0..) |stmt, i| {
         new_stmts[i + import_count] = stmt;
     }
@@ -405,9 +419,9 @@ fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void 
 }
 
 fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
-    if (self.status == .declaring_types or self.status == .declared_types or 
-        self.status == .declaring_signatures or self.status == .declared_signatures or 
-        self.status == .resolving_imports or self.status == .resolved_imports or 
+    if (self.status == .declaring_types or self.status == .declared_types or
+        self.status == .declaring_signatures or self.status == .declared_signatures or
+        self.status == .resolving_imports or self.status == .resolved_imports or
         self.status == .validating or self.status == .validated) return;
 
     self.status = .declaring_types;
@@ -424,17 +438,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
                         actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ei", .{actual_module_path});
                     }
-                    var mod_path: []const u8 = undefined;
-                    if (std.mem.startsWith(u8, actual_module_path, "std.")) {
-                        const pkg_name = actual_module_path[4..];
-                        mod_path = try std.fmt.allocPrint(self.allocator, "std/{s}", .{pkg_name});
-                    } else {
-                        if (std.mem.eql(u8, dir_path, ".")) {
-                            mod_path = actual_module_path;
-                        } else {
-                            mod_path = try std.fs.path.join(self.allocator, &.{ dir_path, actual_module_path });
-                        }
-                    }
+                    const mod_path = try resolveModulePath(self.allocator, dir_path, actual_module_path);
                     if (reg.modules.get(mod_path)) |m| {
                         try m.checker.declareTypes(m.ast_root);
                         var class_ast_it = m.checker.classes_ast.iterator();
@@ -596,8 +600,8 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
 }
 
 fn core_declareSignatures(self: *TypeChecker, node: *ASTNode) anyerror!void {
-    if (self.status == .declaring_signatures or self.status == .declared_signatures or 
-        self.status == .resolving_imports or self.status == .resolved_imports or 
+    if (self.status == .declaring_signatures or self.status == .declared_signatures or
+        self.status == .resolving_imports or self.status == .resolved_imports or
         self.status == .validating or self.status == .validated) return;
 
     try self.declareTypes(node);
@@ -615,13 +619,7 @@ fn core_declareSignatures(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
                         actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ei", .{actual_module_path});
                     }
-                    var mod_path: []const u8 = undefined;
-                    if (std.mem.startsWith(u8, actual_module_path, "std.")) {
-                        const pkg_name = actual_module_path[4..];
-                        mod_path = try std.fmt.allocPrint(self.allocator, "std/{s}", .{pkg_name});
-                    } else {
-                        mod_path = try std.fs.path.join(self.allocator, &.{ dir_path, actual_module_path });
-                    }
+                    const mod_path = try resolveModulePath(self.allocator, dir_path, actual_module_path);
                     if (reg.modules.get(mod_path)) |m| {
                         try m.checker.declareSignatures(m.ast_root);
                     }
@@ -648,7 +646,7 @@ fn core_declareSignatures(self: *TypeChecker, node: *ASTNode) anyerror!void {
 }
 
 fn core_resolveImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
-    if (self.status == .resolving_imports or self.status == .resolved_imports or 
+    if (self.status == .resolving_imports or self.status == .resolved_imports or
         self.status == .validating or self.status == .validated) return;
 
     try self.declareSignatures(node);
@@ -666,16 +664,7 @@ fn core_resolveImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
                         actual_module_path = try std.fmt.allocPrint(self.allocator, "{s}.ei", .{actual_module_path});
                     }
-                    var mod_path: []const u8 = undefined;
-                    if (std.mem.startsWith(u8, actual_module_path, "std.")) {
-                        var pkg_name = actual_module_path[4..];
-                        if (std.mem.endsWith(u8, pkg_name, ".ei")) {
-                            pkg_name = pkg_name[0 .. pkg_name.len - 3];
-                        }
-                        mod_path = try std.fmt.allocPrint(self.allocator, "std/{s}", .{pkg_name});
-                    } else {
-                        mod_path = try std.fs.path.join(self.allocator, &.{ dir_path, actual_module_path });
-                    }
+                    const mod_path = try resolveModulePath(self.allocator, dir_path, actual_module_path);
                     if (reg.modules.get(mod_path)) |m| {
                         try m.checker.resolveImports(m.ast_root);
                     }
@@ -808,7 +797,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .int_literal => t.* = .Int,
         .string_literal => {
             const literal_str = node.data.string_literal;
-            
+
             // Calculate correct string length in bytes, accounting for escape sequences
             var len: usize = 0;
             var i: usize = 0;
@@ -1006,6 +995,7 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
                 for (f_exp.params, 0..) |p_exp, i| {
                     if (!self.isCompatible(p_exp, f_act.params[i])) return false;
                 }
+                if (f_exp.return_type.* == .Void) return true;
                 return self.isCompatible(f_exp.return_type, f_act.return_type);
             },
             else => return true,

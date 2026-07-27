@@ -1,0 +1,126 @@
+import { Postgres } from "std.postgres"
+import { PgConnection } from "std.postgres.connection"
+
+// Helper — fresh isolated connection per test (uses a test database)
+fun testDb(): PgConnection {
+    return Postgres.connect("postgres://leodouglas@localhost/eiwa")
+}
+
+// --- Connection ---
+
+test "postgres: driver connects and returns a connection" {
+    val db = testDb()
+    assert(db != null)
+    db.close()
+}
+
+// --- Execute DDL ---
+
+test "postgres: execute creates a table without error" {
+    use(Postgres.connect("postgres://leodouglas@localhost/eiwa")) {
+        it.execute("DROP TABLE IF EXISTS pg_test_users")
+        it.execute("CREATE TABLE pg_test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)")
+    }
+}
+
+// // --- Parameterized insert + query ---
+
+test "postgres: insert and query rows" {
+    val db = testDb()
+    db.execute("DELETE FROM pg_test_users")
+    db.execute("INSERT INTO pg_test_users(name) VALUES($1)", ["Alice"])
+    db.execute("INSERT INTO pg_test_users(name) VALUES($1)", ["Bob"])
+
+    val result = db.query("SELECT name FROM pg_test_users ORDER BY id")
+    val rows = result.rows()
+    val names = MutableList<String>()
+    for (row in result.rows()) {
+        val name = row.string("name")
+        names.add(name)
+    }
+
+    assert(names.size() == 2)
+    assert(names.get(0) == "Alice")
+    assert(names.get(1) == "Bob")
+    db.close()
+}
+
+// --- rowsAffected ---
+
+test "postgres: rowsAffected reflects number of modified rows" {
+    val db = testDb()
+    db.execute("DELETE FROM pg_test_users")
+    db.execute("INSERT INTO pg_test_users(name) VALUES($1)", ["X"])
+    db.execute("INSERT INTO pg_test_users(name) VALUES($1)", ["Y"])
+
+    val result = db.query("UPDATE pg_test_users SET name = 'Z'")
+    assert(result.rowsAffected() == 2)
+    db.close()
+}
+
+// --- Prepared statement ---
+
+test "postgres: prepare and execute a named statement" {
+    val db = testDb()
+    db.execute("DELETE FROM pg_test_users")
+    db.execute("INSERT INTO pg_test_users(name) VALUES($1)", ["Charlie"])
+
+    val stmt = db.prepare("SELECT name FROM pg_test_users WHERE name = $1")
+    val result = stmt.query(["Charlie"])
+    val names = MutableList<String>()
+    for (row in result.rows()) {
+        names.add(row.string("name"))
+    }
+
+    assert(names.size() == 1)
+    assert(names.get(0) == "Charlie")
+    db.close()
+}
+
+// --- Row field types ---
+
+test "postgres: row returns correct int and string values" {
+    val db = testDb()
+    db.execute("DELETE FROM pg_test_users")
+    db.execute("INSERT INTO pg_test_users(name) VALUES($1)", ["TypeCheck"])
+
+    val result = db.query("SELECT id, name FROM pg_test_users")
+    for (row in result.rows()) {
+        assert(row.int("id") > 0)
+        assert(row.string("name") == "TypeCheck")
+    }
+
+    db.close()
+}
+
+// --- Async: concurrent queries ---
+//TODO: should work concurrently
+// test "postgres: two concurrent queries do not block each other" {
+//     val db1 = testDb()
+//     val db2 = testDb()
+//     val noParams = List<String>()
+
+//     val t1 = task {
+//         var result = ""
+//         val r = db1.query("SELECT 'conn1' AS tag", noParams)
+//         for (row in r.rows()) {
+//             result = row.string("tag")
+//         }
+//         result
+//     }
+
+//     val t2 = task {
+//         var result = ""
+//         val r = db2.query("SELECT 'conn2' AS tag", noParams)
+//         for (row in r.rows()) {
+//             result = row.string("tag")
+//         }
+//         result
+//     }
+
+//     assert(t1.await() == "conn1")
+//     assert(t2.await() == "conn2")
+
+//     db1.close()
+//     db2.close()
+// }

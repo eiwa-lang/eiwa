@@ -1,0 +1,36 @@
+// std.db — Provider-independent database contracts.
+//
+// Application code should depend only on these contracts, never on a specific
+// driver implementation. Drivers (e.g. std.postgres) implement these contracts
+// so they are interchangeable without changing application code.
+
+contract Row {
+    fun int(name: String): Int
+    fun string(name: String): String
+    fun bool(name: String): Bool
+    fun isNull(name: String): Bool
+}
+
+contract Result {
+    fun rows(): List<Row>
+    fun rowsAffected(): Int
+}
+
+contract Statement {
+    fun query(params: List<String>): Result
+    fun execute(params: List<String>): Result
+}
+
+contract Connection {
+    fun execute(sql: String, params: List<String> = []): Result
+    fun query(sql: String, params: List<String> = []): Result
+    fun prepare(sql: String): Statement
+    // fun transaction(block: () -> Void)
+    fun close()
+}
+
+type DbError(val message: String) : Throwable {
+    implement fun message(): String {
+        return this.message
+    }
+}

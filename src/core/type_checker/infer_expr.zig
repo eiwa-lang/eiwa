@@ -510,7 +510,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     }
     
     if (expected_return) |exp_ret| {
-        if (!self.isCompatible(exp_ret, body_type)) {
+        if (exp_ret.* != .Void and !self.isCompatible(exp_ret, body_type)) {
             self.reportError(node.line, node.column, "TypeError: Lambda return type {} is incompatible with expected return type {}.", .{ body_type.*, exp_ret.* });
             return error.TypeError;
         }

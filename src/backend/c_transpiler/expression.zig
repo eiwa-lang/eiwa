@@ -67,7 +67,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 if (ts.extractBaseType(rt).* == .Array) {
                     try self.emitArrayStruct(ts.extractBaseType(rt).Array);
                     
-                    const inner_c_type = try core.getCTypeStr(self.allocator, ts.extractBaseType(rt).Array);
+                    const inner_c_type = try self.cType(ts.extractBaseType(rt).Array);
                     var safe_inner = ArrayList(u8).init(self.allocator);
                     for (inner_c_type) |ch| {
                         if (ch == '*') continue;
@@ -90,14 +90,14 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     
                     var safe_inner_name = ArrayList(u8).init(self.allocator);
                     if (listItemType(self, rt)) |item_type| {
-                        const inner_c_type = try core.getCTypeStr(self.allocator, item_type);
+                        const inner_c_type = try self.cType(item_type);
                         for (inner_c_type) |ch| {
                             if (ch == '*') continue;
                             if (ch == ' ') continue;
                             try safe_inner_name.append(ch);
                         }
                     } else if (a.elements.len > 0) {
-                        const inner_c_type = try core.getCTypeStr(self.allocator, a.elements[0].resolved_type.?);
+                        const inner_c_type = try self.cType(a.elements[0].resolved_type.?);
                         for (inner_c_type) |ch| {
                             if (ch == '*') continue;
                             if (ch == ' ') continue;
@@ -362,17 +362,17 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             }
             if (is_closure) {
                 const f = ts.extractBaseType(c.callee.resolved_type.?).Function;
-                const ret_type_str = try core.getCTypeStr(self.allocator, f.return_type);
+                const ret_type_str = try self.cType(f.return_type);
                 
                 var params_c = ArrayList(u8).init(self.allocator);
                 try params_c.appendSlice("void*");
                 if (f.receiver) |rec| {
                     try params_c.appendSlice(", ");
-                    try params_c.appendSlice(try core.getCTypeStr(self.allocator, rec));
+                    try params_c.appendSlice(try self.cType(rec));
                 }
                 for (f.params) |p| {
                     try params_c.appendSlice(", ");
-                    try params_c.appendSlice(try core.getCTypeStr(self.allocator, p));
+                    try params_c.appendSlice(try self.cType(p));
                 }
                 
                 try self.writer.appendSlice("((");
@@ -389,6 +389,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 }
                 try self.writer.appendSlice(")");
             } else if (c.callee.data == .identifier) {
+
                 const raw_c_name = c.callee.data.identifier.resolved_c_name orelse c.callee.data.identifier.name;
                 const c_name = if (self.alias_map) |am| am.get(raw_c_name) orelse raw_c_name else raw_c_name;
                 if (self.classes.contains(c_name) or self.known_constructors.contains(c_name)) {
@@ -528,7 +529,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 } else if (rt.* == .Custom) {
                     class_name = rt.Custom;
                 } else if (rt.* == .Array) {
-                    const inner_c_type = try core.getCTypeStr(self.allocator, rt.Array);
+                    const inner_c_type = try self.cType(rt.Array);
                     var safe_inner = ArrayList(u8).init(self.allocator);
                     for (inner_c_type) |ch| {
                         if (ch == '*') continue;
@@ -1133,7 +1134,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             if (node.resolved_type) |rt| {
                 const rt_base = ts.extractBaseType(rt);
                 if (rt_base.* == .Function) {
-                    return_type_str = try core.getCTypeStr(self.allocator, rt_base.Function.return_type);
+                    return_type_str = try self.cType(rt_base.Function.return_type);
                 }
             }
             
@@ -1163,7 +1164,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 var hw = self.header_writer.writer();
                 try hw.print("static inline {s} {s}(void* __env", .{return_type_str, lambda_fn_name});
                 for (param_names.items, param_types.items) |p_name, p_type| {
-                    const p_c_type = try core.getCTypeStr(self.allocator, p_type);
+                    const p_c_type = try self.cType(p_type);
                     try hw.print(", {s} {s}", .{p_c_type, p_name});
                 }
                 try hw.print(") {{\n", .{});
