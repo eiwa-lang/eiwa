@@ -1,9 +1,8 @@
-import { Postgres } from "std.postgres"
-import { PgConnection } from "std.postgres.connection"
-import { DbError } from "std.db"
+import { Postgres } from "../postgres/postgres"
+import { DbError, Connection } from "std.db"
 
 // Helper — fresh isolated connection per test (uses a test database)
-fun testDb(): PgConnection {
+fun testDb(): Connection {
     return Postgres.connect("postgres://leodouglas@localhost/eiwa")
 }
 

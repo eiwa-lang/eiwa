@@ -4,6 +4,8 @@
 // driver implementation. Drivers (e.g. std.postgres) implement these contracts
 // so they are interchangeable without changing application code.
 
+import { List } from "std.collections"
+
 contract Row {
     fun int(name: String): Int
     fun string(name: String): String

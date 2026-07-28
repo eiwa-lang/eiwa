@@ -1,11 +1,11 @@
-// std.postgres — PostgreSQL driver entry point.
+// samples/postgres/postgres.ei — PostgreSQL driver entry point.
 //
-//   import { Postgres } from "std.postgres"
+//   import { Postgres } from "./postgres/postgres"
 //   val db = Postgres.connect("postgres://user:password@localhost/mydb")
 
 import { DbError, Connection } from "std.db"
-import { PgConnection } from "std.postgres.connection"
-import { NativePg } from "std.postgres.native"
+import { PgConnection } from "./connection"
+import { NativePg } from "./native"
 
 object Postgres {
 

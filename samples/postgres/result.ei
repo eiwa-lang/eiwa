@@ -4,9 +4,9 @@
 // then PQclear() is called. No native pointer is held after construction.
 
 import { Standard, NativeString } from "std.core"
-import { DbError, Result } from "std.db"
-import { NativePg, PgStatus } from "std.postgres.native"
-import { PgRow } from "std.postgres.row"
+import { DbError, Result, Row } from "std.db"
+import { NativePg, PgStatus } from "./native"
+import { PgRow } from "./row"
 
 type PgResult(
     val rows: List<Row>,

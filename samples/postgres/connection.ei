@@ -8,10 +8,10 @@
 
 import { Standard, NativeString } from "std.core"
 import { DbError, Connection, Statement, Result } from "std.db"
-import { NativePg, PgStatus } from "std.postgres.native"
+import { NativePg, PgStatus } from "./native"
 import { Neco } from "std.coroutines"
-import { PgResult } from "std.postgres.result"
-import { PgStatement } from "std.postgres.statement"
+import { PgResult } from "./result"
+import { PgStatement } from "./statement"
 import { Log } from "std.log"
 
 type PgConnection(val conn: OpaquePointer, var closed: Bool = false): Connection, Closeable {
@@ -102,20 +102,6 @@ type PgConnection(val conn: OpaquePointer, var closed: Bool = false): Connection
         }
         return PgStatement(conn, stmtName)
     }
-
-    // implement fun transaction(block: () -> Void) {
-    //     val beginRaw = NativePg.exec(conn, "BEGIN")
-    //     if (beginRaw != null) NativePg.clear(beginRaw)
-    //     try {
-    //         block()
-    //         val commitRaw = NativePg.exec(conn, "COMMIT")
-    //         if (commitRaw != null) NativePg.clear(commitRaw)
-    //     } catch (e: Throwable) {
-    //         val rollbackRaw = NativePg.exec(conn, "ROLLBACK")
-    //         if (rollbackRaw != null) NativePg.clear(rollbackRaw)
-    //         throw e
-    //     }
-    // }
 
     implement fun close() {
         if (closed) {

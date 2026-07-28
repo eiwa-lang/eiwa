@@ -384,9 +384,6 @@ fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void 
         &[_][]const u8{"std.core"}
     else if (std.mem.eql(u8, basename, "system.ei") or std.mem.eql(u8, basename, "exceptions.ei"))
         &[_][]const u8{ "std.core", "std.io" }
-    else if (std.mem.indexOf(u8, self.filename, "std/postgres") != null or //TODO: remove this gambiarra
-        std.mem.indexOf(u8, self.filename, "std/db") != null)
-        infer_decl_mod.driver_implicit_imports
     else if (std.mem.startsWith(u8, self.filename, "std/") or std.mem.indexOf(u8, self.filename, "std/") != null)
         infer_decl_mod.core_implicit_imports
     else

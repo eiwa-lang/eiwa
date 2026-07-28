@@ -5,7 +5,7 @@ import { Json } from "std.json"
 import { Yaml } from "std.yaml"
 
 import { Log } from "std.log"
-import { Postgres } from "std.postgres"
+import { Postgres } from "../postgres/postgres"
 import { html } from "html"
 
 type Address(val city: String, val zip: String) : Serializable

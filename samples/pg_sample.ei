@@ -1,4 +1,4 @@
-import { Postgres } from "std.postgres"
+import { Postgres } from "./postgres/postgres"
 
 fun main() {
     // --- Basic connect & execute ---

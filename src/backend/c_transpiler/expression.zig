@@ -887,7 +887,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
         },
         .as_expr => |a| {
             const dest_t = a.type_ref.resolved_type.?;
-            const t_str = try core.getCTypeStr(self.allocator, dest_t);
+            const t_str = try self.cType(dest_t);
             if (dest_t.* == .Int or dest_t.* == .Bool) {
                 try self.writer.writer().print("(({s})(intptr_t)(", .{t_str});
                 try self.emitExpression(a.value);
@@ -1304,7 +1304,7 @@ pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.St
             }
             
             if (node.resolved_type) |rt| {
-                const c_type = try core.getCTypeStr(self.allocator, rt);
+                const c_type = try self.cType(rt);
                 try captures.append(.{
                     .name = i.name,
                     .c_type = c_type,
@@ -1344,7 +1344,7 @@ pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.St
                     if (std.mem.eql(u8, cap.name, a.name)) return;
                 }
                 if (node.resolved_type) |rt| {
-                    const c_type = try core.getCTypeStr(self.allocator, rt);
+                    const c_type = try self.cType(rt);
                     try captures.append(.{
                         .name = a.name,
                         .c_type = c_type,

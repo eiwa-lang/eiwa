@@ -29,18 +29,10 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "coroutines.ei", @embedFile("../../std/coroutines.ei") },
     // --- Database layer ---
     .{ "db.ei", @embedFile("../../std/db.ei") },
-    // --- PostgreSQL driver --- //TODO move to external postgres lib
-    .{ "postgres.ei", @embedFile("../../std/postgres.ei") },
-    .{ "postgres/native.ei", @embedFile("../../std/postgres/native.ei") },
-    .{ "postgres/row.ei", @embedFile("../../std/postgres/row.ei") },
-    .{ "postgres/result.ei", @embedFile("../../std/postgres/result.ei") },
-    .{ "postgres/statement.ei", @embedFile("../../std/postgres/statement.ei") },
-    .{ "postgres/connection.ei", @embedFile("../../std/postgres/connection.ei") },
 });
 
 pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines" };
 pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions" };
-pub const driver_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.collections" };
 pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 
 pub const auto_injected_contracts = &[_][]const u8{ "Stringable", "Equatable", "Hashable" };
