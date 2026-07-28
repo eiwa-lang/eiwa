@@ -100,8 +100,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                     const param_type = if (func_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
                                     if (param_type) |pt| {
                                         arg.expected_type = pt;
-                                        arg.resolved_type = null;
-                                        _ = try self.inferNode(arg, scope);
+                                        if (arg.resolved_type == null) {
+                                            _ = try self.inferNode(arg, scope);
+                                        }
                                         if (!self.isCompatible(pt, arg.resolved_type.?)) {
                                             self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
                                             return error.TypeError;
@@ -188,8 +189,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             const param_type = if (fun_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
                             if (param_type) |pt| {
                                 arg.expected_type = pt;
-                                arg.resolved_type = null;
-                                _ = try self.inferNode(arg, scope);
+                                if (arg.resolved_type == null) {
+                                    _ = try self.inferNode(arg, scope);
+                                }
                                 if (!self.isCompatible(pt, arg.resolved_type.?)) {
                                     self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
                                     return error.TypeError;
@@ -368,6 +370,51 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
         }
 
+        // Phase 2.5: Scope functions without receiver (object companion methods, etc.)
+        if (best_match == null) {
+            if (scope.lookupFunctions(name)) |scope_overloads| {
+                for (scope_overloads) |overload| {
+                    if (overload.* != .Function) continue;
+                    const f = overload.Function;
+                    if (f.receiver != null) continue;
+                    if (c.arguments.len > f.params.len) continue;
+
+                    const func_node = self.functions_ast.get(f.c_name) orelse continue;
+                    const fun_decl = func_node.data.fun_decl;
+
+                    var has_defaults = true;
+                    var i = c.arguments.len;
+                    while (i < f.params.len) : (i += 1) {
+                        if (fun_decl.params[i].initializer == null) {
+                            has_defaults = false;
+                            break;
+                        }
+                    }
+                    if (!has_defaults) continue;
+
+                    var all_match = true;
+                    for (c.arguments, 0..) |arg, arg_i| {
+                        if (arg.data == .lambda_expr) {
+                            if (f.params[arg_i].* != .Function) {
+                                all_match = false;
+                                break;
+                            }
+                        } else {
+                            if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
+                                all_match = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (all_match) {
+                        best_match = overload;
+                        break;
+                    }
+                }
+            }
+        }
+
         if (best_match) |matched| {
             const f = matched.Function;
             const func_node = self.functions_ast.get(f.c_name).?;
@@ -381,6 +428,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 var i = c.arguments.len;
                 while (i < f.params.len) : (i += 1) {
                     const cloned = try self.cloneNode(fun_decl.params[i].initializer.?);
+                    cloned.expected_type = f.params[i];
                     new_args[i] = cloned;
                     _ = try self.inferNode(cloned, scope);
                 }
@@ -449,7 +497,6 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             if (gen_decl.generic_params.len > 0) {
                 var type_args = try self.allocator.alloc(*const EiwaType, gen_decl.generic_params.len);
 
-                // Pre-infer lambda arguments for generic parameter deduction
                 var known_types = std.StringHashMap(*const EiwaType).init(self.allocator);
                 defer known_types.deinit();
                 for (gen_decl.generic_params) |param_name| {
@@ -580,8 +627,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         const param_type = if (func_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
                         if (param_type) |pt| {
                             arg.expected_type = pt;
-                            arg.resolved_type = null;
-                            _ = try self.inferNode(arg, scope);
+                            if (arg.resolved_type == null) {
+                                _ = try self.inferNode(arg, scope);
+                            }
                             if (!self.isCompatible(pt, arg.resolved_type.?)) {
                                 self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
                                 return error.TypeError;
@@ -857,8 +905,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 const p = mono_type_decl.primary_constructor[arg_i];
                                 if (p.resolved_type orelse self.resolveTypeRef(p.type_ref) catch null) |pt| {
                                     arg.expected_type = pt;
-                                    arg.resolved_type = null;
-                                    _ = try self.inferNode(arg, scope);
+                                    if (arg.resolved_type == null) {
+                                        _ = try self.inferNode(arg, scope);
+                                    }
                                     if (!self.isCompatible(pt, arg.resolved_type.?)) {
                                         self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
                                         return error.TypeError;
@@ -1022,8 +1071,11 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     const prop = f.params[i];
                     if (prop.initializer) |init_node| {
                         const cloned = try self.cloneNode(init_node);
-                        _ = try self.inferNode(cloned, scope);
+                        if (prop.type_ref) |tr| {
+                            cloned.expected_type = self.resolveTypeRef(tr) catch null;
+                        }
                         new_args[i] = cloned;
+                        _ = try self.inferNode(cloned, scope);
                     } else {
                         self.reportError(node.line, node.column, "TypeError: Missing argument for parameter '{s}' of '{s}' which has no default value.", .{ prop.name, f.name });
                         return error.TypeError;
@@ -1259,6 +1311,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 const prop = f.params[i];
                                 if (prop.initializer) |init_node| {
                                     const cloned = try self.cloneNode(init_node);
+                                    if (prop.type_ref) |tr| {
+                                        cloned.expected_type = self.resolveTypeRef(tr) catch null;
+                                    }
                                     new_args[i] = cloned;
                                     _ = try self.inferNode(cloned, scope);
                                 } else {
@@ -1281,6 +1336,40 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             _ = try self.inferNode(arg, scope);
                         }
 
+                    }
+                } else if (self.contracts_ast.get(class_name)) |contract_node| {
+                    const cd = contract_node.data.contract_decl;
+                    for (cd.methods) |method| {
+                        if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
+                            const f = &method.data.fun_decl;
+                            if (c.arguments.len < f.params.len) {
+                                var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
+                                for (c.arguments, 0..) |arg, arg_i| {
+                                    new_args[arg_i] = arg;
+                                }
+                                var i = c.arguments.len;
+                                while (i < f.params.len) : (i += 1) {
+                                    if (f.params[i].initializer) |init_node| {
+                                        const cloned = try self.cloneNode(init_node);
+                                        if (f.params[i].type_ref) |tr| {
+                                            cloned.expected_type = self.resolveTypeRef(tr) catch null;
+                                        }
+                                        new_args[i] = cloned;
+                                        _ = try self.inferNode(cloned, scope);
+                                    }
+                                }
+                                c.arguments = new_args;
+                            }
+                            for (c.arguments, 0..) |arg, arg_i| {
+                                if (arg_i < f.params.len) {
+                                    if (f.params[arg_i].type_ref) |tr| {
+                                        arg.expected_type = self.resolveTypeRef(tr) catch null;
+                                    }
+                                }
+                                _ = try self.inferNode(arg, scope);
+                            }
+                            break;
+                        }
                     }
                 }
             }

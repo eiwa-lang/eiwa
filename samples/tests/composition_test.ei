@@ -137,5 +137,7 @@ test "composition: exception handling via Throwable contract" {
 
 test "composition: test polymorphic method call" {
     val d = returnDrawable()
-    assert(d.draw() == "draw OK")
+    with(d) {
+        assert(it.draw() == "draw OK")
+    }
 }

@@ -6,6 +6,7 @@ const lexer = @import("frontend/lexer.zig");
 const parser = @import("frontend/parser/core.zig");
 const c_transpiler = @import("backend/c_transpiler/core.zig");
 const ast = @import("core/ast.zig");
+const type_checker = @import("core/type_checker/core.zig");
 
 /// Main entry point for the Eiwa CLI.
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
@@ -167,17 +168,7 @@ pub fn main(init: std.process.Init) !void {
                     if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
                         actual_module_path = try std.fmt.allocPrint(arena.allocator(), "{s}.ei", .{actual_module_path});
                     }
-                    var import_resolved_path: []const u8 = undefined;
-                    if (std.mem.startsWith(u8, actual_module_path, "std.")) {
-                        const pkg_name = actual_module_path[4..];
-                        import_resolved_path = try std.fmt.allocPrint(arena.allocator(), "std/{s}", .{pkg_name});
-                    } else {
-                        if (std.mem.eql(u8, dir_path, ".")) {
-                            import_resolved_path = actual_module_path;
-                        } else {
-                            import_resolved_path = try std.fs.path.join(arena.allocator(), &.{ dir_path, actual_module_path });
-                        }
-                    }
+                    const import_resolved_path = try type_checker.resolveModulePath(arena.allocator(), dir_path, actual_module_path);
                     try queue.append(import_resolved_path);
                 }
             }
@@ -286,6 +277,9 @@ pub fn main(init: std.process.Init) !void {
     try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", "-O0", "-fwrapv", "-fno-sanitize=undefined" });
     if (builtin.target.os.tag == .macos) {
         try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
+        // libpq is a keg-only Homebrew formula — add its specific paths
+        // TODO: shouldn't have to add these manually
+        try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/opt/libpq/include", "-L", "/opt/homebrew/opt/libpq/lib" });
     }
     try cc_argv.appendSlice(&[_][]const u8{
         "-Isrc/backend/c_transpiler",

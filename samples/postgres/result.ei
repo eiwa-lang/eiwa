@@ -1,0 +1,80 @@
+// postgres/result.ei — PgResult: query result with eager collection.
+//
+// All data is copied from the PGresult* into Eiwa-managed memory immediately,
+// then PQclear() is called. No native pointer is held after construction.
+
+import { Standard, NativeString } from "std.core"
+import { DbError, Result, Row } from "std.db"
+import { NativePg, PgStatus } from "./native"
+import { PgRow } from "./row"
+
+type PgResult(
+    val rows: List<Row>,
+    val rowsAffected: Int
+): Result {
+
+    implement fun rowsAffected() = rowsAffected
+    implement fun rows() = rows
+
+} object {
+
+    //TODO: porque precisamos disso?
+    fun copyCStr(src: OpaquePointer, maxLen: Int): String {
+        val len = NativeString.strlen(src)
+        val cappedLen = if (len > maxLen) maxLen else len
+        val buf = Standard.gcMalloc(cappedLen + 1)
+        NativeString.strncpy(buf, src, cappedLen)
+        return String(buf, cappedLen)
+    }
+
+    fun fromNative(raw: OpaquePointer, conn: OpaquePointer): PgResult {
+        if (raw == null) {
+            throw DbError(String(NativePg.errorMessage(conn), 256))
+        }
+
+        val status = NativePg.resultStatus(raw)
+
+        if (!PgStatus.isOk(status)) {
+            val errPtr = NativePg.errorMessage(conn)
+            val errMsg = String(errPtr, 256)
+            NativePg.clear(raw)
+            throw DbError(errMsg)
+        }
+
+        val affected = NativePg.rowsAffected(raw)
+        val nrows    = NativePg.ntuples(raw)
+        val ncols    = NativePg.nfields(raw)
+
+        // Collect column names once (copy strings before PQclear)
+        val colNames = MutableList<String>()
+        var c = 0
+        while (c < ncols) {
+            colNames.add(copyCStr(NativePg.fname(raw, c), 64))
+            c = c + 1
+        }
+        val frozenColNames = colNames.freeze()
+
+        // Collect rows (copy strings before PQclear)
+        val rowsList = MutableList<Row>()
+        var r = 0
+        while (r < nrows) {
+            val values    = MutableList<String>()
+            val nullFlags = MutableList<Bool>()
+            var col = 0
+            while (col < ncols) {
+                val isNull = NativePg.isnull(raw, r, col) != 0
+                val valStr = if (isNull) "" else copyCStr(NativePg.getvalue(raw, r, col), 512)
+                values.add(valStr)
+                nullFlags.add(isNull)
+                col = col + 1
+            }
+            rowsList.add(PgRow(frozenColNames, values.freeze(), nullFlags.freeze()))
+            r = r + 1
+        }
+
+        // Release the native result — data is now safe in Eiwa memory
+        NativePg.clear(raw)
+
+        return PgResult(rowsList.freeze(), affected)
+    }
+}

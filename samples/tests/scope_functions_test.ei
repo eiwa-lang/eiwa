@@ -69,7 +69,9 @@ test "scope: takeIf on String" {
 
 test "scope: with as top-level function" {
     val p = Person("Leo", 31)
-    val r = with(p) { it.name + " is " + it.age.toString() }
+    val r = with(p) {
+        it.name + " is " + it.age.toString()
+    }
     assert(r == "Leo is 31")
 }
 

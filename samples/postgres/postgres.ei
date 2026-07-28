@@ -1,0 +1,27 @@
+// samples/postgres/postgres.ei — PostgreSQL driver entry point.
+//
+//   import { Postgres } from "./postgres/postgres"
+//   val db = Postgres.connect("postgres://user:password@localhost/mydb")
+
+import { DbError, Connection } from "std.db"
+import { PgConnection } from "./connection"
+import { NativePg } from "./native"
+
+object Postgres {
+
+    // CONNECTION_BAD = 1 in libpq (any non-zero status means failure)
+    val PG_CONNECTION_BAD = 1
+
+    fun connect(url: String): Connection {
+        val conn = NativePg.connect(url.ptr)
+        if (conn == null) {
+            throw DbError("PQconnectdb returned null — out of memory or libpq not available")
+        }
+        if (NativePg.status(conn) == Postgres.PG_CONNECTION_BAD) {
+            val errMsg = String(NativePg.errorMessage(conn), 256)
+            NativePg.finish(conn)
+            throw DbError(errMsg)
+        }
+        return PgConnection(conn)
+    }
+}

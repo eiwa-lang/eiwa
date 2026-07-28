@@ -1,0 +1,20 @@
+// postgres/statement.ei — PgStatement: prepared statement execution.
+
+import { Statement, Result } from "std.db"
+import { NativePg } from "./native"
+import { PgResult } from "./result"
+
+type PgStatement(
+    val conn: OpaquePointer,
+    val name: String
+): Statement {
+
+    implement fun query(params: List<String>): Result {
+        val raw = NativePg.execPrepared(conn, name.ptr, params)
+        return PgResult.fromNative(raw, conn)
+    }
+
+    implement fun execute(params: List<String>): Result {
+        return query(params)
+    }
+}

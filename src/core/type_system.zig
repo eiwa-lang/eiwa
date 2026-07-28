@@ -356,7 +356,7 @@ pub fn isCompatible(expected: *const EiwaType, actual: *const EiwaType) bool {
                 for (f_exp.params, 0..) |p_exp, i| {
                     if (!isCompatible(p_exp, f_act.params[i])) return false;
                 }
-                return isCompatible(f_exp.return_type, f_act.return_type);
+return isCompatible(f_exp.return_type, f_act.return_type);
             },
             else => return true,
         }

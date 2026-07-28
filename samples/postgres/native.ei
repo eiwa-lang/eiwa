@@ -1,0 +1,122 @@
+// postgres/native.ei — libpq bindings.
+//
+// Exposes only the libpq functions required by the PostgreSQL driver.
+// The binding mirrors the original C API closely (no business logic here).
+// All parameter conversion is handled by the libpq_wrapper.h helpers,
+// called via @Alias to avoid duplicating the glue in Eiwa code.
+
+import { List } from "std.collections"
+
+@Link("pq")
+@Header("<libpq-fe.h>")
+@Header("libpq/libpq_wrapper.h")
+@Include("src/runtime/third_party/libpq")
+lib NativePg {
+
+    // // --- Connection lifecycle ---
+
+    @Alias("PQconnectdb")
+    fun connect(conninfo: OpaquePointer): OpaquePointer
+
+    @Alias("PQfinish")
+    fun finish(conn: OpaquePointer): Void
+
+    @Alias("PQstatus")
+    fun status(conn: OpaquePointer): Int
+
+    @Alias("PQerrorMessage")
+    fun errorMessage(conn: OpaquePointer): OpaquePointer
+
+    // --- Async send (non-blocking; use with waitReadable) ---
+
+    @Alias("PQsendQuery")
+    fun sendQuery(conn: OpaquePointer, query: OpaquePointer): Int
+
+    @Alias("PQsendQueryParams")
+    fun sendQueryParams(conn: OpaquePointer, command: OpaquePointer, nparams: Int, paramTypes: OpaquePointer, paramValues: OpaquePointer, paramLengths: OpaquePointer, paramFormats: OpaquePointer, resultFormat: Int): Int
+
+    @Alias("PQconsumeInput")
+    fun consumeInput(conn: OpaquePointer): Int
+
+    @Alias("PQisBusy")
+    fun isBusy(conn: OpaquePointer): Int
+
+    @Alias("PQgetResult")
+    fun getResult(conn: OpaquePointer): OpaquePointer
+
+    @Alias("PQflush")
+    fun flush(conn: OpaquePointer): Int
+
+    // --- Result inspection ---
+
+    @Alias("PQresultStatus")
+    fun resultStatus(result: OpaquePointer): Int
+
+    @Alias("PQntuples")
+    fun ntuples(result: OpaquePointer): Int
+
+    @Alias("PQnfields")
+    fun nfields(result: OpaquePointer): Int
+
+    @Alias("PQfname")
+    fun fname(result: OpaquePointer, col: Int): OpaquePointer
+
+    //TODO: porque usar sempre wrapper gambiarra?
+
+    @Alias("eiwa_pq_field_index")
+    fun fieldIndex(result: OpaquePointer, name: OpaquePointer): Int
+
+    @Alias("eiwa_pq_getvalue")
+    fun getvalue(result: OpaquePointer, row: Int, col: Int): OpaquePointer
+
+    @Alias("PQgetisnull")
+    fun isnull(result: OpaquePointer, row: Int, col: Int): Int
+
+    @Alias("eiwa_pq_rows_affected")
+    fun rowsAffected(result: OpaquePointer): Int
+
+    // --- Synchronous execution (no-param queries, BEGIN/COMMIT/ROLLBACK) ---
+
+    @Alias("eiwa_pq_exec")
+    fun exec(conn: OpaquePointer, command: OpaquePointer): OpaquePointer
+
+    // --- Parameterized execution (via wrapper that converts List<String> → char**) ---
+
+    @Alias("eiwa_pq_exec_params")
+    fun execParams(conn: OpaquePointer, command: OpaquePointer, params: List<String>): OpaquePointer
+
+    // --- Result cleanup ---
+
+    @Alias("PQclear")
+    fun clear(result: OpaquePointer): Void
+
+    // --- Socket (for async integration with neco) ---
+
+    @Alias("PQsocket")
+    fun socket(conn: OpaquePointer): Int
+
+    // --- Prepared statements ---
+
+    @Alias("PQprepare")
+    fun prepare(conn: OpaquePointer, stmtName: OpaquePointer, query: OpaquePointer, nparams: Int, paramTypes: OpaquePointer): OpaquePointer
+
+    @Alias("eiwa_pq_exec_prepared")
+    fun execPrepared(conn: OpaquePointer, stmtName: OpaquePointer, params: List<String>): OpaquePointer
+}
+
+// Result status codes (mirrors ExecStatusType from libpq-fe.h)
+object PgStatus {
+    val PGRES_EMPTY_QUERY    = 0
+    val PGRES_COMMAND_OK     = 1   // DDL / DML without rows
+    val PGRES_TUPLES_OK      = 2   // SELECT
+    val PGRES_COPY_OUT       = 3
+    val PGRES_COPY_IN        = 4
+    val PGRES_BAD_RESPONSE   = 5
+    val PGRES_NONFATAL_ERROR = 6
+    val PGRES_FATAL_ERROR    = 7
+
+    // Returns true for statuses that represent successful execution
+    fun isOk(status: Int): Bool {
+        return status == PgStatus.PGRES_COMMAND_OK || status == PgStatus.PGRES_TUPLES_OK
+    }
+}

@@ -4,21 +4,39 @@ import { date } from "std.time"
 import { Json } from "std.json"
 import { Yaml } from "std.yaml"
 
+import { Log } from "std.log"
+import { Postgres } from "../postgres/postgres"
+import { html } from "html"
+
 type Address(val city: String, val zip: String) : Serializable
 type Person(
-    val name: String, 
-    val age: Int, 
-    val address: Address, 
-    val birthday: Time, 
+    val name: String,
+    val age: Int,
+    val address: Address,
+    val birthday: Time,
     val tags: List<String>
 ) : Serializable + Json + Yaml
+type User(val id: Int, val name: String) : Serializable + Json + Yaml
 
 fun main() {
-    echo("--- Starting Arest Web Server Sample ---")
+    printWelcome()
 
     arest(8082) {
         routing {
             get("/") {
+                respond(200, "text/html", html {
+                    title { "Welcome to Arest!" }
+                    basicStyle()
+                    body {
+                        h1 { "Eiwa" }
+                        h2 { "A modern, simple and productive language." }
+                        p { "Enjoy the simplicity and productivity" }
+                        a("https://github.com/eiwa-lang/eiwa") { "Learn more" }
+                    }
+                })
+            }
+
+            get("/map") {
                 val body = MutableMap<String, String>()
                 body["welcome"] = "Hi there!"
                 body["description"] = "Arest is a Web Framework for Eiwa!"
@@ -37,6 +55,18 @@ fun main() {
                 val addr = Address("Sao Paulo", "01000-000")
                 val person = Person("Ana", 30, addr, date(1987, 10, 10), ["friend", "coder"])
                 respond(200, "text/yaml", person.toYaml())
+            }
+
+            get("/data") {
+                use(Postgres.connect("postgres://leodouglas@localhost/eiwa")) {
+                    val result = it.query("SELECT id, name FROM users")
+
+                    val users = MutableList<User>()
+                    for (row in result.rows()) {
+                        users.add(User(row.int("id"), row.string("name")))
+                    }
+                    respond(200, "application/json", users.toJson())
+                }
             }
 
             get("/hello") {

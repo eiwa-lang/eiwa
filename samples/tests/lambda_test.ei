@@ -21,11 +21,11 @@ test "lambdas: should capture val variable from outer scope" {
 
 test "lambdas: should capture and mutate var variable (closure)" {
     var total = 0
-    val accumulate = { value: Int -> 
+    val accumulate = { value: Int ->
         total = total + value
         total
     }
-    
+
     assert(accumulate(5) == 5)
     assert(accumulate(10) == 15)
     assert(total == 15)
@@ -57,16 +57,14 @@ test "lambdas: simple HTML builder DSL" {
     assert(result == "<html><body>Hello Eiwa DSL!</body></html>")
 }
 
-// TODO: erro ao monipular variaveis externas dentro de lambdas
-// test "Lambdas: return type Void" {
-//     var executed = false
-//     val myFun = { 
-//         executed = true
-//         echo("teste")
-//     }
-//     myFun()
-//     assert(executed == true)
-// }
+test "Lambdas: change var in outer scope" {
+    var executed = false
+    val myFun = {
+        executed = true
+    }
+    myFun()
+    assert(executed == true)
+}
 
 fun lambdaReturnVoid(block: () -> Void) {
     block()

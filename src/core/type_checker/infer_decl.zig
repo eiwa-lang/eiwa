@@ -27,6 +27,8 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "yaml.ei", @embedFile("../../std/yaml.ei") },
     .{ "log.ei", @embedFile("../../std/log.ei") },
     .{ "coroutines.ei", @embedFile("../../std/coroutines.ei") },
+    // --- Database layer ---
+    .{ "db.ei", @embedFile("../../std/db.ei") },
 });
 
 pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines" };
@@ -34,7 +36,7 @@ pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.sys
 pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 
 pub const auto_injected_contracts = &[_][]const u8{ "Stringable", "Equatable", "Hashable" };
-pub const auto_injected_skills = &[_][]const u8{ "Echoable" };
+pub const auto_injected_skills = &[_][]const u8{"Echoable"};
 
 pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     _ = scope;
@@ -53,8 +55,8 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     var mod_source: []const u8 = undefined;
 
     if (std.mem.startsWith(u8, actual_module_path, "std.")) {
-        const pkg_name = actual_module_path[4..];
-        mod_path = try std.fmt.allocPrint(self.allocator, "std/{s}", .{pkg_name});
+        mod_path = try core.resolveModulePath(self.allocator, dir_path, actual_module_path);
+        const pkg_name = mod_path[4..];
 
         if (std_modules.get(pkg_name)) |source| {
             mod_source = source;
@@ -237,9 +239,13 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                                 try self.alias_map.put(sym, aliased_name);
                             }
                             var c_it = fb_tc.classes_ast.iterator();
-                            while (c_it.next()) |ce| { try self.classes_ast.put(ce.key_ptr.*, ce.value_ptr.*); }
+                            while (c_it.next()) |ce| {
+                                try self.classes_ast.put(ce.key_ptr.*, ce.value_ptr.*);
+                            }
                             var ct_it = fb_tc.contracts_ast.iterator();
-                            while (ct_it.next()) |cte| { try self.contracts_ast.put(cte.key_ptr.*, cte.value_ptr.*); }
+                            while (ct_it.next()) |cte| {
+                                try self.contracts_ast.put(cte.key_ptr.*, cte.value_ptr.*);
+                            }
                             found = true;
                             break;
                         }
@@ -440,7 +446,6 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     // Methods
     for (c.methods) |method| {
         if (method.data == .fun_decl) {
-
             const m_name = method.data.fun_decl.name;
             const is_operator = std.mem.eql(u8, m_name, "plus") or
                 std.mem.eql(u8, m_name, "minus") or
@@ -802,10 +807,8 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         const base_t = core.extractBaseType(this_t);
         const class_name = if (self.current_class_name) |cname| (self.alias_map.get(cname) orelse cname) else (if (base_t.* == .Custom) base_t.Custom else (if (base_t.* == .Pointer and base_t.Pointer.* == .Custom) base_t.Pointer.Custom else (if (base_t.* == .Int) "core_Int" else (if (base_t.* == .Bool) "core_Bool" else (if (base_t.* == .String) "core_String" else f.name)))));
 
-
         try mangled_name.writer().print("{s}_{s}", .{ class_name, f.name });
-    }
-    else if (self.current_class_name) |class_name| {
+    } else if (self.current_class_name) |class_name| {
         const actual_class = self.alias_map.get(class_name) orelse class_name;
         try mangled_name.writer().print("{s}_{s}", .{ actual_class, f.name });
     } else if (self.module_prefix) |prefix| {
@@ -827,9 +830,6 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         }
     }
 
-
-
-
     var fun_scope = Scope.init(self.allocator, scope);
     fun_scope.is_function_boundary = true;
     defer fun_scope.deinit();
@@ -850,7 +850,6 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 try mangled_name.appendSlice("_Void");
             }
         }
-
 
         if (p.initializer) |init_node| {
             if (self.pass == .validation) {
@@ -1051,7 +1050,6 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         }
     }
 
-
     try self.objects_ast.put(actual_c_name, node);
 
     // Set static block context
@@ -1063,7 +1061,6 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         self.current_class_name = old_class_name;
         self.current_class_methods = old_class_methods;
     }
-
 
     var obj_scope = Scope.init(self.allocator, scope);
     defer obj_scope.deinit();
@@ -1462,7 +1459,7 @@ fn generateDefaultToString(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
         var is_first = true;
         for (c.primary_constructor) |prop| {
             if (!prop.is_property) continue;
-            if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and prop.type_ref.resolved_type.?.* == .Function) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun")) continue;
+            if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and (prop.type_ref.resolved_type.?.* == .Function or prop.type_ref.resolved_type.?.* == .Array)) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun") or std.mem.eql(u8, prop.type_ref.name, "NativeArray")) continue;
 
             const label_str = try std.fmt.allocPrint(self.allocator, "{s}{s}=", .{ if (is_first) "" else ", ", prop.name });
             is_first = false;
@@ -1475,8 +1472,12 @@ fn generateDefaultToString(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
             curr_expr = try makePlus(self, node.line, node.column, curr_expr, val_call);
         }
 
-        const suffix_lit = try makeStringLiteral(self, node.line, node.column, ")");
-        body_node = try makePlus(self, node.line, node.column, curr_expr, suffix_lit);
+        if (is_first) {
+            body_node = try makeStringLiteral(self, node.line, node.column, c.name);
+        } else {
+            const suffix_lit = try makeStringLiteral(self, node.line, node.column, ")");
+            body_node = try makePlus(self, node.line, node.column, curr_expr, suffix_lit);
+        }
     }
 
     const ret_tr = try self.allocator.create(ast.ASTTypeRef);
@@ -1496,7 +1497,7 @@ fn generateDefaultToString(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
         .data = .{
             .fun_decl = .{
                 .annotations = &.{},
-                .modifiers = &[_]ast.TokenType{ .kw_implement },
+                .modifiers = &[_]ast.TokenType{.kw_implement},
                 .name = "toString",
                 .generic_params = &[_][]const u8{},
                 .params = &.{},
@@ -1535,7 +1536,7 @@ fn generateDefaultHashCode(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
         var curr_expr: ?*ASTNode = null;
         for (c.primary_constructor) |prop| {
             if (!prop.is_property) continue;
-            if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and prop.type_ref.resolved_type.?.* == .Function) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun")) continue;
+            if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and (prop.type_ref.resolved_type.?.* == .Function or prop.type_ref.resolved_type.?.* == .Array)) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun") or std.mem.eql(u8, prop.type_ref.name, "NativeArray")) continue;
 
             const zero_int = try makeIntLiteral(self, node.line, node.column, 0);
             const hc_call = try makeMemberCallOrNullFallback(self, node.line, node.column, "this", prop, "hashCode", zero_int);
@@ -1545,11 +1546,11 @@ fn generateDefaultHashCode(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
                 curr_expr = try makeBinaryOp(self, node.line, node.column, .plus, curr_expr.?, hc_call);
             }
         }
-        body_node = curr_expr.?;
+        body_node = if (curr_expr) |expr| expr else try makeIntLiteral(self, node.line, node.column, 0);
     }
 
-    const ret_tr = try self.allocator.create(ast.ASTTypeRef);
-    ret_tr.* = .{
+    const ret_tr_2 = try self.allocator.create(ast.ASTTypeRef);
+    ret_tr_2.* = .{
         .name = "Int",
         .generic_args = &.{},
         .is_array = false,
@@ -1565,11 +1566,11 @@ fn generateDefaultHashCode(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
         .data = .{
             .fun_decl = .{
                 .annotations = &.{},
-                .modifiers = &[_]ast.TokenType{ .kw_implement },
+                .modifiers = &[_]ast.TokenType{.kw_implement},
                 .name = "hashCode",
                 .generic_params = &[_][]const u8{},
                 .params = &.{},
-                .type_ref = ret_tr,
+                .type_ref = ret_tr_2,
                 .body = body_node,
                 .is_expr_body = true,
                 .resolved_c_name = null,
@@ -1604,7 +1605,7 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
         var curr_expr: ?*ASTNode = null;
         for (c.primary_constructor) |prop| {
             if (!prop.is_property) continue;
-            if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and prop.type_ref.resolved_type.?.* == .Function) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun")) continue;
+            if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and (prop.type_ref.resolved_type.?.* == .Function or prop.type_ref.resolved_type.?.* == .Array)) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun") or std.mem.eql(u8, prop.type_ref.name, "NativeArray")) continue;
 
             const this_prop = try makeMemberAccess(self, node.line, node.column, "this", prop.name);
             const other_prop = try makeMemberAccess(self, node.line, node.column, "other", prop.name);
@@ -1616,7 +1617,7 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
                 curr_expr = try makeBinaryOp(self, node.line, node.column, .and_and, curr_expr.?, eq_expr);
             }
         }
-        case_then_body = curr_expr.?;
+        case_then_body = if (curr_expr) |expr| expr else try makeBoolLiteral(self, node.line, node.column, true);
     }
 
     const is_cond = try makeIsTypeCond(self, node.line, node.column, c.name);
@@ -1813,7 +1814,7 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
         .data = .{
             .fun_decl = .{
                 .annotations = &.{},
-                .modifiers = &[_]ast.TokenType{ .kw_implement },
+                .modifiers = &[_]ast.TokenType{.kw_implement},
                 .name = "serdeFields",
                 .generic_params = &[_][]const u8{},
                 .params = &.{},
