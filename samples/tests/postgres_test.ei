@@ -1,5 +1,6 @@
 import { Postgres } from "std.postgres"
 import { PgConnection } from "std.postgres.connection"
+import { DbError } from "std.db"
 
 // Helper — fresh isolated connection per test (uses a test database)
 fun testDb(): PgConnection {
@@ -94,33 +95,81 @@ test "postgres: row returns correct int and string values" {
 }
 
 // --- Async: concurrent queries ---
-//TODO: should work concurrently
-// test "postgres: two concurrent queries do not block each other" {
-//     val db1 = testDb()
-//     val db2 = testDb()
-//     val noParams = List<String>()
+// TODO: should work concurrently
+test "postgres: two concurrent queries do not block each other" {
 
-//     val t1 = task {
-//         var result = ""
-//         val r = db1.query("SELECT 'conn1' AS tag", noParams)
-//         for (row in r.rows()) {
-//             result = row.string("tag")
-//         }
-//         result
-//     }
+    val t1 = task {
+        val db1 = testDb()
+        var result = ""
+        val r = db1.query("SELECT 'conn1' AS tag")
+        for (row in r.rows()) {
+            result = row.string("tag")
+        }
+        db1.close()
+        result
+    }
 
-//     val t2 = task {
-//         var result = ""
-//         val r = db2.query("SELECT 'conn2' AS tag", noParams)
-//         for (row in r.rows()) {
-//             result = row.string("tag")
-//         }
-//         result
-//     }
+    val db2 = testDb()
+    val t2 = task {
+        var result = ""
+        val r = db2.query("SELECT 'conn2' AS tag")
+        for (row in r.rows()) {
+            result = row.string("tag")
+        }
+        result
+    }
+    
+    assert(t2.await() == "conn2")
+    db2.close()
 
-//     assert(t1.await() == "conn1")
-//     assert(t2.await() == "conn2")
+    assert(t1.await() == "conn1")
+}
 
-//     db1.close()
-//     db2.close()
-// }
+// --- Closed connection guards ---
+
+test "postgres: query throws on closed connection" {
+    val db = testDb()
+    db.close()
+    var caught = false
+    try {
+        db.query("SELECT 1")
+    } catch (e: DbError) {
+        caught = true
+        assert(e.message() == "Connection is closed")
+    }
+    assert(caught == true)
+}
+
+test "postgres: execute throws on closed connection" {
+    val db = testDb()
+    db.close()
+    var caught = false
+    try {
+        db.execute("SELECT 1")
+    } catch (e: DbError) {
+        caught = true
+        assert(e.message() == "Connection is closed")
+    }
+    assert(caught == true)
+}
+
+test "postgres: prepare throws on closed connection" {
+    val db = testDb()
+    db.close()
+    var caught = false
+    try {
+        db.prepare("SELECT 1")
+    } catch (e: DbError) {
+        caught = true
+        assert(e.message() == "Connection is closed")
+    }
+    assert(caught == true)
+}
+
+test "postgres: close is idempotent on closed connection" {
+    val db = testDb()
+    db.close()
+    db.close()
+    // if we reach here, no crash
+    assert(true)
+}

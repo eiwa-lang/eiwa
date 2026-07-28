@@ -58,8 +58,7 @@ fun main() {
             }
 
             get("/data") {
-                val conn = Postgres.connect("postgres://leodouglas@localhost/eiwa")
-                use(conn) { //TODO: should accept inline method under parenthesis
+                use(Postgres.connect("postgres://leodouglas@localhost/eiwa")) {
                     val result = it.query("SELECT id, name FROM users")
 
                     val users = MutableList<User>()

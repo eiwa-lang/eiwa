@@ -90,3 +90,13 @@ test "task with `with` block" {
     }
     assert(t.await() == "Leo is 31")
 }
+
+test "task lambda can update outer scope" {
+    var num = 10
+    val t = task { 
+        num = 50
+    }
+    num = 12
+    assert(t.await() == 50)
+    assert(num == 12)
+}
