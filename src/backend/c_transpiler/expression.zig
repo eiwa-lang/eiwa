@@ -1375,6 +1375,16 @@ pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.St
             if (r.value) |val| try self.collectCaptures(val, locals, captures);
         },
         .throw_stmt => |th| try self.collectCaptures(th.expr, locals, captures),
+        .var_decl => |v| {
+            if (v.initializer) |init| try self.collectCaptures(init, locals, captures);
+        },
+        .ternary_expr => |t| {
+            try self.collectCaptures(t.condition, locals, captures);
+            try self.collectCaptures(t.then_branch, locals, captures);
+            if (t.else_branch) |eb| try self.collectCaptures(eb, locals, captures);
+        },
+        .as_expr => |a| try self.collectCaptures(a.value, locals, captures),
+        .is_expr => |i| try self.collectCaptures(i.value, locals, captures),
         .try_stmt => |try_s| {
             try self.collectCaptures(try_s.body, locals, captures);
             for (try_s.catches) |c| {
