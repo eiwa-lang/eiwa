@@ -171,6 +171,27 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                 found = true;
             }
 
+            const lookup_sym = tc.alias_map.get(sym) orelse sym;
+            if (tc.classes_ast.get(lookup_sym)) |class_node| {
+                try self.classes_ast.put(lookup_sym, class_node);
+                if (prefix.len > 0) {
+                    try self.classes_ast.put(sym, class_node);
+                }
+                found = true;
+            } else if (tc.contracts_ast.get(lookup_sym)) |contract_node| {
+                try self.contracts_ast.put(lookup_sym, contract_node);
+                if (prefix.len > 0) {
+                    try self.contracts_ast.put(sym, contract_node);
+                }
+                found = true;
+            } else if (tc.skills_ast.get(lookup_sym)) |skill_node| {
+                try self.skills_ast.put(lookup_sym, skill_node);
+                if (prefix.len > 0) {
+                    try self.skills_ast.put(sym, skill_node);
+                }
+                found = true;
+            }
+
             if (!found) {
                 for (mod_ast.data.program.statements) |stmt| {
                     if (stmt.data == .type_decl) {
@@ -722,6 +743,69 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
             }
             if (!skip_ret_check and !self.isCompatible(contract_ret, impl_ret)) {
                 self.reportError(m.line, m.column, "TypeError: Method '{s}' returns {} but contract '{s}' requires {}.", .{ cm_name, impl_ret.*, cd.name, contract_ret.* });
+                return error.TypeError;
+            }
+        }
+    }
+
+    // Reverse validation: every method marked with 'implement' must belong to an implemented contract or skill ambiguity resolution.
+    for (c.methods) |method| {
+        if (method.data != .fun_decl) continue;
+        const m = &method.data.fun_decl;
+        var has_implement = false;
+        for (m.modifiers) |mod| {
+            if (mod == .kw_implement) {
+                has_implement = true;
+                break;
+            }
+        }
+        if (has_implement) {
+            var is_valid_contract_method = false;
+
+            // 1. Check against all contracts in c.contracts
+            for (c.contracts) |contract_src_name| {
+                const contract_actual = self.alias_map.get(contract_src_name) orelse contract_src_name;
+                var contract_node_opt = self.contracts_ast.get(contract_actual);
+                if (contract_node_opt == null and self.registry != null) {
+                    var mod_it = self.registry.?.modules.iterator();
+                    while (mod_it.next()) |entry| {
+                        const reg_actual = entry.value_ptr.checker.alias_map.get(contract_src_name) orelse contract_actual;
+                        if (entry.value_ptr.checker.contracts_ast.get(reg_actual)) |cn| {
+                            contract_node_opt = cn;
+                            break;
+                        }
+                    }
+                }
+                if (contract_node_opt) |contract_node| {
+                    const cd = contract_node.data.contract_decl;
+                    for (cd.methods) |cm| {
+                        if (cm.data == .fun_decl and std.mem.eql(u8, cm.data.fun_decl.name, m.name)) {
+                            is_valid_contract_method = true;
+                            break;
+                        }
+                    }
+                }
+                if (is_valid_contract_method) break;
+            }
+
+            // 2. Check if it is a skill member collision disambiguation (e.g. SkillName_methodName)
+            if (!is_valid_contract_method) {
+                for (c.skills) |skill_src| {
+                    const skill_actual = self.alias_map.get(skill_src) orelse skill_src;
+                    if (self.skills_ast.get(skill_actual)) |sn| {
+                        for (sn.data.skill_decl.methods) |sm| {
+                            if (sm.data == .fun_decl and std.mem.eql(u8, sm.data.fun_decl.name, m.name)) {
+                                is_valid_contract_method = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (is_valid_contract_method) break;
+                }
+            }
+
+            if (!is_valid_contract_method) {
+                self.reportError(method.line, method.column, "TypeError: Method '{s}' in type '{s}' is marked with 'implement', but is not declared in any contract implemented by '{s}'.", .{ m.name, c.name, c.name });
                 return error.TypeError;
             }
         }

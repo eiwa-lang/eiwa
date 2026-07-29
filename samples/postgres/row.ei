@@ -12,7 +12,7 @@ type PgRow(
     val nullFlags: List<Bool>
 ) : Row {
 
-    implement fun indexOf(name: String): Int {
+    fun indexOf(name: String): Int {
         var i = 0
         while (i < columnNames.size()) {
             if (columnNames.get(i) == name) {

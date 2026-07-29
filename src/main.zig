@@ -407,6 +407,12 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("  → {s}\n", .{line});
             }
         }
+        var err_it = std.mem.splitScalar(u8, result.stderr, '\n');
+        while (err_it.next()) |line| {
+            if (std.mem.indexOf(u8, line, "error:") != null) {
+                std.debug.print("C ERROR: {s}\n", .{line});
+            }
+        }
         if (!found_error) {
             std.debug.print("\nCompilation error (internal):\n{s}\n", .{result.stderr});
         }

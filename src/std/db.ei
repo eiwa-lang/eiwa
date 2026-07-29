@@ -1,10 +1,12 @@
-// std.db — Provider-independent database contracts.
+// std.db — Provider-independent database contracts & generic connection pool.
 //
 // Application code should depend only on these contracts, never on a specific
 // driver implementation. Drivers (e.g. std.postgres) implement these contracts
 // so they are interchangeable without changing application code.
 
-import { List } from "std.collections"
+import { List, MutableList } from "std.collections"
+import { Coroutine } from "std.coroutines"
+import { Log } from "std.log"
 
 contract Row {
     fun int(name: String): Int
@@ -27,12 +29,158 @@ contract Connection {
     fun execute(sql: String, params: List<String> = []): Result
     fun query(sql: String, params: List<String> = []): Result
     fun prepare(sql: String): Statement
-    // fun transaction(block: () -> Void)
     fun close()
 }
 
 type DbError(val message: String) : Throwable {
     implement fun message(): String {
         return this.message
+    }
+}
+
+type BoundStatement(val conn: Connection, val sql: String, val params: MutableList<String> = MutableList<String>()): Statement {
+
+    fun bind(value: String): BoundStatement {
+        params.add(value)
+        return this
+    }
+
+    fun bind(value: Int): BoundStatement {
+        params.add(value.toString())
+        return this
+    }
+
+    fun bind(value: Bool): BoundStatement {
+        params.add(value.toString())
+        return this
+    }
+
+    implement fun query(params: List<String> = []): Result {
+        if (params.size() > 0) {
+            return conn.query(sql, params)
+        }
+        return conn.query(sql, this.params.freeze())
+    }
+
+    implement fun execute(params: List<String> = []): Result {
+        if (params.size() > 0) {
+            return conn.execute(sql, params)
+        }
+        return conn.execute(sql, this.params.freeze())
+    }
+}
+
+type ConnectionPool<C>(
+    val factory: () -> C,
+    val maxConnections: Int = 10,
+    val idle: MutableList<C> = MutableList<C>(),
+    var idleCount: Int = 0,
+    var activeCount: Int = 0,
+    var closed: Bool = false
+): Connection, Closeable {
+
+    fun acquire(): C {
+        if (closed) {
+            throw DbError("Connection pool is closed")
+        }
+        while (true) {
+            if (idleCount > 0) {
+                idleCount = idleCount - 1
+                return idle.get(idleCount)
+            }
+            if (activeCount < maxConnections) {
+                activeCount = activeCount + 1
+                try {
+                    return factory()
+                } catch (e: Throwable) {
+                    activeCount = activeCount - 1
+                    throw e
+                }
+            }
+            Coroutine.yield()
+        }
+        throw DbError("Unreachable pool acquire state")
+    }
+
+    fun release(conn: C) {
+        if (closed) {
+            if (conn is Closeable) {
+                conn.close()
+            }
+            return
+        }
+        if (idleCount < idle.size()) {
+            idle.set(idleCount, conn)
+        } else {
+            idle.add(conn)
+        }
+        idleCount = idleCount + 1
+    }
+
+    implement fun query(sql: String, params: List<String> = []): Result {
+        val conn = acquire()
+        try {
+            val res = conn.query(sql, params)
+            release(conn)
+            return res
+        } catch (e: Throwable) {
+            release(conn)
+            throw e
+        }
+    }
+
+    implement fun execute(sql: String, params: List<String> = []): Result {
+        val conn = acquire()
+        try {
+            val res = conn.execute(sql, params)
+            release(conn)
+            return res
+        } catch (e: Throwable) {
+            release(conn)
+            throw e
+        }
+    }
+
+    implement fun prepare(sql: String): BoundStatement {
+        return BoundStatement(this, sql)
+    }
+
+    fun prepareBound(sql: String): BoundStatement {
+        return BoundStatement(this, sql)
+    }
+
+    fun transaction(block: (Connection) -> Void) {
+        val conn = acquire()
+        try {
+            conn.execute("BEGIN")
+            block(conn)
+            conn.execute("COMMIT")
+            release(conn)
+        } catch (e: Throwable) {
+            try {
+                conn.execute("ROLLBACK")
+            } catch (rErr: Throwable) {
+                Log.error {"Failed to rollback transaction: " + rErr.message()}
+            }
+            release(conn)
+            throw e
+        }
+    }
+
+    implement fun close() {
+        if (closed) {
+            return
+        }
+        closed = true
+        var i = 0
+        while (i < idleCount) {
+            val conn = idle.get(i)
+            if (conn is Closeable) {
+                conn.close()
+            }
+            i = i + 1
+        }
+        idleCount = 0
+        activeCount = 0
     }
 }

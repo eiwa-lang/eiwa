@@ -172,3 +172,78 @@ test "postgres: close is idempotent on closed connection" {
     // if we reach here, no crash
     assert(true)
 }
+
+// --- PgPool & BoundStatement tests ---
+
+test "postgres: pool executes queries transparently" {
+    val pool = Postgres.pool("postgres://leodouglas@localhost/eiwa", 3)
+    val res = pool.query("SELECT 42 AS val")
+    var value = 0
+    for (row in res.rows()) {
+        value = row.int("val")
+    }
+    assert(value == 42)
+    pool.close()
+}
+
+test "postgres: pool handles fluent parameter binding" {
+    val pool = Postgres.pool("postgres://leodouglas@localhost/eiwa", 2)
+    pool.execute("DELETE FROM pg_test_users")
+    
+    val stmt = pool.prepare("INSERT INTO pg_test_users(name) VALUES($1)")
+    stmt.bind("FluentUser").execute()
+
+    val check = pool.query("SELECT name FROM pg_test_users WHERE name = $1", ["FluentUser"])
+    assert(check.rows().size() == 1)
+    pool.close()
+}
+
+test "postgres: pool transactions commit successfully" {
+    val pool = Postgres.pool("postgres://leodouglas@localhost/eiwa", 2)
+    pool.execute("DELETE FROM pg_test_users")
+
+    pool.transaction { tx ->
+        tx.execute("INSERT INTO pg_test_users(name) VALUES($1)", ["TxUser1"])
+        tx.execute("INSERT INTO pg_test_users(name) VALUES($1)", ["TxUser2"])
+    }
+
+    val res = pool.query("SELECT COUNT(*) AS total FROM pg_test_users")
+    var total = 0
+    for (row in res.rows()) {
+        total = row.int("total")
+    }
+    assert(total == 2)
+    pool.close()
+}
+
+test "postgres: pool handles concurrent tasks under connection limit" {
+    val pool = Postgres.pool("postgres://leodouglas@localhost/eiwa", 2)
+
+    val t1 = task {
+        val r = pool.query("SELECT 1 AS num")
+        var n = 0
+        for (row in r.rows()) { n = row.int("num") }
+        n
+    }
+
+    val t2 = task {
+        val r = pool.query("SELECT 2 AS num")
+        var n = 0
+        for (row in r.rows()) { n = row.int("num") }
+        n
+    }
+
+    val t3 = task {
+        val r = pool.query("SELECT 3 AS num")
+        var n = 0
+        for (row in r.rows()) { n = row.int("num") }
+        n
+    }
+
+    assert(t1.await() == 1)
+    assert(t2.await() == 2)
+    assert(t3.await() == 3)
+
+    pool.close()
+}
+

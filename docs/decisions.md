@@ -419,5 +419,19 @@ A biblioteca C Neco (`lib Neco`) estava sendo importada e chamada diretamente em
 **Razão:**
 Elimina o acoplamento direto de código da stdlib e drivers de aplicação com bibliotecas C específicas de coroutine. Garante que futuras substituições da engine de event loop ou coroutines exijam alterações exclusivamente no módulo `src/std/coroutines.ei`.
 
+## ADR 43: Pool de Conexões de Banco de Dados Genérico (`type ConnectionPool<C>`) e Checagens Estáticas no Compilador
+**Status:** Aceito / Implementado
+**Data:** Julho 2026
 
+**Contexto:**
+1. O pool de conexões com banco de dados inicialmente desenvolvido no driver PostgreSQL (`PgPool`) estava acoplado ao driver `std.postgres`, gerando duplicação de lógica se novos drivers de banco de dados (como MySQL ou SQLite) fossem introduzidos na `std.db`.
+2. Falhava uma checagem estática no compilador Eiwa para validar a simetria do modificador `implement` em `type`: se um desenvolvedor marcasse um método com `implement`, mas esse método não estivesse presente em nenhum contrato declarado no `type`, o compilador aceitava a declaração e gerava vtables C corrompidas no backend.
 
+**Decisão:**
+1. **Promoção de `ConnectionPool<C>` para `std.db`**: O pool de conexões cooperativo baseado em fibras foi promovido a um `type ConnectionPool<C>(val factory: () -> C, ...)` genérico e agnóstico na `std.db`, capaz de gerenciar qualquer tipo de conexão que implemente os contratos `Connection` e `Closeable`.
+2. **Promover `BoundStatement` para `std.db`**: Abstração genérica de Prepared Statements com construtor fluente de parâmetros (`.bind()`).
+3. **Inspecionar Inferência de Construtores Genéricos**: O TypeChecker foi atualizado (`infer_call.zig`) para inferir o parâmetro genérico `C` a partir do tipo de retorno de uma lambda fábrica de parâmetro (`factory: () -> C`), permitindo instanciar `ConnectionPool({ Postgres.connectRaw(url) }, maxConnections)` sem requerer a anotação manual `ConnectionPool<PgConnection>`.
+4. **Validação Estática de `implement` Reverso**: O `inferTypeDecl` (`infer_decl.zig`) agora valida recursivamente que todo método em um `type` marcado com `implement` obrigatoriamente pertença a pelo menos um contrato declarado no cabeçalho ou resolva ambiguidade de `skill`. Emitindo o diagnóstico `TypeError` estático no compile-time caso contrário.
+
+**Razão:**
+Garante 100% de reuso de código no ecossistema de bancos de dados da `std.db`, elimina duplicação de infraestrutura de pool e traz robustez ao TypeChecker ao barrar vtables quebradas antes da transpilação C.

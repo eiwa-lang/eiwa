@@ -667,7 +667,19 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 for (c.arguments, 0..) |arg, arg_i| {
                     const expected_arg_type = if (f.receiver != null) (if (arg_i == 0) f.receiver.? else f.params[arg_i - 1]) else f.params[arg_i];
                     if (!self.isCompatible(expected_arg_type, arg.resolved_type.?)) {
-                        self.reportError(node.line, node.column, "TypeError: Expected {} for argument {} but got {}.", .{ expected_arg_type.*, arg_i + 1, arg.resolved_type.?.* });
+                        const act_base = extractBaseType(arg.resolved_type.?);
+                        const exp_base = extractBaseType(expected_arg_type);
+                        var is_mutable_list_mismatch = false;
+                        if (act_base.* == .GenericInstance and std.mem.eql(u8, act_base.GenericInstance.base_name, "MutableList") and
+                            exp_base.* == .GenericInstance and std.mem.eql(u8, exp_base.GenericInstance.base_name, "List"))
+                        {
+                            is_mutable_list_mismatch = true;
+                        }
+                        if (is_mutable_list_mismatch) {
+                            self.reportError(node.line, node.column, "TypeError: Incompatible types: expected '{}', but got '{}'. Did you mean to call '.freeze()'?", .{ expected_arg_type.*, arg.resolved_type.?.* });
+                        } else {
+                            self.reportError(node.line, node.column, "TypeError: Expected {} for argument {} but got {}.", .{ expected_arg_type.*, arg_i + 1, arg.resolved_type.?.* });
+                        }
                         return error.TypeError;
                     }
                 }
@@ -754,6 +766,23 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                         if (c.arguments[prop_i].resolved_type.?.* == .Array) {
                                             found_type = c.arguments[prop_i].resolved_type.?.Array;
                                             break;
+                                        }
+                                    }
+                                    
+                                    if (prop.type_ref.is_function) {
+                                        if (prop.type_ref.return_type) |ret_ref| {
+                                            if (std.mem.eql(u8, ret_ref.name, g_param)) {
+                                                if (c.arguments[prop_i].resolved_type == null and c.arguments[prop_i].data == .lambda_expr) {
+                                                    _ = self.inferNode(c.arguments[prop_i], scope) catch null;
+                                                }
+                                                if (c.arguments[prop_i].resolved_type) |arg_t| {
+                                                    const base_arg = extractBaseType(arg_t);
+                                                    if (base_arg.* == .Function) {
+                                                        found_type = base_arg.Function.return_type;
+                                                        break;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     

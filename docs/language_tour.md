@@ -1652,3 +1652,50 @@ val answer  = with(20) { it + 22 }   // 42
 ### 24.6 Name Conflicts
 
 If a type declares its own `let`, `run`, etc., the type's explicit method wins; the scope function remains available qualified as `Scope_let`, `Scope_run`, etc. (same rule as `toString` vs `Stringable` — see 11.6).
+
+---
+
+## 25. Database Contracts & Connection Pooling (`std.db`)
+
+Eiwa provides provider-independent database contracts in `std.db` alongside a generic, fiber-cooperative connection pool (`ConnectionPool<C>`). Application code should depend only on `std.db` contracts (`Connection`, `Statement`, `Result`, `Row`) rather than driver-specific implementations.
+
+### 25.1 Core Database Contracts
+
+* **`Row`**: Extracted query row with type-safe accessors (`.int("col")`, `.string("col")`, `.bool("col")`, `.isNull("col")`).
+* **`Result`**: Result of a query (`.rows()`) or DDL/DML statement (`.rowsAffected()`).
+* **`Statement`**: Prepared statement interface (`.query()`, `.execute()`).
+* **`Connection`**: Core database connection interface (`.query(sql, params)`, `.execute(sql, params)`, `.prepare(sql)`, `.close()`).
+
+### 25.2 Generic Fiber-Cooperative Connection Pool (`ConnectionPool<C>`)
+
+The `ConnectionPool<C>` type is generic over any connection type `C` implementing `Connection` and `Closeable`. It manages connections non-blockingly by suspending fibers via `Coroutine.yield()` when the pool reaches its maximum connection limit.
+
+```kotlin
+import { ConnectionPool, Connection } from "std.db"
+import { Postgres } from "std.postgres"
+
+fun main() {
+    // Instantiate a Postgres pool with a max of 10 connections
+    val pool = Postgres.pool("postgres://user:pass@localhost/mydb", maxConnections = 10)
+
+    // Execute queries transparently through the pool
+    val res = pool.query("SELECT * FROM users WHERE id = $1", ["1"])
+    for (row in res.rows()) {
+        print(row.string("name"))
+    }
+
+    // Execute transactions safely
+    pool.transaction { conn ->
+        conn.execute("INSERT INTO audit_logs (action) VALUES ($1)", ["LOGIN"])
+    }
+
+    // Fluent Parameter Binding via BoundStatement
+    pool.prepare("INSERT INTO users (name, age) VALUES ($1, $2)")
+        .bind("Ana")
+        .bind(25)
+        .execute()
+
+    pool.close()
+}
+```
+
