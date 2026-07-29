@@ -26,21 +26,53 @@ lib Neco {
     fun waitWritable(fd: Int): Int
 }
 
+object Coroutine {
+    fun start(closure: () -> Void): Int {
+        return Neco.start(closure)
+    }
+
+    fun join(id: Int): Int {
+        return Neco.join(id)
+    }
+
+    fun yield(): Int {
+        return Neco.yield()
+    }
+
+    fun sleep(nanosecs: Int): Int {
+        return Neco.sleep(nanosecs)
+    }
+
+    fun sleepMs(ms: Int): Int {
+        return Neco.sleep(ms * 1000000)
+    }
+}
+
+object EventLoop {
+    fun waitReadable(fd: Int): Int {
+        return Neco.waitReadable(fd)
+    }
+
+    fun waitWritable(fd: Int): Int {
+        return Neco.waitWritable(fd)
+    }
+}
+
 contract Taskable<T> {
     fun exec(): Int
     fun join(id: Int)
 }
 
-skill TaskableNeco<T> : Taskable<T>, Runnable {
+skill TaskableCoroutine<T> : Taskable<T>, Runnable {
 
     implement fun exec(): Int {
-        return Neco.start { 
+        return Coroutine.start { 
             run() 
         }
     }
 
     implement fun join(id: Int) {
-        Neco.join(id)
+        Coroutine.join(id)
     }
 }
 
@@ -49,7 +81,7 @@ type Task<T>(
     var done: Bool,
     var result: T?,
     val block: () -> T
-): Awaitable<T>, Runnable, Taskable<T> + TaskableNeco {
+): Awaitable<T>, Runnable, Taskable<T> + TaskableCoroutine {
 
     implement fun await(): T {
         if (!done) {

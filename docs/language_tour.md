@@ -1265,7 +1265,25 @@ fun process() {
 }
 ```
 
-### 20.7 Limitações do MVP
+### 20.7 Objetos de Concorrência e I/O (`Coroutine` & `EventLoop`)
+
+A standard library expõe dois objetos estáticos em `std.coroutines` para operações de baixo nível de concorrência e I/O de forma agnóstica de engine:
+
+```kotlin
+import { Coroutine, EventLoop } from "std.coroutines"
+
+fun example() {
+    // Pausa ou cede o controle da fibra atual
+    Coroutine.yield()
+    Coroutine.sleep(1)
+
+    // Aguarda prontidão de socket/FD de forma não-bloqueante
+    EventLoop.waitReadable(fd)
+    EventLoop.waitWritable(fd)
+}
+```
+
+### 20.8 Limitações do MVP
 
 - **Sem cancelamento** — `task.cancel()` fica para uma fase futura.
 - **Single-threaded** — todas as tasks rodam em uma única thread OS (scheduler concorrente). Paralelismo real (Execution Contexts) é uma evolução futura documentada no roadmap.

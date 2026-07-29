@@ -1,4 +1,4 @@
-import { Neco } from "std.coroutines"
+import { EventLoop } from "std.coroutines"
 
 @Header("runtime/net_helpers.h")
 lib NativeNet {
@@ -24,7 +24,7 @@ lib NativeNet {
 type Socket(val fd: Int) {
     fun read(maxLen: Int): String {
         val buf = Standard.gcMalloc(maxLen + 1)
-        Neco.waitReadable(this.fd)
+        EventLoop.waitReadable(this.fd)
         val n = NativeNet.socketRead(this.fd, buf, maxLen)
         if (n <= 0) {
             return ""
@@ -34,7 +34,7 @@ type Socket(val fd: Int) {
     }
     
     fun write(data: String): Int {
-        Neco.waitWritable(this.fd)
+        EventLoop.waitWritable(this.fd)
         return NativeNet.socketWrite(this.fd, data.ptr, data.length)
     }
     
@@ -56,7 +56,7 @@ type TCPServer(var fd: Int = -1) {
         if (this.fd < 0) {
             return null
         }
-        Neco.waitReadable(this.fd)
+        EventLoop.waitReadable(this.fd)
         val clientFd = NativeNet.tcpAccept(this.fd)
         if (clientFd < 0) {
             return null
@@ -72,3 +72,4 @@ type TCPServer(var fd: Int = -1) {
         }
     }
 }
+

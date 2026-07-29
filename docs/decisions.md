@@ -398,4 +398,26 @@ O problema original: a skill `Echoable` (injetada automaticamente em todo `type`
 **Razão:**
 Traz ergonomia e clareza para a FFI e stdlib do Eiwa, simplifica o Type Checker (eliminando tipos de ponteiros legados), garante consistência gramatical da linguagem e aplica o princípio de "pay-only-for-what-you-use" no backend C, onde headers de rede ou cURL só são incluídos na compilação se os módulos correspondentes do Eiwa forem importados.
 
+## ADR 42: Abstração Agnóstica de Coroutines e Event-Loop (`object Coroutine` & `object EventLoop`)
+**Status:** Aceito / Implementado
+**Data:** Julho 2026
+
+**Contexto:**
+A biblioteca C Neco (`lib Neco`) estava sendo importada e chamada diretamente em múltiplos pontos da standard library (`std.net`, `std.system`) e em drivers de banco de dados (`samples/postgres/connection.ei`). Isso criava um acoplamento direto com a biblioteca C subjacente. Se a runtime do Eiwa trocasse a engine de concorrência por `libuv`, `io_uring` ou green threads nativas em Zig backend, todo o código da stdlib e das aplicações quebraria.
+
+**Decisão:**
+1. **Encapsulamento de `lib Neco`:** Restringir a declaração `lib Neco` como privada/interna ao módulo `std.coroutines` (sem exportá-la para os consumidores).
+2. **Abstração por Objetos `Coroutine` e `EventLoop`:**
+   - **`object Coroutine`**: Expõe chamadas agnósticas de concorrência (`Coroutine.start`, `Coroutine.join`, `Coroutine.yield`, `Coroutine.sleep`, `Coroutine.sleepMs`).
+   - **`object EventLoop`**: Expõe chamadas agnósticas de polling de I/O (`EventLoop.waitReadable`, `EventLoop.waitWritable`).
+3. **Refatoração dos Módulos Consumidores:**
+   - `std.system`: Importa `Coroutine` para `sleep()` e expõe o helper `yield()`.
+   - `std.net`: Importa `EventLoop` para I/O não-bloqueante em sockets TCP.
+   - Driver PostgreSQL (`samples/postgres/connection.ei`): Importa `EventLoop` para wait de leitura não-bloqueante via libpq.
+4. **Renomeação de Skill Interno:** `TaskableNeco` refatorado para `TaskableCoroutine`.
+
+**Razão:**
+Elimina o acoplamento direto de código da stdlib e drivers de aplicação com bibliotecas C específicas de coroutine. Garante que futuras substituições da engine de event loop ou coroutines exijam alterações exclusivamente no módulo `src/std/coroutines.ei`.
+
+
 

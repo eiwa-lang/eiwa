@@ -1,4 +1,4 @@
-import { Neco } from "std.coroutines"
+import { Coroutine } from "std.coroutines"
 
 fun loop(block: () -> Void) {
     while (true) {
@@ -35,11 +35,15 @@ fun retry(times: Int, block: (Int) -> Void) {
 }
 
 fun sleep(seconds: Int): Void {
-    Neco.sleep(seconds * 1000000000)
+    Coroutine.sleep(seconds * 1000000000)
 }
 
 fun sleepMs(ms: Int): Void {
-    Neco.sleep(ms * 1000000)
+    Coroutine.sleepMs(ms)
+}
+
+fun yield(): Void {
+    Coroutine.yield()
 }
 
 fun exit(code: Int): Void {

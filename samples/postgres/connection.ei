@@ -1,7 +1,7 @@
 // postgres/connection.ei — PgConnection: concrete database connection.
 //
 // Uses libpq async API for no-param queries:
-//   PQsendQuery → PQsocket → Neco.waitReadable(fd) → PQconsumeInput → PQgetResult
+//   PQsendQuery → PQsocket → EventLoop.waitReadable(fd) → PQconsumeInput → PQgetResult
 //
 // Parameterized queries use the synchronous wrapper eiwa_pq_exec_params
 // which converts List<String> to char** and calls PQexecParams.
@@ -9,7 +9,7 @@
 import { Standard, NativeString } from "std.core"
 import { DbError, Connection, Statement, Result } from "std.db"
 import { NativePg, PgStatus } from "./native"
-import { Neco } from "std.coroutines"
+import { EventLoop } from "std.coroutines"
 import { PgResult } from "./result"
 import { PgStatement } from "./statement"
 import { Log } from "std.log"
@@ -27,10 +27,10 @@ type PgConnection(val conn: Pointer, var closed: Bool = false): Connection, Clos
         checkOpen()
         val fd = NativePg.socket(conn)
         NativePg.sendQuery(conn, sql.ptr)
-        Neco.waitReadable(fd)
+        EventLoop.waitReadable(fd)
         NativePg.consumeInput(conn)
         while (NativePg.isBusy(conn) != 0) {
-            Neco.waitReadable(fd)
+            EventLoop.waitReadable(fd)
             NativePg.consumeInput(conn)
         }
         var raw = NativePg.getResult(conn)
