@@ -435,3 +435,19 @@ Elimina o acoplamento direto de código da stdlib e drivers de aplicação com b
 
 **Razão:**
 Garante 100% de reuso de código no ecossistema de bancos de dados da `std.db`, elimina duplicação de infraestrutura de pool e traz robustez ao TypeChecker ao barrar vtables quebradas antes da transpilação C.
+
+## ADR 44: Captura Transitiva de Variáveis em Closures Aninhadas (N-Level Nested Lambdas)
+**Status:** Aceito / Implementado
+**Data:** Julho 2026
+
+**Contexto:**
+Quando uma lambda profunda (nível N, ex: `get("/data") { pool.query(...) }`) capturava uma variável declarada em um escopo externo (ex: `val pool` em `fun main()`), a análise de escopo do CTranspiler (`collectCaptures`) não garantia a captura dessa variável através das closures intermediárias (`arest` ➔ `routing` ➔ `get`). Isso resultava no erro de compilação em C `use of undeclared identifier 'pool'`, forçando acoplamento artificial entre frameworks e dependências externas.
+
+**Decisão:**
+1. **Varredura Recursiva em `collectCaptures`**: Atualizar a esteira de análise de closures em `src/backend/c_transpiler/expression.zig` para inspecionar nós `.lambda_expr` aninhados.
+2. **Propagação Transitiva de Structs `env`**: Qualquer variável requerida por uma lambda interna que não esteja declarada na lambda intermediária nem no seu escopo local imediato é promovida e incluída na lista de capturas das closures intermediárias.
+3. **Desacoplamento Total de Frameworks**: Garante que frameworks Web (como Arest) permaneçam 100% agnósticos e que os consumidores consigam acessar instâncias de infraestrutura (como `pool`) declaradas no escopo do `main()` diretamente dentro das rotas.
+
+**Razão:**
+Elimina acoplamentos artificiais em frameworks, garante paridade com o modelo de closures do Kotlin/Swift e assegura a corretude da geração de código C e LLVM IR em qualquer nível de aninhamento de funções de alta ordem.
+

@@ -23,6 +23,8 @@ type User(val id: Int, val name: String) : Serializable + Json + Yaml
 fun main() {
     printWelcome()
 
+    val pool = Postgres.pool("postgres://leodouglas@localhost/eiwa", 10)
+
     arest(8082) {
         routing {
             get("/") {
@@ -60,15 +62,26 @@ fun main() {
             }
 
             get("/data") {
-                use(Postgres.connect("postgres://leodouglas@localhost/eiwa")) {
-                    val result = it.query("SELECT id, name FROM users")
+                val result = pool.query("SELECT id, name FROM users")
 
-                    val users = MutableList<User>()
-                    for (row in result.rows()) {
-                        users.add(User(row.int("id"), row.string("name")))
-                    }
-                    respond(200, "application/json", users.toJson())
+                val users = MutableList<User>()
+                for (row in result.rows()) {
+                    users.add(User(row.int("id"), row.string("name")))
                 }
+                respond(200, "application/json", users.toJson())
+            }
+
+            post("/users") {
+                val name = request.queries["name"] ?: "Anonymous"
+                pool.prepare("INSERT INTO users (name) VALUES ($1)")
+                    .bind(name)
+                    .execute()
+
+                val msg = [
+                    "status" of "created",
+                    "name" of name
+                ]
+                respond(201, "application/json", msg.toJson())
             }
 
             get("/hello") {
@@ -82,6 +95,7 @@ fun main() {
             }
 
             get("/shutdown") {
+                pool.close()
                 server.shutdown()
                 respondText("Server is shutting down...")
             }

@@ -76,3 +76,24 @@ test "Lambdas: return type Void" {
     val result = lambdaReturnVoid(myFun)
     assert(result is Void)
 }
+
+test "lambdas: 4-level transitive capture of outer variable" {
+    val outerMessage = "Deep 4-Level Eiwa Closure"
+    var capturedResult = ""
+
+    val l1 = {
+        val l2 = {
+            val l3 = {
+                val l4 = {
+                    capturedResult = outerMessage
+                }
+                l4()
+            }
+            l3()
+        }
+        l2()
+    }
+    l1()
+
+    assert(capturedResult == "Deep 4-Level Eiwa Closure")
+}

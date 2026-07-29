@@ -1398,6 +1398,27 @@ pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.St
                 try self.collectCaptures(case.body, locals, captures);
             }
         },
+        .lambda_expr => |l| {
+            var inner_locals = std.StringHashMap(void).init(self.allocator);
+            defer inner_locals.deinit();
+
+            var loc_it = locals.iterator();
+            while (loc_it.next()) |entry| {
+                try inner_locals.put(entry.key_ptr.*, {});
+            }
+            for (l.params) |p| {
+                try inner_locals.put(p.name, {});
+            }
+            if (l.params.len == 0) {
+                try inner_locals.put("it", {});
+            }
+            for (l.body) |stmt| {
+                try collectDeclaredLocals(stmt, &inner_locals);
+            }
+            for (l.body) |stmt| {
+                try self.collectCaptures(stmt, &inner_locals, captures);
+            }
+        },
         else => {},
     }
 }
