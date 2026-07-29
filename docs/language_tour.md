@@ -999,47 +999,68 @@ fun main() {
 
 Because Eiwa transpiles to C, integrating with native C libraries is seamless. You can declare a `lib` block to map C functions into Eiwa without writing any wrapper code.
 
-Annotations on `lib` blocks instruct the compiler and linker on how to process the native library:
-- **`@Header` (Compile-Time Includes)**: Instructs the C Transpiler to inject the corresponding `#include` directives at the top of the generated C file so that C compiler knows about the function signatures, structs, and constants.
-- **`@Link` (Linker-Time Libraries)**: Instructs the Eiwa compiler to append the corresponding `-l<library>` flag (e.g., `-lcurl`) during the linking phase, and injects `-DEIWA_USE_<LIBRARY>` preprocessor definitions into the C compiler.
-- **`@Source` (Vendored C Sources)**: Appends a C source file (path relative to the working directory) to the compilation, e.g. `@Source("src/runtime/third_party/neco/neco.c")`. Use for vendored libraries that are compiled together with the program instead of linked.
-- **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag to the C compiler, e.g. `@Include("src/runtime/third_party/neco")`.
+Annotated `lib` blocks instruct the compiler and linker on how to process native C libraries:
+- **`@Header` (Compile-Time Includes)**: Instructs the C Transpiler to inject the corresponding `#include` directives at the top of the generated C file so that the C compiler knows about function signatures, structs, and constants.
+- **`@Link` (Smart Linker Resolution via `pkg-config`)**: Instructs the Eiwa compiler to dynamically resolve library paths and flags using system `pkg-config` (e.g. `@Link("pq")` or `@Link("curl")`). The compiler automatically queries `pkg-config --cflags --libs` (searching standard OS and Homebrew `PKG_CONFIG_PATH` paths on macOS and Linux) and injects the appropriate `-I`, `-L`, and `-l` flags alongside preprocessor macros (`-DEIWA_USE_<NAME>`). If `pkg-config` is not available or doesn't find the package, it gracefully falls back to `-l<name>`.
+- **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag to the C compiler. Relative paths starting with `./` or `../` (e.g. `@Include("./native")`) are automatically resolved relative to the directory containing the `.ei` file.
+- **`@Source` (Vendored C Sources)**: Appends a C source file to the compilation, e.g. `@Source("src/runtime/third_party/neco/neco.c")`. Use for vendored C libraries compiled together with the program.
 - **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag to the C compiler, e.g. `@Define("NECO_STACKSIZE=262144")`.
 - **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions.
 
-A `lib` block is therefore self-contained: everything the C toolchain needs to build the binding is declared next to it, with no hardcoded flags in the compiler:
+### 16.1 Self-Contained Library Bindings
+
+A `lib` block is self-contained: everything the C toolchain needs to build the binding is declared next to it, with no hardcoded flags in the compiler:
 
 ```kotlin
-@Header("neco/neco_wrapper.h")
-@Include("src/runtime/third_party/neco")
-@Define("NECO_USEHEAPSTACK")
-@Source("src/runtime/third_party/neco/neco.c")
-lib Neco { ... }
+// samples/postgres/native.ei
+@Link("pq")
+@Header("<libpq-fe.h>")
+@Header("libpq/libpq_wrapper.h")
+@Include("src/runtime/third_party/libpq")
+lib NativePg {
+    @Alias("PQconnectdb")
+    fun connect(conninfo: Pointer): Pointer
+
+    @Alias("PQfinish")
+    fun finish(conn: Pointer): Void
+
+    @Alias("PQstatus")
+    fun status(conn: Pointer): Int
+}
 ```
 
 ```kotlin
 // http.ei (FFI declaration using Header, Link, and Alias)
 @Link("curl")
-@Header("<curl/curl.h>")
+@Header("<curl/curl.h>", "runtime/curl_helpers.h")
 lib NativeHttp {
     @Alias("curl_easy_init")
-    fun curlEasyInit(): OpaquePointer
+    fun curlEasyInit(): Pointer
     
     @Alias("curl_easy_perform")
-    fun curlEasyPerform(curl: OpaquePointer): Int
+    fun curlEasyPerform(curl: Pointer): Int
     
     @Alias("curl_easy_cleanup")
-    fun curlEasyCleanup(curl: OpaquePointer): Void
+    fun curlEasyCleanup(curl: Pointer): Void
 }
 ```
 
-You can then import and use these native functions exactly like standard Eiwa code:
+### 16.2 Custom CLI C-Flags (`-I`, `-L`, `-l`, `-D`)
 
-```kotlin
-import { NativeHttp } from "http"
+When building or running Eiwa applications, you can pass custom C compiler and linker flags directly to `eiwa run`, `eiwa build`, or `eiwa test`:
 
-val curl = NativeHttp.curlEasyInit()
+```bash
+# Pass custom include (-I) and library (-L) search paths
+eiwa run app.ei -I /opt/homebrew/opt/libpq/include -L /opt/homebrew/opt/libpq/lib
+
+# Build a binary with custom C defines and linked libraries
+eiwa build main.ei -I/usr/local/include -L/usr/local/lib -l custom -DDEBUG_MODE
+
+# Run tests with custom C flags
+eiwa test samples/tests/postgres_test.ei -I /opt/homebrew/opt/libpq/include
 ```
+
+All C flags passed on the CLI are automatically collected and forwarded to `zig cc` during compilation.
 
 *(Note: In the current phase, Annotations are structural compiler pragmas. In future phases, Eiwa will support declaring custom user-defined annotations natively).*
 
