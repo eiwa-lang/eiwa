@@ -400,7 +400,13 @@ pub fn emitLibDecl(self: *CTranspiler, node: *ASTNode) !void {
         } else if (std.mem.eql(u8, ann.name, "Include")) {
             // Extra -I directory for the C compiler.
             for (ann.arguments) |arg| {
-                try self.c_includes.put(arg, {});
+                if ((std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../")) and self.source_file.len > 0) {
+                    const dir = std.fs.path.dirname(self.source_file) orelse ".";
+                    const resolved = try std.fs.path.join(self.allocator, &.{ dir, arg });
+                    try self.c_includes.put(resolved, {});
+                } else {
+                    try self.c_includes.put(arg, {});
+                }
             }
         } else if (std.mem.eql(u8, ann.name, "Define")) {
             // Preprocessor -D flag (NAME or NAME=value).

@@ -35,10 +35,33 @@ pub fn main(init: std.process.Init) !void {
 
     const io = init.io;
 
+    var cli_c_flags = ArrayList([]const u8).init(allocator);
+    defer cli_c_flags.deinit();
+    var positionals = ArrayList([]const u8).init(allocator);
+    defer positionals.deinit();
+
+    var arg_idx: usize = 2;
+    while (arg_idx < args.len) : (arg_idx += 1) {
+        const arg = args[arg_idx];
+        if (std.mem.startsWith(u8, arg, "-I") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-D")) {
+            if (arg.len == 2 and arg_idx + 1 < args.len) {
+                try cli_c_flags.append(arg);
+                arg_idx += 1;
+                try cli_c_flags.append(args[arg_idx]);
+            } else {
+                try cli_c_flags.append(arg);
+            }
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            try cli_c_flags.append(arg);
+        } else {
+            try positionals.append(arg);
+        }
+    }
+
     if (is_test) {
         var search_path: []const u8 = ".";
-        if (args.len > 2) {
-            search_path = args[2];
+        if (positionals.items.len > 0) {
+            search_path = positionals.items[0];
         }
         if (std.mem.endsWith(u8, search_path, ".ei")) {
             try source_alloc.print("import {{}} from \"{s}\"\n", .{search_path});
@@ -66,11 +89,11 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
     } else {
-        if (args.len < 3) {
+        if (positionals.items.len == 0) {
             std.debug.print("Error: Missing file argument.\n", .{});
             return;
         }
-        filename = args[2];
+        filename = positionals.items[0];
         if (!std.mem.endsWith(u8, filename, ".ei")) {
             std.debug.print("Error: Unsupported file extension. Please use .ei files.\n", .{});
             return;
@@ -277,9 +300,6 @@ pub fn main(init: std.process.Init) !void {
     try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", "-O0", "-fwrapv", "-fno-sanitize=undefined" });
     if (builtin.target.os.tag == .macos) {
         try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
-        // libpq is a keg-only Homebrew formula — add its specific paths
-        // TODO: shouldn't have to add these manually
-        try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/opt/libpq/include", "-L", "/opt/homebrew/opt/libpq/lib" });
     }
     try cc_argv.appendSlice(&[_][]const u8{
         "-Isrc/backend/c_transpiler",
@@ -304,14 +324,24 @@ pub fn main(init: std.process.Init) !void {
 
     var lib_it = transpiler.link_libraries.keyIterator();
     while (lib_it.next()) |lib_name| {
-        const flag = try std.fmt.allocPrint(allocator, "-l{s}", .{lib_name.*});
-        try cc_argv.append(flag);
+        if (try resolvePkgConfig(allocator, io, lib_name.*)) |flags| {
+            for (flags) |flag| {
+                try cc_argv.append(flag);
+            }
+        } else {
+            const flag = try std.fmt.allocPrint(allocator, "-l{s}", .{lib_name.*});
+            try cc_argv.append(flag);
+        }
 
         const macro = try std.fmt.allocPrint(allocator, "-DEIWA_USE_{s}", .{lib_name.*});
         for (macro) |*c| {
             c.* = std.ascii.toUpper(c.*);
         }
         try cc_argv.append(macro);
+    }
+
+    for (cli_c_flags.items) |flag| {
+        try cc_argv.append(flag);
     }
 
     try cc_argv.appendSlice(&[_][]const u8{ "-o", final_bin });
@@ -440,4 +470,43 @@ fn translateCError(msg: []const u8) []const u8 {
     }
     // Fallback: return the raw message (still better than the full C trace)
     return msg;
+}
+
+fn resolvePkgConfig(allocator: std.mem.Allocator, io: anytype, lib_name: []const u8) !?[][]const u8 {
+    const pkg1 = try std.fmt.allocPrint(allocator, "lib{s}", .{lib_name});
+    defer allocator.free(pkg1);
+    const names = [_][]const u8{ pkg1, lib_name };
+    const binaries = [_][]const u8{ "pkg-config", "/opt/homebrew/bin/pkg-config" };
+
+    const extra_paths = try std.fmt.allocPrint(allocator, "/opt/homebrew/opt/lib{s}/lib/pkgconfig:/opt/homebrew/opt/{s}/lib/pkgconfig:/usr/local/opt/lib{s}/lib/pkgconfig:/usr/local/opt/{s}/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig", .{ lib_name, lib_name, lib_name, lib_name });
+    defer allocator.free(extra_paths);
+
+    const env_var_arg = try std.fmt.allocPrint(allocator, "PKG_CONFIG_PATH={s}", .{extra_paths});
+    defer allocator.free(env_var_arg);
+
+    for (names) |name| {
+        for (binaries) |bin| {
+            const res = std.process.run(allocator, io, .{
+                .argv = &[_][]const u8{ "/usr/bin/env", env_var_arg, bin, "--cflags", "--libs", name },
+            }) catch continue;
+            defer {
+                allocator.free(res.stdout);
+                allocator.free(res.stderr);
+            }
+
+            if (res.term == .exited and res.term.exited == 0 and res.stdout.len > 0) {
+                var flags = ArrayList([]const u8).init(allocator);
+                var it = std.mem.tokenizeAny(u8, res.stdout, " \t\r\n");
+                while (it.next()) |tok| {
+                    if (tok.len > 0) {
+                        try flags.append(try allocator.dupe(u8, tok));
+                    }
+                }
+                if (flags.items.len > 0) {
+                    return try flags.toOwnedSlice();
+                }
+            }
+        }
+    }
+    return null;
 }
