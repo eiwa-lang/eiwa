@@ -1115,6 +1115,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 .Int => prim_class_name = "core_Int",
                 .Bool => prim_class_name = "core_Bool",
                 .String => prim_class_name = "core_String",
+                .Pointer => prim_class_name = "core_Pointer",
                 else => {},
             }
             if (prim_class_name) |raw_class_name| {

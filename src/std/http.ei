@@ -2,37 +2,37 @@ import { Socket, TCPServer } from "std.net"
 import { Map, MutableMap } from "std.collections"
 
 @Link("curl")
-@Header("<curl/curl.h>")
+@Header("<curl/curl.h>", "runtime/curl_helpers.h")
 lib NativeHttp {
     @Alias("curl_easy_init")
-    fun curlEasyInit(): OpaquePointer
+    fun curlEasyInit(): Pointer
     
     @Alias("curl_easy_perform")
-    fun curlEasyPerform(curl: OpaquePointer): Int
+    fun curlEasyPerform(curl: Pointer): Int
     
     @Alias("curl_easy_cleanup")
-    fun curlEasyCleanup(curl: OpaquePointer): Void
+    fun curlEasyCleanup(curl: Pointer): Void
     
     @Alias("eiwa_get_write_callback_ptr")
-    fun getWriteCallbackPtr(): OpaquePointer
+    fun getWriteCallbackPtr(): Pointer
     
     @Alias("eiwa_curl_buf_data")
-    fun curlBufData(buf: OpaquePointer): OpaquePointer
+    fun curlBufData(buf: Pointer): Pointer
     
     @Alias("eiwa_curl_buf_size")
-    fun curlBufSize(buf: OpaquePointer): Int
+    fun curlBufSize(buf: Pointer): Int
     
     @Alias("eiwa_curl_get_status")
-    fun curlGetStatus(curl: OpaquePointer): Int
+    fun curlGetStatus(curl: Pointer): Int
     
     @Alias("eiwa_curl_setopt_string")
-    fun curlSetoptString(curl: OpaquePointer, option: Int, value: OpaquePointer): Int
+    fun curlSetoptString(curl: Pointer, option: Int, value: Pointer): Int
     
     @Alias("eiwa_curl_setopt_ptr")
-    fun curlSetoptPtr(curl: OpaquePointer, option: Int, value: OpaquePointer): Int
+    fun curlSetoptPtr(curl: Pointer, option: Int, value: Pointer): Int
     
     @Alias("eiwa_curl_setopt_int")
-    fun curlSetoptInt(curl: OpaquePointer, option: Int, value: Int): Int
+    fun curlSetoptInt(curl: Pointer, option: Int, value: Int): Int
 }
 
 type Response(val status: Int, val body: String)

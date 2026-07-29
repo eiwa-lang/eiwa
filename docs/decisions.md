@@ -377,3 +377,25 @@ O problema original: a skill `Echoable` (injetada automaticamente em todo `type`
 
 **Razão:** Mantém a filosofia do Eiwa de composição e camadas limpas (ADR 25). A separação `std.db` (contracts) vs `std.postgres` (implementação) garante que futuros drivers (MySQL, SQLite, SQL Server) partilhem a mesma API sem mudanças na camada de aplicação, idêntico ao padrão JDBC/Kotlin Exposed. A escolha de eager collection (vs cursor lazy) simplifica o lifetime management sem GC finalizers — decisão pragmática aceitável na v1, revisável quando cursores de streaming forem necessários.
 
+## ADR 41: Unificação de Ponteiros Primitivos (`Pointer`), Métodos de Acesso a Memória (`NativeMemory`) e Modularização de `eiwa_runtime.h`
+**Status:** Aceito / Implementado
+**Data:** Julho 2026
+
+**Contexto:**
+1. A standard library e FFI possuíam dois tipos de ponteiro concorrentes (`OpaquePointer` e `Pointer<T>`), gerando duplicidade e redundância.
+2. Não havia métodos orientados a objetos em ponteiros para leitura e escrita de bytes em offsets de memória (`readByte` / `writeByte`).
+3. O header de runtime em C (`src/backend/c_transpiler/eiwa_runtime.h`) estava se tornando um monólito (incluindo helpers POSIX de sockets, helpers do cURL e utilitários de memória), violando o princípio de modularidade e desacoplamento.
+
+**Decisão:**
+1. **Tipo Único `Pointer`:** Substituir `OpaquePointer` e `Pointer<T>` por um tipo primitivo único e conciso: `type Pointer`.
+2. **Separação em `lib NativeMemory`:** Criar a biblioteca `lib NativeMemory` em `src/std/core.ei` contendo os bindings C de acesso a bytes (`eiwa_char_at` e `eiwa_write_byte`), mantendo `lib NativeString` focada exclusivamente nas funções de string C (`<string.h>`).
+3. **Métodos Idiomáticos em `type Pointer`:** O `type Pointer` expõe métodos com corpos explícitos delegando para `NativeMemory` (`readByte(index: Int): Int` e `writeByte(index: Int, value: Int): Void`), mantendo a regra gramatical estrita do Eiwa (métodos de `type` sempre têm corpo). Em C, o compilador inlina a chamada para desindexação direta de ponteiros (`((uint8_t*)ptr)[index]`) com custo zero de execução.
+4. **Modularização do Runtime C:**
+   - Extrair helpers POSIX de rede (`eiwa_tcp_bind`, `eiwa_socket_read`, etc.) para `src/backend/c_transpiler/runtime/net_helpers.h`, vinculado via `@Header("runtime/net_helpers.h")` em `std/net.ei`.
+   - Extrair helpers do cURL (`eiwa_curl_write_callback`, etc.) para `src/backend/c_transpiler/runtime/curl_helpers.h`, vinculado via `@Header("<curl/curl.h>", "runtime/curl_helpers.h")` em `std/http.ei`.
+   - O `eiwa_runtime.h` é reduzido em ~47% (ficando exclusivamente com VTables, Contratos, GC, Exceções e Closures).
+
+**Razão:**
+Traz ergonomia e clareza para a FFI e stdlib do Eiwa, simplifica o Type Checker (eliminando tipos de ponteiros legados), garante consistência gramatical da linguagem e aplica o princípio de "pay-only-for-what-you-use" no backend C, onde headers de rede ou cURL só são incluídos na compilação se os módulos correspondentes do Eiwa forem importados.
+
+

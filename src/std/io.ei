@@ -1,8 +1,8 @@
 @Header("<stdio.h>")
 lib Console {
-    fun printf(format: OpaquePointer, value: Int): Void
-    fun puts(str: OpaquePointer): Int
-    fun fflush(stream: OpaquePointer): Int
+    fun printf(format: Pointer, value: Int): Void
+    fun puts(str: Pointer): Int
+    fun fflush(stream: Pointer): Int
 }
 
 skill Echoable : Stringable {

@@ -388,13 +388,14 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
     var methods = ArrayList(*ASTNode).init(self.allocator);
     if (self.match(.l_brace)) {
         while (!self.check(.r_brace) and !self.check(.eof)) {
+            const member_annotations = try self.parseAnnotations();
             var modifiers = ArrayList(TokenType).init(self.allocator);
             while (self.match(.kw_implement) or self.match(.kw_operator)) {
                 try modifiers.append(self.previous.token_type);
             }
 
             if (self.match(.kw_fun)) {
-                try methods.append(try self.funDeclaration(&[_]ast.Annotation{}, try modifiers.toOwnedSlice(), false));
+                try methods.append(try self.funDeclaration(member_annotations, try modifiers.toOwnedSlice(), false));
             } else {
                 self.errorAtCurrent("Only methods are currently supported inside types.");
                 return error.ParseError;
@@ -511,13 +512,14 @@ pub fn skillDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*
     try self.consume(.l_brace, "Expected '{' before skill body.");
     var methods = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
+        const member_annotations = try self.parseAnnotations();
         var modifiers = ArrayList(TokenType).init(self.allocator);
         while (self.match(.kw_implement) or self.match(.kw_operator)) {
             try modifiers.append(self.previous.token_type);
         }
 
         if (self.match(.kw_fun)) {
-            try methods.append(try self.funDeclaration(&[_]ast.Annotation{}, try modifiers.toOwnedSlice(), false));
+            try methods.append(try self.funDeclaration(member_annotations, try modifiers.toOwnedSlice(), false));
         } else {
             self.errorAtCurrent("Skills may only declare methods (no state, no constructors).");
             return error.ParseError;

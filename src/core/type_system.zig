@@ -36,7 +36,7 @@ pub const EiwaType = union(enum) {
             .Bool => try writer.writeAll("Bool"),
             .Pointer => |elem| {
                 if (elem.* == .Void) {
-                    try writer.writeAll("OpaquePointer");
+                    try writer.writeAll("Pointer");
                 } else {
                     try writer.writeAll("Pointer<");
                     try elem.format("", options, writer);
@@ -96,7 +96,7 @@ pub const EiwaType = union(enum) {
             .Bool => try writer.writeAll("Bool"),
             .Pointer => |elem| {
                 if (elem.* == .Void) {
-                    try writer.writeAll("OpaquePointer");
+                    try writer.writeAll("Pointer");
                 } else {
                     try writer.writeAll("Pointer_");
                     try elem.formatSafe(writer);

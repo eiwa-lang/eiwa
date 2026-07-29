@@ -184,7 +184,8 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
     }
 
     if (primitive_type) |pt| {
-        try self.header_writer.writer().print("{s}({s} this", .{ fn_c_name, pt });
+        const c_pt = if (std.mem.eql(u8, pt, "pointer")) "void*" else pt;
+        try self.header_writer.writer().print("{s}({s} this", .{ fn_c_name, c_pt });
     } else {
         try self.header_writer.writer().print("{s}({s}* this", .{ fn_c_name, class_name });
     }
@@ -210,7 +211,8 @@ pub fn emitMethodDecl(self: *CTranspiler, class_name: []const u8, node: *ASTNode
     }
 
     if (primitive_type) |pt| {
-        try self.writer.writer().print("{s}({s} this", .{ fn_c_name, pt });
+        const c_pt = if (std.mem.eql(u8, pt, "pointer")) "void*" else pt;
+        try self.writer.writer().print("{s}({s} this", .{ fn_c_name, c_pt });
     } else {
         try self.writer.writer().print("{s}({s}* this", .{ fn_c_name, class_name });
     }

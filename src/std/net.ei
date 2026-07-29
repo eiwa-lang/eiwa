@@ -1,6 +1,6 @@
 import { Neco } from "std.coroutines"
 
-@Header("<sys/socket.h>", "<netinet/in.h>", "<arpa/inet.h>", "<unistd.h>", "<fcntl.h>")
+@Header("runtime/net_helpers.h")
 lib NativeNet {
     @Alias("eiwa_tcp_bind")
     fun tcpBind(port: Int): Int
@@ -9,10 +9,10 @@ lib NativeNet {
     fun tcpAccept(fd: Int): Int
 
     @Alias("eiwa_socket_read")
-    fun socketRead(fd: Int, buf: OpaquePointer, maxLen: Int): Int
+    fun socketRead(fd: Int, buf: Pointer, maxLen: Int): Int
 
     @Alias("eiwa_socket_write")
-    fun socketWrite(fd: Int, data: OpaquePointer, len: Int): Int
+    fun socketWrite(fd: Int, data: Pointer, len: Int): Int
     
     @Alias("eiwa_tcp_set_nonblocking")
     fun setNonblocking(fd: Int): Int
@@ -29,7 +29,7 @@ type Socket(val fd: Int) {
         if (n <= 0) {
             return ""
         }
-        NativeString.terminate(buf, n)
+        buf?.writeByte(n, 0)
         return String(buf, n)
     }
     

@@ -308,7 +308,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     if (c.resolved_c_name == null) {
         if (self.module_prefix) |prefix| {
             c.resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, c.name });
-            if (!std.mem.eql(u8, c.name, "Int") and !std.mem.eql(u8, c.name, "Bool") and !std.mem.eql(u8, c.name, "Pointer") and !std.mem.eql(u8, c.name, "OpaquePointer")) {
+            if (!std.mem.eql(u8, c.name, "Int") and !std.mem.eql(u8, c.name, "Bool") and !std.mem.eql(u8, c.name, "Pointer")) {
                 try self.alias_map.put(c.name, c.resolved_c_name.?);
             }
         } else {
@@ -323,7 +323,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         class_type.* = .Bool;
     } else if (std.mem.eql(u8, c.name, "String")) {
         class_type.* = .String;
-    } else if (std.mem.eql(u8, c.name, "OpaquePointer") or std.mem.eql(u8, c.name, "Pointer")) {
+    } else if (std.mem.eql(u8, c.name, "Pointer")) {
         class_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
         @constCast(class_type.Pointer).* = .Void;
     } else {
@@ -1214,7 +1214,7 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
 }
 
 pub fn injectAutoContractsAndSkills(self: *TypeChecker, c: anytype) !void {
-    if (std.mem.eql(u8, c.name, "OpaquePointer") or std.mem.eql(u8, c.name, "Pointer")) return;
+    if (std.mem.eql(u8, c.name, "Pointer")) return;
 
     for (auto_injected_contracts) |contract_name| {
         var exists = false;
@@ -1438,7 +1438,7 @@ fn makeIsTypeCond(self: *TypeChecker, line: usize, col: usize, type_name: []cons
 }
 
 fn generateDefaultToString(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
-    if (std.mem.eql(u8, c.name, "Int") or std.mem.eql(u8, c.name, "Bool") or std.mem.eql(u8, c.name, "String") or std.mem.eql(u8, c.name, "Pointer") or std.mem.eql(u8, c.name, "OpaquePointer")) return;
+    if (std.mem.eql(u8, c.name, "Int") or std.mem.eql(u8, c.name, "Bool") or std.mem.eql(u8, c.name, "String") or std.mem.eql(u8, c.name, "Pointer")) return;
 
     for (c.methods) |m| {
         if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "toString")) return;
@@ -1518,7 +1518,7 @@ fn generateDefaultToString(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
 }
 
 fn generateDefaultHashCode(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
-    if (std.mem.eql(u8, c.name, "Int") or std.mem.eql(u8, c.name, "Bool") or std.mem.eql(u8, c.name, "String") or std.mem.eql(u8, c.name, "Pointer") or std.mem.eql(u8, c.name, "OpaquePointer")) return;
+    if (std.mem.eql(u8, c.name, "Int") or std.mem.eql(u8, c.name, "Bool") or std.mem.eql(u8, c.name, "String") or std.mem.eql(u8, c.name, "Pointer")) return;
 
     for (c.methods) |m| {
         if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "hashCode")) return;
@@ -1587,7 +1587,7 @@ fn generateDefaultHashCode(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
 }
 
 fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
-    if (std.mem.eql(u8, c.name, "Int") or std.mem.eql(u8, c.name, "Bool") or std.mem.eql(u8, c.name, "String") or std.mem.eql(u8, c.name, "Pointer") or std.mem.eql(u8, c.name, "OpaquePointer")) return;
+    if (std.mem.eql(u8, c.name, "Int") or std.mem.eql(u8, c.name, "Bool") or std.mem.eql(u8, c.name, "String") or std.mem.eql(u8, c.name, "Pointer")) return;
 
     for (c.methods) |m| {
         if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "equals")) return;

@@ -5,7 +5,7 @@ import { NativePg } from "./native"
 import { PgResult } from "./result"
 
 type PgStatement(
-    val conn: OpaquePointer,
+    val conn: Pointer,
     val name: String
 ): Statement {
 

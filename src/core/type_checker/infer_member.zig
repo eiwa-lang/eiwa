@@ -346,6 +346,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         .Int => base_name = "core_Int",
         .String => base_name = "core_String",
         .Bool => base_name = "core_Bool",
+        .Pointer => base_name = "core_Pointer",
         else => {},
     }
     

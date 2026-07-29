@@ -11,9 +11,8 @@ test "fs.ae: should write and read file correctly" {
     File.delete(path)
 }
 
-test "fs.ae: should support generic pointer types" {
-    val intPtr: Pointer<Int> = Standard.gcMalloc(4)
-    val voidPtr: OpaquePointer = intPtr
-    val intPtr2: Pointer<Int> = voidPtr
-    assert(intPtr == intPtr2)
+test "fs.ae: should support pointer types" {
+    val ptr: Pointer = Standard.gcMalloc(4)
+    val ptr2: Pointer = ptr
+    assert(ptr == ptr2)
 }

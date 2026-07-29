@@ -18,8 +18,7 @@ type PgResult(
 
 } object {
 
-    //TODO: porque precisamos disso?
-    fun copyCStr(src: OpaquePointer, maxLen: Int): String {
+    fun copyCStr(src: Pointer, maxLen: Int): String {
         val len = NativeString.strlen(src)
         val cappedLen = if (len > maxLen) maxLen else len
         val buf = Standard.gcMalloc(cappedLen + 1)
@@ -27,7 +26,7 @@ type PgResult(
         return String(buf, cappedLen)
     }
 
-    fun fromNative(raw: OpaquePointer, conn: OpaquePointer): PgResult {
+    fun fromNative(raw: Pointer, conn: Pointer): PgResult {
         if (raw == null) {
             throw DbError(String(NativePg.errorMessage(conn), 256))
         }

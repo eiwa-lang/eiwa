@@ -16,92 +16,92 @@ lib NativePg {
     // // --- Connection lifecycle ---
 
     @Alias("PQconnectdb")
-    fun connect(conninfo: OpaquePointer): OpaquePointer
+    fun connect(conninfo: Pointer): Pointer
 
     @Alias("PQfinish")
-    fun finish(conn: OpaquePointer): Void
+    fun finish(conn: Pointer): Void
 
     @Alias("PQstatus")
-    fun status(conn: OpaquePointer): Int
+    fun status(conn: Pointer): Int
 
     @Alias("PQerrorMessage")
-    fun errorMessage(conn: OpaquePointer): OpaquePointer
+    fun errorMessage(conn: Pointer): Pointer
 
     // --- Async send (non-blocking; use with waitReadable) ---
 
     @Alias("PQsendQuery")
-    fun sendQuery(conn: OpaquePointer, query: OpaquePointer): Int
+    fun sendQuery(conn: Pointer, query: Pointer): Int
 
     @Alias("PQsendQueryParams")
-    fun sendQueryParams(conn: OpaquePointer, command: OpaquePointer, nparams: Int, paramTypes: OpaquePointer, paramValues: OpaquePointer, paramLengths: OpaquePointer, paramFormats: OpaquePointer, resultFormat: Int): Int
+    fun sendQueryParams(conn: Pointer, command: Pointer, nparams: Int, paramTypes: Pointer, paramValues: Pointer, paramLengths: Pointer, paramFormats: Pointer, resultFormat: Int): Int
 
     @Alias("PQconsumeInput")
-    fun consumeInput(conn: OpaquePointer): Int
+    fun consumeInput(conn: Pointer): Int
 
     @Alias("PQisBusy")
-    fun isBusy(conn: OpaquePointer): Int
+    fun isBusy(conn: Pointer): Int
 
     @Alias("PQgetResult")
-    fun getResult(conn: OpaquePointer): OpaquePointer
+    fun getResult(conn: Pointer): Pointer
 
     @Alias("PQflush")
-    fun flush(conn: OpaquePointer): Int
+    fun flush(conn: Pointer): Int
 
     // --- Result inspection ---
 
     @Alias("PQresultStatus")
-    fun resultStatus(result: OpaquePointer): Int
+    fun resultStatus(result: Pointer): Int
 
     @Alias("PQntuples")
-    fun ntuples(result: OpaquePointer): Int
+    fun ntuples(result: Pointer): Int
 
     @Alias("PQnfields")
-    fun nfields(result: OpaquePointer): Int
+    fun nfields(result: Pointer): Int
 
     @Alias("PQfname")
-    fun fname(result: OpaquePointer, col: Int): OpaquePointer
+    fun fname(result: Pointer, col: Int): Pointer
 
     //TODO: porque usar sempre wrapper gambiarra?
 
     @Alias("eiwa_pq_field_index")
-    fun fieldIndex(result: OpaquePointer, name: OpaquePointer): Int
+    fun fieldIndex(result: Pointer, name: Pointer): Int
 
     @Alias("eiwa_pq_getvalue")
-    fun getvalue(result: OpaquePointer, row: Int, col: Int): OpaquePointer
+    fun getvalue(result: Pointer, row: Int, col: Int): Pointer
 
     @Alias("PQgetisnull")
-    fun isnull(result: OpaquePointer, row: Int, col: Int): Int
+    fun isnull(result: Pointer, row: Int, col: Int): Int
 
     @Alias("eiwa_pq_rows_affected")
-    fun rowsAffected(result: OpaquePointer): Int
+    fun rowsAffected(result: Pointer): Int
 
     // --- Synchronous execution (no-param queries, BEGIN/COMMIT/ROLLBACK) ---
 
     @Alias("eiwa_pq_exec")
-    fun exec(conn: OpaquePointer, command: OpaquePointer): OpaquePointer
+    fun exec(conn: Pointer, command: Pointer): Pointer
 
     // --- Parameterized execution (via wrapper that converts List<String> → char**) ---
 
     @Alias("eiwa_pq_exec_params")
-    fun execParams(conn: OpaquePointer, command: OpaquePointer, params: List<String>): OpaquePointer
+    fun execParams(conn: Pointer, command: Pointer, params: List<String>): Pointer
 
     // --- Result cleanup ---
 
     @Alias("PQclear")
-    fun clear(result: OpaquePointer): Void
+    fun clear(result: Pointer): Void
 
     // --- Socket (for async integration with neco) ---
 
     @Alias("PQsocket")
-    fun socket(conn: OpaquePointer): Int
+    fun socket(conn: Pointer): Int
 
     // --- Prepared statements ---
 
     @Alias("PQprepare")
-    fun prepare(conn: OpaquePointer, stmtName: OpaquePointer, query: OpaquePointer, nparams: Int, paramTypes: OpaquePointer): OpaquePointer
+    fun prepare(conn: Pointer, stmtName: Pointer, query: Pointer, nparams: Int, paramTypes: Pointer): Pointer
 
     @Alias("eiwa_pq_exec_prepared")
-    fun execPrepared(conn: OpaquePointer, stmtName: OpaquePointer, params: List<String>): OpaquePointer
+    fun execPrepared(conn: Pointer, stmtName: Pointer, params: List<String>): Pointer
 }
 
 // Result status codes (mirrors ExecStatusType from libpq-fe.h)

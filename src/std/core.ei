@@ -1,34 +1,35 @@
 @Header("<stdlib.h>", "<stdio.h>")
 lib Standard {
-    fun sprintf(buffer: OpaquePointer, format: OpaquePointer, value: Int): Int
+    fun sprintf(buffer: Pointer, format: Pointer, value: Int): Int
 
     @Alias("GC_MALLOC")
-    fun gcMalloc(size: Int): OpaquePointer
+    fun gcMalloc(size: Int): Pointer
 
     @Alias("GC_REALLOC")
-    fun gcRealloc(ptr: OpaquePointer, newSize: Int): OpaquePointer
+    fun gcRealloc(ptr: Pointer, newSize: Int): Pointer
 
     fun exit(code: Int): Void
 }
 
 @Header("<string.h>")
 lib NativeString {
-    fun strcmp(s1: OpaquePointer, s2: OpaquePointer): Int
+    fun strcmp(s1: Pointer, s2: Pointer): Int
 
-    fun strstr(haystack: OpaquePointer, needle: OpaquePointer): OpaquePointer
+    fun strstr(haystack: Pointer, needle: Pointer): Pointer
 
-    fun strcpy(dest: OpaquePointer, src: OpaquePointer): OpaquePointer
+    fun strcpy(dest: Pointer, src: Pointer): Pointer
 
-    fun strncpy(dest: OpaquePointer, src: OpaquePointer, n: Int): OpaquePointer
+    fun strncpy(dest: Pointer, src: Pointer, n: Int): Pointer
 
-    fun strlen(s: OpaquePointer): Int
+    fun strlen(s: Pointer): Int
+}
 
-    //TODO: Remove this, they are only for internal usage
+lib NativeMemory {
     @Alias("eiwa_char_at")
-    fun charAt(s: OpaquePointer, index: Int): Int
+    fun readByte(ptr: Pointer, index: Int): Int
 
-    @Alias("eiwa_terminate")
-    fun terminate(s: OpaquePointer, index: Int): Void
+    @Alias("eiwa_write_byte")
+    fun writeByte(ptr: Pointer, index: Int, value: Int): Void
 }
 
 contract Stringable {
@@ -108,12 +109,15 @@ fun use<T>(receiver: T, block: (T) -> Void): Void {
 }
 
 @Primitive("pointer")
-type OpaquePointer {}
+type Pointer {
+    fun readByte(index: Int): Int = NativeMemory.readByte(this, index)
 
-@Primitive("pointer")
-type Pointer<T> {}
+    fun writeByte(index: Int, value: Int): Void {
+        NativeMemory.writeByte(this, index, value)
+    }
+}
 
-type String(val ptr: OpaquePointer, val length: Int) : Stringable, Equatable, Hashable {
+type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable {
     implement fun toString(): String = this
 
     operator fun equals(other: String): Bool {
@@ -189,7 +193,7 @@ type String(val ptr: OpaquePointer, val length: Int) : Stringable, Equatable, Ha
         val len = end - start
         val buf = Standard.gcMalloc(len + 1)
         NativeString.strncpy(buf, this.ptr + start, len)
-        NativeString.terminate(buf, len)
+        NativeMemory.writeByte(buf, len, 0)
         return String(buf, len)
     }
 
@@ -197,7 +201,7 @@ type String(val ptr: OpaquePointer, val length: Int) : Stringable, Equatable, Ha
         var hash = 5381
         var i = 0
         while (i < this.length) {
-            val c = NativeString.charAt(this.ptr, i)
+            val c = NativeMemory.readByte(this.ptr, i)
             hash = hash * 33 + c
             i = i + 1
         }

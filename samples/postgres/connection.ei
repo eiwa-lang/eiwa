@@ -14,7 +14,7 @@ import { PgResult } from "./result"
 import { PgStatement } from "./statement"
 import { Log } from "std.log"
 
-type PgConnection(val conn: OpaquePointer, var closed: Bool = false): Connection, Closeable {
+type PgConnection(val conn: Pointer, var closed: Bool = false): Connection, Closeable {
 
     fun checkOpen() {
         if (closed) {
@@ -23,8 +23,7 @@ type PgConnection(val conn: OpaquePointer, var closed: Bool = false): Connection
     }
 
     // Async path for no-param queries: yields the fiber until socket is ready.
-    //TODO: porque retornar OpaquePointer?
-    fun asyncQuery(sql: String): OpaquePointer {
+    fun asyncQuery(sql: String): Pointer {
         checkOpen()
         val fd = NativePg.socket(conn)
         NativePg.sendQuery(conn, sql.ptr)
@@ -65,13 +64,13 @@ type PgConnection(val conn: OpaquePointer, var closed: Bool = false): Connection
         var i = 0
         val len = sql.length
         while (i < len) {
-            val c = NativeString.charAt(sql.ptr, i)
+            val c = NativeMemory.readByte(sql.ptr, i)
             if (c == 36) { // '$' = ASCII 36
                 i = i + 1
                 // Skip any following digits
                 var skip = true
                 while (skip && i < len) {
-                    val d = NativeString.charAt(sql.ptr, i)
+                    val d = NativeMemory.readByte(sql.ptr, i)
                     if (d >= 48 && d <= 57) { // '0'..'9'
                         i = i + 1
                     } else {
