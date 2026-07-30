@@ -106,9 +106,9 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
 - [x] **Task 20.7:** FFI Nativo & Bibliotecas C (`lib Name { ... }`):
   - Declaração dinâmica de protótipos de funções C externas no módulo LLVM (`declareLib`).
   - Interoperabilidade com bibliotecas nativas C (`libcurl`, `libpq`, `Boehm GC`, POSIX libc).
-- [ ] **Task 20.8:** Arrays & Coleções Genéricas (`List<T>`, `Map<K, V>`, `[1, 2, 3]`):
-  - Tradução de literais de array (`array_literal`) e expressões de índice (`arr[i]`).
-  - Suporte a contêineres monomórficos em LLVM IR.
+- [x] **Task 20.8:** Arrays & Coleções Genéricas (`List<T>`, `Map<K, V>`, `[1, 2, 3]`):
+  - Tradução de literais de array (`array_literal`) e expressões de índice (`arr[i]`, `index_expr`, `index_set_expr`).
+  - Suporte a layout de array buffer (tamanho, capacidade e elementos) em LLVM IR.
 - [ ] **Task 20.9:** Lambdas & Closures (`() -> T`):
   - Emissão de structs de closure (ponteiro de função + ambiente de variáveis capturadas).
   - Chamadas dinâmicas a lambdas em LLVM IR.

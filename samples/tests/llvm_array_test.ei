@@ -1,0 +1,8 @@
+import { assert } from "std.core"
+
+test "llvm backend array literal and indexing" {
+    val nums = [10, 20, 30]
+    assert(nums[0] == 10)
+    assert(nums[1] == 20)
+    assert(nums[2] == 30)
+}

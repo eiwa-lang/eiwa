@@ -98,6 +98,61 @@ pub fn emitExpression(
             }
             return error.PropertyNotFound;
         },
+        .array_literal => |arr| {
+            const count: i64 = @intCast(arr.elements.len);
+            const total_slots: i64 = count + 2; // slot 0: size, slot 1: capacity, slot 2..N+1: elements
+            const size_bytes: i64 = total_slots * 8;
+
+            const malloc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+            const malloc_type = llvm.LLVMGlobalGetValueType(malloc_func);
+            const size_val = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), @bitCast(size_bytes), 0);
+            var malloc_args = [_]llvm.LLVMValueRef{size_val};
+            const arr_ptr = llvm.LLVMBuildCall2(builder, malloc_type, malloc_func, &malloc_args, 1, "arr_alloc");
+
+            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+            // Store size at slot 0
+            var idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+            const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &idx0, 1, "size_ptr");
+            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, @bitCast(count), 0), size_ptr);
+
+            // Store capacity at slot 1
+            var idx1 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
+            const cap_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &idx1, 1, "cap_ptr");
+            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, @bitCast(count), 0), cap_ptr);
+
+            // Store elements
+            for (arr.elements, 0..) |elem_node, idx| {
+                const elem_val = try emitExpression(ctx, mod, builder, scope, structs, elem_node);
+                const offset_val = llvm.LLVMConstInt(i64_type, @bitCast(@as(i64, @intCast(idx + 2))), 0);
+                var elem_idx = [_]llvm.LLVMValueRef{offset_val};
+                const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &elem_idx, 1, "elem_ptr");
+                _ = llvm.LLVMBuildStore(builder, elem_val, elem_ptr);
+            }
+
+            return arr_ptr;
+        },
+        .index_expr => |idx_expr| {
+            const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, idx_expr.object);
+            const i_val = try emitExpression(ctx, mod, builder, scope, structs, idx_expr.index);
+
+            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+            const offset_val = llvm.LLVMBuildAdd(builder, i_val, llvm.LLVMConstInt(i64_type, 2, 0), "offset");
+            var elem_idx = [_]llvm.LLVMValueRef{offset_val};
+            const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &elem_idx, 1, "arr_idx_gep");
+            return llvm.LLVMBuildLoad2(builder, i64_type, elem_ptr, "arr_elem_val");
+        },
+        .index_set_expr => |set_idx| {
+            const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, set_idx.object);
+            const i_val = try emitExpression(ctx, mod, builder, scope, structs, set_idx.index);
+            const val = try emitExpression(ctx, mod, builder, scope, structs, set_idx.value);
+
+            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+            const offset_val = llvm.LLVMBuildAdd(builder, i_val, llvm.LLVMConstInt(i64_type, 2, 0), "offset");
+            var elem_idx = [_]llvm.LLVMValueRef{offset_val};
+            const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &elem_idx, 1, "arr_set_gep");
+            _ = llvm.LLVMBuildStore(builder, val, elem_ptr);
+            return val;
+        },
         .unary_expr => |un| {
             const operand_val = try emitExpression(ctx, mod, builder, scope, structs, un.operand);
             switch (un.operator) {

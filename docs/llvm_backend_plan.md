@@ -62,9 +62,9 @@ Ao construir o IR do LLVM diretamente na memória RAM (`LLVMModuleRef`, `LLVMBui
 - [x] Declaração dinâmica de protótipos de funções C externas no módulo LLVM (`declareLib`).
 - [x] Resolução automática de símbolos C nativos via OrcJIT e linkage nativo (`abs`, `malloc`, POSIX libc, FFI).
 
-### ⏳ Fase 20.8 — Arrays & Coleções Genéricas (`List<T>`, `Map<K, V>`, `[1, 2, 3]`)
-- [ ] Tradução de literais de array (`array_literal`) e expressões de índice (`arr[i]`).
-- [ ] Suporte a contêineres monomórficos em LLVM IR.
+### ✅ Fase 20.8 — Arrays & Coleções Genéricas (`List<T>`, `Map<K, V>`, `[1, 2, 3]`)
+- [x] Tradução de literais de array (`array_literal`) e expressões de índice (`arr[i]`, `index_expr`, `index_set_expr`).
+- [x] Suporte a layout de array buffer (tamanho, capacidade e elementos em LLVM GEP2).
 
 ### ⏳ Fase 20.9 — Lambdas & Closures (`() -> T`)
 - [ ] Emissão de structs de closure (ponteiro de função + ambiente de variáveis capturadas).
