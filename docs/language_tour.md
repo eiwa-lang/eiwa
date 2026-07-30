@@ -1719,3 +1719,71 @@ fun main() {
 }
 ```
 
+---
+
+## 26. Unique Identifiers (`std.uuid` & `std.ulid`)
+
+Eiwa provides built-in support for 128-bit unique identifiers through the standard packages `std.uuid` and `std.ulid`.
+
+### 26.1 `std.uuid` — UUID v7 (Time-Ordered) & UUID v4 (Random)
+
+`Uuid` is an immutable 128-bit structure representing a Universally Unique Identifier.
+
+* **UUID v7 (Default / Recommended)**: Combines a 48-bit Unix millisecond timestamp with 74 bits of CSPRNG entropy. Time-ordered, ideal for database primary keys (index-friendly).
+* **UUID v4**: Fully random CSPRNG UUID.
+* **RFC String Format**: Standard 36-character format (`8-4-4-4-12` hex characters with hyphens).
+
+```kotlin
+import { Uuid, Identifier } from "std.uuid"
+
+fun main() {
+    // Generate UUID v7 (time-ordered, default)
+    val id7 = Uuid.generate() // or Uuid.v7()
+    println(id7.toString())   // e.g. "018f6c52-7b2a-7123-8abc-123456789abc"
+    assert(id7.version() == 7)
+
+    // Generate UUID v4 (random)
+    val id4 = Uuid.v4()
+    println(id4.toString())   // e.g. "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    assert(id4.version() == 4)
+
+    // Parse existing UUID string (returns null if invalid)
+    val parsed = Uuid.parse("018f6c52-7b2a-7123-8abc-123456789abc")
+    if (parsed != null) {
+        assert(parsed == id7)
+    }
+
+    // Contract polymorphism
+    val genericId: Identifier = Uuid.generate()
+    println(genericId.toString())
+}
+```
+
+### 26.2 `std.ulid` — ULID (Universally Unique Lexicographically Sortable Identifier)
+
+`Ulid` is a 128-bit identifier encoded as a 26-character Crockford Base32 string (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`).
+
+* **Structure**: 48-bit Unix millisecond timestamp (10 chars) + 80 bits of CSPRNG entropy (16 chars).
+* **Sortable**: Lexicographically sortable across systems.
+* **Timestamp Extraction**: Direct access to the embedded 48-bit Unix millisecond timestamp.
+
+```kotlin
+import { Ulid } from "std.ulid"
+
+fun main() {
+    // Generate ULID
+    val ulid = Ulid.generate()
+    println(ulid.toString()) // e.g. "01KYR9VPX561EXNHG95R8REG8R" (26 chars)
+
+    // Access embedded timestamp in milliseconds
+    val ts = ulid.timestamp()
+    println("Created at millis: " + ts.toString())
+
+    // Parse Crockford Base32 ULID string (returns null if invalid)
+    val parsed = Ulid.parse("01KYR9VPX561EXNHG95R8REG8R")
+    if (parsed != null) {
+        assert(parsed == ulid)
+    }
+}
+```
+

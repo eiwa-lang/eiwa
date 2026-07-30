@@ -43,10 +43,10 @@ skill TextFormatter : LogFormatter {
         if (fields.size() > 0) {
             result = result + " {"
             var i = 0
-            val capacity = fields.list.size()
+            val capacity = fields.entries.size()
             var first = true
             while (i < capacity) {
-                var curr = fields.list.get(i)
+                var curr = fields.entries.get(i)
                 while (curr != null) {
                     if (first == false) {
                         result = result + ", "
@@ -79,9 +79,9 @@ skill JsonFormatter : LogFormatter {
 
         if (fields.size() > 0) {
             var i = 0
-            val capacity = fields.list.size()
+            val capacity = fields.entries.size()
             while (i < capacity) {
-                var curr = fields.list.get(i)
+                var curr = fields.entries.get(i)
                 while (curr != null) {
                     val k = curr!!.key
                     val v = curr!!.value
@@ -116,9 +116,9 @@ type Logger(
     fun with(key: String, value: String): Logger {
         val newFields = MutableMap<String, String>()
         var i = 0
-        val capacity = this.fields.list.size()
+        val capacity = this.fields.entries.size()
         while (i < capacity) {
-            var curr = this.fields.list.get(i)
+            var curr = this.fields.entries.get(i)
             while (curr != null) {
                 newFields.put(curr!!.key, curr!!.value)
                 curr = curr!!.next
@@ -135,9 +135,9 @@ type Logger(
     fun withFields(extraFields: Map<String, String>): Logger {
         val newFields = MutableMap<String, String>()
         var i = 0
-        val cap1 = this.fields.list.size()
+        val cap1 = this.fields.entries.size()
         while (i < cap1) {
-            var curr = this.fields.list.get(i)
+            var curr = this.fields.entries.get(i)
             while (curr != null) {
                 newFields.put(curr!!.key, curr!!.value)
                 curr = curr!!.next
@@ -145,9 +145,9 @@ type Logger(
             i = i + 1
         }
         var j = 0
-        val cap2 = extraFields.list.size()
+        val cap2 = extraFields.entries.size()
         while (j < cap2) {
-            var curr2 = extraFields.list.get(j)
+            var curr2 = extraFields.entries.get(j)
             while (curr2 != null) {
                 newFields.put(curr2!!.key, curr2!!.value)
                 curr2 = curr2!!.next

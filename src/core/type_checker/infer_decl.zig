@@ -27,11 +27,13 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "yaml.ei", @embedFile("../../std/yaml.ei") },
     .{ "log.ei", @embedFile("../../std/log.ei") },
     .{ "coroutines.ei", @embedFile("../../std/coroutines.ei") },
+    .{ "uuid.ei", @embedFile("../../std/uuid.ei") },
+    .{ "ulid.ei", @embedFile("../../std/ulid.ei") },
     // --- Database layer ---
     .{ "db.ei", @embedFile("../../std/db.ei") },
 });
 
-pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines" };
+pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines", "std.uuid", "std.ulid" };
 pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions" };
 pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 

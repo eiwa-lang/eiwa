@@ -34,7 +34,7 @@ pub fn cIdent(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
 
 pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType) ![]const u8 {
     switch (t.*) {
-        .Int => return "int",
+        .Int => return "int64_t",
         .Bool => return "bool",
         .Pointer => |elem| {
             if (elem.* == .Void) return "char*";
@@ -44,7 +44,7 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType)
         .String => return "core_String*",
         .Void => return "void",
         .Custom => |name| {
-            if (std.mem.eql(u8, name, "Int")) return "int";
+            if (std.mem.eql(u8, name, "Int")) return "int64_t";
             if (std.mem.eql(u8, name, "Bool")) return "bool";
             if (std.mem.eql(u8, name, "core_String") or std.mem.eql(u8, name, "String")) return "core_String*";
             if (std.mem.endsWith(u8, name, "Stringable") or std.mem.endsWith(u8, name, "Equatable") or std.mem.endsWith(u8, name, "Hashable") or std.mem.endsWith(u8, name, "Throwable") or std.mem.endsWith(u8, name, "Serializable") or std.mem.endsWith(u8, name, "SerdeValue") or std.mem.endsWith(u8, name, "SerdeList")) {

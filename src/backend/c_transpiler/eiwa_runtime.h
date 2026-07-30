@@ -17,6 +17,28 @@ static inline void eiwa_write_byte(void* str, int index, int value) {
     ((uint8_t*)str)[index] = (uint8_t)value;
 }
 
+static inline void eiwa_random_bytes(void* buf, int len) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+    arc4random_buf(buf, len);
+#else
+    FILE* f = fopen("/dev/urandom", "rb");
+    if (f) {
+        size_t r = fread(buf, 1, len, f);
+        (void)r;
+        fclose(f);
+    } else {
+        uint8_t* p = (uint8_t*)buf;
+        for (int i = 0; i < len; i++) p[i] = (uint8_t)(rand() & 0xFF);
+    }
+#endif
+}
+
+static inline int64_t eiwa_now_millis(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000LL + (int64_t)(ts.tv_nsec / 1000000LL);
+}
+
 typedef struct EiwaContractDescriptor {
     const char* name;
 } EiwaContractDescriptor;
@@ -100,9 +122,9 @@ typedef struct core_String core_String;
 extern const EiwaContractDescriptor core_Stringable_contract;
 extern const EiwaContractDescriptor core_Hashable_contract;
 core_String* core_Bool_toString(bool val);
-core_String* core_Int_toString(int val);
-int core_Bool_hashCode(bool val);
-int core_Int_hashCode(int val);
+core_String* core_Int_toString(int64_t val);
+int64_t core_Bool_hashCode(bool val);
+int64_t core_Int_hashCode(int64_t val);
 
 static inline core_String* eiwa_to_string(void* ptr) {
     if (!ptr) {
@@ -115,18 +137,18 @@ static inline core_String* eiwa_to_string(void* ptr) {
     }
     uintptr_t val = (uintptr_t)ptr;
     if (val <= 1) return core_Bool_toString((bool)val);
-    if (val < 0x10000) return core_Int_toString((int)val);
+    if (val < 0x10000) return core_Int_toString((int64_t)val);
     const EiwaTypeDescriptor* desc = *(const EiwaTypeDescriptor**)ptr;
     if (desc == &core_String_descriptor) return (core_String*)ptr;
     return ((core_String*(*)(void*))eiwa_find_vtable(desc, &core_Stringable_contract)[0])(ptr);
 }
 
-static inline int eiwa_hash_code(void* ptr) {
+static inline int64_t eiwa_hash_code(void* ptr) {
     if (!ptr) return 0;
     uintptr_t val = (uintptr_t)ptr;
     if (val <= 1) return core_Bool_hashCode((bool)val);
-    if (val < 0x10000) return core_Int_hashCode((int)val);
-    return ((int(*)(void*))eiwa_find_vtable(*(const EiwaTypeDescriptor**)ptr, &core_Hashable_contract)[0])(ptr);
+    if (val < 0x10000) return core_Int_hashCode((int64_t)val);
+    return ((int64_t(*)(void*))eiwa_find_vtable(*(const EiwaTypeDescriptor**)ptr, &core_Hashable_contract)[0])(ptr);
 }
 
 #endif // EIWA_RUNTIME_H

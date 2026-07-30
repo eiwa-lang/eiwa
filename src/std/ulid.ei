@@ -1,0 +1,228 @@
+import { mod } from "std.math"
+import { Identifier } from "std.uuid"
+import { Serializable } from "std.serde"
+
+type Ulid(val bytes: List<Int>) : Identifier {
+
+    implement fun toString(): String {
+        val alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+        val b0 = this.bytes[0]
+        val b1 = this.bytes[1]
+        val b2 = this.bytes[2]
+        val b3 = this.bytes[3]
+        val b4 = this.bytes[4]
+        val b5 = this.bytes[5]
+        val b6 = this.bytes[6]
+        val b7 = this.bytes[7]
+        val b8 = this.bytes[8]
+        val b9 = this.bytes[9]
+        val b10 = this.bytes[10]
+        val b11 = this.bytes[11]
+        val b12 = this.bytes[12]
+        val b13 = this.bytes[13]
+        val b14 = this.bytes[14]
+        val b15 = this.bytes[15]
+
+        var res = ""
+        res = res + alphabet.substring(mod(b0 / 32, 32), mod(b0 / 32, 32) + 1)
+        res = res + alphabet.substring(mod(b0, 32), mod(b0, 32) + 1)
+        res = res + alphabet.substring(mod(b1 / 8, 32), mod(b1 / 8, 32) + 1)
+
+        val c3 = (mod(b1, 8) * 4) + mod(b2 / 64, 4)
+        res = res + alphabet.substring(c3, c3 + 1)
+
+        res = res + alphabet.substring(mod(b2 / 2, 32), mod(b2 / 2, 32) + 1)
+
+        val c5 = (mod(b2, 2) * 16) + mod(b3 / 16, 16)
+        res = res + alphabet.substring(c5, c5 + 1)
+
+        val c6 = (mod(b3, 16) * 2) + mod(b4 / 128, 2)
+        res = res + alphabet.substring(c6, c6 + 1)
+
+        res = res + alphabet.substring(mod(b4 / 4, 32), mod(b4 / 4, 32) + 1)
+
+        val c8 = (mod(b4, 4) * 8) + mod(b5 / 32, 8)
+        res = res + alphabet.substring(c8, c8 + 1)
+
+        res = res + alphabet.substring(mod(b5, 32), mod(b5, 32) + 1)
+
+        res = res + alphabet.substring(mod(b6 / 8, 32), mod(b6 / 8, 32) + 1)
+
+        val c11 = (mod(b6, 8) * 4) + mod(b7 / 64, 4)
+        res = res + alphabet.substring(c11, c11 + 1)
+
+        res = res + alphabet.substring(mod(b7 / 2, 32), mod(b7 / 2, 32) + 1)
+
+        val c13 = (mod(b7, 2) * 16) + mod(b8 / 16, 16)
+        res = res + alphabet.substring(c13, c13 + 1)
+
+        val c14 = (mod(b8, 16) * 2) + mod(b9 / 128, 2)
+        res = res + alphabet.substring(c14, c14 + 1)
+
+        res = res + alphabet.substring(mod(b9 / 4, 32), mod(b9 / 4, 32) + 1)
+
+        val c16 = (mod(b9, 4) * 8) + mod(b10 / 32, 8)
+        res = res + alphabet.substring(c16, c16 + 1)
+
+        res = res + alphabet.substring(mod(b10, 32), mod(b10, 32) + 1)
+
+        res = res + alphabet.substring(mod(b11 / 8, 32), mod(b11 / 8, 32) + 1)
+
+        val c19 = (mod(b11, 8) * 4) + mod(b12 / 64, 4)
+        res = res + alphabet.substring(c19, c19 + 1)
+
+        res = res + alphabet.substring(mod(b12 / 2, 32), mod(b12 / 2, 32) + 1)
+
+        val c21 = (mod(b12, 2) * 16) + mod(b13 / 16, 16)
+        res = res + alphabet.substring(c21, c21 + 1)
+
+        val c22 = (mod(b13, 16) * 2) + mod(b14 / 128, 2)
+        res = res + alphabet.substring(c22, c22 + 1)
+
+        res = res + alphabet.substring(mod(b14 / 4, 32), mod(b14 / 4, 32) + 1)
+
+        val c24 = (mod(b14, 4) * 8) + mod(b15 / 32, 8)
+        res = res + alphabet.substring(c24, c24 + 1)
+
+        res = res + alphabet.substring(mod(b15, 32), mod(b15, 32) + 1)
+
+        return res
+    }
+
+    implement fun toBytes(): List<Int> {
+        return this.bytes
+    }
+
+    fun timestamp(): Int {
+        val b0 = this.bytes[0]
+        val b1 = this.bytes[1]
+        val b2 = this.bytes[2]
+        val b3 = this.bytes[3]
+        val b4 = this.bytes[4]
+        val b5 = this.bytes[5]
+        val high24 = (b0 * 65536) + (b1 * 256) + b2
+        val low24 = (b3 * 65536) + (b4 * 256) + b5
+        return (high24 * 16777216) + low24
+    }
+
+    operator fun equals(other: Stringable): Bool {
+        if (other is Ulid) {
+            var i = 0
+            while (i < 16) {
+                if (this.bytes[i] != (other as Ulid).bytes[i]) {
+                    return false
+                }
+                i = i + 1
+            }
+            return true
+        }
+        return false
+    }
+} object {
+    fun generate(): Ulid {
+        val ts = NativeMemory.nowMillis()
+        val ptr = Standard.gcMalloc(16)
+        NativeMemory.randomBytes(ptr, 16)
+
+        val high24 = ts / 16777216
+        val low24 = mod(ts, 16777216)
+
+        val bytes = MutableList<Int>()
+        bytes.add(mod(high24 / 65536, 256))
+        bytes.add(mod(high24 / 256, 256))
+        bytes.add(mod(high24, 256))
+        bytes.add(mod(low24 / 65536, 256))
+        bytes.add(mod(low24 / 256, 256))
+        bytes.add(mod(low24, 256))
+
+        var i = 6
+        while (i < 16) {
+            bytes.add(mod(NativeMemory.readByte(ptr, i), 256))
+            i = i + 1
+        }
+
+        return Ulid(bytes.freeze())
+    }
+
+    fun parse(str: String): Ulid? {
+        if (str.length != 26) {
+            return null
+        }
+        val b = decodeCrockford(str)
+        if (b == null || b?.size() != 16) {
+            return null
+        }
+        return Ulid(b!!.freeze())
+    }
+}
+
+fun decodeCrockford(str: String): MutableList<Int>? {
+    val dec = MutableList<Int>()
+    var i = 0
+    while (i < 26) {
+        val val5 = crockfordVal(str.substring(i, i + 1))
+        if (val5 < 0) {
+            return null
+        }
+        dec.add(val5)
+        i = i + 1
+    }
+
+    val bytes = MutableList<Int>()
+    bytes.add((mod(dec[0], 8) * 32) + dec[1])
+    bytes.add((dec[2] * 8) + (dec[3] / 4))
+    bytes.add((mod(dec[3], 4) * 64) + (dec[4] * 2) + (dec[5] / 16))
+    bytes.add((mod(dec[5], 16) * 16) + (dec[6] / 2))
+    bytes.add((mod(dec[6], 2) * 128) + (dec[7] * 4) + (dec[8] / 8))
+    bytes.add((mod(dec[8], 8) * 32) + dec[9])
+
+    bytes.add((dec[10] * 8) + (dec[11] / 4))
+    bytes.add((mod(dec[11], 4) * 64) + (dec[12] * 2) + (dec[13] / 16))
+    bytes.add((mod(dec[13], 16) * 16) + (dec[14] / 2))
+    bytes.add((mod(dec[14], 2) * 128) + (dec[15] * 4) + (dec[16] / 8))
+    bytes.add((mod(dec[16], 8) * 32) + dec[17])
+
+    bytes.add((dec[18] * 8) + (dec[19] / 4))
+    bytes.add((mod(dec[19], 4) * 64) + (dec[20] * 2) + (dec[21] / 16))
+    bytes.add((mod(dec[21], 16) * 16) + (dec[22] / 2))
+    bytes.add((mod(dec[22], 2) * 128) + (dec[23] * 4) + (dec[24] / 8))
+    bytes.add((mod(dec[24], 8) * 32) + dec[25])
+
+    return bytes
+}
+
+fun crockfordVal(c: String): Int {
+    if (c == "0" || c == "O" || c == "o") { return 0 }
+    if (c == "1" || c == "I" || c == "i" || c == "L" || c == "l") { return 1 }
+    if (c == "2") { return 2 }
+    if (c == "3") { return 3 }
+    if (c == "4") { return 4 }
+    if (c == "5") { return 5 }
+    if (c == "6") { return 6 }
+    if (c == "7") { return 7 }
+    if (c == "8") { return 8 }
+    if (c == "9") { return 9 }
+    if (c == "A" || c == "a") { return 10 }
+    if (c == "B" || c == "b") { return 11 }
+    if (c == "C" || c == "c") { return 12 }
+    if (c == "D" || c == "d") { return 13 }
+    if (c == "E" || c == "e") { return 14 }
+    if (c == "F" || c == "f") { return 15 }
+    if (c == "G" || c == "g") { return 16 }
+    if (c == "H" || c == "h") { return 17 }
+    if (c == "J" || c == "j") { return 18 }
+    if (c == "K" || c == "k") { return 19 }
+    if (c == "M" || c == "m") { return 20 }
+    if (c == "N" || c == "n") { return 21 }
+    if (c == "P" || c == "p") { return 22 }
+    if (c == "Q" || c == "q") { return 23 }
+    if (c == "R" || c == "r") { return 24 }
+    if (c == "S" || c == "s") { return 25 }
+    if (c == "T" || c == "t") { return 26 }
+    if (c == "V" || c == "v") { return 27 }
+    if (c == "W" || c == "w") { return 28 }
+    if (c == "X" || c == "x") { return 29 }
+    if (c == "Y" || c == "y") { return 30 }
+    if (c == "Z" || c == "z") { return 31 }
+    return 0 - 1
+}

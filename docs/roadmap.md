@@ -400,7 +400,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
  - [x] **Task 52.5:** `task {}`: mutação de `var` capturada visível após `await()` — teste "task without return value should complete" passa.
  - [x] **Verify:** novos testes em `closure_capture_test.ei` (4 casos) e `task_test.ei`; suite completa verde (147 testes).
 
-### Phase 53: Driver PostgreSQL — `std.db` + `std.postgres` (PLANNED)
+### Phase 53: Driver PostgreSQL — `std.db` + `std.postgres` (COMPLETED)
 > **Dependência:** Phase 51 (neco) concluída ✅.
 >
 > **Referência:** Plano completo em [`docs/plan_pglib.md`](plan_pglib.md).
@@ -408,37 +408,37 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 > **Filosofia:** 100% Eiwa — a única camada C é o glue mínimo em `neco_wrapper` (`waitReadable`/`waitWritable`) e um helper opcional em `libpq_wrapper` para conversão de params. Tudo o mais é `.ei` puro.
 
 #### Etapa 0 — Pré-requisitos de Runtime
-- [ ] **Task 53.0.1:** Adicionar `eiwa_neco_wait_readable(fd)` e `eiwa_neco_wait_writable(fd)` ao `neco_wrapper.c` (padrão idêntico ao `eiwa_neco_sleep`).
-- [ ] **Task 53.0.2:** Declarar ambas as funções em `neco_wrapper.h`.
-- [ ] **Task 53.0.3:** Expor `Neco.waitReadable(fd: Int)` e `Neco.waitWritable(fd: Int)` no `lib Neco` em `src/std/core.ei`.
-- [ ] **Verify:** `zig build` compila sem erros; os bindings aparecem no objeto C.
+- [x] **Task 53.0.1:** Adicionar `eiwa_neco_wait_readable(fd)` e `eiwa_neco_wait_writable(fd)` ao `neco_wrapper.c` (padrão idêntico ao `eiwa_neco_sleep`).
+- [x] **Task 53.0.2:** Declarar ambas as funções em `neco_wrapper.h`.
+- [x] **Task 53.0.3:** Expor `Neco.waitReadable(fd: Int)` e `Neco.waitWritable(fd: Int)` no `lib Neco` em `src/std/core.ei`.
+- [x] **Verify:** `zig build` compila sem erros; os bindings aparecem no objeto C.
 
 #### Etapa 1 — Contracts `std.db`
-- [ ] **Task 53.1.1:** Criar `src/std/db.ei` com `contract Database`, `contract Connection`, `contract Statement`, `contract Result`, `contract Row`, `contract Transaction`.
-- [ ] **Task 53.1.2:** `contract Connection` usa `params: List<String>` (varargs postergado para fase futura).
-- [ ] **Task 53.1.3:** `contract Result` expõe `val rowsAffected: Int` e iteração via `for row in result`.
-- [ ] **Task 53.1.4:** Criar `src/std/db_error.ei` com `type DbError(val message: String) : Throwable`.
-- [ ] **Verify:** `zig build` com imports de `std.db` funciona; contratos reconhecidos pelo type checker.
+- [x] **Task 53.1.1:** Criar `src/std/db.ei` com `contract Database`, `contract Connection`, `contract Statement`, `contract Result`, `contract Row`, `contract Transaction`.
+- [x] **Task 53.1.2:** `contract Connection` usa `params: List<String>` (varargs postergado para fase futura).
+- [x] **Task 53.1.3:** `contract Result` expõe `val rowsAffected: Int` e iteração via `for row in result`.
+- [x] **Task 53.1.4:** Criar `src/std/db_error.ei` com `type DbError(val message: String) : Throwable`.
+- [x] **Verify:** `zig build` com imports de `std.db` funciona; contratos reconhecidos pelo type checker.
 
 #### Etapa 2 — Binding Nativo `lib NativePg`
-- [ ] **Task 53.2.1:** Criar `src/runtime/third_party/libpq/libpq_wrapper.h` com helper `eiwa_pq_exec_params` (converte `EiwaArray*` de `String` para `char**` antes de chamar `PQexecParams`).
-- [ ] **Task 53.2.2:** Criar `src/postgres/native.ei` com `lib NativePg { @Link("pq") @Header("<libpq-fe.h>") }` expondo: `PQconnectdb`, `PQfinish`, `PQsendQuery`, `PQconsumeInput`, `PQisBusy`, `PQgetResult`, `PQclear`, `PQresultStatus`, `PQntuples`, `PQnfields`, `PQfname`, `PQgetvalue`, `PQsocket`, `PQerrorMessage`, `PQexec`, `eiwa_pq_exec_params`.
-- [ ] **Verify:** `zig build` linka contra `libpq`; funções nativas acessíveis.
+- [x] **Task 53.2.1:** Criar `src/runtime/third_party/libpq/libpq_wrapper.h` com helper `eiwa_pq_exec_params` (converte `EiwaArray*` de `String` para `char**` antes de chamar `PQexecParams`).
+- [x] **Task 53.2.2:** Criar `src/postgres/native.ei` com `lib NativePg { @Link("pq") @Header("<libpq-fe.h>") }` expondo: `PQconnectdb`, `PQfinish`, `PQsendQuery`, `PQconsumeInput`, `PQisBusy`, `PQgetResult`, `PQclear`, `PQresultStatus`, `PQntuples`, `PQnfields`, `PQfname`, `PQgetvalue`, `PQsocket`, `PQerrorMessage`, `PQexec`, `eiwa_pq_exec_params`.
+- [x] **Verify:** `zig build` linka contra `libpq`; funções nativas acessíveis.
 
 #### Etapa 3 — Implementação `postgres/`
-- [ ] **Task 53.3.1:** `src/postgres/row.ei` — `type PgRow(val result: OpaquePointer, val rowIdx: Int, val nfields: Int) : Row` com `int()`, `string()`, `bool()`, `double()`.
-- [ ] **Task 53.3.2:** `src/postgres/result.ei` — `type PgResult(val rows: List<PgRow>, val rowsAffected: Int) : Result`. Após construção, chama `PQclear()` imediatamente (eager — dados já em memória Eiwa).
-- [ ] **Task 53.3.3:** `src/postgres/statement.ei` — `type PgStatement(val conn: OpaquePointer, val name: String) : Statement` com `query(params)` e `execute(params)`.
-- [ ] **Task 53.3.4:** `src/postgres/connection.ei` — `type PgConnection(val conn: OpaquePointer) : Connection`. O loop async: `PQsendQuery → PQsocket → Neco.waitReadable(fd) → PQconsumeInput → PQgetResult`.
-- [ ] **Task 53.3.5:** `src/postgres/transaction.ei` — `type PgTransaction(val conn: Connection)` com `BEGIN`/`COMMIT`/`ROLLBACK` (rollback automático em exceção).
-- [ ] **Task 53.3.6:** `src/postgres/postgres.ei` — entry point: `fun driver(): Database`.
-- [ ] **Verify:** `zig build`; `eiwa run samples/pg_sample.ei` conecta e executa queries básicas.
+- [x] **Task 53.3.1:** `src/postgres/row.ei` — `type PgRow(val result: OpaquePointer, val rowIdx: Int, val nfields: Int) : Row` com `int()`, `string()`, `bool()`, `double()`.
+- [x] **Task 53.3.2:** `src/postgres/result.ei` — `type PgResult(val rows: List<PgRow>, val rowsAffected: Int) : Result`. Após construção, chama `PQclear()` imediatamente (eager — dados já em memória Eiwa).
+- [x] **Task 53.3.3:** `src/postgres/statement.ei` — `type PgStatement(val conn: OpaquePointer, val name: String) : Statement` com `query(params)` e `execute(params)`.
+- [x] **Task 53.3.4:** `src/postgres/connection.ei` — `type PgConnection(val conn: OpaquePointer) : Connection`. O loop async: `PQsendQuery → PQsocket → Neco.waitReadable(fd) → PQconsumeInput → PQgetResult`.
+- [x] **Task 53.3.5:** `src/postgres/transaction.ei` — `type PgTransaction(val conn: Connection)` com `BEGIN`/`COMMIT`/`ROLLBACK` (rollback automático em exceção).
+- [x] **Task 53.3.6:** `src/postgres/postgres.ei` — entry point: `fun driver(): Database`.
+- [x] **Verify:** `zig build`; `eiwa run samples/pg_sample.ei` conecta e executa queries básicas.
 
 #### Etapa 4 — Testes e Samples
-- [ ] **Task 53.4.1:** Executar `eiwa test samples/tests/postgres_test.ei` — todos os testes passam (requer PostgreSQL local com banco `eiwa_test`).
-- [ ] **Task 53.4.2:** Verificar `samples/pg_sample.ei` como demo completo (connect, query, prepared, transaction).
-- [ ] **Task 53.4.3:** Documentar variáveis de ambiente de conexão no header do sample.
-- [ ] **Verify:** Suite completa `eiwa test samples` verde (postgres_test é skip-safe se libpq não disponível).
+- [x] **Task 53.4.1:** Executar `eiwa test samples/tests/postgres_test.ei` — todos os testes passam (requer PostgreSQL local com banco `eiwa_test`).
+- [x] **Task 53.4.2:** Verificar `samples/pg_sample.ei` como demo completo (connect, query, prepared, transaction).
+- [x] **Task 53.4.3:** Documentar variáveis de ambiente de conexão no header do sample.
+- [x] **Verify:** Suite completa `eiwa test samples` verde (postgres_test é skip-safe se libpq não disponível).
 
 ### Phase 54: Argumentos Nomeados & Framework HTML (`samples/html/`) (COMPLETED)
 > **Motivação:** Permitir a construção de DSLs HTML expressivas e legíveis no Eiwa com chamada de funções usando Argumentos Nomeados (`div(class = "container", id = "hero")`), combinando Receiver Lambdas (`HTMLBuilder.() -> Void`), `write("...")` para texto intercalado e higienização automática contra XSS.
@@ -458,6 +458,22 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 54.2.5:** Sanitização e Escape XSS automático para textos e valores de atributos.
 - [x] **Task 54.2.6:** Criar `samples/html/main.ei` com o exemplo completo de uso.
 - [x] **Verify:** Executar `./zig-out/bin/eiwa run samples/html/main.ei` e testar a saída HTML gerada (100% funcional).
+
+### Phase 55: Identificadores Únicos — `std.uuid` + `std.ulid` + `contract Identifier` (COMPLETED)
+> **Motivação:** Fornecer identificadores únicos nativos de alta performance e seguros para bancos de dados, APIs e modelos de domínio.
+>
+> **Recursos:**
+> - `contract Identifier`: Contrato base para IDs (`toString()`, `toBytes()`).
+> - `type Uuid`: Geração UUID v7 (Time-ordered por padrão), UUID v4 (aleatório) e parsing/validação de strings formato RFC.
+> - `type Ulid`: Geração ULID (128-bit: timestamp + entropia aleatória em Crockford Base32), decoding/encoding e extração de timestamp Unix.
+> - Entropy CSPRNG nativa via `eiwa_random_bytes` e timestamp de milissegundos de 64 bits via `eiwa_now_millis`.
+
+- [x] **Task 55.1:** Helpers C de entropia `eiwa_random_bytes` e tempo de milissegundos `eiwa_now_millis` em `src/backend/c_transpiler/eiwa_runtime.h`.
+- [x] **Task 55.2:** Bindings em `lib NativeMemory` em `src/std/core.ei` + mapeamento de `Int` para `int64_t` no transpiler C.
+- [x] **Task 55.3:** Módulo `src/std/uuid.ei` com `contract Identifier`, `type Uuid` e `object Uuid`.
+- [x] **Task 55.4:** Módulo `src/std/ulid.ei` com `type Ulid`, `object Ulid` e algoritmo Crockford Base32.
+- [x] **Task 55.5:** Registro dos pacotes `std.uuid` e `std.ulid` no compilador (`src/core/type_checker/infer_decl.zig`).
+- [x] **Verify:** Suite de testes `samples/tests/id_test.ei` 100% PASS; suite nativa completa `eiwa test` verde.
 
 ---
 

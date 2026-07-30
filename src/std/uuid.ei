@@ -1,0 +1,171 @@
+import { mod } from "std.math"
+import { Serializable } from "std.serde"
+
+contract Identifier {
+    fun toString(): String
+    fun toBytes(): List<Int>
+}
+
+type Uuid(val bytes: List<Int>) : Identifier {
+
+    implement fun toString(): String {
+        val hexChars = "0123456789abcdef"
+        var result = ""
+        var i = 0
+        while (i < 16) {
+            if (i == 4 || i == 6 || i == 8 || i == 10) {
+                result = result + "-"
+            }
+            val b = this.bytes[i]
+            val high = mod(b / 16, 16)
+            val low = mod(b, 16)
+            result = result + hexChars.substring(high, high + 1) + hexChars.substring(low, low + 1)
+            i = i + 1
+        }
+        return result
+    }
+
+    implement fun toBytes(): List<Int> {
+        return this.bytes
+    }
+
+    fun version(): Int {
+        return mod(this.bytes[6] / 16, 16)
+    }
+
+    operator fun equals(other: Stringable): Bool {
+        if (other is Uuid) {
+            var i = 0
+            while (i < 16) {
+                if (this.bytes[i] != (other as Uuid).bytes[i]) {
+                    return false
+                }
+                i = i + 1
+            }
+            return true
+        }
+        return false
+    }
+} object {
+    fun generate() = Uuid.v7()
+
+    fun v7(): Uuid {
+        val ts = NativeMemory.nowMillis()
+        val ptr = Standard.gcMalloc(16)
+        NativeMemory.randomBytes(ptr, 16)
+
+        val high24 = ts / 16777216
+        val low24 = mod(ts, 16777216)
+
+        val bytes = MutableList<Int>()
+        bytes.add(mod(high24 / 65536, 256))
+        bytes.add(mod(high24 / 256, 256))
+        bytes.add(mod(high24, 256))
+        bytes.add(mod(low24 / 65536, 256))
+        bytes.add(mod(low24 / 256, 256))
+        bytes.add(mod(low24, 256))
+
+        // Byte 6: version 7 (0x70 = 112)
+        val randByte6 = mod(NativeMemory.readByte(ptr, 6), 16)
+        bytes.add(112 + randByte6)
+
+        // Byte 7: random byte
+        bytes.add(mod(NativeMemory.readByte(ptr, 7), 256))
+
+        // Byte 8: variant RFC 4122 (0x80 = 128)
+        val randByte8 = mod(NativeMemory.readByte(ptr, 8), 64)
+        bytes.add(128 + randByte8)
+
+        // Bytes 9-15: random bytes
+        var i = 9
+        while (i < 16) {
+            bytes.add(mod(NativeMemory.readByte(ptr, i), 256))
+            i = i + 1
+        }
+
+        return Uuid(bytes.freeze())
+    }
+
+    fun v4(): Uuid {
+        val ptr = Standard.gcMalloc(16)
+        NativeMemory.randomBytes(ptr, 16)
+
+        val bytes = MutableList<Int>()
+        var i = 0
+        while (i < 16) {
+            val raw = mod(NativeMemory.readByte(ptr, i), 256)
+            if (i == 6) {
+                // Byte 6: version 4 (0x40 = 64)
+                bytes.add(64 + mod(raw, 16))
+            } else if (i == 8) {
+                // Byte 8: variant RFC 4122 (0x80 = 128)
+                bytes.add(128 + mod(raw, 64))
+            } else {
+                bytes.add(raw)
+            }
+            i = i + 1
+        }
+
+        return Uuid(bytes.freeze())
+    }
+
+    fun parse(str: String): Uuid? {
+        if (str.length != 36) {
+            return null
+        }
+        val bytes = MutableList<Int>()
+        var i = 0
+        while (i < 36) {
+            if (i == 8 || i == 13 || i == 18 || i == 23) {
+                if (str.substring(i, i + 1) != "-") {
+                    return null
+                }
+            } else {
+                val hexPair = str.substring(i, i + 2)
+                val byteVal = parseHexByte(hexPair)
+                if (byteVal < 0) {
+                    return null
+                }
+                bytes.add(byteVal)
+                i = i + 1
+            }
+            i = i + 1
+        }
+        if (bytes.size() != 16) {
+            return null
+        }
+        return Uuid(bytes.freeze())
+    }
+}
+
+fun parseHexByte(hex: String): Int {
+    if (hex.length != 2) {
+        return 0 - 1
+    }
+    val h1 = hexCharToInt(hex.substring(0, 1))
+    val h2 = hexCharToInt(hex.substring(1, 2))
+    if (h1 < 0 || h2 < 0) {
+        return 0 - 1
+    }
+    return (h1 * 16) + h2
+}
+
+fun hexCharToInt(c: String): Int {
+    if (c == "0") { return 0 }
+    if (c == "1") { return 1 }
+    if (c == "2") { return 2 }
+    if (c == "3") { return 3 }
+    if (c == "4") { return 4 }
+    if (c == "5") { return 5 }
+    if (c == "6") { return 6 }
+    if (c == "7") { return 7 }
+    if (c == "8") { return 8 }
+    if (c == "9") { return 9 }
+    if (c == "a" || c == "A") { return 10 }
+    if (c == "b" || c == "B") { return 11 }
+    if (c == "c" || c == "C") { return 12 }
+    if (c == "d" || c == "D") { return 13 }
+    if (c == "e" || c == "E") { return 14 }
+    if (c == "f" || c == "F") { return 15 }
+    return 0 - 1
+}

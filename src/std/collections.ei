@@ -9,11 +9,11 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
         this.list.items.push(element)
     }
 
-    fun get(index: Int): T {
+    operator fun get(index: Int): T {
         return this.list.items[index]
     }
 
-    fun set(index: Int, element: T): Void {
+    operator fun set(index: Int, element: T): Void {
         this.list.items[index] = element
     }
 
@@ -40,7 +40,7 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
 }
 
 type List<T>(val items: NativeArray<T> = []) : Serializable + Json {
-    fun get(index: Int): T {
+    operator fun get(index: Int): T {
         return this.items[index]
     }
 
@@ -61,16 +61,16 @@ type Node<K, V>(val key: K, var value: V, var next: Node<K, V>?) {
     fun toString(): String = ""
 }
 
-type MutableMap<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
-    fun put(key: K, value: V): Void {
-        var capacity = this.list.size()
+type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
+    operator fun put(key: K, value: V): Void {
+        var capacity = this.entries.size()
         if (capacity == 0) {
             var i = 0
             while (i < 16) {
-                this.list.items.push(null)
+                this.entries.items.push(null)
                 i = i + 1
             }
-            capacity = this.list.size()
+            capacity = this.entries.size()
         }
 
         var hash = key.hashCode()
@@ -79,7 +79,7 @@ type MutableMap<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
             index = index + capacity
         }
 
-        var curr = this.list.items[index]
+        var curr = this.entries.items[index]
         while (curr != null) {
             if (curr!!.key == key) {
                 curr!!.value = value
@@ -88,12 +88,12 @@ type MutableMap<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
             curr = curr!!.next
         }
 
-        val newNode = Node(key, value, this.list.items[index])
-        this.list.items[index] = newNode
+        val newNode = Node(key, value, this.entries.items[index])
+        this.entries.items[index] = newNode
     }
 
-    fun get(key: K): V? {
-        val capacity = this.list.size()
+    operator fun get(key: K): V? {
+        val capacity = this.entries.size()
         if (capacity == 0) {
             return null
         }
@@ -102,7 +102,7 @@ type MutableMap<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
         var index = hash - (hash / capacity) * capacity
         if (index < 0) index = index + capacity
 
-        var curr = this.list.items[index]
+        var curr = this.entries.items[index]
         while (curr != null) {
             if (curr!!.key == key) {
                 return curr!!.value
@@ -119,8 +119,8 @@ type MutableMap<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
     fun size(): Int {
         var count = 0
         var i = 0
-        while (i < this.list.size()) {
-            var curr = this.list.items[i]
+        while (i < this.entries.size()) {
+            var curr = this.entries.items[i]
             while (curr != null) {
                 count = count + 1
                 curr = curr!!.next
@@ -134,14 +134,14 @@ type MutableMap<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
 
     fun isNotEmpty(): Bool = this.size() > 0
 
-    fun freeze(): Map<K, V> = Map(this.list)
+    fun freeze(): Map<K, V> = Map(this.entries)
 
-    implement fun serdeFields(): List<SerdeField> = Map(this.list).serdeFields()
+    implement fun serdeFields(): List<SerdeField> = Map(this.entries).serdeFields()
 }
 
-type Map<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
-    fun get(key: K): V? {
-        val capacity = this.list.size()
+type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
+    operator fun get(key: K): V? {
+        val capacity = this.entries.size()
         if (capacity == 0) {
             return null
         }
@@ -150,7 +150,7 @@ type Map<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
         var index = hash - (hash / capacity) * capacity
         if (index < 0) index = index + capacity
 
-        var curr = this.list.items[index]
+        var curr = this.entries.items[index]
         while (curr != null) {
             if (curr!!.key == key) {
                 return curr!!.value
@@ -167,8 +167,8 @@ type Map<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
     fun size(): Int {
         var count = 0
         var i = 0
-        while (i < this.list.size()) {
-            var curr = this.list.items[i]
+        while (i < this.entries.size()) {
+            var curr = this.entries.items[i]
             while (curr != null) {
                 count = count + 1
                 curr = curr!!.next
@@ -182,27 +182,24 @@ type Map<K, V>(val list: List<Node<K, V>?> = []) : Serializable + Json {
 
     fun isNotEmpty(): Bool = this.size() > 0
 
-    fun mut(): MutableMap<K, V> = MutableMap(this.list)
+    fun mut(): MutableMap<K, V> = MutableMap(this.entries)
 
     implement fun serdeFields(): List<SerdeField> {
-        val items: NativeArray<SerdeField> = []
+        val fields = MutableList<SerdeField>()
         var i = 0
-        val capacity = this.list.size()
-        while (i < capacity) {
-            var curr = this.list.get(i)
+        while (i < this.entries.size()) {
+            var curr = this.entries.items[i]
             while (curr != null) {
-                val key = curr!!.key.toString()
-                val valStr = curr!!.value.toString()
-                items.push(SerdeField(key, SerdeString(valStr)))
+                fields.add(SerdeField(curr!!.key.toString(), SerdeString(curr!!.value.toString())))
                 curr = curr!!.next
             }
             i = i + 1
         }
-        return List(items)
+        return fields.freeze()
     }
 }
 
-type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap<T, Bool>()) {
+type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap()) {
     fun add(element: T): Void {
         this.map.put(element, true)
     }
@@ -211,9 +208,7 @@ type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap<T, Bool>()) {
         return this.map.containsKey(element)
     }
 
-    fun size(): Int {
-        return this.map.size()
-    }
+    fun size(): Int = this.map.size()
 
     fun isEmpty(): Bool = this.size() == 0
 
@@ -222,18 +217,28 @@ type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap<T, Bool>()) {
     fun freeze(): Set<T> = Set(this.map.freeze())
 }
 
-type Set<T>(val map: Map<T, Bool> = Map<T, Bool>()) {
+type Set<T>(val map: Map<T, Bool> = Map()) {
     fun contains(element: T): Bool {
         return this.map.containsKey(element)
     }
 
-    fun size(): Int {
-        return this.map.size()
-    }
+    fun size(): Int = this.map.size()
 
     fun isEmpty(): Bool = this.size() == 0
 
     fun isNotEmpty(): Bool = this.size() > 0
 
-    fun mut(): MutableSet<T> = MutableSet(this.map.mut())
+    fun mut(): MutableSet<T> {
+        val m = MutableSet<T>()
+        var i = 0
+        while (i < this.map.entries.size()) {
+            var curr = this.map.entries.items[i]
+            while (curr != null) {
+                m.add(curr!!.key)
+                curr = curr!!.next
+            }
+            i = i + 1
+        }
+        return m
+    }
 }

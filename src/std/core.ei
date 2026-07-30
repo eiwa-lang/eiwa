@@ -30,6 +30,12 @@ lib NativeMemory {
 
     @Alias("eiwa_write_byte")
     fun writeByte(ptr: Pointer, index: Int, value: Int): Void
+
+    @Alias("eiwa_random_bytes")
+    fun randomBytes(ptr: Pointer, len: Int): Void
+
+    @Alias("eiwa_now_millis")
+    fun nowMillis(): Int
 }
 
 contract Stringable {
@@ -209,11 +215,11 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
     }
 }
 
-@Primitive("int")
+@Primitive("int64_t")
 type Int : Stringable, Equatable, Hashable {
     implement fun toString(): String {
         val buf = Standard.gcMalloc(32)
-        Standard.sprintf(buf, "%d".ptr, this)
+        Standard.sprintf(buf, "%lld".ptr, this)
         return String(buf, NativeString.strlen(buf))
     }
 

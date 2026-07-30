@@ -22,7 +22,7 @@ type User(val id: Int, val name: String) : Serializable + Json + Yaml
 
 fun main() {
     printWelcome()
-    val pool = Postgres.pool("postgres://leodouglas@localhost/eiwa", 10)
+    val pool = Postgres.pool("postgres://leodouglas@localhost/eiwa", maxConnections = 10)
 
     arest(8082) {
         routing {
@@ -69,6 +69,7 @@ fun main() {
                 body["welcome"] = "Hi there!"
                 body["description"] = "Arest is a Web Framework for Eiwa!"
                 body["date"] = now().toString()
+                body["uuid"] = Uuid.generate().toString()
 
                 respond(200, "application/json", body.toJson())
             }

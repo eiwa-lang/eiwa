@@ -1,5 +1,5 @@
 import { assert } from "std.core"
-import { List, MutableList, Map, MutableMap, Set, MutableSet, Node } from "std.collections"
+import { List, MutableList, Map, MutableMap, Set, MutableSet } from "std.collections"
 
 test "List.mut() should return MutableList" {
     val list = [10, 20]
@@ -18,77 +18,40 @@ test "MutableList.freeze() should return List" {
     assert(frozen[3] == 4)
 }
 
-// test "Set.mut() should return MutableSet" {
-//     val set = [1, 2, 3]
-//     val mset = set.mut()
-//     mset.add(4)
-//     val frozen = mset.freeze()
-//     assert(frozen.size() == 4)
-//     assert(frozen[3] == 4)
-// }
+test "Map.mut() should return MutableMap" {
+    val map = ["a" of 1, "b" of 2]
+    val mmap = map.mut()
+    mmap.put("c", 3)
+    assert(mmap.size() == 3)
+    assert(mmap["c"] == 3)
+}
 
-// test "MutableSet.freeze() should return Set" {
-//     val set = [1, 2, 3]
-//     val mset = set.mut()
-//     mset.add(4)
-//     val frozen = mset.freeze()
-//     assert(frozen.size() == 4)
-//     assert(frozen[3] == 4)
-// }
+test "MutableMap.freeze() should return Map" {
+    val map = ["a" of 1, "b" of 2]
+    val mmap = map.mut()
+    mmap.put("c", 3)
+    val frozen = mmap.freeze()
+    assert(frozen.size() == 3)
+    assert(frozen["c"] == 3)
+}
 
-// test "Map.mut() should return MutableMap" {
-//     val map = ["a" of 1, "b" of 2]
-//     val mmap = map.mut()
-//     mmap.put("c", 3)
-//     assert(mmap.size() == 3)
-//     assert(mmap.get("c") == 3)
-// }
+test "Set.mut() should return MutableSet" {
+    val s = MutableSet<Int>()
+    s.add(1)
+    s.add(2)
+    val frozenSet = s.freeze()
+    val mset = frozenSet.mut()
+    mset.add(3)
+    assert(mset.size() == 3)
+    assert(mset.contains(3) == true)
+}
 
-// test "MutableMap.freeze() should return Map" {
-//     val map = ["a" of 1, "b" of 2]
-//     val mmap = map.mut()
-//     mmap.put("c", 3)
-//     val frozen = mmap.freeze()
-//     assert(frozen.size() == 3)
-//     assert(frozen.get("c") == 3)
-// }
-
-// test "Set.list() should return List" {
-//     val set = [1, 2, 3]
-//     val list = set.list()
-//     assert(list.size() == 3)
-//     assert(list[0] == 1)
-//     assert(list[1] == 2)
-//     assert(list[2] == 3)
-// }
-
-// test "MutableSet.list() should return List" {
-//     val set = [1, 2, 3]
-//     val mset = set.mut()
-//     mset.add(4)
-//     val list = mset.list()
-//     assert(list.size() == 4)
-//     assert(list[0] == 1)
-//     assert(list[1] == 2)
-//     assert(list[2] == 3)
-//     assert(list[3] == 4)
-// }
-
-// test "List.set() should return filtered Set" {
-//     val list = [1, 2, 2, 3, 3, 3]
-//     val set = list.set()
-//     assert(set.size() == 3)
-//     assert(set[0] == 1)
-//     assert(set[1] == 2)
-//     assert(set[2] == 3)
-// }
-
-// test "MutableList.set() should return filtered Set" {
-//     val list = [1, 2, 2, 3, 3, 3]
-//     val mlist = list.mut()
-//     val set = mlist.set()
-//     assert(set.size() == 3)
-//     assert(set[0] == 1)
-//     assert(set[1] == 2)
-//     assert(set[2] == 3)
-// }
+test "MutableSet.freeze() should return Set" {
+    val mset = MutableSet<Int>()
+    mset.add(10)
+    mset.add(20)
+    val frozen = mset.freeze()
+    assert(frozen.size() == 2)
+    assert(frozen.contains(10) == true)
+    assert(frozen.contains(20) == true)
+}

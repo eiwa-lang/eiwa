@@ -740,6 +740,34 @@ pub fn inferIndexExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
     const obj_type = try self.inferNode(i.object, scope);
     
     if (!isNativeArrayType(obj_type) and (obj_type.* == .Custom or obj_type.* == .GenericInstance)) {
+        const base_type = extractBaseType(obj_type);
+        var name_opt: ?[]const u8 = null;
+        switch (base_type.*) {
+            .Custom => |n| name_opt = n,
+            .GenericInstance => |gi| name_opt = gi.base_name,
+            else => {},
+        }
+        if (name_opt) |name| {
+            const lookup = self.alias_map.get(name) orelse name;
+            if (self.classes_ast.get(lookup)) |cn| {
+                for (cn.data.type_decl.methods) |m| {
+                    if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "get")) {
+                        var has_op = false;
+                        for (m.data.fun_decl.modifiers) |mod| {
+                            if (mod == .kw_operator) {
+                                has_op = true;
+                                break;
+                            }
+                        }
+                        if (!has_op) {
+                            self.reportError(node.line, node.column, "TypeError: Method 'get' on type '{s}' must be marked with 'operator' modifier to support index operator '[]'.", .{cn.data.type_decl.name});
+                            return error.TypeError;
+                        }
+                    }
+                }
+            }
+        }
+
         // Redireciona para object.get(index)
         const get_ident = try self.allocator.create(ASTNode);
         get_ident.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .identifier = .{ .name = "get", .resolved_c_name = null } } };

@@ -1,0 +1,66 @@
+import { assert } from "std.core"
+import { Uuid, Identifier } from "std.uuid"
+import { Ulid } from "std.ulid"
+
+test "should generate valid UUID v7" {
+    val id = Uuid.generate()
+    val str = id.toString()
+    assert(str.length == 36)
+    assert(id.version() == 7)
+
+    assert(str.substring(8, 9) == "-")
+    assert(str.substring(13, 14) == "-")
+    assert(str.substring(18, 19) == "-")
+    assert(str.substring(23, 24) == "-")
+}
+
+test "should generate valid UUID v4" {
+    val id = Uuid.v4()
+    val str = id.toString()
+    assert(str.length == 36)
+    assert(id.version() == 4)
+
+    assert(str.substring(8, 9) == "-")
+    assert(str.substring(13, 14) == "-")
+    assert(str.substring(18, 19) == "-")
+    assert(str.substring(23, 24) == "-")
+}
+
+test "should parse UUID string" {
+    val validStr = "018f6c52-7b2a-7123-8abc-123456789abc"
+    val parsed = Uuid.parse(validStr)
+    assert(parsed != null)
+    assert(parsed?.toString() == validStr)
+    assert(parsed?.version() == 7)
+
+    val invalidStr = "invalid-uuid-string"
+    val parsedInvalid = Uuid.parse(invalidStr)
+    assert(parsedInvalid == null)
+}
+
+test "should generate valid ULID" {
+    val ulid = Ulid.generate()
+    val str = ulid.toString()
+    assert(str.length == 26)
+    assert(ulid.timestamp() > 0)
+}
+
+test "should parse and round-trip ULID string" {
+    val original = Ulid.generate()
+    val str = original.toString()
+    val parsed = Ulid.parse(str)
+
+    assert(parsed != null)
+    assert(parsed?.toString() == str)
+    assert(parsed == original)
+}
+
+test "should confirm Identifier contract polymorphically" {
+    val id1: Identifier = Uuid.generate()
+    val id2: Identifier = Ulid.generate()
+
+    assert(id1.toString().length == 36)
+    assert(id2.toString().length == 26)
+    assert(id1.toBytes().size() == 16)
+    assert(id2.toBytes().size() == 16)
+}
