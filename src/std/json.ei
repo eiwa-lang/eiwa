@@ -1,4 +1,4 @@
-import { Serializable, SerdeField, SerdeValue, SerdeInt, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
+import { Serializable, SerdeField, SerdeValue, SerdeInt, SerdeDouble, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
 
 skill Json : Serializable {
     fun escapeJsonString(s: String): String {
@@ -38,6 +38,7 @@ skill Json : Serializable {
 
     fun writeJsonValue(v: SerdeValue): String = when (v) {
         is SerdeInt -> v.v.toString()
+        is SerdeDouble -> v.v.toString()
         is SerdeBool -> v.v.toString()
         is SerdeString -> "\"" + this.escapeJsonString(v.v) + "\""
         is SerdeObject -> this.writeJson(v.obj.serdeFields())

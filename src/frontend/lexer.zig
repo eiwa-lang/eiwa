@@ -125,6 +125,13 @@ pub const Lexer = struct {
         while (!self.isAtEnd() and isDigit(self.peek())) {
             _ = self.advance();
         }
+        if (!self.isAtEnd() and self.peek() == '.' and isDigit(self.peekNext())) {
+            _ = self.advance(); // consume '.'
+            while (!self.isAtEnd() and isDigit(self.peek())) {
+                _ = self.advance();
+            }
+            return self.makeToken(.double_literal);
+        }
         return self.makeToken(.int_literal);
     }
 
@@ -271,4 +278,19 @@ test "Lexer string escape cases" {
     try std.testing.expectEqualStrings("Barra invertida \\\\ caminho", tok2.lexeme[1..tok2.lexeme.len - 1]);
     
     try std.testing.expectEqual(TokenType.eof, lexer.scanToken().token_type);
+}
+
+test "Lexer double literal cases" {
+    var lexer = Lexer.init("3.5 123.456 0.0");
+    const tok1 = lexer.scanToken();
+    try std.testing.expectEqual(TokenType.double_literal, tok1.token_type);
+    try std.testing.expectEqualStrings("3.5", tok1.lexeme);
+
+    const tok2 = lexer.scanToken();
+    try std.testing.expectEqual(TokenType.double_literal, tok2.token_type);
+    try std.testing.expectEqualStrings("123.456", tok2.lexeme);
+
+    const tok3 = lexer.scanToken();
+    try std.testing.expectEqual(TokenType.double_literal, tok3.token_type);
+    try std.testing.expectEqualStrings("0.0", tok3.lexeme);
 }

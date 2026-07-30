@@ -1,6 +1,12 @@
 @Header("<stdlib.h>", "<stdio.h>")
 lib Standard {
-    fun sprintf(buffer: Pointer, format: Pointer, value: Int): Int
+    @Alias("sprintf")
+    fun sprintfInt(buffer: Pointer, format: Pointer, value: Int): Int
+
+    @Alias("sprintf")
+    fun sprintfDouble(buffer: Pointer, format: Pointer, value: Double): Int
+
+    fun atof(nptr: Pointer): Double
 
     @Alias("GC_MALLOC")
     fun gcMalloc(size: Int): Pointer
@@ -36,6 +42,12 @@ lib NativeMemory {
 
     @Alias("eiwa_now_millis")
     fun nowMillis(): Int
+
+    @Alias("eiwa_double_to_int")
+    fun doubleToInt(value: Double): Int
+
+    @Alias("eiwa_int_to_double")
+    fun intToDouble(value: Int): Double
 }
 
 contract Stringable {
@@ -132,7 +144,7 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
     operator fun plus(other: String): String {
         val totalLen = this.length + other.length
         val buf = Standard.gcMalloc(totalLen + 1)
-        Standard.sprintf(buf, "%s%s".ptr, this.ptr, other.ptr)
+        Standard.sprintfInt(buf, "%s%s".ptr, this.ptr, other.ptr)
         return String(buf, totalLen)
     }
 
@@ -203,6 +215,10 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
         return String(buf, len)
     }
 
+    fun toDouble(): Double {
+        return Standard.atof(this.ptr)
+    }
+
     fun hashCode(): Int {
         var hash = 5381
         var i = 0
@@ -219,7 +235,7 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
 type Int : Stringable, Equatable, Hashable {
     implement fun toString(): String {
         val buf = Standard.gcMalloc(32)
-        Standard.sprintf(buf, "%lld".ptr, this)
+        Standard.sprintfInt(buf, "%lld".ptr, this)
         return String(buf, NativeString.strlen(buf))
     }
 
@@ -233,6 +249,38 @@ type Int : Stringable, Equatable, Hashable {
         }
         return false
     }
+
+    fun toDouble(): Double {
+        return NativeMemory.intToDouble(this)
+    }
+
+    fun toInt(): Int = this
+}
+
+@Primitive("double")
+type Double : Stringable, Equatable, Hashable {
+    implement fun toString(): String {
+        val buf = Standard.gcMalloc(64)
+        Standard.sprintfDouble(buf, "%g".ptr, this)
+        return String(buf, NativeString.strlen(buf))
+    }
+
+    implement fun hashCode(): Int {
+        return NativeMemory.doubleToInt(this)
+    }
+
+    implement operator fun equals(other: Stringable): Bool {
+        if (other is Double) {
+            return this == (other as Double)
+        }
+        return false
+    }
+
+    fun toInt(): Int {
+        return NativeMemory.doubleToInt(this)
+    }
+
+    fun toDouble(): Double = this
 }
 
 contract Awaitable<T> {

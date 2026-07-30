@@ -1310,6 +1310,8 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
 
         if (std.mem.eql(u8, elem_name, "Int")) {
             list_wrapper_name = "SerdeIntList";
+        } else if (std.mem.eql(u8, elem_name, "Double")) {
+            list_wrapper_name = "SerdeDoubleList";
         } else if (std.mem.eql(u8, elem_name, "Bool")) {
             list_wrapper_name = "SerdeBoolList";
         } else if (std.mem.eql(u8, elem_name, "String")) {
@@ -1859,6 +1861,8 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
         var wrapper_name: []const u8 = "SerdeObjectList";
         if (std.mem.endsWith(u8, c.name, "_core_Int") or std.mem.endsWith(u8, c.name, "_Int")) {
             wrapper_name = "SerdeIntList";
+        } else if (std.mem.endsWith(u8, c.name, "_core_Double") or std.mem.endsWith(u8, c.name, "_Double")) {
+            wrapper_name = "SerdeDoubleList";
         } else if (std.mem.endsWith(u8, c.name, "_core_Bool") or std.mem.endsWith(u8, c.name, "_Bool")) {
             wrapper_name = "SerdeBoolList";
         } else if (std.mem.endsWith(u8, c.name, "_core_String") or std.mem.endsWith(u8, c.name, "_String")) {

@@ -1,5 +1,5 @@
 import { List } from "std.collections"
-import { Serializable, SerdeField, SerdeValue, SerdeInt, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
+import { Serializable, SerdeField, SerdeValue, SerdeInt, SerdeDouble, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
 
 skill Yaml : Serializable {
     fun toYaml(): String {
@@ -28,6 +28,7 @@ skill Yaml : Serializable {
 
     fun writeYamlValueSuffix(v: SerdeValue, indent: String): String = when (v) {
         is SerdeInt -> " " + v.v.toString() + "\n"
+        is SerdeDouble -> " " + v.v.toString() + "\n"
         is SerdeBool -> " " + v.v.toString() + "\n"
         is SerdeString -> " \"" + v.v + "\"\n"
         is SerdeObject -> v.obj.serdeFields().size() == 1 ? this.writeYamlValueSuffix(v.obj.serdeFields()[0].value, indent) : "\n" + this.writeYamlBlock(v.obj.serdeFields(), indent + "  ")
@@ -54,6 +55,7 @@ skill Yaml : Serializable {
 
     fun writeYamlScalar(v: SerdeValue): String = when (v) {
         is SerdeInt -> v.v.toString()
+        is SerdeDouble -> v.v.toString()
         is SerdeBool -> v.v.toString()
         is SerdeString -> "\"" + v.v + "\""
         else -> "null"

@@ -36,3 +36,17 @@ test "random: SeededRandom is deterministic" {
     assert(r1_a == r2_a)
     assert(r1_b == r2_b)
 }
+
+test "random: nextDouble within range" {
+    val d = Random.nextDouble()
+    assert(d >= 0.0)
+    assert(d <= 1.0)
+
+    val dRange = Random.nextDouble(10.5, 20.5)
+    assert(dRange >= 10.5)
+    assert(dRange <= 20.5)
+
+    val dRangeInt = Random.nextDouble(1, 1000)
+    assert(dRangeInt >= 1.0)
+    assert(dRangeInt <= 1000.0)
+}

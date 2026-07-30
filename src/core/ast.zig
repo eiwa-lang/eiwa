@@ -71,6 +71,7 @@ pub const TokenType = enum {
     identifier,
     string_literal,
     int_literal,
+    double_literal,
     bool_literal,
 
     invalid,
@@ -225,6 +226,7 @@ pub const ASTNodeType = union(enum) {
     
     // Literals
     int_literal: i64,
+    double_literal: f64,
     string_literal: []const u8,
     bool_literal: bool,
     array_literal: struct {

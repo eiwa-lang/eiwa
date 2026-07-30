@@ -73,7 +73,7 @@ test "env: parsing .env file correctly with comments, spaces and quotes" {
     
     // Construct double quote string dynamically via FFI since lexer does not support escaped double quotes \"
     val quoteBuf = Standard.gcMalloc(2)
-    Standard.sprintf(quoteBuf, "%c".ptr, 34)
+    Standard.sprintfInt(quoteBuf, "%c".ptr, 34)
     val dq = String(quoteBuf, 1)
 
     val content = "# Comment line\n  # Space padded comment\nDB_HOST = localhost\nDB_PORT=5432\nDEBUG=true\n\n# Empty lines and padding\n  TEMP_KEY   =   temp-value   \n  \nQUOTED_VAL=" + dq + "quoted value" + dq + "\nSINGLE_QUOTED_VAL='single quoted'\n"

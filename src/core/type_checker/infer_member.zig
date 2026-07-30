@@ -367,6 +367,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             base_name = try mangled.toOwnedSlice();
         },
         .Int => base_name = "core_Int",
+        .Double => base_name = "core_Double",
         .String => base_name = "core_String",
         .Bool => base_name = "core_Bool",
         .Pointer => base_name = "core_Pointer",

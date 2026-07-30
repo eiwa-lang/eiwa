@@ -1342,12 +1342,19 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             } };
             c.callee.resolved_type = null;
             
+            if (c.arguments.len > f.params.len) {
+                self.reportError(node.line, node.column, "TypeError: Too many arguments passed to method '{s}'. Expected {d}, got {d}.", .{ g.name, f.params.len, c.arguments.len });
+                return error.TypeError;
+            }
+
             for (c.arguments, 0..) |arg, i| {
                 const arg_type = try self.inferNode(arg, scope);
-                const expected_type = try self.resolveTypeRef(f.params[i].type_ref.?);
-                if (!self.isCompatible(expected_type, arg_type)) {
-                    self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ expected_type.*, arg_type.*, i + 1 });
-                    return error.TypeError;
+                if (i < f.params.len and f.params[i].type_ref != null) {
+                    const expected_type = try self.resolveTypeRef(f.params[i].type_ref.?);
+                    if (!self.isCompatible(expected_type, arg_type)) {
+                        self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ expected_type.*, arg_type.*, i + 1 });
+                        return error.TypeError;
+                    }
                 }
             }
             

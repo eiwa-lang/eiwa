@@ -1796,6 +1796,8 @@ Eiwa provides random generation functionality via `std.random`, which offers bot
 ### 27.1 System Random (`Random`)
 
 * **`nextInt(min, max)`**: Returns a random integer in the range `[min, max]`.
+* **`nextDouble()`**: Returns a random `Double` in the range `[0.0, 1.0)`.
+* **`nextDouble(min, max)`**: Returns a random `Double` in the range `[min, max)`.
 * **`nextPercent()`**: Returns a random integer between `0` and `100`.
 * **`nextBool()`**: Returns a random boolean.
 * **`choice(list)`**: Returns a random element from a list (or `null` if empty).
@@ -1807,6 +1809,8 @@ import { Random } from "std.random"
 fun main() {
     val roll = Random.nextInt(1, 6)
     val pct = Random.nextPercent()
+    val d = Random.nextDouble() // Double between 0.0 and 1.0
+    val dRange = Random.nextDouble(10.5, 20.5) // Double between 10.5 and 20.5
     
     val items = ["apple", "banana", "cherry"]
     val picked = Random.choice(items) // String?
@@ -1831,5 +1835,99 @@ fun main() {
     val n1 = rng.nextInt(1, 100)
     val n2 = rng.nextInt(1, 100)
 }
+```
+
+---
+
+## 28. Primitive Numerical Types (`Int` & `Double`) and Standard Math (`std.math`)
+
+Eiwa provides two core primitive numerical types for high-performance systems programming and numerical computation: `Int` and `Double`.
+
+### 28.1 The `Int` Type (64-bit Signed Integer)
+
+`Int` represents a 64-bit signed integer (mapped directly to C `int64_t`).
+
+* **Literals**: `42`, `-10`, `0`.
+* **Conversions**:
+  * `.toDouble()`: Converts `Int` to a 64-bit `Double`.
+  * `.toInt()`: Returns `this` (`Int`).
+  * `.toString()`: Converts the integer to its string representation.
+* **Contracts**: Implements `Stringable`, `Equatable`, and `Hashable`.
+
+```kotlin
+val a: Int = 42
+val d: Double = a.toDouble() // 42.0
+val s: String = a.toString() // "42"
+```
+
+### 28.2 The `Double` Type (64-bit IEEE 754 Floating Point)
+
+`Double` represents a 64-bit IEEE 754 double precision floating point number (mapped directly to C `double`).
+
+* **Literals**: Decimal numbers such as `3.14159`, `0.0`, `-15.5`, `123.456`.
+* **Arithmetic & Comparisons**: Supports `+`, `-`, `*`, `/`, `<`, `>`, `<=`, `>=`, `==`, `!=`.
+* **Automatic Promotion**: Mixing `Int` and `Double` in binary arithmetic (`+`, `-`, `*`, `/`) automatically promotes the operation and result to `Double`.
+* **Conversions**:
+  * `.toInt()`: Truncates and converts `Double` to 64-bit `Int`.
+  * `.toDouble()`: Returns `this` (`Double`).
+  * `.toString()`: Formats the floating point number as a string.
+* **String Conversion**: `String` provides `.toDouble()` (via `Standard.atof`) to parse numbers from strings.
+* **Contracts**: Implements `Stringable`, `Equatable`, and `Hashable`.
+
+```kotlin
+val pi: Double = 3.14159
+val radius: Double = 2.5
+
+// Mixed Int and Double arithmetic (promotes to Double)
+val area = pi * radius * radius // 19.6349375...
+
+// Conversions
+val roundedInt: Int = area.toInt() // 19
+val parsedDouble: Double = "12.34".toDouble() // 12.34
+```
+
+### 28.3 Standard Math Library (`std.math`)
+
+The `std.math` package provides mathematical functions and utilities. Floating point math functions are bound directly to C `<math.h>` double precision routines via the `Math` object.
+
+```kotlin
+import { Math, mod } from "std.math"
+
+fun main() {
+    // Trigonometry
+    val s = Math.sin(1.570796) // ~1.0
+    val c = Math.cos(0.0)      // 1.0
+    val t = Math.tan(0.785398) // ~1.0
+
+    // Roots & Powers
+    val root = Math.sqrt(16.0)     // 4.0
+    val power = Math.pow(2.0, 3.0) // 8.0
+
+    // Rounding & Absolute Value
+    val absVal = Math.abs(-15.5) // 15.5
+    val fl = Math.floor(4.9)     // 4.0
+    val cl = Math.ceil(4.1)      // 5.0
+    val rd = Math.round(4.6)     // 5.0
+
+    // Integer Modulo Helper
+    val remainder = mod(10, 3) // 1
+}
+```
+
+#### Summary of `Math` Methods
+
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `Math.sin(x)` | `(Double) -> Double` | Returns the sine of $x$ (in radians). |
+| `Math.cos(x)` | `(Double) -> Double` | Returns the cosine of $x$ (in radians). |
+| `Math.tan(x)` | `(Double) -> Double` | Returns the tangent of $x$ (in radians). |
+| `Math.sqrt(x)` | `(Double) -> Double` | Returns the square root of $x$. |
+| `Math.pow(base, exp)` | `(Double, Double) -> Double` | Returns $base^{exp}$. |
+| `Math.abs(x)` | `(Double) -> Double` | Returns the absolute value of $x$. |
+| `Math.floor(x)` | `(Double) -> Double` | Returns the largest integer $\le x$. |
+| `Math.ceil(x)` | `(Double) -> Double` | Returns the smallest integer $\ge x$. |
+| `Math.round(x)` | `(Double) -> Double` | Returns $x$ rounded to the nearest integer. |
+| `mod(a, b)` | `(Int, Int) -> Int` | Returns the integer remainder of $a / b$. |
+
 ```
 

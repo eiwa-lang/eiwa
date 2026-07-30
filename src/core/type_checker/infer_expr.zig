@@ -125,11 +125,11 @@ pub fn inferUnaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         }
         t.* = .Bool;
     } else if (u.operator == .minus) {
-        if (op_type.* != .Int) {
-            self.reportError(node.line, node.column, "TypeError: Operator '-' requires an Int operand, but got {}.", .{op_type.*});
+        if (op_type.* != .Int and op_type.* != .Double) {
+            self.reportError(node.line, node.column, "TypeError: Operator '-' requires an Int or Double operand, but got {}.", .{op_type.*});
             return error.TypeError;
         }
-        t.* = .Int;
+        t.* = op_type.*;
     } else {
         self.reportError(node.line, node.column, "TypeError: Unknown unary operator.", .{});
         return error.TypeError;
@@ -155,6 +155,8 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         .plus => {
             if (left_type.* == .Int and right_type.* == .Int) {
                 t.* = .Int;
+            } else if ((left_type.* == .Int or left_type.* == .Double) and (right_type.* == .Int or right_type.* == .Double)) {
+                t.* = .Double;
             } else if (std.meta.activeTag(left_type.*) == .Pointer and right_type.* == .Int) {
                 t.* = left_type.*;
             } else {
@@ -176,6 +178,8 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         .minus => {
             if (left_type.* == .Int and right_type.* == .Int) {
                 t.* = .Int;
+            } else if ((left_type.* == .Int or left_type.* == .Double) and (right_type.* == .Int or right_type.* == .Double)) {
+                t.* = .Double;
             } else if (std.meta.activeTag(left_type.*) == .Pointer and std.meta.activeTag(right_type.*) == .Pointer) {
                 t.* = .Int;
             } else {
@@ -190,11 +194,16 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             }
         },
         .star, .slash => {
-            if (left_type.* != .Int or right_type.* != .Int) {
-                self.reportError(node.line, node.column, "TypeError: Math operations require Int on both sides. Found {} and {}.", .{ left_type.*, right_type.* });
+            if ((left_type.* == .Int or left_type.* == .Double) and (right_type.* == .Int or right_type.* == .Double)) {
+                if (left_type.* == .Double or right_type.* == .Double) {
+                    t.* = .Double;
+                } else {
+                    t.* = .Int;
+                }
+            } else {
+                self.reportError(node.line, node.column, "TypeError: Math operations require Int or Double on both sides. Found {} and {}.", .{ left_type.*, right_type.* });
                 return error.TypeError;
             }
-            t.* = .Int;
         },
         .eq_eq, .bang_eq, .less, .greater, .less_eq, .greater_eq, .and_and, .or_or => {
             t.* = .Bool;

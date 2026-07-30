@@ -17,6 +17,7 @@ contract SerdeList {
 }
 
 type SerdeInt(val v: Int) : SerdeValue
+type SerdeDouble(val v: Double) : SerdeValue
 type SerdeBool(val v: Bool) : SerdeValue
 type SerdeString(val v: String) : SerdeValue
 type SerdeObject(val obj: Serializable) : SerdeValue
@@ -25,6 +26,11 @@ type SerdeListValue(val list: SerdeList) : SerdeValue
 type SerdeIntList(val list: List<Int>) : SerdeList {
     implement fun size(): Int = list.size()
     implement fun getAt(index: Int): SerdeValue = SerdeInt(list.get(index))
+}
+
+type SerdeDoubleList(val list: List<Double>) : SerdeList {
+    implement fun size(): Int = list.size()
+    implement fun getAt(index: Int): SerdeValue = SerdeDouble(list.get(index))
 }
 
 type SerdeBoolList(val list: List<Bool>) : SerdeList {

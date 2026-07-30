@@ -475,6 +475,31 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 55.5:** Registro dos pacotes `std.uuid` e `std.ulid` no compilador (`src/core/type_checker/infer_decl.zig`).
 - [x] **Verify:** Suite de testes `samples/tests/id_test.ei` 100% PASS; suite nativa completa `eiwa test` verde.
 
+### Phase 56: Suporte ao Tipo `Double` (64-bit IEEE 754) (COMPLETED)
+> **Motivação:** Fornecer suporte nativo a números de ponto flutuante de dupla precisão (`double` em C) em Eiwa, permitindo literais decimais (ex: `3.14159`), operações aritméticas completas, conversões numéricas e integração com bibliotecas da Standard Library (`std.serde`, `std.json`, `std.yaml`, `std.db`, `std.math`). O tipo `Float` (32-bit) fica diferido para uma fase futura.
+
+#### Etapa 1 — Lexer e AST
+- [x] **Task 56.1.1:** Atualizar Lexer (`src/frontend/lexer.zig`) para reconhecer números com ponto decimal (ex: `123.456`) e emitir token `double_literal`.
+- [x] **Task 56.1.2:** Adicionar tipo primitivo `Double` em `src/core/type_system.zig` e no AST (`src/core/ast.zig`).
+
+#### Etapa 2 — Type Checker & Semântica
+- [x] **Task 56.2.1:** Atualizar o Type Checker (`src/core/type_checker/`) para inferir literais decimais como `Double`.
+- [x] **Task 56.2.2:** Suporte a operadores aritméticos (`+`, `-`, `*`, `/`, comparadores) para `Double`, e coerção/promoção com `Int`.
+- [x] **Task 56.2.3:** Adicionar métodos de conversão `.toDouble()`, `.toInt()` e `.toString()` para os tipos `Double` e `Int`.
+
+#### Etapa 3 — C Transpiler & Runtime & Standard Library
+- [x] **Task 56.3.1:** Mapear `Double` para o tipo nativo C `double` em `src/backend/c_transpiler/`.
+- [x] **Task 56.3.2:** Adicionar helper de formatação `sprintfDouble` e helpers inline C `eiwa_double_to_int` e `eiwa_int_to_double` em `eiwa_runtime.h` e `std.core`.
+- [x] **Task 56.3.3:** Adicionar suporte a `SerdeDouble` e `SerdeDoubleList` em `std.serde`, `std.json` e `std.yaml`.
+- [x] **Task 56.3.4:** Adicionar suporte a `double(name)` em `contract Row` em `std.db` e `Double` em `Math` (`std.math`).
+
+#### Etapa 4 — Testes & Validação
+- [x] **Task 56.4.1:** Criar suite de testes nativa `samples/tests/double_test.ei` validando literais, precisão matemática, comparadores, conversões e funções de `Math`.
+- [x] **Task 56.4.2:** Executar `zig build test` e `eiwa test` para garantir regressão zero.
+
+### Phase 57: Tipo `Float` (32-bit IEEE 754) & Sufixo de Literal `f` (FUTURE / POSTPONED)
+> **Motivação:** Adicionar o tipo de precisão simples (32-bit `float` em C) com literais como `3.14f` para interoperação de baixa nível (FFI), buffers compactos e performance em gráficos/vetores.
+
 ---
 
 ## ✅ Definition of Done (Per Phase)

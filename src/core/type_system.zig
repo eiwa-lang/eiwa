@@ -4,6 +4,7 @@ const ArrayList = compat.ArrayList;
 
 pub const EiwaType = union(enum) {
     Int,
+    Double,
     String,
     Bool,
     Pointer: *const EiwaType,
@@ -32,6 +33,7 @@ pub const EiwaType = union(enum) {
         _ = fmt;
         switch (self) {
             .Int => try writer.writeAll("Int"),
+            .Double => try writer.writeAll("Double"),
             .String => try writer.writeAll("String"),
             .Bool => try writer.writeAll("Bool"),
             .Pointer => |elem| {
@@ -92,6 +94,7 @@ pub const EiwaType = union(enum) {
     pub fn formatSafe(self: EiwaType, writer: anytype) !void {
         switch (self) {
             .Int => try writer.writeAll("Int"),
+            .Double => try writer.writeAll("Double"),
             .String => try writer.writeAll("String"),
             .Bool => try writer.writeAll("Bool"),
             .Pointer => |elem| {

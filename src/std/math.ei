@@ -1,3 +1,28 @@
+@Header("<math.h>")
+lib NativeMath {
+    fun sin(x: Double): Double
+    fun cos(x: Double): Double
+    fun tan(x: Double): Double
+    fun sqrt(x: Double): Double
+    fun pow(x: Double, y: Double): Double
+    fun fabs(x: Double): Double
+    fun floor(x: Double): Double
+    fun ceil(x: Double): Double
+    fun round(x: Double): Double
+}
+
+object Math {
+    fun sin(x: Double): Double = NativeMath.sin(x)
+    fun cos(x: Double): Double = NativeMath.cos(x)
+    fun tan(x: Double): Double = NativeMath.tan(x)
+    fun sqrt(x: Double): Double = NativeMath.sqrt(x)
+    fun pow(base: Double, exp: Double): Double = NativeMath.pow(base, exp)
+    fun abs(x: Double): Double = NativeMath.fabs(x)
+    fun floor(x: Double): Double = NativeMath.floor(x)
+    fun ceil(x: Double): Double = NativeMath.ceil(x)
+    fun round(x: Double): Double = NativeMath.round(x)
+}
+
 fun mod(a: Int, b: Int): Int {
     return a - (a / b) * b
 }

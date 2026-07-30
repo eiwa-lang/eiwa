@@ -70,7 +70,8 @@ fun main() {
                 body["description"] = "Arest is a Web Framework for Eiwa!"
                 body["date"] = now().toString()
                 body["uuid"] = Uuid.generate().toString()
-                body["random_number"] = Random.nextInt(1, 100).toString()
+                body["random_int"] = Random.nextInt().toString()
+                body["random_double"] = Random.nextDouble(1, 100).toString()
 
                 respond(200, "application/json", body.toJson())
             }

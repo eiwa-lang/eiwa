@@ -14,8 +14,8 @@ fun error(msg: String): Void {
     throw Exception(msg)
 }
 
-fun assert(condition: Bool) {
+fun assert(condition: Bool, message: String = "Assertion failed") {
     if (condition == false) {
-        throw AssertionException("Assertion failed")
+        throw AssertionException(message)
     }
 }

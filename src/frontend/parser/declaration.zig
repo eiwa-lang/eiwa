@@ -294,6 +294,9 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
             while (true) {
                 try self.consume(.identifier, "Expected generic parameter name.");
                 try generic_params.append(self.previous.lexeme);
+                if (self.match(.colon)) {
+                    _ = try self.parseType();
+                }
                 if (!self.match(.comma)) break;
             }
         }

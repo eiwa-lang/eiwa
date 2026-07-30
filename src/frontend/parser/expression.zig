@@ -571,6 +571,10 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
         const value = try std.fmt.parseInt(i64, self.previous.lexeme, 10);
         return try self.createNodeAt(.{ .int_literal = value }, line, col);
     }
+    if (self.match(.double_literal)) {
+        const value = try std.fmt.parseFloat(f64, self.previous.lexeme);
+        return try self.createNodeAt(.{ .double_literal = value }, line, col);
+    }
     if (self.match(.string_literal)) {
         const lexeme = self.previous.lexeme;
         const value = lexeme[1 .. lexeme.len - 1];

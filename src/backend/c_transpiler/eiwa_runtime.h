@@ -55,8 +55,17 @@ typedef struct EiwaTypeDescriptor {
 } EiwaTypeDescriptor;
 
 extern const EiwaTypeDescriptor core_Int_descriptor;
+extern const EiwaTypeDescriptor core_Double_descriptor;
 extern const EiwaTypeDescriptor core_Bool_descriptor;
 extern const EiwaTypeDescriptor core_String_descriptor;
+
+static inline int64_t eiwa_double_to_int(double val) {
+    return (int64_t)val;
+}
+
+static inline double eiwa_int_to_double(int64_t val) {
+    return (double)val;
+}
 
 static inline bool eiwa_implements(const EiwaTypeDescriptor* desc, const EiwaContractDescriptor* target) {
     if (!desc || !target) return false;

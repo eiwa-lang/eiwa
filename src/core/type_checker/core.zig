@@ -255,6 +255,8 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         // Check primitives first
         if (std.mem.eql(u8, alias, "Int") or std.mem.eql(u8, alias, "core_Int")) {
             base_type = .Int;
+        } else if (std.mem.eql(u8, alias, "Double") or std.mem.eql(u8, alias, "core_Double")) {
+            base_type = .Double;
         } else if (std.mem.eql(u8, alias, "Bool") or std.mem.eql(u8, alias, "core_Bool")) {
             base_type = .Bool;
         } else if (std.mem.eql(u8, alias, "String") or std.mem.eql(u8, alias, "core_String")) {
@@ -803,6 +805,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .lambda_expr => try infer_expr_mod.inferLambdaExpr(self, node, scope, t),
         .identifier => try infer_expr_mod.inferIdentifier(self, node, scope, t),
         .int_literal => t.* = .Int,
+        .double_literal => t.* = .Double,
         .string_literal => {
             const literal_str = node.data.string_literal;
 
@@ -892,6 +895,8 @@ fn core_implementsContract(self: *TypeChecker, type_name: []const u8, contract_n
     if (node_opt == null) {
         if (std.mem.eql(u8, actual_type, "Int")) {
             node_opt = self.classes_ast.get("std_core_Int") orelse self.classes_ast.get("core_Int");
+        } else if (std.mem.eql(u8, actual_type, "Double")) {
+            node_opt = self.classes_ast.get("std_core_Double") orelse self.classes_ast.get("core_Double");
         } else if (std.mem.eql(u8, actual_type, "Bool")) {
             node_opt = self.classes_ast.get("std_core_Bool") orelse self.classes_ast.get("core_Bool");
         } else if (std.mem.eql(u8, actual_type, "String")) {
@@ -933,6 +938,7 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
         const type_name: ?[]const u8 = switch (act_base.*) {
             .Custom => |name| name,
             .Int => "Int",
+            .Double => "Double",
             .Bool => "Bool",
             .String => "String",
             else => null,
@@ -955,20 +961,44 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
                 if (self.conformsTo(act_gi.base_name, contract_base)) return true;
             },
             .Int => if (self.conformsTo("Int", contract_base)) return true,
+            .Double => if (self.conformsTo("Double", contract_base)) return true,
             .Bool => if (self.conformsTo("Bool", contract_base)) return true,
             .String => if (self.conformsTo("String", contract_base)) return true,
             else => {},
         }
     }
 
-    // String ↔ Custom("core_String") / Custom("String") bridge
+    // Int / Double / Bool / String ↔ Custom primitive bridges
+    if (exp_base.* == .Int and act_base.* == .Custom and
+        (std.mem.eql(u8, act_base.Custom, "core_Int") or std.mem.eql(u8, act_base.Custom, "std_core_Int") or std.mem.eql(u8, act_base.Custom, "Int")))
+        return true;
+    if (exp_base.* == .Custom and act_base.* == .Int and
+        (std.mem.eql(u8, exp_base.Custom, "core_Int") or std.mem.eql(u8, exp_base.Custom, "std_core_Int") or std.mem.eql(u8, exp_base.Custom, "Int")))
+        return true;
+
+    if (exp_base.* == .Double and (act_base.* == .Int or (act_base.* == .Custom and (std.mem.eql(u8, act_base.Custom, "core_Int") or std.mem.eql(u8, act_base.Custom, "std_core_Int") or std.mem.eql(u8, act_base.Custom, "Int")))))
+        return true;
+    if (exp_base.* == .Double and act_base.* == .Custom and
+        (std.mem.eql(u8, act_base.Custom, "core_Double") or std.mem.eql(u8, act_base.Custom, "std_core_Double") or std.mem.eql(u8, act_base.Custom, "Double")))
+        return true;
+    if (exp_base.* == .Custom and act_base.* == .Double and
+        (std.mem.eql(u8, exp_base.Custom, "core_Double") or std.mem.eql(u8, exp_base.Custom, "std_core_Double") or std.mem.eql(u8, exp_base.Custom, "Double")))
+        return true;
+
+    if (exp_base.* == .Bool and act_base.* == .Custom and
+        (std.mem.eql(u8, act_base.Custom, "core_Bool") or std.mem.eql(u8, act_base.Custom, "std_core_Bool") or std.mem.eql(u8, act_base.Custom, "Bool")))
+        return true;
+    if (exp_base.* == .Custom and act_base.* == .Bool and
+        (std.mem.eql(u8, exp_base.Custom, "core_Bool") or std.mem.eql(u8, exp_base.Custom, "std_core_Bool") or std.mem.eql(u8, exp_base.Custom, "Bool")))
+        return true;
+
     if (exp_base.* == .String and act_base.* == .Custom and
-        (std.mem.eql(u8, act_base.Custom, "core_String") or std.mem.eql(u8, act_base.Custom, "String")))
+        (std.mem.eql(u8, act_base.Custom, "core_String") or std.mem.eql(u8, act_base.Custom, "std_core_String") or std.mem.eql(u8, act_base.Custom, "String")))
     {
         return true;
     }
     if (exp_base.* == .Custom and act_base.* == .String and
-        (std.mem.eql(u8, exp_base.Custom, "core_String") or std.mem.eql(u8, exp_base.Custom, "String")))
+        (std.mem.eql(u8, exp_base.Custom, "core_String") or std.mem.eql(u8, exp_base.Custom, "std_core_String") or std.mem.eql(u8, exp_base.Custom, "String")))
     {
         return true;
     }

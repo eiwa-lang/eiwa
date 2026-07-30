@@ -35,6 +35,7 @@ pub fn cIdent(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
 pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType) ![]const u8 {
     switch (t.*) {
         .Int => return "int64_t",
+        .Double => return "double",
         .Bool => return "bool",
         .Pointer => |elem| {
             if (elem.* == .Void) return "char*";
@@ -44,8 +45,9 @@ pub fn getCTypeStr(allocator: std.mem.Allocator, t: *const type_system.EiwaType)
         .String => return "core_String*",
         .Void => return "void",
         .Custom => |name| {
-            if (std.mem.eql(u8, name, "Int")) return "int64_t";
-            if (std.mem.eql(u8, name, "Bool")) return "bool";
+            if (std.mem.eql(u8, name, "Int") or std.mem.eql(u8, name, "std_core_Int") or std.mem.eql(u8, name, "core_Int")) return "int64_t";
+            if (std.mem.eql(u8, name, "Double") or std.mem.eql(u8, name, "std_core_Double") or std.mem.eql(u8, name, "core_Double")) return "double";
+            if (std.mem.eql(u8, name, "Bool") or std.mem.eql(u8, name, "std_core_Bool") or std.mem.eql(u8, name, "core_Bool")) return "bool";
             if (std.mem.eql(u8, name, "core_String") or std.mem.eql(u8, name, "String")) return "core_String*";
             if (std.mem.endsWith(u8, name, "Stringable") or std.mem.endsWith(u8, name, "Equatable") or std.mem.endsWith(u8, name, "Hashable") or std.mem.endsWith(u8, name, "Throwable") or std.mem.endsWith(u8, name, "Serializable") or std.mem.endsWith(u8, name, "SerdeValue") or std.mem.endsWith(u8, name, "SerdeList")) {
                 return "void*";

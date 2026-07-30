@@ -24,6 +24,18 @@ skill RandomOps : RandomProvider {
         return nextInt(0, 100)
     }
 
+    fun nextDouble(): Double {
+        val raw = mod(nextInt(), 1000000000)
+        return raw.toDouble() / 1000000000.0
+    }
+
+    fun nextDouble(min: Double, max: Double): Double {
+        if (min >= max) {
+            return min
+        }
+        return min + (nextDouble() * (max - min))
+    }
+
     fun nextBool(): Bool {
         return mod(nextInt(), 2) == 1
     }

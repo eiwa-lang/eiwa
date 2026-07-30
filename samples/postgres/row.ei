@@ -60,6 +60,12 @@ type PgRow(
         }
     }
 
+    implement fun double(name: String): Double {
+        val s = string(name)
+        if (s.length == 0) { return 0.0 }
+        return s.toDouble()
+    }
+
     implement fun bool(name: String): Bool {
         val s = string(name)
         return s == "t" || s == "true" || s == "1" || s == "yes" || s == "on"

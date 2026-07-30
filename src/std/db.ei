@@ -10,6 +10,7 @@ import { Log } from "std.log"
 
 contract Row {
     fun int(name: String): Int
+    fun double(name: String): Double
     fun string(name: String): String
     fun bool(name: String): Bool
     fun isNull(name: String): Bool
@@ -46,6 +47,11 @@ type BoundStatement(val conn: Connection, val sql: String, val params: MutableLi
     }
 
     fun bind(value: Int): BoundStatement {
+        params.add(value.toString())
+        return this
+    }
+
+    fun bind(value: Double): BoundStatement {
         params.add(value.toString())
         return this
     }

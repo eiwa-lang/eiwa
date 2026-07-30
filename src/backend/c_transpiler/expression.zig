@@ -27,6 +27,14 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
         .int_literal => |val| {
             try self.writer.writer().print("{}", .{val});
         },
+        .double_literal => |val| {
+            var buf: [64]u8 = undefined;
+            const str = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "0.0";
+            try self.writer.appendSlice(str);
+            if (std.mem.indexOfScalar(u8, str, '.') == null and std.mem.indexOfScalar(u8, str, 'e') == null and std.mem.indexOfScalar(u8, str, 'E') == null) {
+                try self.writer.appendSlice(".0");
+            }
+        },
         .bool_literal => |b| {
             if (b) try self.writer.appendSlice("1")
             else try self.writer.appendSlice("0");
@@ -406,6 +414,10 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                             try self.writer.appendSlice("(void*)(intptr_t)(");
                             try self.emitExpression(arg);
                             try self.writer.appendSlice(")");
+                        } else if (arg_t != null and arg_t.?.* == .Double and exp_t != null and (exp_t.?.* == .Union or exp_t.?.* == .Custom)) {
+                            try self.writer.appendSlice("*(void**)&(");
+                            try self.emitExpression(arg);
+                            try self.writer.appendSlice(")");
                         } else {
                             try self.emitExpression(arg);
                         }
@@ -419,6 +431,10 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         const exp_t = if (arg.expected_type) |ext| ts.extractBaseType(ext) else null;
                         if (arg_t != null and (arg_t.?.* == .Int or arg_t.?.* == .Bool) and exp_t != null and (exp_t.?.* == .Union or exp_t.?.* == .Custom)) {
                             try self.writer.appendSlice("(void*)(intptr_t)(");
+                            try self.emitExpression(arg);
+                            try self.writer.appendSlice(")");
+                        } else if (arg_t != null and arg_t.?.* == .Double and exp_t != null and (exp_t.?.* == .Union or exp_t.?.* == .Custom)) {
+                            try self.writer.appendSlice("*(void**)&(");
                             try self.emitExpression(arg);
                             try self.writer.appendSlice(")");
                         } else {
@@ -473,6 +489,11 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         try self.emitExpression(g.object);
                         try self.writer.appendSlice(")");
                         return;
+                    } else if (rt.* == .Double) {
+                        try self.writer.appendSlice("core_Double_toString(");
+                        try self.emitExpression(g.object);
+                        try self.writer.appendSlice(")");
+                        return;
                     } else if (rt.* == .String) {
                         try self.emitExpression(g.object);
                         return;
@@ -502,6 +523,11 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         try self.emitExpression(g.object);
                         try self.writer.appendSlice(")");
                         return;
+                    } else if (rt.* == .Double) {
+                        try self.writer.appendSlice("core_Double_hashCode(");
+                        try self.emitExpression(g.object);
+                        try self.writer.appendSlice(")");
+                        return;
                     } else if (rt.* == .String) {
                         try self.writer.appendSlice("core_String_hashCode(");
                         try self.emitExpression(g.object);
@@ -527,6 +553,8 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     class_name = "core_String";
                 } else if (rt.* == .Int) {
                     class_name = "core_Int";
+                } else if (rt.* == .Double) {
+                    class_name = "core_Double";
                 } else if (rt.* == .Bool) {
                     class_name = "core_Bool";
                 } else if (rt.* == .Custom) {
@@ -646,6 +674,10 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         const exp_t = if (arg.expected_type) |ext| ts.extractBaseType(ext) else null;
                         if (arg_t != null and (arg_t.?.* == .Int or arg_t.?.* == .Bool) and exp_t != null and (exp_t.?.* == .Union or exp_t.?.* == .Custom)) {
                             try self.writer.appendSlice("(void*)(intptr_t)(");
+                            try self.emitExpression(arg);
+                            try self.writer.appendSlice(")");
+                        } else if (arg_t != null and arg_t.?.* == .Double and exp_t != null and (exp_t.?.* == .Union or exp_t.?.* == .Custom)) {
+                            try self.writer.appendSlice("*(void**)&(");
                             try self.emitExpression(arg);
                             try self.writer.appendSlice(")");
                         } else {
@@ -819,13 +851,18 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         class_name = "core_String";
                     } else if (base.* == .Custom) {
                         class_name = base.Custom;
-                        if (self.classes_ast) |ca| {
-                            if (ca.get(class_name)) |class_node| {
-                                const cd = class_node.data.type_decl;
-                                for (cd.methods) |method| {
-                                    if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, "equals")) {
-                                        has_equals = true;
-                                        break;
+                        const is_primitive = std.mem.eql(u8, class_name, "core_Int") or std.mem.eql(u8, class_name, "Int") or
+                                             std.mem.eql(u8, class_name, "core_Double") or std.mem.eql(u8, class_name, "Double") or
+                                             std.mem.eql(u8, class_name, "core_Bool") or std.mem.eql(u8, class_name, "Bool");
+                        if (!is_primitive) {
+                            if (self.classes_ast) |ca| {
+                                if (ca.get(class_name)) |class_node| {
+                                    const cd = class_node.data.type_decl;
+                                    for (cd.methods) |method| {
+                                        if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, "equals")) {
+                                            has_equals = true;
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -905,6 +942,10 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 try self.writer.writer().print("(({s})(intptr_t)(", .{t_str});
                 try self.emitExpression(a.value);
                 try self.writer.appendSlice("))");
+            } else if (dest_t.* == .Double) {
+                try self.writer.appendSlice("(*(double*)&(");
+                try self.emitExpression(a.value);
+                try self.writer.appendSlice("))");
             } else {
                 try self.writer.writer().print("(({s})", .{t_str});
                 try self.emitExpression(a.value);
@@ -920,6 +961,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             const target_c_name = switch (target_t.*) {
                 .Custom => |cname| cname,
                 .Int => "core_Int",
+                .Double => "core_Double",
                 .Bool => "core_Bool",
                 .String => "core_String",
                 .Null => "core_Null",
@@ -934,6 +976,10 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 try self.emitExpression(i.value);
                 try self.writer.appendSlice(") == 0)");
             } else if (std.mem.eql(u8, target_c_name, "core_Int")) {
+                try self.writer.appendSlice("((uintptr_t)(");
+                try self.emitExpression(i.value);
+                try self.writer.appendSlice(") < 0x10000)");
+            } else if (std.mem.eql(u8, target_c_name, "core_Double") or std.mem.eql(u8, target_c_name, "std_core_Double") or std.mem.eql(u8, target_c_name, "Double")) {
                 try self.writer.appendSlice("((uintptr_t)(");
                 try self.emitExpression(i.value);
                 try self.writer.appendSlice(") < 0x10000)");
@@ -1012,6 +1058,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                                 const target_c_name = switch (target_t.*) {
                                     .Custom => |cname| cname,
                                     .Int => "core_Int",
+                                    .Double => "core_Double",
                                     .Bool => "core_Bool",
                                     .String => "core_String",
                                     .Null => "core_Null",
@@ -1024,6 +1071,8 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                                 if (std.mem.eql(u8, target_c_name, "core_Null")) {
                                     try self.writer.writer().print("({s} == 0)", .{subj_var_name});
                                 } else if (std.mem.eql(u8, target_c_name, "core_Int")) {
+                                    try self.writer.writer().print("((uintptr_t)({s}) < 0x10000)", .{subj_var_name});
+                                } else if (std.mem.eql(u8, target_c_name, "core_Double") or std.mem.eql(u8, target_c_name, "std_core_Double") or std.mem.eql(u8, target_c_name, "Double")) {
                                     try self.writer.writer().print("((uintptr_t)({s}) < 0x10000)", .{subj_var_name});
                                 } else if (std.mem.eql(u8, target_c_name, "core_Bool")) {
                                     try self.writer.writer().print("((uintptr_t)({s}) <= 1)", .{subj_var_name});

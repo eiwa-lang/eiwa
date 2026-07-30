@@ -1,0 +1,61 @@
+import { print } from "std.core"
+import { assert } from "std.exceptions"
+import { Math } from "std.math"
+
+test "double: basic literal and arithmetic" {
+    val a: Double = 3.5
+    val b = 2.5
+    val sum = a + b
+    assert(sum == 6.0, "3.5 + 2.5 should be 6.0")
+
+    val diff = a - b
+    assert(diff == 1.0, "3.5 - 2.5 should be 1.0")
+
+    val prod = a * b
+    assert(prod == 8.75, "3.5 * 2.5 should be 8.75")
+
+    val div = 7.0 / 2.0
+    assert(div == 3.5, "7.0 / 2.0 should be 3.5")
+}
+
+test "double: comparisons" {
+    val x = 10.5
+    val y = 20.25
+    assert(x < y, "10.5 < 20.25")
+    assert(y > x, "20.25 > 10.5")
+    assert(x != y, "10.5 != 20.25")
+    assert(x == 10.5, "10.5 == 10.5")
+}
+
+test "double: conversions toInt and toDouble" {
+    val d = 42.8
+    val i = d.toInt()
+    assert(i == 42, "42.8.toInt() should be 42")
+
+    val i2 = 100
+    val d2 = i2.toDouble()
+    assert(d2 == 100.0, "100.toDouble() should be 100.0")
+}
+
+test "double: toString" {
+    val d = 12.34
+    val s = d.toString()
+    assert(s.length > 0, "toString on Double should return a non-empty string")
+}
+
+test "double: std.math functions" {
+    val sq = Math.sqrt(16.0)
+    assert(sq == 4.0, "sqrt(16.0) should be 4.0")
+
+    val p = Math.pow(2.0, 3.0)
+    assert(p == 8.0, "pow(2.0, 3.0) should be 8.0")
+
+    val fl = Math.floor(4.9)
+    assert(fl == 4.0, "floor(4.9) should be 4.0")
+
+    val cl = Math.ceil(4.1)
+    assert(cl == 5.0, "ceil(4.1) should be 5.0")
+
+    val ab = Math.abs(-15.5)
+    assert(ab == 15.5, "abs(-15.5) should be 15.5")
+}
