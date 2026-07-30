@@ -90,15 +90,36 @@ This document tracks the historical progress, current status, and future roadmap
 - [x] **Task 19.2:** Add support for Multi-Catch (`catch (e: ExceptionA | ExceptionB)`) and optional catch blocks (`catch { ... }`).
 - [x] **Task 19.3:** Map Exceptions and non-local unwinding in the C Transpiler via `<setjmp.h>` (setjmp/longjmp).
 
-### Phase 20: LLVM Native Emitter & Release Pipeline (COMPLETED)
-Substituição da geração de C intermediário por um emissor nativo LLVM IR construído 100% em memória via LLVM C-API 21 (`llvm-c/Core.h`), eliminando I/O de disco e subprocessos shell.
+### Phase 20: LLVM Native Emitter & Release Pipeline (IN PROGRESS)
+Substituição completa do backend C por um emissor nativo LLVM IR construído 100% em memória via LLVM C-API 21 (`llvm-c/Core.h`), eliminando I/O de disco e subprocessos shell.
 - [x] **Task 20.1:** Adicionar suporte às flags `--backend=c|llvm` e `--release` na CLI (`src/main.zig`), com detecção dinâmica do LLVM 21 em `build.zig`.
-- [x] **Task 20.2:** Construir o emissor nativo LLVM (`src/backend/llvm_emitter/`) traduzindo a AST Resolvida diretamente em estruturas LLVM em memória via C-API (`types.zig`, `expression.zig`, `statement.zig`, `core.zig`).
+- [x] **Task 20.2:** Construir a infraestrutura básica do emissor nativo LLVM (`src/backend/llvm_emitter/`) traduzindo a AST Resolvida (primitivos, variáveis, condicionais, loops `while` e funções) diretamente em estruturas LLVM em memória.
 - [x] **Task 20.3:** Conectar passes de otimização LLVM via PassBuilder (`default<O3>` para `--release` e `mem2reg` para dev) para gerar binários nativos de alta performance.
 - [x] **Task 20.4:** Otimizações de Build-Time (Dev Loops instantâneos em < 77ms):
   - Eliminar escrita de arquivos `.ll` e `.c` no disco.
   - Execução JIT instantânea via OrcJIT (`LLVMCreateExecutionEngineForModule`) e emissão direta de objeto `.o` (`LLVMTargetMachineEmitToFile`) sem invocar `clang`/`llc`.
 - [x] **Task 20.5:** Suporte a Binário Nativo Direto (`eiwa build --backend=llvm`) com `-O3` e `-lgc` ativado.
+- [ ] **Task 20.6:** Tipos Compostos & Instanciação (`type`, `object`, `enum`):
+  - Mapear campos de `type` para `LLVMStructTypeInContext`.
+  - Instanciação de objetos gerenciada pelo GC (`GC_MALLOC`).
+  - Leitura e escrita de propriedades (`LLVMBuildStructGEP2`) e chamadas de métodos de instância.
+- [ ] **Task 20.7:** FFI Nativo & Bibliotecas C (`lib Name { ... }`):
+  - Declaração dinâmica de protótipos de funções C externas no módulo LLVM.
+  - Interoperabilidade com bibliotecas nativas C (`libcurl`, `libpq`, `Boehm GC`).
+- [ ] **Task 20.8:** Arrays & Coleções Genéricas (`List<T>`, `Map<K, V>`, `[1, 2, 3]`):
+  - Tradução de literais de array (`array_literal`) e expressões de índice (`arr[i]`).
+  - Suporte a contêineres monomórficos em LLVM IR.
+- [ ] **Task 20.9:** Lambdas & Closures (`() -> T`):
+  - Emissão de structs de closure (ponteiro de função + ambiente de variáveis capturadas).
+  - Chamadas dinâmicas a lambdas em LLVM IR.
+- [ ] **Task 20.10:** Sistema de Composição (`contract` & Dynamic Dispatch):
+  - Geração de vtables estáticas/dinâmicas em LLVM IR.
+  - Suporte a testes e casts de tipo em contratos (`when (x) is Contract`).
+- [ ] **Task 20.11:** Exceções & Fibras (`try/catch` e `task { }` / `.await()`):
+  - Suporte a `try/catch` via `LLVMBuildInvoke` / landingpads ou unwind.
+  - Troca de contexto de fibras cooperativas em LLVM IR.
+- [ ] **Task 20.12:** Transição Completa & Depreciação do Backend C:
+  - Definir `--backend=llvm` como backend oficial padrão do compilador Eiwa.
 
 ### Phase 21: Native Test System & CLI Refinements (COMPLETED)
 - [x] **Task 21.1:** Add native `test "name" { ... }` blocks in the AST and Parser.
