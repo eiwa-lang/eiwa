@@ -545,6 +545,52 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
     if (self.match(.identifier)) {
         name = self.previous.lexeme;
     }
+
+    var contracts = ArrayList([]const u8).init(self.allocator);
+    var skills = ArrayList([]const u8).init(self.allocator);
+    if (self.match(.colon)) {
+        while (true) {
+            try self.consume(.identifier, "Expected contract name after ':'.");
+            try contracts.append(self.previous.lexeme);
+            if (self.match(.less)) {
+                var depth: usize = 1;
+                while (depth > 0 and !self.check(.eof)) {
+                    if (self.match(.less)) {
+                        depth += 1;
+                    } else if (self.match(.greater)) {
+                        depth -= 1;
+                    } else {
+                        _ = self.advance();
+                    }
+                }
+            }
+            if (!self.match(.comma)) break;
+        }
+
+        while (true) {
+            if (self.match(.plus)) {
+                while (true) {
+                    try self.consume(.identifier, "Expected skill name after '+'.");
+                    try skills.append(self.previous.lexeme);
+                    if (self.match(.less)) {
+                        var depth: usize = 1;
+                        while (depth > 0 and !self.check(.eof)) {
+                            if (self.match(.less)) {
+                                depth += 1;
+                            } else if (self.match(.greater)) {
+                                depth -= 1;
+                            } else {
+                                _ = self.advance();
+                            }
+                        }
+                    }
+                    if (!self.match(.comma)) break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
     
     try self.consume(.l_brace, "Expected '{' before object body.");
     var members = ArrayList(*ASTNode).init(self.allocator);
@@ -578,6 +624,8 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
         .name = name,
         .members = try members.toOwnedSlice(),
         .resolved_c_name = null,
+        .contracts = try contracts.toOwnedSlice(),
+        .skills = try skills.toOwnedSlice(),
     } }, line, col);
 }
 

@@ -1,0 +1,81 @@
+import { mod } from "std.math"
+
+contract RandomProvider {
+    fun nextRawBits(): Int
+}
+
+skill RandomOps : RandomProvider {
+    fun nextInt(): Int {
+        val bits = nextRawBits()
+        return if (bits < 0) 0 - bits else bits
+    }
+
+    fun nextInt(min: Int, max: Int): Int {
+        if (min >= max) {
+            return min
+        }
+        val range = (max - min) + 1
+        val raw = nextInt()
+        val offset = mod(raw, range)
+        return min + offset
+    }
+
+    fun nextPercent(): Int {
+        return nextInt(0, 100)
+    }
+
+    fun nextBool(): Bool {
+        return mod(nextInt(), 2) == 1
+    }
+
+    fun choice<T>(list: List<T>): T? {
+        if (list.size() == 0) {
+            return null
+        }
+        val idx = nextInt(0, list.size() - 1)
+        return list[idx]
+    }
+
+    fun shuffle<T>(list: List<T>): List<T> {
+        val mutList = list.mut()
+        val n = mutList.size()
+        var i = n - 1
+        while (i > 0) {
+            val j = nextInt(0, i)
+            val temp = mutList[i]
+            val itemJ = mutList[j]
+            mutList.set(i, itemJ)
+            mutList.set(j, temp)
+            i = i - 1
+        }
+        return mutList.freeze()
+    }
+}
+
+type SeededRandom(var state: Int) : RandomProvider + RandomOps {
+    implement fun nextRawBits(): Int {
+        if (this.state == 0) {
+            this.state = 12345
+        }
+        val nextState = mod((this.state * 1103515245) + 12345, 2147483647)
+        this.state = nextState
+        return nextState
+    }
+}
+
+object Random : RandomProvider + RandomOps {
+    implement fun nextRawBits(): Int {
+        val ptr = Standard.gcMalloc(4)
+        NativeMemory.randomBytes(ptr, 4)
+        val b0 = mod(NativeMemory.readByte(ptr, 0), 256)
+        val b1 = mod(NativeMemory.readByte(ptr, 1), 256)
+        val b2 = mod(NativeMemory.readByte(ptr, 2), 256)
+        val b3 = mod(NativeMemory.readByte(ptr, 3), 256)
+        val raw = b0 + (b1 * 256) + (b2 * 65536) + (b3 * 16777216)
+        return if (raw < 0) 0 - raw else raw
+    }
+
+    fun seeded(seed: Int): SeededRandom {
+        return SeededRandom(seed)
+    }
+}

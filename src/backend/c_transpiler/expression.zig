@@ -745,8 +745,8 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 const left_base = if (b.left.resolved_type) |rt| ts.extractBaseType(rt) else null;
                 const right_base = if (b.right.resolved_type) |rt| ts.extractBaseType(rt) else null;
 
-                const left_is_union = (left_base != null and left_base.?.* == .Union and left_base.?.Union.right.* != .Null);
-                const right_is_union = (right_base != null and right_base.?.* == .Union and right_base.?.Union.right.* != .Null);
+                const left_is_union = (left_base != null and left_base.?.* == .Union);
+                const right_is_union = (right_base != null and right_base.?.* == .Union);
 
                 if (left_is_union or right_is_union) {
                     const union_side = if (left_is_union) b.left else b.right;
@@ -763,7 +763,7 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                             try self.writer.appendSlice("))");
                             if (b.op == .bang_eq) try self.writer.appendSlice(")");
                             return;
-                        } else if (ot.* == .String or (ot.* == .Custom and std.mem.eql(u8, ot.Custom, "core_String"))) {
+                        } else if (ot.* == .String or (ot.* == .Custom and (std.mem.eql(u8, ot.Custom, "core_String") or std.mem.eql(u8, ot.Custom, "String")))) {
                             if (b.op == .bang_eq) try self.writer.appendSlice("!(");
                             try self.writer.appendSlice("(");
                             try self.writer.appendSlice("((core_String*)(");

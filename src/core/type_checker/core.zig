@@ -454,6 +454,10 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         while (enum_ast_it.next()) |entry| {
                             try self.enums_ast.put(entry.key_ptr.*, entry.value_ptr.*);
                         }
+                        var object_ast_it = m.checker.objects_ast.iterator();
+                        while (object_ast_it.next()) |entry| {
+                            try self.objects_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+                        }
                         var alias_it = m.checker.alias_map.iterator();
                         while (alias_it.next()) |entry| {
                             if (!self.alias_map.contains(entry.key_ptr.*)) {
@@ -664,6 +668,7 @@ fn core_resolveImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     const mod_path = try resolveModulePath(self.allocator, dir_path, actual_module_path);
                     if (reg.modules.get(mod_path)) |m| {
                         try m.checker.resolveImports(m.ast_root);
+                        try m.checker.validate(m.ast_root);
                     }
                 }
             }
@@ -741,8 +746,10 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
             },
         }
     } else {
-        if (node.resolved_type) |rt| {
-            return rt;
+        if (node.data != .fun_decl) {
+            if (node.resolved_type) |rt| {
+                return rt;
+            }
         }
     }
     const t = try self.allocator.create(EiwaType);
@@ -865,7 +872,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
     if (node.resolved_type == null) {
         node.resolved_type = t;
     }
-    return t;
+    return node.resolved_type.?;
 }
 
 fn core_conformsTo(self: *TypeChecker, actual_name: []const u8, target_name: []const u8) bool {
@@ -902,6 +909,7 @@ fn core_implementsContract(self: *TypeChecker, type_name: []const u8, contract_n
 
 fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *const EiwaType) bool {
     if (expected.* == .Unknown or actual.* == .Unknown) return true;
+    if (expected.* == .GenericParam or actual.* == .GenericParam) return true;
     if (isNullable(expected) and actual.* == .Null) return true;
     if (expected.* == .Custom and actual.* == .Custom and std.mem.eql(u8, expected.Custom, actual.Custom)) {
         return true;

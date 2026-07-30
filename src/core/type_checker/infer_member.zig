@@ -182,26 +182,32 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, m
 pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var g = &node.data.get_expr;
 
-    // Check if it's a lib method call (e.g. C.printf)
+    // Check if it's a lib method call (e.g. C.printf or NativeMemory.pointerToString)
     if (g.object.data == .identifier) {
-        const full_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ g.object.data.identifier.name, g.name });
-        if (scope.lookupVariable(full_name)) |found_type| {
+        const raw_name = g.object.data.identifier.name;
+        const actual_obj_name = self.alias_map.get(raw_name) orelse raw_name;
+        const full_name1 = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ raw_name, g.name });
+        const full_name2 = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ actual_obj_name, g.name });
+        const found_var = scope.lookupVariable(full_name1) orelse scope.lookupVariable(full_name2);
+        const found_funcs = scope.lookupFunctions(full_name1) orelse scope.lookupFunctions(full_name2);
+
+        if (found_var) |found_type| {
             t.* = found_type.*;
             node.resolved_type = found_type;
 
             const obj_t = try self.allocator.create(EiwaType);
-            obj_t.* = .{ .Custom = g.object.data.identifier.name };
+            obj_t.* = .{ .Custom = raw_name };
             g.object.resolved_type = obj_t;
 
             return;
-        } else if (scope.lookupFunctions(full_name)) |overloads| {
+        } else if (found_funcs) |overloads| {
             if (overloads.len > 0) {
                 const found_type = overloads[0];
                 t.* = found_type.*;
                 node.resolved_type = found_type;
 
                 const obj_t = try self.allocator.create(EiwaType);
-                obj_t.* = .{ .Custom = g.object.data.identifier.name };
+                obj_t.* = .{ .Custom = raw_name };
                 g.object.resolved_type = obj_t;
 
                 return;
@@ -237,36 +243,53 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     const obj_type = try self.inferNode(g.object, scope);
     var prop_type: ?*const EiwaType = null;
     var is_static = false;
+
+    var object_class_name: ?[]const u8 = null;
     if (g.object.data == .identifier) {
         const class_name = g.object.data.identifier.name;
         const actual_class_name = self.alias_map.get(class_name) orelse class_name;
-        if (self.objects_ast.contains(actual_class_name)) {
-            is_static = true;
-            // Pin the resolved object name so the transpiler does not re-resolve
-            // it through the (possibly polluted) global alias map.
-            g.object.data.identifier.resolved_c_name = actual_class_name;
-            const obj_node = self.objects_ast.get(actual_class_name).?;
+        if (self.objects_ast.get(actual_class_name)) |obj_node| {
             const obj = obj_node.data.object_decl;
-            for (obj.members) |member| {
-                if (member.data == .var_decl and std.mem.eql(u8, member.data.var_decl.name, g.name)) {
-                    if (member.resolved_type == null) {
-                        _ = try self.inferNode(member, scope);
-                    }
-                    prop_type = member.resolved_type;
-                    break;
-                } else if (member.data == .fun_decl and std.mem.eql(u8, member.data.fun_decl.name, g.name)) {
-                    if (member.resolved_type == null) {
-                        _ = try self.inferNode(member, scope);
-                    }
-                    prop_type = member.resolved_type;
+            for (obj.members) |m| {
+                if ((m.data == .var_decl and std.mem.eql(u8, m.data.var_decl.name, g.name)) or
+                    (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, g.name))) {
+                    object_class_name = actual_class_name;
                     break;
                 }
             }
-            if (prop_type == null) {
-                self.reportError(node.line, node.column, "TypeError: Static member '{s}' not found in object '{s}'.", .{g.name, class_name});
-                return error.TypeError;
+        }
+    }
+
+    if (object_class_name) |actual_class_name| {
+        is_static = true;
+        if (g.object.data == .identifier) {
+            g.object.data.identifier.resolved_c_name = actual_class_name;
+        }
+        const obj_node = self.objects_ast.get(actual_class_name).?;
+        const obj = obj_node.data.object_decl;
+        for (obj.members) |member| {
+            if (member.data == .var_decl and std.mem.eql(u8, member.data.var_decl.name, g.name)) {
+                if (member.resolved_type == null) {
+                    _ = try self.inferNode(member, scope);
+                }
+                prop_type = member.resolved_type;
+                break;
+            } else if (member.data == .fun_decl and std.mem.eql(u8, member.data.fun_decl.name, g.name)) {
+                if (member.resolved_type == null or (member.resolved_type.?.* == .Function and member.resolved_type.?.Function.return_type.* == .Unknown and self.pass != .declaration)) {
+                    _ = try self.inferNode(member, scope);
+                }
+                prop_type = member.resolved_type;
+                break;
             }
-        } else if (self.enums_ast.contains(actual_class_name)) {
+        }
+        if (prop_type == null) {
+            self.reportError(node.line, node.column, "TypeError: Static member '{s}' not found in object '{s}'.", .{ g.name, actual_class_name });
+            return error.TypeError;
+        }
+    } else if (g.object.data == .identifier) {
+        const class_name = g.object.data.identifier.name;
+        const actual_class_name = self.alias_map.get(class_name) orelse class_name;
+        if (self.enums_ast.contains(actual_class_name)) {
             is_static = true;
             g.object.data.identifier.resolved_c_name = actual_class_name;
             const enum_node = self.enums_ast.get(actual_class_name).?;

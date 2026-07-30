@@ -29,6 +29,34 @@ fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
     }
 }
 
+fn createGetExprNode(self: *TypeChecker, obj_name: []const u8, resolved_c_name: ?[]const u8, member_name: []const u8, line: usize, column: usize) !*ASTNode {
+    const obj_ident = try self.allocator.create(ASTNode);
+    obj_ident.* = .{
+        .line = line,
+        .column = column,
+        .resolved_type = null,
+        .data = .{ .identifier = .{
+            .name = obj_name,
+            .resolved_c_name = resolved_c_name,
+            .is_class_property = false,
+            .is_boxed = false,
+        } },
+    };
+
+    const get_expr_node = try self.allocator.create(ASTNode);
+    get_expr_node.* = .{
+        .line = line,
+        .column = column,
+        .resolved_type = null,
+        .data = .{ .get_expr = .{
+            .object = obj_ident,
+            .name = member_name,
+            .is_safe = false,
+        } },
+    };
+    return get_expr_node;
+}
+
 pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const ast.Param, scope: *Scope) anyerror!void {
     var c = &node.data.call_expr;
     var has_named = false;
@@ -191,6 +219,240 @@ pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anyt
     return true;
 }
 
+fn inferExplicitGenericMethodCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) !bool {
+    var c = &node.data.call_expr;
+    if (c.callee.data != .get_expr or c.type_args.len == 0) return false;
+
+    const g = &c.callee.data.get_expr;
+    _ = try self.inferNode(g.object, scope);
+    if (g.object.resolved_type) |obj_type| {
+        const base_type = extractBaseType(obj_type);
+        if (base_type.* == .Custom) {
+            const class_name = base_type.Custom;
+            const actual_class_name = self.alias_map.get(class_name) orelse class_name;
+            const methods_list: ?[]const *ASTNode = if (self.classes_ast.get(actual_class_name)) |cn| cn.data.type_decl.methods else if (self.objects_ast.get(actual_class_name)) |on| on.data.object_decl.members else null;
+            if (methods_list) |methods| {
+                for (methods) |method| {
+                    if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name) and method.data.fun_decl.generic_params.len > 0) {
+                        const method_decl = method.data.fun_decl;
+                        if (method_decl.generic_params.len != c.type_args.len) {
+                            self.reportError(node.line, node.column, "TypeError: Expected {} generic arguments for method '{s}', got {}.", .{method_decl.generic_params.len, g.name, c.type_args.len});
+                            return error.TypeError;
+                        }
+                        var type_args = try self.allocator.alloc(*const EiwaType, c.type_args.len);
+                        for (c.type_args, 0..) |type_ref, i| {
+                            type_args[i] = try self.resolveTypeRef(type_ref);
+                        }
+
+                        var mangled = ArrayList(u8).init(self.allocator);
+                        try mangled.appendSlice(class_name);
+                        try mangled.appendSlice("_");
+                        try mangled.appendSlice(g.name);
+                        for (type_args) |type_arg| {
+                            try mangled.appendSlice("_");
+                            try type_arg.formatSafe(mangled.writer());
+                        }
+                        const final_mangled = try mangled.toOwnedSlice();
+                        try self.monomorphizeFunction(g.name, type_args, final_mangled, base_type);
+
+                        const func_node = self.functions_ast.get(final_mangled) orelse {
+                            self.reportError(node.line, node.column, "TypeError: Monomorphized function '{s}' not found (expected key: '{s}').", .{g.name, final_mangled});
+                            return error.TypeError;
+                        };
+                        const actual_c_name = func_node.data.fun_decl.resolved_c_name orelse final_mangled;
+                        const func_decl = func_node.data.fun_decl;
+                        const ret_type = func_node.resolved_type.?.Function.return_type;
+
+                        try resolveCallArguments(self, node, func_decl.params, scope);
+
+                        for (c.arguments, 0..) |arg, arg_i| {
+                            if (arg_i < func_decl.params.len) {
+                                const param_type = if (func_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
+                                if (param_type) |pt| {
+                                    arg.expected_type = pt;
+                                    if (arg.resolved_type == null) {
+                                        _ = try self.inferNode(arg, scope);
+                                    }
+                                    if (!self.isCompatible(pt, arg.resolved_type.?)) {
+                                        self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
+                                        return error.TypeError;
+                                    }
+                                }
+                            }
+                        }
+
+                        t.* = ret_type.*;
+                        var call_args = try self.allocator.alloc(*ASTNode, c.arguments.len + 1);
+                        call_args[0] = g.object;
+                        for (c.arguments, 0..) |a, ai| {
+                            call_args[ai + 1] = a;
+                        }
+                        c.arguments = call_args;
+                        c.callee.data = .{ .identifier = .{
+                            .name = g.name,
+                            .resolved_c_name = actual_c_name,
+                        } };
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    self.reportError(node.line, node.column, "TypeError: Generic method '{s}' with type arguments not found.", .{g.name});
+    return error.TypeError;
+}
+
+fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) !bool {
+    var c = &node.data.call_expr;
+    if (c.callee.data != .identifier or c.type_args.len == 0) return false;
+
+    const name = c.callee.data.identifier.name;
+    const class_name = self.alias_map.get(name) orelse name;
+    const class_node = self.classes_ast.get(class_name);
+    if (class_node == null) {
+        // Try as a generic function
+        if (self.lookupGenericFunction(name) != null) {
+            var type_args = try self.allocator.alloc(*const EiwaType, c.type_args.len);
+            for (c.type_args, 0..) |type_ref, i| {
+                type_args[i] = try self.resolveTypeRef(type_ref);
+            }
+
+            var mangled = ArrayList(u8).init(self.allocator);
+            try mangled.appendSlice(name);
+            for (type_args) |type_arg| {
+                try mangled.appendSlice("_");
+                try type_arg.formatSafe(mangled.writer());
+            }
+            const final_mangled = try mangled.toOwnedSlice();
+
+            try self.monomorphizeFunction(name, type_args, final_mangled, null);
+
+            const actual_c_name_3 = blk_3: {
+                if (self.functions_ast.get(final_mangled)) |fn_node| {
+                    if (fn_node.data.fun_decl.resolved_c_name) |rcn| break :blk_3 rcn;
+                }
+                break :blk_3 final_mangled;
+            };
+            const func_node = self.functions_ast.get(actual_c_name_3).?;
+            const fun_decl = &func_node.data.fun_decl;
+            const ret_type = func_node.resolved_type.?.Function.return_type;
+
+            try resolveCallArguments(self, node, fun_decl.params, scope);
+
+            for (c.arguments, 0..) |arg, arg_i| {
+                if (arg_i < fun_decl.params.len) {
+                    const param_type = if (fun_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
+                    if (param_type) |pt| {
+                        arg.expected_type = pt;
+                        if (arg.resolved_type == null) {
+                            _ = try self.inferNode(arg, scope);
+                        }
+                        if (!self.isCompatible(pt, arg.resolved_type.?)) {
+                            self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
+                            return error.TypeError;
+                        }
+                    }
+                }
+            }
+
+            t.* = ret_type.*;
+            c.callee.data.identifier.resolved_c_name = actual_c_name_3;
+            return true;
+        }
+        self.reportError(node.line, node.column, "TypeError: Generic class '{s}' not found.", .{name});
+        return error.TypeError;
+    }
+    const class_node_uw = class_node.?;
+    const type_decl = class_node_uw.data.type_decl;
+    if (type_decl.generic_params.len != c.type_args.len) {
+        self.reportError(node.line, node.column, "TypeError: Expected {} generic arguments for '{s}', got {}.", .{ type_decl.generic_params.len, name, c.type_args.len });
+        return error.TypeError;
+    }
+
+    var type_args = try self.allocator.alloc(*const EiwaType, c.type_args.len);
+    for (c.type_args, 0..) |type_ref, i| {
+        type_args[i] = try self.resolveTypeRef(type_ref);
+    }
+
+    const base_name = type_decl.resolved_c_name orelse class_name;
+    var mangled = ArrayList(u8).init(self.allocator);
+    try mangled.appendSlice(base_name);
+    try mangled.appendSlice("_");
+    for (type_args, 0..) |type_arg, i| {
+        if (i > 0) try mangled.appendSlice("_");
+        try type_arg.formatSafe(mangled.writer());
+    }
+    const final_mangled = try mangled.toOwnedSlice();
+
+    try self.monomorphizeClass(base_name, type_args, final_mangled);
+    const mono_node = self.classes_ast.get(final_mangled).?;
+    const mono_decl = mono_node.data.type_decl;
+
+    if (c.arguments.len < mono_decl.primary_constructor.len) {
+        var new_args = try self.allocator.alloc(*ASTNode, mono_decl.primary_constructor.len);
+        for (c.arguments, 0..) |arg, arg_i| {
+            new_args[arg_i] = arg;
+        }
+        var i = c.arguments.len;
+        while (i < mono_decl.primary_constructor.len) : (i += 1) {
+            const prop = mono_decl.primary_constructor[i];
+            if (prop.initializer) |init_node| {
+                const cloned = try self.cloneNode(init_node);
+                cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
+                new_args[i] = cloned;
+                _ = try self.inferNode(cloned, scope);
+            } else {
+                self.reportError(node.line, node.column, "TypeError: Missing argument for generic constructor parameter '{s}' of '{s}' which has no default value.", .{ prop.name, name });
+                return error.TypeError;
+            }
+        }
+        c.arguments = new_args;
+    } else if (c.arguments.len > mono_decl.primary_constructor.len) {
+        self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for generic constructor of '{s}', got {}.", .{ mono_decl.primary_constructor.len, name, c.arguments.len });
+        return error.TypeError;
+    }
+
+    for (c.arguments, 0..) |arg, arg_i| {
+        const expected = mono_decl.primary_constructor[arg_i].resolved_type orelse try self.resolveTypeRef(mono_decl.primary_constructor[arg_i].type_ref);
+        if (arg.resolved_type == null) {
+            // Lambdas are not pre-inferred; give them the param type as context
+            arg.expected_type = expected;
+            _ = try self.inferNode(arg, scope);
+        }
+        if (arg.resolved_type == null or !self.isCompatible(expected, arg.resolved_type.?)) {
+            self.reportError(arg.line, arg.column, "TypeError: Expected {} for argument {} of '{s}', got {}.", .{ expected.*, arg_i + 1, name, arg.resolved_type.?.* });
+            return error.TypeError;
+        }
+    }
+
+    const actual_mangled = self.alias_map.get(final_mangled) orelse final_mangled;
+    t.* = .{ .Custom = actual_mangled };
+    c.callee.data.identifier.resolved_c_name = actual_mangled;
+    return true;
+}
+
+fn inferImplicitThisOrObjectCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType, name: []const u8) !bool {
+    var c = &node.data.call_expr;
+    if (scope.lookupVariable("this")) |_| {
+        c.callee = try createGetExprNode(self, "this", null, name, node.line, node.column);
+        try inferCallExpr(self, node, scope, t);
+        return true;
+    } else if (self.current_class_name) |class_name| {
+        const actual_class_name = self.alias_map.get(class_name) orelse class_name;
+        if (self.objects_ast.get(actual_class_name)) |obj_node| {
+            const obj = obj_node.data.object_decl;
+            for (obj.members) |m| {
+                if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, name)) {
+                    c.callee = try createGetExprNode(self, class_name, actual_class_name, name, node.line, node.column);
+                    try inferCallExpr(self, node, scope, t);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var c = &node.data.call_expr;
     // 1. Infer all arguments that are NOT lambdas
@@ -200,213 +462,11 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         }
     }
 
-    if (c.callee.data == .get_expr and c.type_args.len > 0) {
-        const g = &c.callee.data.get_expr;
-        _ = try self.inferNode(g.object, scope);
-        if (g.object.resolved_type) |obj_type| {
-            const base_type = extractBaseType(obj_type);
-            if (base_type.* == .Custom) {
-                const class_name = base_type.Custom;
-                if (self.classes_ast.get(class_name)) |class_node| {
-                    const type_decl = class_node.data.type_decl;
-                    for (type_decl.methods) |method| {
-                        if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name) and method.data.fun_decl.generic_params.len > 0) {
-                            const method_decl = method.data.fun_decl;
-                            if (method_decl.generic_params.len != c.type_args.len) {
-                                self.reportError(node.line, node.column, "TypeError: Expected {} generic arguments for method '{s}', got {}.", .{method_decl.generic_params.len, g.name, c.type_args.len});
-                                return error.TypeError;
-                            }
-                            var type_args = try self.allocator.alloc(*const EiwaType, c.type_args.len);
-                            for (c.type_args, 0..) |type_ref, i| {
-                                type_args[i] = try self.resolveTypeRef(type_ref);
-                            }
-
-                            var mangled = ArrayList(u8).init(self.allocator);
-                            try mangled.appendSlice(class_name);
-                            try mangled.appendSlice("_");
-                            try mangled.appendSlice(g.name);
-                            for (type_args) |type_arg| {
-                                try mangled.appendSlice("_");
-                                try type_arg.formatSafe(mangled.writer());
-                            }
-                            const final_mangled = try mangled.toOwnedSlice();
-
-                            try self.monomorphizeFunction(g.name, type_args, final_mangled, base_type);
-
-                            const func_node = self.functions_ast.get(final_mangled) orelse {
-                                self.reportError(node.line, node.column, "TypeError: Monomorphized function '{s}' not found (expected key: '{s}').", .{g.name, final_mangled});
-                                return error.TypeError;
-                            };
-                            const actual_c_name = func_node.data.fun_decl.resolved_c_name orelse final_mangled;
-                            const func_decl = func_node.data.fun_decl;
-                            const ret_type = func_node.resolved_type.?.Function.return_type;
-
-                            try resolveCallArguments(self, node, func_decl.params, scope);
-
-                            for (c.arguments, 0..) |arg, arg_i| {
-                                if (arg_i < func_decl.params.len) {
-                                    const param_type = if (func_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
-                                    if (param_type) |pt| {
-                                        arg.expected_type = pt;
-                                        if (arg.resolved_type == null) {
-                                            _ = try self.inferNode(arg, scope);
-                                        }
-                                        if (!self.isCompatible(pt, arg.resolved_type.?)) {
-                                            self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
-                                            return error.TypeError;
-                                        }
-                                    }
-                                }
-                            }
-
-                            t.* = ret_type.*;
-                            var call_args = try self.allocator.alloc(*ASTNode, c.arguments.len + 1);
-                            call_args[0] = g.object;
-                            for (c.arguments, 0..) |a, ai| {
-                                call_args[ai + 1] = a;
-                            }
-                            c.arguments = call_args;
-                            c.callee.data = .{ .identifier = .{
-                                .name = g.name,
-                                .resolved_c_name = actual_c_name,
-                            } };
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-        self.reportError(node.line, node.column, "TypeError: Generic method '{s}' with type arguments not found.", .{g.name});
-        return error.TypeError;
-    }
+    if (try inferExplicitGenericMethodCall(self, node, scope, t)) return;
+    if (try inferExplicitGenericCall(self, node, scope, t)) return;
 
     if (c.callee.data == .identifier) {
         const name = c.callee.data.identifier.name;
-
-        if (c.type_args.len > 0) {
-            const class_name = self.alias_map.get(name) orelse name;
-            const class_node = self.classes_ast.get(class_name);
-            if (class_node == null) {
-                // Try as a generic function
-                if (self.lookupGenericFunction(name) != null) {
-                    var type_args = try self.allocator.alloc(*const EiwaType, c.type_args.len);
-                    for (c.type_args, 0..) |type_ref, i| {
-                        type_args[i] = try self.resolveTypeRef(type_ref);
-                    }
-
-                    var mangled = ArrayList(u8).init(self.allocator);
-                    try mangled.appendSlice(name);
-                    for (type_args) |type_arg| {
-                        try mangled.appendSlice("_");
-                        try type_arg.formatSafe(mangled.writer());
-                    }
-                    const final_mangled = try mangled.toOwnedSlice();
-
-                    try self.monomorphizeFunction(name, type_args, final_mangled, null);
-
-                    const actual_c_name_3 = blk_3: {
-                        if (self.functions_ast.get(final_mangled)) |fn_node| {
-                            if (fn_node.data.fun_decl.resolved_c_name) |rcn| break :blk_3 rcn;
-                        }
-                        break :blk_3 final_mangled;
-                    };
-                    const func_node = self.functions_ast.get(actual_c_name_3).?;
-                    const fun_decl = &func_node.data.fun_decl;
-                    const ret_type = func_node.resolved_type.?.Function.return_type;
-
-                    try resolveCallArguments(self, node, fun_decl.params, scope);
-
-                    for (c.arguments, 0..) |arg, arg_i| {
-                        if (arg_i < fun_decl.params.len) {
-                            const param_type = if (fun_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
-                            if (param_type) |pt| {
-                                arg.expected_type = pt;
-                                if (arg.resolved_type == null) {
-                                    _ = try self.inferNode(arg, scope);
-                                }
-                                if (!self.isCompatible(pt, arg.resolved_type.?)) {
-                                    self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
-                                    return error.TypeError;
-                                }
-                            }
-                        }
-                    }
-
-                    t.* = ret_type.*;
-                    c.callee.data.identifier.resolved_c_name = actual_c_name_3;
-                    return;
-                }
-                self.reportError(node.line, node.column, "TypeError: Generic class '{s}' not found.", .{name});
-                return error.TypeError;
-            }
-            const class_node_uw = class_node.?;
-            const type_decl = class_node_uw.data.type_decl;
-            if (type_decl.generic_params.len != c.type_args.len) {
-                self.reportError(node.line, node.column, "TypeError: Expected {} generic arguments for '{s}', got {}.", .{ type_decl.generic_params.len, name, c.type_args.len });
-                return error.TypeError;
-            }
-
-            var type_args = try self.allocator.alloc(*const EiwaType, c.type_args.len);
-            for (c.type_args, 0..) |type_ref, i| {
-                type_args[i] = try self.resolveTypeRef(type_ref);
-            }
-
-            const base_name = type_decl.resolved_c_name orelse class_name;
-            var mangled = ArrayList(u8).init(self.allocator);
-            try mangled.appendSlice(base_name);
-            try mangled.appendSlice("_");
-            for (type_args, 0..) |type_arg, i| {
-                if (i > 0) try mangled.appendSlice("_");
-                try type_arg.formatSafe(mangled.writer());
-            }
-            const final_mangled = try mangled.toOwnedSlice();
-
-            try self.monomorphizeClass(base_name, type_args, final_mangled);
-            const mono_node = self.classes_ast.get(final_mangled).?;
-            const mono_decl = mono_node.data.type_decl;
-
-            if (c.arguments.len < mono_decl.primary_constructor.len) {
-                var new_args = try self.allocator.alloc(*ASTNode, mono_decl.primary_constructor.len);
-                for (c.arguments, 0..) |arg, arg_i| {
-                    new_args[arg_i] = arg;
-                }
-                var i = c.arguments.len;
-                while (i < mono_decl.primary_constructor.len) : (i += 1) {
-                    const prop = mono_decl.primary_constructor[i];
-                    if (prop.initializer) |init_node| {
-                        const cloned = try self.cloneNode(init_node);
-                        cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
-                        new_args[i] = cloned;
-                        _ = try self.inferNode(cloned, scope);
-                    } else {
-                        self.reportError(node.line, node.column, "TypeError: Missing argument for generic constructor parameter '{s}' of '{s}' which has no default value.", .{ prop.name, name });
-                        return error.TypeError;
-                    }
-                }
-                c.arguments = new_args;
-            } else if (c.arguments.len > mono_decl.primary_constructor.len) {
-                self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for generic constructor of '{s}', got {}.", .{ mono_decl.primary_constructor.len, name, c.arguments.len });
-                return error.TypeError;
-            }
-
-            for (c.arguments, 0..) |arg, arg_i| {
-                const expected = mono_decl.primary_constructor[arg_i].resolved_type orelse try self.resolveTypeRef(mono_decl.primary_constructor[arg_i].type_ref);
-                if (arg.resolved_type == null) {
-                    // Lambdas are not pre-inferred; give them the param type as context
-                    arg.expected_type = expected;
-                    _ = try self.inferNode(arg, scope);
-                }
-                if (arg.resolved_type == null or !self.isCompatible(expected, arg.resolved_type.?)) {
-                    self.reportError(arg.line, arg.column, "TypeError: Expected {} for argument {} of '{s}', got {}.", .{ expected.*, arg_i + 1, name, arg.resolved_type.?.* });
-                    return error.TypeError;
-                }
-            }
-
-            const actual_mangled = self.alias_map.get(final_mangled) orelse final_mangled;
-            t.* = .{ .Custom = actual_mangled };
-            c.callee.data.identifier.resolved_c_name = actual_mangled;
-            return;
-        }
 
         // Two-phase lookup for bare function calls:
         // 1. First try local scope (methods on `this`, lambdas with receiver) - Kotlin-style
@@ -950,7 +1010,6 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             if (found_type) |ft| {
                                 type_args[i] = ft;
                             } else {
-                                std.debug.print("Failed to infer '{s}' for '{s}'. Prop: {s}. Arg type: {}\n", .{g_param, name, type_decl.primary_constructor[0].name, c.arguments[0].resolved_type.?.*});
                                 self.reportError(node.line, node.column, "TypeError: Could not infer generic parameter '{s}' for class '{s}'.", .{ g_param, name });
                                 return error.TypeError;
                             }
@@ -1088,6 +1147,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 }
             }
         }
+        if (try inferImplicitThisOrObjectCall(self, node, scope, t, name)) return;
         self.reportError(node.line, node.column, "TypeError: Undeclared function '{s}'.", .{name});
         return error.TypeError;
     } else if (c.callee.data == .get_expr) {
@@ -1123,10 +1183,12 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         var all_match = true;
                         for (c.arguments, 0..) |arg, arg_i| {
                             const arg_type = try self.inferNode(arg, scope);
-                            const expected_type = try self.resolveTypeRef(f.params[arg_i].type_ref.?);
-                            if (!self.isCompatible(expected_type, arg_type)) {
-                                all_match = false;
-                                break;
+                            if (f.generic_params.len == 0) {
+                                const expected_type = try self.resolveTypeRef(f.params[arg_i].type_ref.?);
+                                if (!self.isCompatible(expected_type, arg_type)) {
+                                    all_match = false;
+                                    break;
+                                }
                             }
                         }
                         
@@ -1153,6 +1215,99 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 self.reportError(node.line, node.column, "TypeError: Static method '{s}' not found.", .{g.name});
                 return error.TypeError;
             };
+
+            if (matched_method.data.fun_decl.generic_params.len > 0) {
+                const f = &matched_method.data.fun_decl;
+                var type_args = try self.allocator.alloc(*const EiwaType, f.generic_params.len);
+                if (c.type_args.len == f.generic_params.len) {
+                    for (c.type_args, 0..) |ta_ref, tai| {
+                        type_args[tai] = try self.resolveTypeRef(ta_ref);
+                    }
+                } else {
+                    for (f.generic_params, 0..) |param_name, pi| {
+                        var inferred_t: ?*const EiwaType = null;
+                        for (c.arguments, 0..) |arg, ai| {
+                            if (ai >= f.params.len) break;
+                            const arg_t = try self.inferNode(arg, scope);
+                            const p_ref = f.params[ai].type_ref;
+                            if (p_ref) |pr| {
+                                if (pr.generic_args.len > 0 and std.mem.eql(u8, pr.generic_args[0].name, param_name)) {
+                                    const base_arg_t = extractBaseType(arg_t);
+                                    if (base_arg_t.* == .Custom) {
+                                        if (std.mem.lastIndexOf(u8, base_arg_t.Custom, "_")) |idx| {
+                                            const sub_name = base_arg_t.Custom[idx + 1 ..];
+                                            const sub_t = try self.allocator.create(EiwaType);
+                                            sub_t.* = .{ .Custom = sub_name };
+                                            inferred_t = sub_t;
+                                        }
+                                    }
+                                } else if (std.mem.eql(u8, pr.name, param_name)) {
+                                    inferred_t = arg_t;
+                                }
+                            }
+                        }
+                        type_args[pi] = inferred_t orelse blk: {
+                            const string_t = try self.allocator.create(EiwaType);
+                            string_t.* = .String;
+                            break :blk string_t;
+                        };
+                    }
+                }
+
+                var mangled = ArrayList(u8).init(self.allocator);
+                const obj_name = self.alias_map.get(g.object.data.identifier.name) orelse g.object.data.identifier.name;
+                try mangled.appendSlice(obj_name);
+                try mangled.appendSlice("_");
+                try mangled.appendSlice(g.name);
+                for (type_args) |ta| {
+                    try mangled.appendSlice("_");
+                    try ta.formatSafe(mangled.writer());
+                }
+                const final_mangled = try mangled.toOwnedSlice();
+
+                const old_class_name = self.current_class_name;
+                self.current_class_name = obj_name;
+                defer self.current_class_name = old_class_name;
+
+                const old_gen_entry = self.generic_functions_ast.get(g.name);
+                try self.generic_functions_ast.put(g.name, matched_method);
+                const mono_result = self.monomorphizeFunction(g.name, type_args, final_mangled, null);
+                if (old_gen_entry) |old| {
+                    try self.generic_functions_ast.put(g.name, old);
+                } else {
+                    _ = self.generic_functions_ast.remove(g.name);
+                }
+                try mono_result;
+
+                const func_node = self.functions_ast.get(final_mangled) orelse {
+                    self.reportError(node.line, node.column, "TypeError: Monomorphized static method '{s}.{s}' not found.", .{ obj_name, g.name });
+                    return error.TypeError;
+                };
+                const ret_type = func_node.resolved_type.?.Function.return_type;
+
+                c.callee.data = .{ .identifier = .{
+                    .name = g.name,
+                    .resolved_c_name = final_mangled,
+                    .is_class_property = false,
+                } };
+                c.callee.resolved_type = null;
+
+                for (c.arguments) |arg| {
+                    _ = try self.inferNode(arg, scope);
+                }
+
+                t.* = ret_type.*;
+                node.resolved_type = t;
+                return;
+            }
+
+            if (matched_method.resolved_type == null or matched_method.resolved_type.?.* != .Function or matched_method.resolved_type.?.Function.return_type.* == .Unknown) {
+                _ = try self.inferNode(matched_method, scope);
+            }
+            if (matched_method.resolved_type == null or matched_method.resolved_type.?.* != .Function) {
+                self.reportError(node.line, node.column, "TypeError: Method '{s}' does not have a function type.", .{g.name});
+                return error.TypeError;
+            }
             const ret_type = matched_method.resolved_type.?.Function.return_type;
             const f = &matched_method.data.fun_decl;
             

@@ -29,11 +29,12 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "coroutines.ei", @embedFile("../../std/coroutines.ei") },
     .{ "uuid.ei", @embedFile("../../std/uuid.ei") },
     .{ "ulid.ei", @embedFile("../../std/ulid.ei") },
+    .{ "random.ei", @embedFile("../../std/random.ei") },
     // --- Database layer ---
     .{ "db.ei", @embedFile("../../std/db.ei") },
 });
 
-pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines", "std.uuid", "std.ulid" };
+pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines", "std.uuid", "std.ulid", "std.random" };
 pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions" };
 pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 
@@ -192,6 +193,12 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                     try self.skills_ast.put(sym, skill_node);
                 }
                 found = true;
+            } else if (tc.objects_ast.get(lookup_sym)) |obj_node| {
+                try self.objects_ast.put(lookup_sym, obj_node);
+                if (prefix.len > 0) {
+                    try self.objects_ast.put(sym, obj_node);
+                }
+                found = true;
             }
 
             if (!found) {
@@ -210,6 +217,13 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                         if (std.mem.eql(u8, stmt.data.skill_decl.name, sym)) {
                             found = true;
                             break;
+                        }
+                    } else if (stmt.data == .object_decl) {
+                        if (stmt.data.object_decl.name) |oname| {
+                            if (std.mem.eql(u8, oname, sym)) {
+                                found = true;
+                                break;
+                            }
                         }
                     } else if (stmt.data == .lib_decl) {
                         if (std.mem.eql(u8, stmt.data.lib_decl.name, sym)) {
@@ -536,14 +550,15 @@ fn substituteSkillTypeRef(self: *TypeChecker, tr: *const ast.ASTTypeRef, params:
 
 fn bindSkillGenericParams(self: *TypeChecker, cloned: *ASTNode, orig: *ASTNode, skill_params: []const []const u8, c: anytype) anyerror!void {
     if (skill_params.len == 0) return;
+    const c_name_str = if (@hasField(@TypeOf(c.*), "name")) (if (@typeInfo(@TypeOf(c.name)) == .optional) (c.name orelse "object") else c.name) else "object";
     const self_ref = try self.allocator.create(ast.ASTTypeRef);
     self_ref.* = .{
-        .name = c.name,
+        .name = c_name_str,
         .generic_args = &.{},
         .is_array = false,
         .is_nullable = false,
     };
-    if (c.generic_params.len > 0) {
+    if (@hasField(@TypeOf(c.*), "generic_params") and c.generic_params.len > 0) {
         const g_args = try self.allocator.alloc(*const ast.ASTTypeRef, c.generic_params.len);
         for (c.generic_params, 0..) |gp, i| {
             const gp_ref = try self.allocator.create(ast.ASTTypeRef);
@@ -573,7 +588,8 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
     var final_methods = ArrayList(*ASTNode).init(self.allocator);
     var provided = std.StringHashMap([]const u8).init(self.allocator);
 
-    for (c.methods) |m| {
+    const initial_methods = if (@hasField(@TypeOf(c.*), "methods")) c.methods else c.members;
+    for (initial_methods) |m| {
         try final_methods.append(m);
         if (m.data == .fun_decl) {
             try provided.put(m.data.fun_decl.name, "");
@@ -611,7 +627,8 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
                 }
             }
             if (!found) {
-                self.reportError(node.line, node.column, "Skill '{s}' requires contract '{s}'.\nType '{s}' does not implement it.", .{ s.name, req, c.name });
+                const c_name = if (@hasField(@TypeOf(c.*), "name")) (if (@typeInfo(@TypeOf(c.name)) == .optional) (c.name orelse "object") else c.name) else "object";
+                self.reportError(node.line, node.column, "Skill '{s}' requires contract '{s}'.\nType '{s}' does not implement it.", .{ s.name, req, c_name });
                 return error.TypeError;
             }
         }
@@ -620,7 +637,12 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
             if (m.data != .fun_decl) continue;
             const fname = m.data.fun_decl.name;
             if (provided.get(fname)) |other_skill| {
-                if (other_skill.len == 0) {
+                if (std.mem.eql(u8, other_skill, s.name)) {
+                    // Same skill overloading a method name — allowed!
+                    const cloned = try self.cloneNode(m);
+                    try bindSkillGenericParams(self, cloned, m, s.generic_params, c);
+                    try final_methods.append(cloned);
+                } else if (other_skill.len == 0) {
                     // Type implements it explicitly — skill version stays available qualified.
                     const renamed = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ s.name, fname });
                     const cloned = try self.cloneNode(m);
@@ -629,7 +651,8 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
                     try final_methods.append(cloned);
                 } else {
                     // Two skills provide the same member without an explicit resolution.
-                    self.reportError(m.line, m.column, "TypeError: Ambiguous member '{s}' from skills '{s}' and '{s}'. Resolve it explicitly in type '{s}' with 'implement fun {s}'.", .{ fname, other_skill, s.name, c.name, fname });
+                    const c_name = if (@hasField(@TypeOf(c.*), "name")) (if (@typeInfo(@TypeOf(c.name)) == .optional) (c.name orelse "object") else c.name) else "object";
+                    self.reportError(m.line, m.column, "TypeError: Ambiguous member '{s}' from skills '{s}' and '{s}'. Resolve it explicitly in type '{s}' with 'implement fun {s}'.", .{ fname, other_skill, s.name, c_name, fname });
                     return error.TypeError;
                 }
             } else {
@@ -641,10 +664,15 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
         }
     }
 
-    c.methods = try final_methods.toOwnedSlice();
+    if (@hasField(@TypeOf(c.*), "methods")) {
+        c.methods = try final_methods.toOwnedSlice();
+    } else {
+        c.members = try final_methods.toOwnedSlice();
+    }
 }
 
 fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
+    const c_name_str = if (@hasField(@TypeOf(c.*), "name")) (if (@typeInfo(@TypeOf(c.name)) == .optional) (c.name orelse "object") else c.name) else "object";
     for (c.contracts) |contract_src_name| {
         const contract_actual = self.alias_map.get(contract_src_name) orelse contract_src_name;
         const contract_node = self.contracts_ast.get(contract_actual) orelse {
@@ -659,7 +687,8 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
 
             var found: ?*ASTNode = null;
             var from_skill = false;
-            for (c.methods) |m| {
+            const c_methods = if (@hasField(@TypeOf(c.*), "methods")) c.methods else c.members;
+            for (c_methods) |m| {
                 if (m.data != .fun_decl) continue;
                 if (std.mem.eql(u8, m.data.fun_decl.name, cm_name)) {
                     found = m;
@@ -680,7 +709,7 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
             }
 
             if (found == null) {
-                self.reportError(node.line, node.column, "TypeError: Type '{s}' does not implement method '{s}' required by contract '{s}'.", .{ c.name, cm_name, cd.name });
+                self.reportError(node.line, node.column, "TypeError: Type '{s}' does not implement method '{s}' required by contract '{s}'.", .{ c_name_str, cm_name, cd.name });
                 return error.TypeError;
             }
 
@@ -703,7 +732,7 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
                         }
                     }
                     if (!has_implement) {
-                        self.reportError(m.line, m.column, "TypeError: Method '{s}' implements contract '{s}' and must be marked with 'implement'.", .{ cm_name, cd.name });
+                        self.reportError(m.line, m.column, "TypeError: Method '{s}' in type '{s}' implements contract '{s}', but is missing the mandatory 'implement' modifier.", .{ cm_name, c_name_str, cd.name });
                         return error.TypeError;
                     }
                 }
@@ -751,7 +780,8 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
     }
 
     // Reverse validation: every method marked with 'implement' must belong to an implemented contract or skill ambiguity resolution.
-    for (c.methods) |method| {
+    const all_c_methods = if (@hasField(@TypeOf(c.*), "methods")) c.methods else c.members;
+    for (all_c_methods) |method| {
         if (method.data != .fun_decl) continue;
         const m = &method.data.fun_decl;
         var has_implement = false;
@@ -807,7 +837,7 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
             }
 
             if (!is_valid_contract_method) {
-                self.reportError(method.line, method.column, "TypeError: Method '{s}' in type '{s}' is marked with 'implement', but is not declared in any contract implemented by '{s}'.", .{ m.name, c.name, c.name });
+                self.reportError(method.line, method.column, "TypeError: Method '{s}' in type '{s}' is marked with 'implement', but is not declared in any contract implemented by '{s}'.", .{ m.name, c_name_str, c_name_str });
                 return error.TypeError;
             }
         }
@@ -923,7 +953,11 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     for (f.params) |*p| {
         var param_type: *EiwaType = undefined;
         if (p.type_ref) |tr| {
-            param_type = try self.resolveTypeRef(tr);
+            param_type = self.resolveTypeRef(tr) catch blk: {
+                const gen_t = try self.allocator.create(EiwaType);
+                gen_t.* = .{ .GenericParam = tr.name };
+                break :blk gen_t;
+            };
 
             if (!is_method or is_overloaded) {
                 try mangled_name.appendSlice("_");
@@ -974,11 +1008,21 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     var body_inferred = false;
 
     if (f.type_ref) |tr| {
-        return_type = try self.resolveTypeRef(tr);
+        return_type = self.resolveTypeRef(tr) catch blk: {
+            const gen_t = try self.allocator.create(EiwaType);
+            gen_t.* = .{ .GenericParam = tr.name };
+            break :blk gen_t;
+        };
     } else if (f.is_expr_body) {
-        _ = try self.inferNode(f.body, &fun_scope);
-        body_inferred = true;
-        return_type = f.body.resolved_type.?;
+        if (self.pass != .declaration) {
+            _ = try self.inferNode(f.body, &fun_scope);
+            body_inferred = true;
+            return_type = f.body.resolved_type.?;
+        } else {
+            const unk_t = try self.allocator.create(EiwaType);
+            unk_t.* = .Unknown;
+            return_type = unk_t;
+        }
     } else {
         const void_t = try self.allocator.create(EiwaType);
         void_t.* = .Void;
@@ -993,6 +1037,11 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         .receiver = if (is_method) scope.lookupVariable("this") else null,
     } };
 
+    if (node.resolved_type) |rt| {
+        @constCast(rt).* = fn_type.*;
+    } else {
+        node.resolved_type = fn_type;
+    }
     try scope.define(f.name, fn_type, false, true);
 
     if (self.pass == .declaration) {
@@ -1137,6 +1186,9 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     }
 
     try self.objects_ast.put(actual_c_name, node);
+
+    try composeSkills(self, node, o);
+    try validateContracts(self, node, o);
 
     // Set static block context
     const old_class_name = self.current_class_name;

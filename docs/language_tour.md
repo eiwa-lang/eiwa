@@ -1787,3 +1787,49 @@ fun main() {
 }
 ```
 
+---
+
+## 27. Random Number Generation (`std.random`)
+
+Eiwa provides random generation functionality via `std.random`, which offers both system entropy (`Random`) and deterministic seedable generation (`SeededRandom`).
+
+### 27.1 System Random (`Random`)
+
+* **`nextInt(min, max)`**: Returns a random integer in the range `[min, max]`.
+* **`nextPercent()`**: Returns a random integer between `0` and `100`.
+* **`nextBool()`**: Returns a random boolean.
+* **`choice(list)`**: Returns a random element from a list (or `null` if empty).
+* **`shuffle(list)`**: Returns a new list with elements randomly permuted.
+
+```kotlin
+import { Random } from "std.random"
+
+fun main() {
+    val roll = Random.nextInt(1, 6)
+    val pct = Random.nextPercent()
+    
+    val items = ["apple", "banana", "cherry"]
+    val picked = Random.choice(items) // String?
+    
+    val numbers = [1, 2, 3, 4, 5]
+    val shuffled = Random.shuffle(numbers) // List<Int>
+}
+```
+
+### 27.2 Seeded Random (`SeededRandom`)
+
+`SeededRandom` is a deterministic Linear Congruential Generator (LCG) useful for games, simulations, and reproducible testing.
+
+```kotlin
+import { SeededRandom, Random } from "std.random"
+
+fun main() {
+    // Create seeded generator directly or via Random.seeded(seed)
+    val rng = SeededRandom(12345)
+    // or: val rng = Random.seeded(12345)
+
+    val n1 = rng.nextInt(1, 100)
+    val n2 = rng.nextInt(1, 100)
+}
+```
+

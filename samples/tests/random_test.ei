@@ -1,0 +1,38 @@
+import { Random, SeededRandom } from "std.random"
+
+test "random: nextInt within range" {
+    val n = Random.nextInt(10, 20)
+    assert(n >= 10)
+    assert(n <= 20)
+}
+
+test "random: nextPercent within 0 and 100" {
+    val pct = Random.nextPercent()
+    assert(pct >= 0)
+    assert(pct <= 100)
+}
+
+test "random: choice returns item from list" {
+    val items = ["apple", "banana", "cherry"]
+    val picked = Random.choice(items)
+    assert(picked == "apple" || picked == "banana" || picked == "cherry")
+}
+
+test "random: shuffle returns list with same size" {
+    val items = [10, 20, 30, 40, 50]
+    val shuffled = Random.shuffle(items)
+    assert(shuffled.size() == 5)
+}
+
+test "random: SeededRandom is deterministic" {
+    val rng1 = SeededRandom(12345)
+    val r1_a = rng1.nextInt(1, 1000)
+    val r1_b = rng1.nextInt(1, 1000)
+
+    val rng2 = SeededRandom(12345)
+    val r2_a = rng2.nextInt(1, 1000)
+    val r2_b = rng2.nextInt(1, 1000)
+
+    assert(r1_a == r2_a)
+    assert(r1_b == r2_b)
+}

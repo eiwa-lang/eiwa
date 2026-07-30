@@ -213,6 +213,8 @@ pub const ASTNodeType = union(enum) {
         name: ?[]const u8,
         members: []const *ASTNode,
         resolved_c_name: ?[]const u8,
+        contracts: []const []const u8 = &.{},
+        skills: []const []const u8 = &.{},
     },
     enum_decl: struct {
         annotations: []const Annotation,
