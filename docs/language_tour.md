@@ -891,29 +891,49 @@ fun multiply(a: Int, b: Int) = a * b
 
 ---
 
-## 14. Default Parameters
+## 14. Default Parameters & Named Arguments
 
-Eiwa supports default values for parameters in functions, methods, and type constructors (both generic and non-generic). This reduces the need for overloading and simplifies constructor instantiations.
+Eiwa supports default values for parameters in functions, methods, and type constructors, as well as **Named Arguments** at call sites. This allows omitting unneeded arguments, passing arguments out of order, and crafting highly readable APIs and HTML/UI DSLs.
 
 ```kotlin
 // Function with default parameters
-fun greet(name: String, greeting: String = "Hello") = greeting + ", " + name + "!"
+fun greet(name: String, greeting: String = "Hello", punctuation: String = "!"): String {
+    return greeting + ", " + name + punctuation
+}
 
-type Server(val tcpServer: TCPServer = TCPServer())
+type Server(val host: String = "127.0.0.1", val port: Int = 8080)
 
 fun main() {
-    // Uses the default greeting "Hello"
+    // 1. Positional call using default values
     print(greet("Alice")) // "Hello, Alice!"
-    
-    // Overrides the default greeting
-    print(greet("Bob", "Hi")) // "Hi, Bob!"
-    
-    // Instantiates Server using default constructor parameter (which calls TCPServer())
-    val server = Server()
+
+    // 2. Named Arguments call (specifying only non-default parameters by name)
+    print(greet(name = "Bob", punctuation = "!!!")) // "Hello, Bob!!!"
+
+    // 3. Named Arguments out of order
+    print(greet(greeting = "Welcome", name = "Charlie")) // "Welcome, Charlie!"
+
+    // 4. Named Arguments with type constructors
+    val s1 = Server(port = 3000) // host defaults to "127.0.0.1"
 }
 ```
 
-Statically typed defaults are evaluated and type-checked during function and type declarations. If a caller omits an argument that has a default value, the type checker automatically clones and injects the default expression at the call-site.
+### 14.1 Combining Named Arguments with Trailing Lambdas
+
+When creating Domain-Specific Languages (DSLs) like HTML or UI trees, Named Arguments combine seamlessly with Receiver Lambdas:
+
+```kotlin
+meta(charset = "UTF-8")
+link(rel = "stylesheet", href = "/styles.css")
+
+body(class = "bg-slate-900 text-white p-8") {
+    div(class = "container mx-auto") {
+        h1("Welcome to Eiwa!", class = "text-3xl font-bold")
+    }
+}
+```
+
+Statically typed defaults and named arguments are validated during type checking. If a caller omits an argument that has a default value, the type checker automatically clones and injects the default expression into the target parameter slot before transpilation.
 
 ---
 

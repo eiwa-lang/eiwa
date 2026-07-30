@@ -440,6 +440,25 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [ ] **Task 53.4.3:** Documentar variáveis de ambiente de conexão no header do sample.
 - [ ] **Verify:** Suite completa `eiwa test samples` verde (postgres_test é skip-safe se libpq não disponível).
 
+### Phase 54: Argumentos Nomeados & Framework HTML (`samples/html/`) (COMPLETED)
+> **Motivação:** Permitir a construção de DSLs HTML expressivas e legíveis no Eiwa com chamada de funções usando Argumentos Nomeados (`div(class = "container", id = "hero")`), combinando Receiver Lambdas (`HTMLBuilder.() -> Void`), `write("...")` para texto intercalado e higienização automática contra XSS.
+
+#### Etapa 1 — Argumentos Nomeados no Compilador
+- [x] **Task 54.1.1:** Adicionar nó `.named_arg` na união de dados de `ASTNode` em `src/core/ast.zig`.
+- [x] **Task 54.1.2:** Atualizar o Parser (`src/frontend/parser/expression.zig`) para reconhecer `identificador = expressao` dentro da lista de argumentos de chamadas.
+- [x] **Task 54.1.3:** Atualizar o Type Checker (`src/core/type_checker/infer_call.zig`) para associar parâmetros nomeados aos nomes de parâmetros definidos na função, preenchendo valores padrão unsupplied.
+- [x] **Task 54.1.4:** Atualizar o C Transpiler (`src/backend/c_transpiler/expression.zig`) para emitir o código C correspondente dos argumentos nomeados na ordem correta de declaração dos parâmetros.
+- [x] **Verify:** Testes unitários do compilador `zig build test` e suite nativa `samples/tests/html_test.ei` (100% PASS).
+
+#### Etapa 2 — Framework HTML em `samples/html/`
+- [x] **Task 54.2.1:** Criar `samples/html/html.ei` com os builders `HTMLBuilder`, `HeadBuilder`, `BodyBuilder`.
+- [x] **Task 54.2.2:** Suporte a `write("...")` para escrita de nós de texto intercalados com sub-tags.
+- [x] **Task 54.2.3:** Suporte a parâmetro de texto direto em tags simples (`h1("Título")`, `p("Texto")`).
+- [x] **Task 54.2.4:** Suporte a Void Tags (auto-fechadas) como `img`, `input`, `meta`, `link`, `br`, `hr`.
+- [x] **Task 54.2.5:** Sanitização e Escape XSS automático para textos e valores de atributos.
+- [x] **Task 54.2.6:** Criar `samples/html/main.ei` com o exemplo completo de uso.
+- [x] **Verify:** Executar `./zig-out/bin/eiwa run samples/html/main.ei` e testar a saída HTML gerada (100% funcional).
+
 ---
 
 ## ✅ Definition of Done (Per Phase)

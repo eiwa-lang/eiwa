@@ -89,7 +89,7 @@ fun arest(port: Int, init: ArestBuilder.() -> Void) {
     
     val server = Server()
     if (server.bind(port)) {
-        Log.info { "[Arest] Server listening on port " + port.toString() + "..." }
+        Log.info { "[Arest] Server listening on http://localhost:" + port.toString() + " ..." }
         
         while (builder.running) {
             try {

@@ -138,6 +138,12 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
                 .index = try self.cloneNode(i.index),
             }};
         },
+        .named_arg => |na| {
+            new_node.data = .{ .named_arg = .{
+                .name = na.name,
+                .value = try self.cloneNode(na.value),
+            }};
+        },
         .index_set_expr => |i| {
             new_node.data = .{ .index_set_expr = .{
                 .object = try self.cloneNode(i.object),

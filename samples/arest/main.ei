@@ -8,7 +8,7 @@ import { Yaml } from "std.yaml"
 
 import { Log } from "std.log"
 import { Postgres } from "../postgres/postgres"
-import { html } from "html"
+import { html } from "../html/html"
 
 type Address(val city: String, val zip: String) : Serializable
 type Person(
@@ -22,20 +22,44 @@ type User(val id: Int, val name: String) : Serializable + Json + Yaml
 
 fun main() {
     printWelcome()
-
     val pool = Postgres.pool("postgres://leodouglas@localhost/eiwa", 10)
 
     arest(8082) {
         routing {
             get("/") {
                 respond(200, "text/html", html {
-                    title { "Welcome to Arest!" }
-                    basicStyle()
-                    body {
-                        h1 { "Eiwa" }
-                        h2 { "A modern, simple and productive language." }
-                        p { "Enjoy the simplicity and productivity" }
-                        a("https://github.com/eiwa-lang/eiwa") { "Learn more" }
+                    head {
+                        title("Arest — Eiwa Web Framework")
+                        meta(charset = "UTF-8")
+                        script(src = "https://cdn.tailwindcss.com")
+                    }
+                    body(class = "bg-blue-950 text-gray-100 flex items-center justify-center min-h-screen p-6 font-sans antialiased") {
+                        div(class = "max-w-2xl w-full bg-gray-900 border border-gray-800 rounded-3xl p-10 shadow-2xl text-center") {
+                            span(class = "inline-block px-4 py-1.5 rounded-full text-xs font-semibold bg-blue-950 text-blue-400 border border-blue-800 mb-6", text = "⚡ Arest Web Framework v1.0")
+                            h1("Eiwa Programming Language", class = "text-4xl font-extrabold text-white tracking-tight mb-3")
+                            h2("Natively compiled systems language with Kotlin-inspired syntax.", class = "text-base text-gray-400 mb-8")
+                            
+                            div(class = "grid grid-cols-3 gap-4 mb-8 text-left") {
+                                div(class = "bg-gray-950 p-4 rounded-xl border border-gray-800") {
+                                    h3("Native C Backend", class = "text-xs font-bold text-blue-400 uppercase tracking-wider mb-1")
+                                    p("Compiled via C99 into high-performance native binaries.", class = "text-xs text-gray-400")
+                                }
+                                div(class = "bg-gray-950 p-4 rounded-xl border border-gray-800") {
+                                    h3("Garbage Collected", class = "text-xs font-bold text-indigo-400 uppercase tracking-wider mb-1")
+                                    p("Boehm GC integration for memory safety and zero leaks.", class = "text-xs text-gray-400")
+                                }
+                                div(class = "bg-gray-950 p-4 rounded-xl border border-gray-800") {
+                                    h3("Structured Fibers", class = "text-xs font-bold text-purple-400 uppercase tracking-wider mb-1")
+                                    p("Cooperative fibers for lightweight async concurrency.", class = "text-xs text-gray-400")
+                                }
+                            }
+
+                            div(class = "flex justify-center gap-4") {
+                                a(href = "https://github.com/eiwa-lang/eiwa", class = "inline-block bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 px-6 rounded-xl transition shadow-lg", text = "View Source on GitHub")
+                                a(href = "/json", class = "inline-block bg-gray-800 hover:bg-gray-700 text-gray-200 font-semibold py-3 px-6 rounded-xl border border-gray-700 transition", text = "API /json Endpoint")
+                                a(href = "/data", class = "inline-block bg-gray-800 hover:bg-gray-700 text-gray-200 font-semibold py-3 px-6 rounded-xl border border-gray-700 transition", text = "API /data Endpoint")
+                            }
+                        }
                     }
                 })
             }

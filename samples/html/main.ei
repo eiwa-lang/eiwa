@@ -1,0 +1,38 @@
+import { html } from "./html"
+
+fun main() {
+    val page = html {
+        head {
+            title("Eiwa HTML DSL Framework")
+            meta(charset = "UTF-8")
+            script(src = "https://cdn.tailwindcss.com")
+            style("body { background-color: #030712; color: #f3f4f6; margin: 0; }")
+        }
+        body(class = "bg-gray-950 text-gray-100 flex items-center justify-center min-h-screen p-8 font-sans antialiased") {
+            div(class = "max-w-2xl w-full bg-gray-900 border border-gray-800 rounded-3xl p-10 shadow-2xl") {
+                h1("Bem-vindo ao Eiwa Framework HTML!", class = "text-3xl font-black text-white tracking-tight mb-3")
+                h2("Simplicidade, Tipagem Forte e Produtividade", class = "text-base font-normal text-blue-400 mb-6")
+                
+                p(class = "text-gray-300 leading-relaxed mb-6") {
+                    write("O Eiwa oferece uma DSL elegante baseada em ")
+                    b("Receiver Lambdas", class = "text-white font-semibold")
+                    write(" e suporte nativo a ")
+                    i("nós de texto intercalados", class = "text-indigo-300 not-italic font-medium")
+                    write(" com sanitização XSS automática.")
+                }
+
+                hr(class = "my-6 border-gray-800")
+
+                p(class = "text-sm text-gray-400 mb-6") {
+                    write("Confira o repositório oficial do projeto no ")
+                    a(href = "https://github.com/eiwa-lang/eiwa", class = "text-blue-400 hover:text-blue-300 font-semibold underline transition", text = "GitHub")
+                    write(" para mais novidades.")
+                }
+
+                img(src = "/logo.png", alt = "Eiwa Logo", class = "w-full h-48 object-cover rounded-2xl border border-gray-800 shadow-md")
+            }
+        }
+    }
+
+    print(page)
+}

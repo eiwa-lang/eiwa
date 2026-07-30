@@ -1,0 +1,270 @@
+fun escapeHtml(str: String): String {
+    var result = str
+    result = result.replace("&", "&amp;")
+    result = result.replace("<", "&lt;")
+    result = result.replace(">", "&gt;")
+    result = result.replace("\"", "&quot;")
+    result = result.replace("'", "&#39;")
+    return result
+}
+
+type HTMLBuilder(var content: String = "") {
+
+    fun head(init: HeadBuilder.() -> Void) {
+        val builder = HeadBuilder()
+        init(builder)
+        content = content + "<head>" + builder.content + "</head>"
+    }
+
+    fun body(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        val builder = BodyBuilder()
+        init(builder)
+        var attrs = ""
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        if (id != "") {
+            attrs = attrs + " id=\"" + escapeHtml(id) + "\""
+        }
+        content = content + "<body" + attrs + ">" + builder.content + "</body>"
+    }
+}
+
+type HeadBuilder(var content: String = "") {
+
+    fun title(text: String) {
+        content = content + "<title>" + escapeHtml(text) + "</title>"
+    }
+
+    fun meta(name: String = "", contentValue: String = "", charset: String = "", httpEquiv: String = "") {
+        var attrs = ""
+        if (name != "") {
+            attrs = attrs + " name=\"" + escapeHtml(name) + "\""
+        }
+        if (contentValue != "") {
+            attrs = attrs + " content=\"" + escapeHtml(contentValue) + "\""
+        }
+        if (charset != "") {
+            attrs = attrs + " charset=\"" + escapeHtml(charset) + "\""
+        }
+        if (httpEquiv != "") {
+            attrs = attrs + " http-equiv=\"" + escapeHtml(httpEquiv) + "\""
+        }
+        content = content + "<meta" + attrs + " />"
+    }
+
+    fun link(rel: String = "", href: String = "", linkType: String = "") {
+        var attrs = ""
+        if (rel != "") {
+            attrs = attrs + " rel=\"" + escapeHtml(rel) + "\""
+        }
+        if (href != "") {
+            attrs = attrs + " href=\"" + escapeHtml(href) + "\""
+        }
+        if (linkType != "") {
+            attrs = attrs + " type=\"" + escapeHtml(linkType) + "\""
+        }
+        content = content + "<link" + attrs + " />"
+    }
+
+    fun script(src: String = "", scriptType: String = "") {
+        var attrs = ""
+        if (src != "") {
+            attrs = attrs + " src=\"" + escapeHtml(src) + "\""
+        }
+        if (scriptType != "") {
+            attrs = attrs + " type=\"" + escapeHtml(scriptType) + "\""
+        }
+        content = content + "<script" + attrs + "></script>"
+    }
+
+    fun style(css: String = "") {
+        content = content + "<style>" + css + "</style>"
+    }
+}
+
+type BodyBuilder(var content: String = "") {
+
+    fun renderTagSimple(tag: String, text: String, class: String, id: String) {
+        var attrs = ""
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        if (id != "") {
+            attrs = attrs + " id=\"" + escapeHtml(id) + "\""
+        }
+        content = content + "<" + tag + attrs + ">" + escapeHtml(text) + "</" + tag + ">"
+    }
+
+    fun renderTag(tag: String, class: String, id: String, init: BodyBuilder.() -> Void) {
+        val builder = BodyBuilder()
+        init(builder)
+        var attrs = ""
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        if (id != "") {
+            attrs = attrs + " id=\"" + escapeHtml(id) + "\""
+        }
+        content = content + "<" + tag + attrs + ">" + builder.content + "</" + tag + ">"
+    }
+
+    fun write(text: String) {
+        content = content + escapeHtml(text)
+    }
+
+    fun h1(text: String = "", class: String = "", id: String = "") {
+        renderTagSimple("h1", text, class, id)
+    }
+
+    fun h1(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        renderTag("h1", class, id, init)
+    }
+
+    fun h2(text: String = "", class: String = "", id: String = "") {
+        renderTagSimple("h2", text, class, id)
+    }
+
+    fun h2(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        renderTag("h2", class, id, init)
+    }
+
+    fun h3(text: String = "", class: String = "", id: String = "") {
+        renderTagSimple("h3", text, class, id)
+    }
+
+    fun h3(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        renderTag("h3", class, id, init)
+    }
+
+    fun p(text: String = "", class: String = "", id: String = "") {
+        renderTagSimple("p", text, class, id)
+    }
+
+    fun p(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        renderTag("p", class, id, init)
+    }
+
+    fun div(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        renderTag("div", class, id, init)
+    }
+
+    fun b(text: String = "", class: String = "", id: String = "") {
+        renderTagSimple("b", text, class, id)
+    }
+
+    fun b(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        renderTag("b", class, id, init)
+    }
+
+    fun i(text: String = "", class: String = "", id: String = "") {
+        renderTagSimple("i", text, class, id)
+    }
+
+    fun i(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        renderTag("i", class, id, init)
+    }
+
+    fun span(text: String = "", class: String = "", id: String = "") {
+        renderTagSimple("span", text, class, id)
+    }
+
+    fun span(class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        renderTag("span", class, id, init)
+    }
+
+    fun a(href: String = "", class: String = "", id: String = "", text: String = "") {
+        var attrs = ""
+        if (href != "") {
+            attrs = attrs + " href=\"" + escapeHtml(href) + "\""
+        }
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        if (id != "") {
+            attrs = attrs + " id=\"" + escapeHtml(id) + "\""
+        }
+        content = content + "<a" + attrs + ">" + escapeHtml(text) + "</a>"
+    }
+
+    fun a(href: String = "", class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        val builder = BodyBuilder()
+        init(builder)
+        var attrs = ""
+        if (href != "") {
+            attrs = attrs + " href=\"" + escapeHtml(href) + "\""
+        }
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        if (id != "") {
+            attrs = attrs + " id=\"" + escapeHtml(id) + "\""
+        }
+        content = content + "<a" + attrs + ">" + builder.content + "</a>"
+    }
+
+    fun button(btnType: String = "button", class: String = "", id: String = "", text: String = "") {
+        var attrs = ""
+        if (btnType != "") {
+            attrs = attrs + " type=\"" + escapeHtml(btnType) + "\""
+        }
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        if (id != "") {
+            attrs = attrs + " id=\"" + escapeHtml(id) + "\""
+        }
+        content = content + "<button" + attrs + ">" + escapeHtml(text) + "</button>"
+    }
+
+    fun button(btnType: String = "button", class: String = "", id: String = "", init: BodyBuilder.() -> Void) {
+        val builder = BodyBuilder()
+        init(builder)
+        var attrs = ""
+        if (btnType != "") {
+            attrs = attrs + " type=\"" + escapeHtml(btnType) + "\""
+        }
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        if (id != "") {
+            attrs = attrs + " id=\"" + escapeHtml(id) + "\""
+        }
+        content = content + "<button" + attrs + ">" + builder.content + "</button>"
+    }
+
+    fun img(src: String = "", alt: String = "", class: String = "", id: String = "") {
+        var attrs = ""
+        if (src != "") {
+            attrs = attrs + " src=\"" + escapeHtml(src) + "\""
+        }
+        if (alt != "") {
+            attrs = attrs + " alt=\"" + escapeHtml(alt) + "\""
+        }
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        if (id != "") {
+            attrs = attrs + " id=\"" + escapeHtml(id) + "\""
+        }
+        content = content + "<img" + attrs + " />"
+    }
+
+    fun br() {
+        content = content + "<br />"
+    }
+
+    fun hr(class: String = "") {
+        var attrs = ""
+        if (class != "") {
+            attrs = attrs + " class=\"" + escapeHtml(class) + "\""
+        }
+        content = content + "<hr" + attrs + " />"
+    }
+}
+
+fun html(init: HTMLBuilder.() -> Void): String {
+    val builder = HTMLBuilder()
+    init(builder)
+    return "<!DOCTYPE html><html>" + builder.content + "</html>"
+}

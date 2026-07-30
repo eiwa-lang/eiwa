@@ -371,7 +371,24 @@ pub fn finishCall(self: *Parser, callee: *ASTNode, type_args: []const *const ast
     var args = ArrayList(*ASTNode).init(self.allocator);
     if (!self.check(.r_paren)) {
         while (true) {
-            try args.append(try self.expression());
+            if (self.check(.identifier)) {
+                var temp_lexer = self.lexer;
+                const next_tok = temp_lexer.scanToken();
+                if (next_tok.token_type == .eq) {
+                    const arg_line = self.current.line;
+                    const arg_col = self.current.column;
+                    _ = try self.consume(.identifier, "Expected argument name.");
+                    const arg_name = self.previous.lexeme;
+                    _ = try self.consume(.eq, "Expected '=' after argument name.");
+                    const val = try self.expression();
+                    const named_node = try self.createNodeAt(.{ .named_arg = .{ .name = arg_name, .value = val } }, arg_line, arg_col);
+                    try args.append(named_node);
+                } else {
+                    try args.append(try self.expression());
+                }
+            } else {
+                try args.append(try self.expression());
+            }
             if (!self.match(.comma)) break;
         }
     }

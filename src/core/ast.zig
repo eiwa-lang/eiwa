@@ -256,6 +256,10 @@ pub const ASTNodeType = union(enum) {
         arguments: []const *ASTNode,
         type_args: []const *const ASTTypeRef = &.{},
     },
+    named_arg: struct {
+        name: []const u8,
+        value: *ASTNode,
+    },
     if_expr: struct {
         condition: *ASTNode,
         then_branch: *ASTNode,

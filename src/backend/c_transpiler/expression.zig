@@ -49,6 +49,9 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 try self.writer.appendSlice(name);
             }
         },
+        .named_arg => |na| {
+            try self.emitExpression(na.value);
+        },
         .unary_expr => |u| {
             if (u.operator == .bang_bang) {
                 try self.emitExpression(u.operand);
@@ -1384,6 +1387,7 @@ pub fn collectCaptures(self: *CTranspiler, node: *ASTNode, locals: *const std.St
             if (t.else_branch) |eb| try self.collectCaptures(eb, locals, captures);
         },
         .as_expr => |a| try self.collectCaptures(a.value, locals, captures),
+        .named_arg => |na| try self.collectCaptures(na.value, locals, captures),
         .is_expr => |i| try self.collectCaptures(i.value, locals, captures),
         .try_stmt => |try_s| {
             try self.collectCaptures(try_s.body, locals, captures);

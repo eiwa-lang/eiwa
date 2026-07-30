@@ -1,0 +1,50 @@
+import { html, escapeHtml } from "../html/html"
+
+test "html_framework: should escape special HTML characters" {
+    assert(escapeHtml("<script>alert('xss')</script>") == "&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;")
+    assert(escapeHtml("A & B \"quotes\"") == "A &amp; B &quot;quotes&quot;")
+}
+
+test "html_framework: should render basic HTML document structure" {
+    val result = html {
+        head {
+            title("Test Page")
+        }
+        body {
+            h1("Hello World")
+        }
+    }
+
+    assert(result == "<!DOCTYPE html><html><head><title>Test Page</title></head><body><h1>Hello World</h1></body></html>")
+}
+
+test "html_framework: should render void tags correctly" {
+    val result = html {
+        head {
+            meta(charset = "UTF-8")
+            link(rel = "stylesheet", href = "/style.css")
+        }
+        body {
+            img(src = "/test.png", alt = "Test Image")
+            br()
+            hr(class = "divider")
+        }
+    }
+
+    val expected = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\" /><link rel=\"stylesheet\" href=\"/style.css\" /></head><body><img src=\"/test.png\" alt=\"Test Image\" /><br /><hr class=\"divider\" /></body></html>"
+    assert(result == expected)
+}
+
+test "html_framework: should render interleaved text and sub-tags via write()" {
+    val result = html {
+        body {
+            p {
+                write("Hello ")
+                b("Bold Text")
+                write(" & World")
+            }
+        }
+    }
+
+    assert(result == "<!DOCTYPE html><html><body><p>Hello <b>Bold Text</b> &amp; World</p></body></html>")
+}

@@ -776,6 +776,10 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .binary_expr => try infer_expr_mod.inferBinaryExpr(self, node, scope, t),
         .get_expr => try infer_expr_mod.inferGetExpr(self, node, scope, t),
         .set_expr => try infer_expr_mod.inferSetExpr(self, node, scope, t),
+        .named_arg => |na| {
+            const val_t = try self.inferNode(na.value, scope);
+            t.* = val_t.*;
+        },
         .call_expr => try infer_expr_mod.inferCallExpr(self, node, scope, t),
         .as_expr => try infer_expr_mod.inferAsExpr(self, node, scope, t),
         .is_expr => try infer_expr_mod.inferIsExpr(self, node, scope, t),

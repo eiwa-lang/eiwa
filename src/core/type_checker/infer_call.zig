@@ -29,6 +29,168 @@ fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
     }
 }
 
+pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const ast.Param, scope: *Scope) anyerror!void {
+    var c = &node.data.call_expr;
+    var has_named = false;
+    for (c.arguments) |arg| {
+        if (arg.data == .named_arg) {
+            has_named = true;
+            break;
+        }
+    }
+
+    if (!has_named and c.arguments.len == params.len) return;
+
+    var new_args = try self.allocator.alloc(?*ASTNode, params.len);
+    for (new_args) |*slot| {
+        slot.* = null;
+    }
+
+    var pos_i: usize = 0;
+    for (c.arguments) |arg| {
+        if (arg.data == .named_arg) {
+            const name = arg.data.named_arg.name;
+            const val = arg.data.named_arg.value;
+            var param_match: ?usize = null;
+            for (params, 0..) |p, pi| {
+                if (std.mem.eql(u8, p.name, name)) {
+                    param_match = pi;
+                    break;
+                }
+            }
+            if (param_match) |pi| {
+                if (new_args[pi] != null) {
+                    self.reportError(arg.line, arg.column, "TypeError: Duplicate argument provided for parameter '{s}'.", .{name});
+                    return error.TypeError;
+                }
+                new_args[pi] = val;
+            } else {
+                self.reportError(arg.line, arg.column, "TypeError: Unknown parameter '{s}' in function call.", .{name});
+                return error.TypeError;
+            }
+        } else {
+            var target_slot: ?usize = null;
+            if (arg.data == .lambda_expr) {
+                var search_i: usize = pos_i;
+                while (search_i < params.len) : (search_i += 1) {
+                    if (new_args[search_i] == null) {
+                        if (params[search_i].type_ref) |tr| {
+                            if (tr.is_function) {
+                                target_slot = search_i;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (target_slot == null) {
+                while (pos_i < params.len and new_args[pos_i] != null) : (pos_i += 1) {}
+                if (pos_i >= params.len) {
+                    self.reportError(arg.line, arg.column, "TypeError: Too many positional arguments in call.", .{});
+                    return error.TypeError;
+                }
+                target_slot = pos_i;
+            }
+
+            new_args[target_slot.?] = arg;
+            if (target_slot.? == pos_i) {
+                pos_i += 1;
+            }
+        }
+    }
+
+    for (params, 0..) |p, pi| {
+        if (new_args[pi] == null) {
+            if (p.initializer) |init_node| {
+                const cloned = try self.cloneNode(init_node);
+                _ = try self.inferNode(cloned, scope);
+                new_args[pi] = cloned;
+            } else {
+                self.reportError(node.line, node.column, "TypeError: Missing argument for parameter '{s}'.", .{p.name});
+                return error.TypeError;
+            }
+        }
+    }
+
+    var final_args = try self.allocator.alloc(*ASTNode, params.len);
+    for (new_args, 0..) |opt_arg, i| {
+        final_args[i] = opt_arg.?;
+    }
+
+    c.arguments = final_args;
+}
+
+pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anytype, f: anytype, scope: *Scope) bool {
+    const c = &node.data.call_expr;
+    if (c.arguments.len > f.params.len) return false;
+
+    var pos_i: usize = 0;
+    var provided = ArrayList(bool).init(self.allocator);
+    var pi_idx: usize = 0;
+    while (pi_idx < fun_decl.params.len) : (pi_idx += 1) {
+        provided.append(false) catch return false;
+    }
+
+    for (c.arguments) |arg| {
+        if (arg.data == .named_arg) {
+            const arg_name = arg.data.named_arg.name;
+            const val_node = arg.data.named_arg.value;
+            var match_idx: ?usize = null;
+            for (fun_decl.params, 0..) |p, pi| {
+                if (std.mem.eql(u8, p.name, arg_name)) {
+                    match_idx = pi;
+                    break;
+                }
+            }
+            if (match_idx) |pi| {
+                provided.items[pi] = true;
+                if (val_node.resolved_type == null) {
+                    _ = self.inferNode(val_node, scope) catch return false;
+                }
+                if (val_node.resolved_type) |vt| {
+                    if (!self.isCompatible(f.params[pi], vt)) return false;
+                }
+            } else {
+                return false;
+            }
+        } else if (arg.data == .lambda_expr) {
+            var target_slot: ?usize = null;
+            var search_i: usize = pos_i;
+            while (search_i < f.params.len) : (search_i += 1) {
+                if (!provided.items[search_i] and f.params[search_i].* == .Function) {
+                    target_slot = search_i;
+                    break;
+                }
+            }
+            if (target_slot) |ts| {
+                provided.items[ts] = true;
+            } else {
+                return false;
+            }
+        } else {
+            while (pos_i < f.params.len and provided.items[pos_i]) : (pos_i += 1) {}
+            if (pos_i >= f.params.len) return false;
+            provided.items[pos_i] = true;
+            if (arg.resolved_type == null) {
+                _ = self.inferNode(arg, scope) catch return false;
+            }
+            if (arg.resolved_type) |at| {
+                if (!self.isCompatible(f.params[pos_i], at)) return false;
+            }
+            pos_i += 1;
+        }
+    }
+
+    for (fun_decl.params, 0..) |p, pi| {
+        if (!provided.items[pi] and p.initializer == null) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var c = &node.data.call_expr;
     // 1. Infer all arguments that are NOT lambdas
@@ -79,21 +241,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             const func_decl = func_node.data.fun_decl;
                             const ret_type = func_node.resolved_type.?.Function.return_type;
 
-                            if (c.arguments.len < func_decl.params.len) {
-                                var new_args = try self.allocator.alloc(*ASTNode, func_decl.params.len);
-                                for (c.arguments, 0..) |arg, arg_i| {
-                                    new_args[arg_i] = arg;
-                                }
-                                var i = c.arguments.len;
-                                while (i < func_decl.params.len) : (i += 1) {
-                                    if (func_decl.params[i].initializer) |init_node| {
-                                        const cloned = try self.cloneNode(init_node);
-                                        new_args[i] = cloned;
-                                        _ = try self.inferNode(cloned, scope);
-                                    }
-                                }
-                                c.arguments = new_args;
-                            }
+                            try resolveCallArguments(self, node, func_decl.params, scope);
 
                             for (c.arguments, 0..) |arg, arg_i| {
                                 if (arg_i < func_decl.params.len) {
@@ -166,23 +314,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     const fun_decl = &func_node.data.fun_decl;
                     const ret_type = func_node.resolved_type.?.Function.return_type;
 
-                    if (c.arguments.len < fun_decl.params.len) {
-                        var new_args = try self.allocator.alloc(*ASTNode, fun_decl.params.len);
-                        for (c.arguments, 0..) |arg, arg_i| {
-                            new_args[arg_i] = arg;
-                        }
-                        var i = c.arguments.len;
-                        while (i < fun_decl.params.len) : (i += 1) {
-                            if (fun_decl.params[i].initializer) |init_node| {
-                                const cloned = try self.cloneNode(init_node);
-                                const param_type = if (fun_decl.params[i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
-                                if (param_type) |pt| cloned.expected_type = pt;
-                                new_args[i] = cloned;
-                                _ = try self.inferNode(cloned, scope);
-                            }
-                        }
-                        c.arguments = new_args;
-                    }
+                    try resolveCallArguments(self, node, fun_decl.params, scope);
 
                     for (c.arguments, 0..) |arg, arg_i| {
                         if (arg_i < fun_decl.params.len) {
@@ -288,37 +420,10 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 if (overload.* != .Function) continue;
                 const f = overload.Function;
                 if (f.receiver == null) continue; // Only consider methods (with receiver)
-                if (c.arguments.len > f.params.len) continue;
-                
                 const func_node = self.functions_ast.get(f.c_name) orelse continue;
                 const fun_decl = func_node.data.fun_decl;
                 
-                var has_defaults = true;
-                var i = c.arguments.len;
-                while (i < f.params.len) : (i += 1) {
-                    if (fun_decl.params[i].initializer == null) {
-                        has_defaults = false;
-                        break;
-                    }
-                }
-                if (!has_defaults) continue;
-                
-                var all_match = true;
-                for (c.arguments, 0..) |arg, arg_i| {
-                    if (arg.data == .lambda_expr) {
-                        if (f.params[arg_i].* != .Function) {
-                            all_match = false;
-                            break;
-                        }
-                    } else {
-                        if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
-                            all_match = false;
-                            break;
-                        }
-                    }
-                }
-                
-                if (all_match) {
+                if (canMatchOverload(self, node, &fun_decl, &f, scope)) {
                     best_match = overload;
                     break;
                 }
@@ -332,37 +437,10 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     if (overload.* != .Function) continue;
                     const f = overload.Function;
                     if (f.receiver != null) continue; // Skip methods in global scope
-                    if (c.arguments.len > f.params.len) continue;
-                    
                     const func_node = self.functions_ast.get(f.c_name) orelse continue;
                     const fun_decl = func_node.data.fun_decl;
                     
-                    var has_defaults = true;
-                    var i = c.arguments.len;
-                    while (i < f.params.len) : (i += 1) {
-                        if (fun_decl.params[i].initializer == null) {
-                            has_defaults = false;
-                            break;
-                        }
-                    }
-                    if (!has_defaults) continue;
-                    
-                    var all_match = true;
-                    for (c.arguments, 0..) |arg, arg_i| {
-                        if (arg.data == .lambda_expr) {
-                            if (f.params[arg_i].* != .Function) {
-                                all_match = false;
-                                break;
-                            }
-                        } else {
-                            if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
-                                all_match = false;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (all_match) {
+                    if (canMatchOverload(self, node, &fun_decl, &f, scope)) {
                         best_match = overload;
                         break;
                     }
@@ -420,20 +498,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             const func_node = self.functions_ast.get(f.c_name).?;
             const fun_decl = func_node.data.fun_decl;
             
-            if (c.arguments.len < f.params.len) {
-                var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
-                for (c.arguments, 0..) |arg, arg_i| {
-                    new_args[arg_i] = arg;
-                }
-                var i = c.arguments.len;
-                while (i < f.params.len) : (i += 1) {
-                    const cloned = try self.cloneNode(fun_decl.params[i].initializer.?);
-                    cloned.expected_type = f.params[i];
-                    new_args[i] = cloned;
-                    _ = try self.inferNode(cloned, scope);
-                }
-                c.arguments = new_args;
-            }
+            try resolveCallArguments(self, node, fun_decl.params, scope);
             
             // Set expected types for all arguments (for C transpiler boxing)
             for (c.arguments, 0..) |arg, arg_i| {
@@ -477,6 +542,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         .object = this_node,
                         .name = name,
                         .is_safe = false,
+                        .resolved_c_name = matched.Function.c_name,
                     } },
                 };
                 
