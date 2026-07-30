@@ -2,6 +2,7 @@ const std = @import("std");
 const ast = @import("../../core/ast.zig");
 const types_mapping = @import("types.zig");
 const expression = @import("expression.zig");
+const core = @import("core.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 
@@ -11,6 +12,7 @@ pub fn emitStatement(
     builder: llvm.LLVMBuilderRef,
     func_val: llvm.LLVMValueRef,
     scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
     node: *ast.ASTNode,
 ) !void {
     switch (node.data) {
@@ -26,7 +28,7 @@ pub fn emitStatement(
             try scope.put(name, alloca_ptr);
 
             if (v.initializer) |init_node| {
-                const val = try expression.emitExpression(ctx, mod, builder, scope, init_node);
+                const val = try expression.emitExpression(ctx, mod, builder, scope, structs, init_node);
                 _ = llvm.LLVMBuildStore(builder, val, alloca_ptr);
             }
         },
@@ -37,11 +39,11 @@ pub fn emitStatement(
                 return error.VariableNotFound;
             };
 
-            const val = try expression.emitExpression(ctx, mod, builder, scope, assign.value);
+            const val = try expression.emitExpression(ctx, mod, builder, scope, structs, assign.value);
             _ = llvm.LLVMBuildStore(builder, val, alloca_ptr);
         },
         .if_expr => |if_node| {
-            const cond_val = try expression.emitExpression(ctx, mod, builder, scope, if_node.condition);
+            const cond_val = try expression.emitExpression(ctx, mod, builder, scope, structs, if_node.condition);
 
             const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "if.then");
             const else_bb = if (if_node.else_branch != null) llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "if.else") else null;
@@ -51,7 +53,7 @@ pub fn emitStatement(
 
             // Emit then branch
             llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
-            try emitStatement(ctx, mod, builder, func_val, scope, if_node.then_branch);
+            try emitStatement(ctx, mod, builder, func_val, scope, structs, if_node.then_branch);
             if (llvm.LLVMGetBasicBlockTerminator(then_bb) == null) {
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
             }
@@ -60,7 +62,7 @@ pub fn emitStatement(
             if (if_node.else_branch) |else_branch| {
                 if (else_bb) |eb| {
                     llvm.LLVMPositionBuilderAtEnd(builder, eb);
-                    try emitStatement(ctx, mod, builder, func_val, scope, else_branch);
+                    try emitStatement(ctx, mod, builder, func_val, scope, structs, else_branch);
                     if (llvm.LLVMGetBasicBlockTerminator(eb) == null) {
                         _ = llvm.LLVMBuildBr(builder, merge_bb);
                     }
@@ -78,12 +80,12 @@ pub fn emitStatement(
 
             // Condition block
             llvm.LLVMPositionBuilderAtEnd(builder, cond_bb);
-            const cond_val = try expression.emitExpression(ctx, mod, builder, scope, w.condition);
+            const cond_val = try expression.emitExpression(ctx, mod, builder, scope, structs, w.condition);
             _ = llvm.LLVMBuildCondBr(builder, cond_val, body_bb, after_bb);
 
             // Body block
             llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
-            try emitStatement(ctx, mod, builder, func_val, scope, w.body);
+            try emitStatement(ctx, mod, builder, func_val, scope, structs, w.body);
             if (llvm.LLVMGetBasicBlockTerminator(body_bb) == null) {
                 _ = llvm.LLVMBuildBr(builder, cond_bb);
             }
@@ -93,7 +95,7 @@ pub fn emitStatement(
         },
         .return_stmt => |ret| {
             if (ret.value) |val_node| {
-                const ret_val = try expression.emitExpression(ctx, mod, builder, scope, val_node);
+                const ret_val = try expression.emitExpression(ctx, mod, builder, scope, structs, val_node);
                 _ = llvm.LLVMBuildRet(builder, ret_val);
             } else {
                 _ = llvm.LLVMBuildRetVoid(builder);
@@ -101,17 +103,17 @@ pub fn emitStatement(
         },
         .block => |blk| {
             for (blk.statements) |stmt| {
-                try emitStatement(ctx, mod, builder, func_val, scope, stmt);
+                try emitStatement(ctx, mod, builder, func_val, scope, structs, stmt);
             }
         },
         .program => |prog| {
             for (prog.statements) |stmt| {
-                try emitStatement(ctx, mod, builder, func_val, scope, stmt);
+                try emitStatement(ctx, mod, builder, func_val, scope, structs, stmt);
             }
         },
         .fun_decl, .import_stmt, .test_decl, .type_decl, .contract_decl, .skill_decl, .object_decl, .enum_decl, .lib_decl => {},
         else => {
-            _ = try expression.emitExpression(ctx, mod, builder, scope, node);
+            _ = try expression.emitExpression(ctx, mod, builder, scope, structs, node);
         },
     }
 }

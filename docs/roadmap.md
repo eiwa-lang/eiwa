@@ -99,10 +99,10 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
   - Eliminar escrita de arquivos `.ll` e `.c` no disco.
   - Execução JIT instantânea via OrcJIT (`LLVMCreateExecutionEngineForModule`) e emissão direta de objeto `.o` (`LLVMTargetMachineEmitToFile`) sem invocar `clang`/`llc`.
 - [x] **Task 20.5:** Suporte a Binário Nativo Direto (`eiwa build --backend=llvm`) com `-O3` e `-lgc` ativado.
-- [ ] **Task 20.6:** Tipos Compostos & Instanciação (`type`, `object`, `enum`):
+- [x] **Task 20.6:** Tipos Compostos & Instanciação (`type`, `object`, `enum`):
   - Mapear campos de `type` para `LLVMStructTypeInContext`.
-  - Instanciação de objetos gerenciada pelo GC (`GC_MALLOC`).
-  - Leitura e escrita de propriedades (`LLVMBuildStructGEP2`) e chamadas de métodos de instância.
+  - Instanciação de objetos gerenciada pelo GC (`malloc` / `GC_MALLOC`).
+  - Leitura e escrita de propriedades (`LLVMBuildStructGEP2`, `.get_expr`, `.set_expr`) e chamadas de métodos de instância.
 - [ ] **Task 20.7:** FFI Nativo & Bibliotecas C (`lib Name { ... }`):
   - Declaração dinâmica de protótipos de funções C externas no módulo LLVM.
   - Interoperabilidade com bibliotecas nativas C (`libcurl`, `libpq`, `Boehm GC`).

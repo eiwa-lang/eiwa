@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("../../core/ast.zig");
 const types_mapping = @import("types.zig");
+const core = @import("core.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 
@@ -9,6 +10,7 @@ pub fn emitExpression(
     mod: llvm.LLVMModuleRef,
     builder: llvm.LLVMBuilderRef,
     scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
     node: *ast.ASTNode,
 ) !llvm.LLVMValueRef {
     switch (node.data) {
@@ -46,8 +48,58 @@ pub fn emitExpression(
             std.debug.print("LLVM Emitter Error: Variable '{s}' not found in local scope.\n", .{name});
             return error.VariableNotFound;
         },
+        .get_expr => |get| {
+            const obj_val = try emitExpression(ctx, mod, builder, scope, structs, get.object);
+            if (get.object.resolved_type) |rt| {
+                var type_name: []const u8 = "";
+                if (rt.* == .Custom) {
+                    type_name = rt.Custom;
+                } else if (rt.* == .Pointer and rt.Pointer.* == .Custom) {
+                    type_name = rt.Pointer.Custom;
+                }
+                if (structs.get(type_name)) |s_info| {
+                    for (s_info.field_names, 0..) |f_name, f_idx| {
+                        if (std.mem.eql(u8, f_name, get.name)) {
+                            const field_name_z = try std.heap.page_allocator.dupeZ(u8, f_name);
+                            defer std.heap.page_allocator.free(field_name_z);
+
+                            const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, obj_val, @intCast(f_idx), field_name_z.ptr);
+                            const field_type = s_info.field_types[f_idx];
+                            return llvm.LLVMBuildLoad2(builder, field_type, field_ptr, "get_val");
+                        }
+                    }
+                }
+            }
+            return error.PropertyNotFound;
+        },
+        .set_expr => |set| {
+            const obj_val = try emitExpression(ctx, mod, builder, scope, structs, set.object);
+            const val = try emitExpression(ctx, mod, builder, scope, structs, set.value);
+
+            if (set.object.resolved_type) |rt| {
+                var type_name: []const u8 = "";
+                if (rt.* == .Custom) {
+                    type_name = rt.Custom;
+                } else if (rt.* == .Pointer and rt.Pointer.* == .Custom) {
+                    type_name = rt.Pointer.Custom;
+                }
+                if (structs.get(type_name)) |s_info| {
+                    for (s_info.field_names, 0..) |f_name, f_idx| {
+                        if (std.mem.eql(u8, f_name, set.name)) {
+                            const field_name_z = try std.heap.page_allocator.dupeZ(u8, f_name);
+                            defer std.heap.page_allocator.free(field_name_z);
+
+                            const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, obj_val, @intCast(f_idx), field_name_z.ptr);
+                            _ = llvm.LLVMBuildStore(builder, val, field_ptr);
+                            return val;
+                        }
+                    }
+                }
+            }
+            return error.PropertyNotFound;
+        },
         .unary_expr => |un| {
-            const operand_val = try emitExpression(ctx, mod, builder, scope, un.operand);
+            const operand_val = try emitExpression(ctx, mod, builder, scope, structs, un.operand);
             switch (un.operator) {
                 .minus => {
                     if (un.operand.resolved_type) |t| {
@@ -64,8 +116,8 @@ pub fn emitExpression(
             }
         },
         .binary_expr => |bin| {
-            const left_val = try emitExpression(ctx, mod, builder, scope, bin.left);
-            const right_val = try emitExpression(ctx, mod, builder, scope, bin.right);
+            const left_val = try emitExpression(ctx, mod, builder, scope, structs, bin.left);
+            const right_val = try emitExpression(ctx, mod, builder, scope, structs, bin.right);
 
             const is_double = if (bin.left.resolved_type) |t| (t.* == .Double) else false;
 
@@ -132,7 +184,7 @@ pub fn emitExpression(
                 const printf_type = llvm.LLVMGlobalGetValueType(printf_func);
 
                 if (call.arguments.len > 0) {
-                    const arg_val = try emitExpression(ctx, mod, builder, scope, call.arguments[0]);
+                    const arg_val = try emitExpression(ctx, mod, builder, scope, structs, call.arguments[0]);
                     const arg_type = llvm.LLVMTypeOf(arg_val);
 
                     var fmt_str: [*c]const u8 = "%lld\n";
@@ -159,16 +211,25 @@ pub fn emitExpression(
             const callee_z = try std.heap.page_allocator.dupeZ(u8, callee_name);
             defer std.heap.page_allocator.free(callee_z);
 
-            const func_val = llvm.LLVMGetNamedFunction(mod, callee_z.ptr) orelse {
-                std.debug.print("LLVM Emitter Error: Function '{s}' not found in LLVM module.\n", .{callee_name});
-                return error.FunctionNotFound;
-            };
-
             var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, call.arguments.len);
             defer std.heap.page_allocator.free(arg_vals);
 
             for (call.arguments, 0..) |arg_node, idx| {
-                arg_vals[idx] = try emitExpression(ctx, mod, builder, scope, arg_node);
+                arg_vals[idx] = try emitExpression(ctx, mod, builder, scope, structs, arg_node);
+            }
+
+            var func_val = llvm.LLVMGetNamedFunction(mod, callee_z.ptr);
+            if (func_val == null) {
+                const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+                var arg_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, call.arguments.len);
+                defer std.heap.page_allocator.free(arg_types);
+
+                for (arg_vals, 0..) |a_val, idx| {
+                    arg_types[idx] = llvm.LLVMTypeOf(a_val);
+                }
+
+                const func_type = llvm.LLVMFunctionType(ptr_type, if (arg_types.len > 0) arg_types.ptr else null, @intCast(arg_types.len), 0);
+                func_val = llvm.LLVMAddFunction(mod, callee_z.ptr, func_type);
             }
 
             const func_type = llvm.LLVMGlobalGetValueType(func_val);

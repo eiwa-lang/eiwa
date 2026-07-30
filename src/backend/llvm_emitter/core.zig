@@ -8,6 +8,12 @@ const statement = @import("statement.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 
+pub const StructInfo = struct {
+    struct_type: llvm.LLVMTypeRef,
+    field_names: [][]const u8,
+    field_types: []llvm.LLVMTypeRef,
+};
+
 /// In-Memory LLVM IR Emitter and Execution Driver.
 pub const LLVMEmitter = struct {
     allocator: std.mem.Allocator,
@@ -16,6 +22,7 @@ pub const LLVMEmitter = struct {
     builder: llvm.LLVMBuilderRef,
     is_release: bool,
     functions: std.StringHashMap(llvm.LLVMValueRef),
+    structs: std.StringHashMap(StructInfo),
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         _ = llvm.LLVMInitializeNativeTarget();
@@ -35,11 +42,13 @@ pub const LLVMEmitter = struct {
             .builder = builder,
             .is_release = is_release,
             .functions = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
+            .structs = std.StringHashMap(StructInfo).init(allocator),
         };
     }
 
     pub fn deinit(self: *LLVMEmitter) void {
         self.functions.deinit();
+        self.structs.deinit();
         llvm.LLVMDisposeBuilder(self.builder);
         if (self.module) |m| {
             llvm.LLVMDisposeModule(m);
@@ -55,19 +64,33 @@ pub const LLVMEmitter = struct {
         if (ast_root.data != .program) return error.InvalidASTRoot;
         const prog = ast_root.data.program;
 
-        // Pass 1: Declare all function signatures
+        // Pass 0: Declare memory allocation prototypes
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+        const size_t_type = llvm.LLVMInt64TypeInContext(self.context);
+        var gc_params = [_]llvm.LLVMTypeRef{size_t_type};
+        const gc_type = llvm.LLVMFunctionType(ptr_type, &gc_params, 1, 0);
+        _ = llvm.LLVMAddFunction(mod, "GC_malloc", gc_type);
+        _ = llvm.LLVMAddFunction(mod, "malloc", gc_type);
+
+        // Declare printf prototype for builtin print calls
+        const i32_type = llvm.LLVMInt32TypeInContext(self.context);
+        var printf_params = [_]llvm.LLVMTypeRef{ptr_type};
+        const printf_type = llvm.LLVMFunctionType(i32_type, &printf_params, 1, 1); // varargs = 1
+        _ = llvm.LLVMAddFunction(mod, "printf", printf_type);
+
+        // Pass 1a: Declare all user-defined types (structs & constructors)
+        for (prog.statements) |stmt| {
+            if (stmt.data == .type_decl) {
+                try self.declareType(mod, stmt);
+            }
+        }
+
+        // Pass 1b: Declare all function signatures
         for (prog.statements) |stmt| {
             if (stmt.data == .fun_decl) {
                 try self.declareFunction(mod, stmt);
             }
         }
-
-        // Declare printf prototype for builtin print calls
-        const i32_type = llvm.LLVMInt32TypeInContext(self.context);
-        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
-        var printf_params = [_]llvm.LLVMTypeRef{ptr_type};
-        const printf_type = llvm.LLVMFunctionType(i32_type, &printf_params, 1, 1); // varargs = 1
-        _ = llvm.LLVMAddFunction(mod, "printf", printf_type);
 
         // Pass 2: Emit function bodies
         var top_level_stmts = ArrayList(*ast.ASTNode).init(self.allocator);
@@ -76,7 +99,7 @@ pub const LLVMEmitter = struct {
         for (prog.statements) |stmt| {
             if (stmt.data == .fun_decl) {
                 try self.emitFunctionBody(mod, stmt);
-            } else {
+            } else if (stmt.data != .type_decl) {
                 try top_level_stmts.append(stmt);
             }
         }
@@ -94,7 +117,7 @@ pub const LLVMEmitter = struct {
                 defer scope.deinit();
 
                 for (top_level_stmts.items) |stmt| {
-                    try statement.emitStatement(self.context, mod, self.builder, main_func.?, &scope, stmt);
+                    try statement.emitStatement(self.context, mod, self.builder, main_func.?, &scope, &self.structs, stmt);
                 }
 
                 const cur_bb = llvm.LLVMGetInsertBlock(self.builder);
@@ -102,6 +125,70 @@ pub const LLVMEmitter = struct {
                     const zero = llvm.LLVMConstInt(i32_type, 0, 0);
                     _ = llvm.LLVMBuildRet(self.builder, zero);
                 }
+            }
+        }
+    }
+
+    fn declareType(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, type_node: *ast.ASTNode) !void {
+        const t = type_node.data.type_decl;
+        const name = t.resolved_c_name orelse t.name;
+
+        const struct_name_z = try self.allocator.dupeZ(u8, name);
+        defer self.allocator.free(struct_name_z);
+
+        const struct_type = llvm.LLVMStructCreateNamed(self.context, struct_name_z.ptr);
+
+        var field_names = ArrayList([]const u8).init(self.allocator);
+        var field_types = ArrayList(llvm.LLVMTypeRef).init(self.allocator);
+
+        for (t.primary_constructor) |prop| {
+            try field_names.append(prop.name);
+            const f_llvm_type = if (prop.resolved_type) |rt| types_mapping.getLLVMType(self.context, rt.*) else llvm.LLVMInt64TypeInContext(self.context);
+            try field_types.append(f_llvm_type);
+        }
+
+        llvm.LLVMStructSetBody(struct_type, if (field_types.items.len > 0) field_types.items.ptr else null, @intCast(field_types.items.len), 0);
+
+        const field_names_owned = try field_names.toOwnedSlice();
+        const field_types_owned = try field_types.toOwnedSlice();
+
+        try self.structs.put(name, .{
+            .struct_type = struct_type,
+            .field_names = field_names_owned,
+            .field_types = field_types_owned,
+        });
+
+        // Declare constructor function: name(params...) -> ptr
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+        const ctor_type = llvm.LLVMFunctionType(ptr_type, if (field_types_owned.len > 0) field_types_owned.ptr else null, @intCast(field_types_owned.len), 0);
+
+        const ctor_val = llvm.LLVMAddFunction(mod, struct_name_z.ptr, ctor_type);
+        try self.functions.put(name, ctor_val);
+
+        // Emit constructor body
+        const entry_block = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_val, "entry");
+        llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);
+
+        // Call malloc or GC_malloc
+        const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+        const gc_func_type = llvm.LLVMGlobalGetValueType(gc_func);
+        const size_val = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(self.context), 128, 0);
+        var gc_args = [_]llvm.LLVMValueRef{size_val};
+        const raw_ptr = llvm.LLVMBuildCall2(self.builder, gc_func_type, gc_func, &gc_args, 1, "raw_inst");
+
+        // Store constructor parameters into struct fields
+        for (field_names_owned, 0..) |_, idx| {
+            const param_val = llvm.LLVMGetParam(ctor_val, @intCast(idx));
+            const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(idx), "field_gep");
+            _ = llvm.LLVMBuildStore(self.builder, param_val, field_ptr);
+        }
+
+        _ = llvm.LLVMBuildRet(self.builder, raw_ptr);
+
+        // Pass 1a2: Emit member methods inside type
+        for (t.methods) |m_node| {
+            if (m_node.data == .fun_decl) {
+                try self.declareFunction(mod, m_node);
             }
         }
     }
@@ -170,7 +257,7 @@ pub const LLVMEmitter = struct {
             try scope.put(p.name, alloca_ptr);
         }
 
-        try statement.emitStatement(self.context, mod, self.builder, func_val, &scope, f.body);
+        try statement.emitStatement(self.context, mod, self.builder, func_val, &scope, &self.structs, f.body);
 
         const cur_bb = llvm.LLVMGetInsertBlock(self.builder);
         if (llvm.LLVMGetBasicBlockTerminator(cur_bb) == null) {
