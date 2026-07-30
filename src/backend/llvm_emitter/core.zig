@@ -85,7 +85,14 @@ pub const LLVMEmitter = struct {
             }
         }
 
-        // Pass 1b: Declare all function signatures
+        // Pass 1b: Declare all lib blocks (external FFI prototypes)
+        for (prog.statements) |stmt| {
+            if (stmt.data == .lib_decl) {
+                try self.declareLib(mod, stmt);
+            }
+        }
+
+        // Pass 1c: Declare all function signatures
         for (prog.statements) |stmt| {
             if (stmt.data == .fun_decl) {
                 try self.declareFunction(mod, stmt);
@@ -99,7 +106,7 @@ pub const LLVMEmitter = struct {
         for (prog.statements) |stmt| {
             if (stmt.data == .fun_decl) {
                 try self.emitFunctionBody(mod, stmt);
-            } else if (stmt.data != .type_decl) {
+            } else if (stmt.data != .type_decl and stmt.data != .lib_decl) {
                 try top_level_stmts.append(stmt);
             }
         }
@@ -125,6 +132,15 @@ pub const LLVMEmitter = struct {
                     const zero = llvm.LLVMConstInt(i32_type, 0, 0);
                     _ = llvm.LLVMBuildRet(self.builder, zero);
                 }
+            }
+        }
+    }
+
+    fn declareLib(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, lib_node: *ast.ASTNode) !void {
+        const lib = lib_node.data.lib_decl;
+        for (lib.functions) |func_node| {
+            if (func_node.data == .fun_decl) {
+                try self.declareFunction(mod, func_node);
             }
         }
     }
@@ -235,6 +251,9 @@ pub const LLVMEmitter = struct {
 
     fn emitFunctionBody(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode) !void {
         const f = func_node.data.fun_decl;
+        // Check if function is an external prototype without body
+        if (f.body.data == .block and f.body.data.block.statements.len == 0) return;
+
         const name = f.resolved_c_name orelse f.name;
         const func_val = self.functions.get(name) orelse return error.FunctionNotFound;
 

@@ -1,0 +1,10 @@
+import { assert } from "std.core"
+
+lib C {
+    fun abs(n: Int): Int
+}
+
+test "llvm backend ffi lib block declaration and call" {
+    val result = C.abs(-42)
+    assert(result == 42)
+}

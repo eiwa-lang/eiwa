@@ -103,9 +103,9 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
   - Mapear campos de `type` para `LLVMStructTypeInContext`.
   - Instanciação de objetos gerenciada pelo GC (`malloc` / `GC_MALLOC`).
   - Leitura e escrita de propriedades (`LLVMBuildStructGEP2`, `.get_expr`, `.set_expr`) e chamadas de métodos de instância.
-- [ ] **Task 20.7:** FFI Nativo & Bibliotecas C (`lib Name { ... }`):
-  - Declaração dinâmica de protótipos de funções C externas no módulo LLVM.
-  - Interoperabilidade com bibliotecas nativas C (`libcurl`, `libpq`, `Boehm GC`).
+- [x] **Task 20.7:** FFI Nativo & Bibliotecas C (`lib Name { ... }`):
+  - Declaração dinâmica de protótipos de funções C externas no módulo LLVM (`declareLib`).
+  - Interoperabilidade com bibliotecas nativas C (`libcurl`, `libpq`, `Boehm GC`, POSIX libc).
 - [ ] **Task 20.8:** Arrays & Coleções Genéricas (`List<T>`, `Map<K, V>`, `[1, 2, 3]`):
   - Tradução de literais de array (`array_literal`) e expressões de índice (`arr[i]`).
   - Suporte a contêineres monomórficos em LLVM IR.
