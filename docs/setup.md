@@ -11,23 +11,26 @@ O código fonte do Eiwa é escrito em Zig. Você precisa do compilador do Zig pa
 - Verifique a instalação rodando: `zig version`
 
 ### Boehm Garbage Collector (Gestão de Memória)
-Como o Eiwa gera código C que aloca memória dinamicamente, usamos o Boehm-Demers-Weiser GC para rastrear e limpar a memória (evitando *Memory Leaks* crônicos). Sem isso, o compilador vai falhar acusando a ausência da flag `-lgc`.
+Como o Eiwa gera código que aloca memória dinamicamente, usamos o Boehm-Demers-Weiser GC para rastrear e limpar a memória (evitando *Memory Leaks* crônicos). Sem isso, o compilador vai falhar acusando a ausência da flag `-lgc`.
 
-**Instalação no Linux (Ubuntu/Debian):**
+### LLVM 21+ (Emissor Nativo em Memória & JIT)
+Para utilizar o backend nativo ultra-rápido do LLVM (`--backend=llvm`) ou compilar o executável com suporte ao emissor LLVM C-API, o sistema precisa do **LLVM 21+** instalado com os arquivos de cabeçalho (`llvm-c`).
+
+**Instalação das Dependências no Linux (Ubuntu/Debian):**
 ```bash
 sudo apt update
-sudo apt install libgc-dev
+sudo apt install libgc-dev llvm-21-dev
 ```
 
 **Instalação no macOS:**
 ```bash
-brew install bdw-gc
+brew install bdw-gc llvm@21
 ```
 
 **Instalação no Windows (MSYS2 / vcpkg):**
 ```bash
 # MSYS2 MinGW-w64:
-pacman -S mingw-w64-x86_64-gc
+pacman -S mingw-w64-x86_64-gc mingw-w64-x86_64-llvm
 
 # Ou vcpkg:
 vcpkg install bdw-gc

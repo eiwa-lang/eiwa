@@ -467,4 +467,24 @@ Operações financeiras utilizando tipos de ponto flutuante (`Float`/`Double`) c
 **Razão:**
 Entrega um padrão de domínio financeiro moderno, conciso e seguro para a linguagem Eiwa. Elimina bugs clássicos de arredondamento sem exigir uma engine `Decimal` pesada no runtime em C, alinhando-se aos princípios da linguagem de ser performática, pragmática e expressiva.
 
+## ADR 46: Emissor Nativo LLVM C-API In-Memory (Compilação Ultra-Rápida & Execution Engine JIT)
+**Status:** Aprovado / Em Implementação
+**Data:** Julho 2026
+
+**Contexto:**
+1. O backend de transpilação para C (`src/backend/c_transpiler.zig`) do Eiwa gera código intermediário `.c` e invoca a ferramenta externa `zig cc -O0` via subprocesso shell. Embora muito portável e maduro, esse modelo envolve I/O de disco para arquivos temporários e sobrecarga de criação de processos.
+2. Para alcançar compilações instantâneas (desenvolvimento com latência < 5ms) e performance de execução de estado da arte em binários finais de produção, o compilador precisa de um backend LLVM nativo e direto.
+
+**Decisão:**
+1. **Arquitetura de Backend Duplo (Zero-Risco):** O backend C permanece como fallback seguro e padrão (`--backend=c`). O novo backend LLVM (`--backend=llvm`) opera em paralelo (`src/backend/llvm_emitter/`), compartilhando 100% da esteira de Frontend (Lexer, Parser, AST e TypeChecker global).
+2. **Construção de IR 100% em Memória via C-API:** Eliminar totalmente a escrita de arquivos intermediários `.ll` no disco e a invocação de ferramentas de linha de comando (`llc`, `clang`). A estrutura IR é construída diretamente na RAM utilizando a C-API do LLVM 21 (`llvm-c/Core.h`, `LLVMModuleRef`, `LLVMBuilderRef`).
+3. **Execução Instantânea JIT para `eiwa run`:** O comando `eiwa run --backend=llvm` compila e executa o código diretamente da memória utilizando o LLVM OrcJIT v2 (`LLVMCreateExecutionEngineForModule`), alcançando velocidade de dev loop inferior a 5 milissegundos.
+4. **Otimização `mem2reg` em Dev vs `-O3` em Release:**
+   - Em modo desenvolvimento, o compilador executa apenas o pass `mem2reg` do LLVM para converter alocações de pilha (`alloca`) em registradores SSA virtuais em tempo recorde.
+   - Em modo de produção (`eiwa build --release --backend=llvm`), o compilador ativa o pipeline `-O3` completo direcionado à arquitetura nativa do processador (`-mcpu=native`), Tail Call Optimization (`LLVMSetTailCall`) e alocações atômicas no Boehm GC (`GC_MALLOC_ATOMIC`) para arrays numéricos e buffers de string.
+
+**Razão:**
+Elimina 100% do I/O de disco intermediário e da sobrecarga de spawn de subprocessos. Garante velocidade de compilação instantânea no ciclo de feedback do desenvolvedor e entrega binários finais otimizados ao nível de C/C++ e Rust para produção, mantendo total estabilidade no backend C existente.
+
+
 

@@ -118,16 +118,16 @@ eiwa test
 If you want to hack on the Eiwa compiler itself, you will need to prepare your machine. The compiler is written in **Zig** and uses **Boehm GC** for the generated C code.
 
 ### 1. Install Dependencies
-You need **Zig (0.13.0+)** and the Garbage Collector library.
+You need **Zig (0.16.0+)**, **Boehm GC**, and **LLVM 21+** (for the native in-memory LLVM backend).
 ```bash
 # Ubuntu / Debian
-sudo apt install libgc-dev
+sudo apt install libgc-dev llvm-21-dev
 
 # macOS
-brew install bdw-gc
+brew install bdw-gc llvm@21
 
 # Windows (MSYS2 / vcpkg)
-pacman -S mingw-w64-x86_64-gc
+pacman -S mingw-w64-x86_64-gc mingw-w64-x86_64-llvm
 # or: vcpkg install bdw-gc
 ```
 

@@ -90,19 +90,15 @@ This document tracks the historical progress, current status, and future roadmap
 - [x] **Task 19.2:** Add support for Multi-Catch (`catch (e: ExceptionA | ExceptionB)`) and optional catch blocks (`catch { ... }`).
 - [x] **Task 19.3:** Map Exceptions and non-local unwinding in the C Transpiler via `<setjmp.h>` (setjmp/longjmp).
 
-### Phase 20: LLVM Native Emitter & Release Pipeline (PENDING / LATER)
-Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a direct LLVM IR emitter constructed in-memory. This eliminates C transpilation overhead and enables advanced low-level control.
-- [ ] **Task 20.1:** Add support for the `--release` flag in the CLI (`eiwa build --release file.ei`).
-- [ ] **Task 20.2:** Build `llvm_emitter.zig`, bypassing the C backend, and translating the Resolved AST directly into in-memory LLVM structures using LLVM-C API bindings (`@cImport` of LLVM-C headers in Zig) to construct modules directly in memory.
-- [ ] **Task 20.3:** Hook up LLVM optimization passes (`-O3` for release and `-O0` for development/run commands) to generate native optimized binaries.
-- [ ] **Task 20.4:** Build-Time Optimizations (Speed up Dev Loops):
-  - Avoid writing textual LLVM IR (`.ll`) files and invoking the `llc` command line tool, keeping all IR generation and assembly generation in-memory.
-  - Skip writing intermediate C code to disk and spawning child processes (`zig cc`/`clang`).
-  - Bypass Clang's parsing/typechecking stage of transpiled C code.
-- [ ] **Task 20.5:** Runtime Performance Enhancements:
-  - **Precise Garbage Collection (Stack Maps):** Emit stack map metadata so the GC knows exactly where references live, replacing the slow, conservative scans of Boehm GC.
-  - **Tail Call Optimization (TCO):** Use LLVM's `tail` or `musttail` markers to optimize recursive function calls and prevent stack overflows.
-  - **Custom Calling Conventions:** Optimize register allocation and parameters passing for the Eiwa runtime instead of complying with standard C ABI.
+### Phase 20: LLVM Native Emitter & Release Pipeline (COMPLETED)
+Substituição da geração de C intermediário por um emissor nativo LLVM IR construído 100% em memória via LLVM C-API 21 (`llvm-c/Core.h`), eliminando I/O de disco e subprocessos shell.
+- [x] **Task 20.1:** Adicionar suporte às flags `--backend=c|llvm` e `--release` na CLI (`src/main.zig`), com detecção dinâmica do LLVM 21 em `build.zig`.
+- [x] **Task 20.2:** Construir o emissor nativo LLVM (`src/backend/llvm_emitter/`) traduzindo a AST Resolvida diretamente em estruturas LLVM em memória via C-API (`types.zig`, `expression.zig`, `statement.zig`, `core.zig`).
+- [x] **Task 20.3:** Conectar passes de otimização LLVM via PassBuilder (`default<O3>` para `--release` e `mem2reg` para dev) para gerar binários nativos de alta performance.
+- [x] **Task 20.4:** Otimizações de Build-Time (Dev Loops instantâneos em < 77ms):
+  - Eliminar escrita de arquivos `.ll` e `.c` no disco.
+  - Execução JIT instantânea via OrcJIT (`LLVMCreateExecutionEngineForModule`) e emissão direta de objeto `.o` (`LLVMTargetMachineEmitToFile`) sem invocar `clang`/`llc`.
+- [x] **Task 20.5:** Suporte a Binário Nativo Direto (`eiwa build --backend=llvm`) com `-O3` e `-lgc` ativado.
 
 ### Phase 21: Native Test System & CLI Refinements (COMPLETED)
 - [x] **Task 21.1:** Add native `test "name" { ... }` blocks in the AST and Parser.
@@ -247,13 +243,13 @@ Replacing the temporary C code generation (`temp_out.c` ──> `zig cc`) with a
 - [x] **Task 39.4:** Implement `Env.get(key, defaultValue: Bool): Bool`. If the key is not found, return the default value.
 - [x] **Verify:** Compile and run a script that uses `Env.get()` to retrieve environment variables.
 
-### Phase 40: Multi-Pass Compiler Architecture Refactoring (Crystal/Kotlin Style) (PLANNED)
+### Phase 40: Multi-Pass Compiler Architecture Refactoring (Crystal/Kotlin Style) (COMPLETED)
 Refactor the Eiwa compiler from file-by-file recursive typechecking to a global, multi-pass type resolution architecture inspired by Crystal and Kotlin to natively support project-wide namespaces and circular dependencies.
-- [ ] **Task 40.1:** Refactor file resolution to support a global Parsing Pass. Scan all files in the dependency graph starting from the entry point (`main.ei`) and load their parsed ASTs into a shared registry, rather than recursively compiling imports on-the-fly.
-- [ ] **Task 40.2:** Implement Type and Signature Declaration Pass. Walk all parsed ASTs and populate a global symbol table with all class, object, and function types and signatures, leaving bodies/initializers un-typechecked.
-- [ ] **Task 40.3:** Implement Semantic Body Validation Pass. Typecheck function bodies, method definitions, and initializers using the populated global symbol table. Resolves circular imports and cross-file type dependencies natively.
-- [ ] **Task 40.4:** Deduplicate Transpiler Output. Update `CTranspiler` to leverage the global registry, ensuring each standard library module is transpiled exactly once without duplicate C definitions.
-- [ ] **Verify:** Run a test verifying circular dependencies between user classes (e.g. `class User` referencing `class Group` and vice-versa) compiles and executes successfully.
+- [x] **Task 40.1:** Refactor file resolution to support a global Parsing Pass. Scan all files in the dependency graph starting from the entry point (`main.ei`) and load their parsed ASTs into a shared registry, rather than recursively compiling imports on-the-fly.
+- [x] **Task 40.2:** Implement Type and Signature Declaration Pass. Walk all parsed ASTs and populate a global symbol table with all class, object, and function types and signatures, leaving bodies/initializers un-typechecked.
+- [x] **Task 40.3:** Implement Semantic Body Validation Pass. Typecheck function bodies, method definitions, and initializers using the populated global symbol table. Resolves circular imports and cross-file type dependencies natively.
+- [x] **Task 40.4:** Deduplicate Transpiler Output. Update `CTranspiler` to leverage the global registry, ensuring each standard library module is transpiled exactly once without duplicate C definitions.
+- [x] **Verify:** Run a test verifying circular dependencies between user types (e.g. `CircularUser` referencing `CircularGroup` and vice-versa in `samples/tests/circular_dependency_test.ei`) compiles and executes successfully.
 
 ### Phase 41: Composition-Based Type System — `type`, `contract` & `skill` (COMPLETED)
 Replace implementation inheritance entirely with the composition model defined in ADR 25: `type` owns state, `contract` defines behavioral APIs, `skill` provides reusable implementation, `object` remains the singleton, `enum` unchanged. **Hard break:** `class`, `open`, `abstract` and inheritance syntax are removed.

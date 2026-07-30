@@ -1,0 +1,16 @@
+import { assert } from "std.core"
+
+fun calculateArea(width: Double, height: Double): Double {
+    return width * height
+}
+
+fun sumInts(a: Int, b: Int, c: Int): Int {
+    return a + b + c
+}
+
+test "llvm backend double and int math" {
+    val area = calculateArea(5.5, 4.0)
+    val total = sumInts(10, 20, 30)
+    assert(area == 22.0)
+    assert(total == 60)
+}

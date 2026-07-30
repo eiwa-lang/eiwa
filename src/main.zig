@@ -7,6 +7,13 @@ const parser = @import("frontend/parser/core.zig");
 const c_transpiler = @import("backend/c_transpiler/core.zig");
 const ast = @import("core/ast.zig");
 const type_checker = @import("core/type_checker/core.zig");
+const build_options = @import("build_options");
+const llvm_emitter = if (build_options.has_llvm) @import("backend/llvm_emitter/core.zig") else struct {};
+
+pub const BackendKind = enum {
+    c,
+    llvm,
+};
 
 /// Main entry point for the Eiwa CLI.
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
@@ -40,10 +47,19 @@ pub fn main(init: std.process.Init) !void {
     var positionals = ArrayList([]const u8).init(allocator);
     defer positionals.deinit();
 
+    var backend_kind: BackendKind = .c;
+    var is_release: bool = false;
+
     var arg_idx: usize = 2;
     while (arg_idx < args.len) : (arg_idx += 1) {
         const arg = args[arg_idx];
-        if (std.mem.startsWith(u8, arg, "-I") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-D")) {
+        if (std.mem.eql(u8, arg, "--backend=llvm")) {
+            backend_kind = .llvm;
+        } else if (std.mem.eql(u8, arg, "--backend=c")) {
+            backend_kind = .c;
+        } else if (std.mem.eql(u8, arg, "--release")) {
+            is_release = true;
+        } else if (std.mem.startsWith(u8, arg, "-I") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-D")) {
             if (arg.len == 2 and arg_idx + 1 < args.len) {
                 try cli_c_flags.append(arg);
                 arg_idx += 1;
@@ -269,6 +285,33 @@ pub fn main(init: std.process.Init) !void {
         while (alias_it.next()) |entry| {
             try global_alias_map.put(entry.key_ptr.*, entry.value_ptr.*);
         }
+    }
+
+    if (backend_kind == .llvm) {
+        if (!build_options.has_llvm) {
+            std.debug.print("Error: The Eiwa compiler was built without LLVM support or LLVM 21+ was not found on your system.\n", .{});
+            std.process.exit(1);
+        }
+        var emitter = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
+        defer emitter.deinit();
+
+        try emitter.emitModule(ast_root);
+
+        if (is_build) {
+            const basename = std.fs.path.basename(filename);
+            const ext = std.fs.path.extension(basename);
+            const out_bin_name = basename[0 .. basename.len - ext.len];
+            const final_bin = if (out_bin_name.len > 0) out_bin_name else "a.out";
+
+            try emitter.emitNativeBinary(final_bin, io);
+            std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
+        } else {
+            const exit_code = try emitter.executeJIT();
+            if (exit_code != 0) {
+                std.process.exit(@intCast(exit_code));
+            }
+        }
+        return;
     }
 
     var transpiler = c_transpiler.CTranspiler.init(allocator);

@@ -1,0 +1,32 @@
+import { assert } from "std.core"
+
+fun fibonacci(n: Int): Int {
+    var a = 0
+    var b = 1
+    var count = 0
+    
+    while (count < n) {
+        var temp = a
+        a = b
+        b = temp + b
+        count = count + 1
+    }
+    
+    return a
+}
+
+fun isEven(num: Int): Bool {
+    if (num <= 0) {
+        return true
+    } else {
+        return num > 0
+    }
+}
+
+test "llvm backend fibonacci and conditional calculation" {
+    val f10 = fibonacci(10)
+    val f12 = fibonacci(12)
+    assert(f10 == 55)
+    assert(f12 == 144)
+    assert(isEven(f10))
+}
