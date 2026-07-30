@@ -193,7 +193,7 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                 try inferCallExpr(self, node, scope, t);
             }
         },
-        .star, .slash => {
+        .star => {
             if ((left_type.* == .Int or left_type.* == .Double) and (right_type.* == .Int or right_type.* == .Double)) {
                 if (left_type.* == .Double or right_type.* == .Double) {
                     t.* = .Double;
@@ -201,8 +201,32 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                     t.* = .Int;
                 }
             } else {
-                self.reportError(node.line, node.column, "TypeError: Math operations require Int or Double on both sides. Found {} and {}.", .{ left_type.*, right_type.* });
-                return error.TypeError;
+                const get_expr_node = try self.allocator.create(ASTNode);
+                get_expr_node.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .get_expr = .{ .object = b.left, .name = "times", .is_safe = false } } };
+
+                var args = try self.allocator.alloc(*ASTNode, 1);
+                args[0] = b.right;
+
+                node.data = .{ .call_expr = .{ .callee = get_expr_node, .arguments = args } };
+                try inferCallExpr(self, node, scope, t);
+            }
+        },
+        .slash => {
+            if ((left_type.* == .Int or left_type.* == .Double) and (right_type.* == .Int or right_type.* == .Double)) {
+                if (left_type.* == .Double or right_type.* == .Double) {
+                    t.* = .Double;
+                } else {
+                    t.* = .Int;
+                }
+            } else {
+                const get_expr_node = try self.allocator.create(ASTNode);
+                get_expr_node.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .get_expr = .{ .object = b.left, .name = "div", .is_safe = false } } };
+
+                var args = try self.allocator.alloc(*ASTNode, 1);
+                args[0] = b.right;
+
+                node.data = .{ .call_expr = .{ .callee = get_expr_node, .arguments = args } };
+                try inferCallExpr(self, node, scope, t);
             }
         },
         .eq_eq, .bang_eq, .less, .greater, .less_eq, .greater_eq, .and_and, .or_or => {

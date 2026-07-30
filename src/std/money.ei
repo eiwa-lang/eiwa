@@ -1,0 +1,259 @@
+import { List, MutableList } from "std.collections"
+import { Exception } from "std.exceptions"
+import { mod } from "std.math"
+
+fun formatThousands(majorStr: String, thousandSeparator: String): String {
+    if (thousandSeparator.length == 0 || majorStr.length <= 3) {
+        return majorStr
+    }
+
+    val len = majorStr.length
+    var result = ""
+    var i = 0
+
+    while (i < len) {
+        if (i > 0 && mod(len - i, 3) == 0) {
+            result = result + thousandSeparator
+        }
+        result = result + majorStr.substring(i, i + 1)
+        i = i + 1
+    }
+
+    return result
+}
+
+type Currency(
+    val code: String,
+    val name: String,
+    val symbol: String,
+    val decimals: Int,
+    val decimalSeparator: String = ".",
+    val thousandSeparator: String = ""
+) {
+    operator fun equals(other: Currency): Bool {
+        return this.code == other.code
+    }
+
+    fun formatAmount(cents: Int): String {
+        val isNegative = cents < 0
+        var positiveCents = cents
+        if (isNegative) {
+            positiveCents = 0 - cents
+        }
+
+        var divisor = 1
+        var i = 0
+        while (i < this.decimals) {
+            divisor = divisor * 10
+            i = i + 1
+        }
+
+        val major = positiveCents / divisor
+        val majorStr = formatThousands(major.toString(), this.thousandSeparator)
+
+        if (this.decimals == 0) {
+            if (isNegative) {
+                return "-" + this.symbol + " " + majorStr
+            }
+            return this.symbol + " " + majorStr
+        }
+
+        val minor = mod(positiveCents, divisor)
+
+        var minorStr = minor.toString()
+        while (minorStr.length < this.decimals) {
+            minorStr = "0" + minorStr
+        }
+
+        val formatted = this.symbol + " " + majorStr + this.decimalSeparator + minorStr
+        if (isNegative) {
+            return "-" + formatted
+        }
+        return formatted
+    }
+}
+
+object Currencies {
+    // South America
+    val BRL = Currency("BRL", "Brazilian Real", "R$", 2, ",", ".")
+    val ARS = Currency("ARS", "Argentine Peso", "ARS$", 2, ",", ".")
+    val CLP = Currency("CLP", "Chilean Peso", "CLP$", 0, ".", ".")
+    val COP = Currency("COP", "Colombian Peso", "COL$", 2, ",", ".")
+    val PEN = Currency("PEN", "Peruvian Sol", "S/", 2, ".", ",")
+    val UYU = Currency("UYU", "Uruguayan Peso", "$U", 2, ",", ".")
+    val PYG = Currency("PYG", "Paraguayan Guaraní", "₲", 0, ".", ".")
+    val BOB = Currency("BOB", "Bolivian Boliviano", "Bs.", 2, ",", ".")
+    val VES = Currency("VES", "Venezuelan Bolívar", "Bs.S", 2, ",", ".")
+
+    // North America, Central America and Caribbean
+    val USD = Currency("USD", "US Dollar", "$", 2, ".", ",")
+    val CAD = Currency("CAD", "Canadian Dollar", "CA$", 2, ".", ",")
+    val MXN = Currency("MXN", "Mexican Peso", "Mex$", 2, ".", ",")
+    val CRC = Currency("CRC", "Costa Rican Colón", "₡", 2, ",", ".")
+    val DOP = Currency("DOP", "Dominican Peso", "RD$", 2, ".", ",")
+    val GTQ = Currency("GTQ", "Guatemalan Quetzal", "Q", 2, ".", ",")
+    val HNL = Currency("HNL", "Honduran Lempira", "L", 2, ".", ",")
+    val NIO = Currency("NIO", "Nicaraguan Córdoba", "C$", 2, ".", ",")
+    val PAB = Currency("PAB", "Panamanian Balboa", "B/.", 2, ".", ",")
+    val JMD = Currency("JMD", "Jamaican Dollar", "J$", 2, ".", ",")
+    val TTD = Currency("TTD", "Trinidad and Tobago Dollar", "TT$", 2, ".", ",")
+
+    // Major Global (Europe, Asia, Oceania, Middle East, Africa)
+    val EUR = Currency("EUR", "Euro", "€", 2, ",", ".")
+    val GBP = Currency("GBP", "British Pound", "£", 2, ".", ",")
+    val JPY = Currency("JPY", "Japanese Yen", "¥", 0, ".", ",")
+    val CHF = Currency("CHF", "Swiss Franc", "CHF", 2, ".", "'")
+    val AUD = Currency("AUD", "Australian Dollar", "A$", 2, ".", ",")
+    val NZD = Currency("NZD", "New Zealand Dollar", "NZ$", 2, ".", ",")
+    val CNY = Currency("CNY", "Chinese Yuan", "¥", 2, ".", ",")
+    val HKD = Currency("HKD", "Hong Kong Dollar", "HK$", 2, ".", ",")
+    val SGD = Currency("SGD", "Singapore Dollar", "S$", 2, ".", ",")
+    val KRW = Currency("KRW", "South Korean Won", "₩", 0, ".", ",")
+    val INR = Currency("INR", "Indian Rupee", "₹", 2, ".", ",")
+    val SEK = Currency("SEK", "Swedish Krona", "kr", 2, ",", ".")
+    val NOK = Currency("NOK", "Norwegian Krone", "kr", 2, ",", ".")
+    val DKK = Currency("DKK", "Danish Krone", "kr.", 2, ",", ".")
+    val PLN = Currency("PLN", "Polish Złoty", "zł", 2, ",", ".")
+    val TRY = Currency("TRY", "Turkish Lira", "₺", 2, ",", ".")
+    val AED = Currency("AED", "UAE Dirham", "AED", 2, ".", ",")
+    val SAR = Currency("SAR", "Saudi Riyal", "SR", 2, ".", ",")
+    val ILS = Currency("ILS", "Israeli New Shekel", "₪", 2, ".", ",")
+    val ZAR = Currency("ZAR", "South African Rand", "R", 2, ",", ".")
+}
+
+type Money(val cents: Int, val currency: Currency) {
+    operator fun plus(other: Money): Money {
+        if (this.currency.code != other.currency.code) {
+            throw Exception("Currency mismatch: " + this.currency.code + " vs " + other.currency.code)
+        }
+        return Money(this.cents + other.cents, this.currency)
+    }
+
+    operator fun minus(other: Money): Money {
+        if (this.currency.code != other.currency.code) {
+            throw Exception("Currency mismatch: " + this.currency.code + " vs " + other.currency.code)
+        }
+        return Money(this.cents - other.cents, this.currency)
+    }
+
+    operator fun times(factor: Int): Money {
+        return Money(this.cents * factor, this.currency)
+    }
+
+    operator fun equals(other: Money): Bool {
+        return this.cents == other.cents && this.currency.code == other.currency.code
+    }
+
+    fun isZero(): Bool = this.cents == 0
+
+    fun isPositive(): Bool = this.cents > 0
+
+    fun isNegative(): Bool = this.cents < 0
+
+    fun allocate(ratios: List<Int>): List<Money> {
+        var totalWeight = 0
+        var i = 0
+        while (i < ratios.size()) {
+            val weight = ratios[i]
+            if (weight < 0) {
+                throw Exception("Ratio weight cannot be negative")
+            }
+            totalWeight = totalWeight + weight
+            i = i + 1
+        }
+
+        if (totalWeight == 0) {
+            throw Exception("Total weight must be greater than 0")
+        }
+
+        var remainder = this.cents
+        val result = MutableList<Money>()
+
+        i = 0
+        while (i < ratios.size()) {
+            val weight = ratios[i]
+            val share = (this.cents * weight) / totalWeight
+            result.add(Money(share, this.currency))
+            remainder = remainder - share
+            i = i + 1
+        }
+
+        // Distribute remaining cents 1-by-1 to preserve exact sum (Fowler pattern)
+        i = 0
+        while (remainder > 0 && i < result.size()) {
+            val current = result[i]
+            result.set(i, Money(current.cents + 1, this.currency))
+            remainder = remainder - 1
+            i = i + 1
+        }
+
+        return result.freeze()
+    }
+
+    fun split(parts: Int): List<Money> {
+        if (parts <= 0) {
+            throw Exception("Parts must be greater than 0")
+        }
+        val ratios = MutableList<Int>()
+        var i = 0
+        while (i < parts) {
+            ratios.add(1)
+            i = i + 1
+        }
+        return this.allocate(ratios.freeze())
+    }
+
+    fun format(): String {
+        return this.currency.formatAmount(this.cents)
+    }
+}
+
+fun money(cents: Int, currency: Currency): Money {
+    return Money(cents, currency)
+}
+
+// South America
+fun brl(cents: Int): Money = Money(cents, Currencies.BRL)
+fun ars(cents: Int): Money = Money(cents, Currencies.ARS)
+fun clp(amount: Int): Money = Money(amount, Currencies.CLP)
+fun cop(cents: Int): Money = Money(cents, Currencies.COP)
+fun pen(cents: Int): Money = Money(cents, Currencies.PEN)
+fun uyu(cents: Int): Money = Money(cents, Currencies.UYU)
+fun pyg(amount: Int): Money = Money(amount, Currencies.PYG)
+fun bob(cents: Int): Money = Money(cents, Currencies.BOB)
+fun ves(cents: Int): Money = Money(cents, Currencies.VES)
+
+// North America, Central America and Caribbean
+fun usd(cents: Int): Money = Money(cents, Currencies.USD)
+fun cad(cents: Int): Money = Money(cents, Currencies.CAD)
+fun mxn(cents: Int): Money = Money(cents, Currencies.MXN)
+fun crc(cents: Int): Money = Money(cents, Currencies.CRC)
+fun dop(cents: Int): Money = Money(cents, Currencies.DOP)
+fun gtq(cents: Int): Money = Money(cents, Currencies.GTQ)
+fun hnl(cents: Int): Money = Money(cents, Currencies.HNL)
+fun nio(cents: Int): Money = Money(cents, Currencies.NIO)
+fun pab(cents: Int): Money = Money(cents, Currencies.PAB)
+fun jmd(cents: Int): Money = Money(cents, Currencies.JMD)
+fun ttd(cents: Int): Money = Money(cents, Currencies.TTD)
+
+// Global
+fun eur(cents: Int): Money = Money(cents, Currencies.EUR)
+fun gbp(cents: Int): Money = Money(cents, Currencies.GBP)
+fun jpy(amount: Int): Money = Money(amount, Currencies.JPY)
+fun chf(cents: Int): Money = Money(cents, Currencies.CHF)
+fun aud(cents: Int): Money = Money(cents, Currencies.AUD)
+fun nzd(cents: Int): Money = Money(cents, Currencies.NZD)
+fun cny(cents: Int): Money = Money(cents, Currencies.CNY)
+fun hkd(cents: Int): Money = Money(cents, Currencies.HKD)
+fun sgd(cents: Int): Money = Money(cents, Currencies.SGD)
+fun krw(amount: Int): Money = Money(amount, Currencies.KRW)
+fun inr(cents: Int): Money = Money(cents, Currencies.INR)
+fun sek(cents: Int): Money = Money(cents, Currencies.SEK)
+fun nok(cents: Int): Money = Money(cents, Currencies.NOK)
+fun dkk(cents: Int): Money = Money(cents, Currencies.DKK)
+fun pln(cents: Int): Money = Money(cents, Currencies.PLN)
+fun tryLira(cents: Int): Money = Money(cents, Currencies.TRY)
+fun aed(cents: Int): Money = Money(cents, Currencies.AED)
+fun sar(cents: Int): Money = Money(cents, Currencies.SAR)
+fun ils(cents: Int): Money = Money(cents, Currencies.ILS)
+fun zar(cents: Int): Money = Money(cents, Currencies.ZAR)

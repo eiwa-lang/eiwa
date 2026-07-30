@@ -500,6 +500,22 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 ### Phase 57: Tipo `Float` (32-bit IEEE 754) & Sufixo de Literal `f` (FUTURE / POSTPONED)
 > **Motivação:** Adicionar o tipo de precisão simples (32-bit `float` em C) com literais como `3.14f` para interoperação de baixa nível (FFI), buffers compactos e performance em gráficos/vetores.
 
+### Phase 58: Módulo Monetário e Financeiro — `std.money` + Fowler Allocation Engine (COMPLETED)
+> **Motivação:** Prover um modelo financeiro seguro e moderno contra erros binários de ponto flutuante IEEE 754, alinhado ao Money Pattern de Martin Fowler e com taxa de alocação exata sem perda de centavos em rateios de parcelas ou impostos.
+>
+> **Recursos:**
+> - `type Currency(val code: String, val symbol: String, val decimals: Int)` com objetos pré-definidos (`Currencies.BRL`, `USD`, `EUR`, `JPY`, `GBP`).
+> - `type Money(val cents: Int, val currency: Currency)` baseado em menor unidade não-fracionada (*Minor Units / Centavos*).
+> - Sobrecarga de operadores (`+`, `-`, `*`, `==`) com checagem estrita de integridade de moeda (dispara exceção ao somar `BRL` + `USD`).
+> - Métodos `.allocate(ratios: List<Int>)` e `.split(parts: Int)` para distribuição ponderada com alocação sequencial de centavos remanescentes (*remainder cents*).
+> - Suporte a sobrecarga de operadores estendida no compilador (`*` para `.times` e `/` para `.div` em tipos personalizados).
+
+- [x] **Task 58.1:** Módulo `src/std/money.ei` com `Currency`, `Currencies`, `Money`, sobrecarga de operadores e engine `.allocate` / `.split`.
+- [x] **Task 58.2:** Registro do pacote `std.money` em `src/core/type_checker/infer_decl.zig`.
+- [x] **Task 58.3:** Suporte no TypeChecker (`src/core/type_checker/infer_expr.zig`) para desugar `.star` (`*`) em `.times` e `.slash` (`/`) em `.div` em tipos personalizados.
+- [x] **Task 58.4:** Registro do ADR 45 em `docs/decisions.md` e atualização do guia da linguagem em `docs/language_tour.md`.
+- [x] **Verify:** Sample `samples/money_sample.ei` e suíte de testes nativa `samples/tests/money_test.ei` 100% PASS.
+
 ---
 
 ## ✅ Definition of Done (Per Phase)

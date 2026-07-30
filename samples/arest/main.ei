@@ -10,6 +10,8 @@ import { Log } from "std.log"
 import { Postgres } from "../postgres/postgres"
 import { html } from "../html/html"
 
+import { brl } from "std.money"
+
 type Address(val city: String, val zip: String) : Serializable
 type Person(
     val name: String,
@@ -72,6 +74,7 @@ fun main() {
                 body["uuid"] = Uuid.generate().toString()
                 body["random_int"] = Random.nextInt().toString()
                 body["random_double"] = Random.nextDouble(1, 100).toString()
+                body["money"] = brl(Random.nextInt()).format()
 
                 respond(200, "application/json", body.toJson())
             }

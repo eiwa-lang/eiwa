@@ -32,6 +32,8 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "random.ei", @embedFile("../../std/random.ei") },
     // --- Database layer ---
     .{ "db.ei", @embedFile("../../std/db.ei") },
+    // --- Domain & Math layer ---
+    .{ "money.ei", @embedFile("../../std/money.ei") },
 });
 
 pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines", "std.uuid", "std.ulid", "std.random" };

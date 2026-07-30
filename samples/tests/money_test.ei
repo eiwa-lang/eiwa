@@ -1,0 +1,105 @@
+import { brl, usd, eur, jpy, cad, mxn, ars, clp, cop, pen, uyu, chf, aud, cny, krw, inr, Currencies, Money, Currency } from "std.money"
+
+test "should create and format money in different currencies" {
+    val m1 = brl(1050)
+    assert(m1.cents == 1050)
+    assert(m1.currency.code == "BRL")
+    assert(m1.currency.name == "Brazilian Real")
+    assert(m1.format() == "R$ 10,50")
+
+    val m2 = usd(2500)
+    assert(m2.currency.name == "US Dollar")
+    assert(m2.format() == "$ 25.00")
+
+    val m3 = jpy(1000)
+    assert(m3.format() == "¥ 1,000")
+
+    val m4 = cad(1550)
+    assert(m4.format() == "CA$ 15.50")
+
+    val m5 = mxn(2000)
+    assert(m5.format() == "Mex$ 20.00")
+
+    val m6 = ars(5000)
+    assert(m6.format() == "ARS$ 50,00")
+
+    val m7 = clp(5000)
+    assert(m7.format() == "CLP$ 5.000")
+
+    val m8 = chf(1200)
+    assert(m8.format() == "CHF 12.00")
+
+    val m9 = aud(1850)
+    assert(m9.format() == "A$ 18.50")
+
+    val m10 = cny(9900)
+    assert(m10.format() == "¥ 99.00")
+
+    val m11 = krw(50000)
+    assert(m11.format() == "₩ 50,000")
+
+    val m12 = inr(7500)
+    assert(m12.format() == "₹ 75.00")
+}
+
+test "should format large amounts with thousand separators" {
+    val m1 = brl(123456789)
+    assert(m1.format() == "R$ 1.234.567,89")
+
+    val m2 = usd(123456789)
+    assert(m2.format() == "$ 1,234,567.89")
+
+    val m3 = chf(123456789)
+    assert(m3.format() == "CHF 1'234'567.89")
+
+    val m4 = krw(5000000)
+    assert(m4.format() == "₩ 5,000,000")
+}
+
+test "should support mathematical operators on Money" {
+    val a = brl(1500)
+    val b = brl(500)
+
+    val sum = a + b
+    assert(sum.cents == 2000)
+    assert(sum == brl(2000))
+
+    val diff = a - b
+    assert(diff.cents == 1000)
+    assert(diff == brl(1000))
+
+    val mult = b * 3
+    assert(mult.cents == 1500)
+    assert(mult == a)
+}
+
+test "should check positive, negative and zero amounts" {
+    val z = brl(0)
+    val p = brl(100)
+    val n = brl(-100)
+
+    assert(z.isZero() == true)
+    assert(p.isPositive() == true)
+    assert(n.isNegative() == true)
+    assert(n.format() == "-R$ 1,00")
+}
+
+test "should allocate money accurately without losing remainder cents" {
+    val m = brl(1000) // R$ 10,00
+
+    // Split equally in 3 parts
+    val parts = m.split(3)
+    assert(parts.size() == 3)
+    assert(parts[0].cents == 334)
+    assert(parts[1].cents == 333)
+    assert(parts[2].cents == 333)
+
+    val total = parts[0] + parts[1] + parts[2]
+    assert(total == m)
+
+    // Weighted allocation (ratios 70%, 30%)
+    val allocated = m.allocate([7, 3])
+    assert(allocated[0].cents == 700)
+    assert(allocated[1].cents == 300)
+    assert(allocated[0] + allocated[1] == m)
+}

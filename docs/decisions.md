@@ -451,3 +451,20 @@ Quando uma lambda profunda (nível N, ex: `get("/data") { pool.query(...) }`) ca
 **Razão:**
 Elimina acoplamentos artificiais em frameworks, garante paridade com o modelo de closures do Kotlin/Swift e assegura a corretude da geração de código C e LLVM IR em qualquer nível de aninhamento de funções de alta ordem.
 
+## ADR 45: Padrão `Money` Value Type na Standard Library (`std.money`) baseado em Minor Units e Fowler Allocation Engine
+**Status:** Aceito / Implementado
+**Data:** Julho 2026
+
+**Contexto:**
+Operações financeiras utilizando tipos de ponto flutuante (`Float`/`Double`) causam imprecisões binárias catastróficas em virtude da representação IEEE 754 (ex: `0.1 + 0.2 != 0.3`). Histórica e tradicionalmente (como no ecossistema Java), soluções como `BigDecimal` trouxeram precisão, porém ao custo de sintaxe extremamente verbosa (`a.add(b)`), alta alocação de memória e gestão manual complexa de arredondamento.
+
+**Decisão:**
+1. **Representação por Menor Unidade Não-Fracionada (Minor Units / Centavos):** Armazenar internamente os valores monetários como números inteiros (`cents: Int`), onde R$ 10,50 é representado por `1050` centavos. Isso elimina totalmente qualquer imprecisão de ponto flutuante com custo zero de alocação de CPU para adições e subtrações.
+2. **Encapsulamento de Moeda (`Currency`) com Checagem Estrita:** O tipo `Money` vincula cada valor a um `Currency(code, symbol, decimals)`. Operações matemáticas entre moedas distintas (`BRL` + `USD`) disparam exceção em tempo de execução, garantindo a integridade dos cálculos do domínio.
+3. **Fowler Allocation Engine (`allocate` & `split`):** Operações de divisão financeira (como rateio de parcelas, impostos ou porcentagens) não utilizam arredondamentos flutuantes arbitrários. O método `.allocate(ratios: [Int])` calcula a distribuição ponderada e aloca sequencialmente centavos remanescentes (*remainder cents*), assegurando a conservação exata da soma total dos centavos sem perda de valor.
+4. **Sobrecarga de Operadores Matemáticos:** Implementação de `operator fun plus`, `operator fun minus`, `operator fun times` e `operator fun equals` no `type Money`.
+
+**Razão:**
+Entrega um padrão de domínio financeiro moderno, conciso e seguro para a linguagem Eiwa. Elimina bugs clássicos de arredondamento sem exigir uma engine `Decimal` pesada no runtime em C, alinhando-se aos princípios da linguagem de ser performática, pragmática e expressiva.
+
+

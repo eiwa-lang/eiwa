@@ -122,9 +122,11 @@ fn core_parseType(self: *Parser) anyerror!*const ast.ASTTypeRef {
         const inner = try self.parseType();
         try self.consume(.r_bracket, "Expected ']' after array type.");
         
+        const g_args = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
+        g_args[0] = inner;
         ref.* = .{
             .name = "",
-            .generic_args = &.{ inner },
+            .generic_args = g_args,
             .is_array = true,
             .is_nullable = false,
         };

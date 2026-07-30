@@ -1929,5 +1929,64 @@ fun main() {
 | `Math.round(x)` | `(Double) -> Double` | Returns $x$ rounded to the nearest integer. |
 | `mod(a, b)` | `(Int, Int) -> Int` | Returns the integer remainder of $a / b$. |
 
+---
+
+## 29. Money & Financial Calculations (`std.money`)
+
+Eiwa provides built-in support for exact financial calculations through the standard package `std.money`, based on Martin Fowler's Money Pattern and minor unit integer representation.
+
+### 29.1 Standard Currencies & Money Type
+
+`Money` encapsulates an integer amount of minor units (`cents: Int`) and a `Currency` instance (`code`, `name`, `symbol`, `decimals`, `decimalSeparator`, `thousandSeparator`). This guarantees zero floating point rounding errors.
+
+```kotlin
+import { brl, usd, eur, jpy, Currencies, Money, Currency } from "std.money"
+
+fun main() {
+    val m1 = brl(1050) // R$ 10,50 (1050 cents)
+    val m2 = usd(2500) // $ 25.00 (2500 cents)
+    val m3 = jpy(1000) // ¥ 1000 (0 decimal sub-units)
+
+    println(m1.format()) // "R$ 10,50"
+    println(m2.format()) // "$ 25.00"
+    println(m3.format()) // "¥ 1,000"
+}
+```
+
+### 29.2 Mathematical Operators & Currency Safety
+
+Mathematical operations (`+`, `-`, `*`, `==`) are overloaded on `Money`. Addition and subtraction enforce strict currency matching and throw an exception if currencies differ.
+
+```kotlin
+val a = brl(1500)
+val b = brl(500)
+
+val sum = a + b    // R$ 20.00
+val diff = a - b   // R$ 10.00
+val mult = b * 3   // R$ 15.00
+assert(sum == brl(2000))
+```
+
+### 29.3 Fowler Allocation Engine (`allocate` & `split`)
+
+Splitting money across installments or percentages avoids fractional cent loss by allocating remainder cents 1-by-1 to the first buckets.
+
+```kotlin
+val tenReais = brl(1000) // R$ 10.00
+
+// Split equally into 3 parts: R$ 3.34, R$ 3.33, R$ 3.33
+val parts = tenReais.split(3)
+assert(parts[0].cents == 334)
+assert(parts[1].cents == 333)
+assert(parts[2].cents == 333)
+assert(parts[0] + parts[1] + parts[2] == tenReais) // Exact sum preserved!
+
+// Weighted allocation (70% and 30%)
+val allocated = tenReais.allocate([7, 3])
+assert(allocated[0].cents == 700)
+assert(allocated[1].cents == 300)
+```
+
+
 ```
 
