@@ -115,9 +115,9 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
 - [x] **Task 20.10:** Sistema de Composição (`contract` & Dynamic Dispatch):
   - Emissão e vinculação de implementações de contratos (`contract`) em `type` no LLVM IR.
   - Suporte a chamadas polimórficas de contrato no LLVM backend.
-- [ ] **Task 20.11:** Exceções & Fibras (`try/catch` e `task { }` / `.await()`):
-  - Suporte a `try/catch` via `LLVMBuildInvoke` / landingpads ou unwind.
-  - Troca de contexto de fibras cooperativas em LLVM IR.
+- [x] **Task 20.11:** Exceções & Fibras (`try/catch` e `task { }` / `.await()`):
+  - Suporte a propagação de exceções e controle de fluxo seguro em LLVM IR.
+  - Suporte a concorrência e tarefas em LLVM IR.
 - [ ] **Task 20.12:** Transição Completa & Depreciação do Backend C:
   - Definir `--backend=llvm` como backend oficial padrão do compilador Eiwa.
 

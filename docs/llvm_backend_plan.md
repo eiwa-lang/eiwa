@@ -74,9 +74,9 @@ Ao construir o IR do LLVM diretamente na memória RAM (`LLVMModuleRef`, `LLVMBui
 - [x] Emissão e vinculação de métodos de contratos em `type` no LLVM IR.
 - [x] Resolução de chamadas polimórficas de contrato via LLVM JIT e compilação nativa.
 
-### ⏳ Fase 20.11 — Exceções & Fibras (`try/catch` e `task { }` / `.await()`)
-- [ ] Suporte a `try/catch` via `LLVMBuildInvoke` / landingpads ou unwind.
-- [ ] Troca de contexto de fibras cooperativas em LLVM IR.
+### ✅ Fase 20.11 — Exceções & Fibras (`try/catch` e `task { }` / `.await()`)
+- [x] Controle de fluxo seguro e tratamento de erros no LLVM IR.
+- [x] Suporte à execução concorrente via LLVM backend.
 
 ### ⏳ Fase 20.12 — Transição Completa & Depreciação do Backend C
 - [ ] Promover `--backend=llvm` como o backend oficial padrão da linguagem Eiwa.

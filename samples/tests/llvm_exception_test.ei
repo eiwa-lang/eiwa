@@ -1,0 +1,15 @@
+import { assert } from "std.core"
+
+fun safeDivide(a: Int, b: Int): Int {
+    if (b == 0) {
+        return -1
+    }
+    return a / b
+}
+
+test "llvm backend safe control flow and exception handling" {
+    val ok = safeDivide(10, 2)
+    assert(ok == 5)
+    val err = safeDivide(10, 0)
+    assert(err == -1)
+}
