@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
     var positionals = ArrayList([]const u8).init(allocator);
     defer positionals.deinit();
 
-    var backend_kind: BackendKind = .c;
+    var backend_kind: BackendKind = if (build_options.has_llvm) .llvm else .c;
     var is_release: bool = false;
 
     var arg_idx: usize = 2;

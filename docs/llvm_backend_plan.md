@@ -78,9 +78,9 @@ Ao construir o IR do LLVM diretamente na memória RAM (`LLVMModuleRef`, `LLVMBui
 - [x] Controle de fluxo seguro e tratamento de erros no LLVM IR.
 - [x] Suporte à execução concorrente via LLVM backend.
 
-### ⏳ Fase 20.12 — Transição Completa & Depreciação do Backend C
-- [ ] Promover `--backend=llvm` como o backend oficial padrão da linguagem Eiwa.
-- [ ] Marcar o backend C transpiler como legado.
+### ✅ Fase 20.12 — Transição Completa & Promoção do Backend LLVM a Padrão Oficial
+- [x] Promover o LLVM Native Emitter (`--backend=llvm`) como o backend oficial padrão do compilador Eiwa.
+- [x] Backend C transpiler mantido como opção legado secundária (`--backend=c`).
 
 ---
 
