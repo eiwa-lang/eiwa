@@ -602,15 +602,22 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                             }
                         }
                     }
-                if (std.mem.eql(u8, g.name, "toString")) {
+                    if (g.is_safe) {
+                        try self.writer.appendSlice("((");
+                        try self.emitExpression(g.object);
+                        try self.writer.appendSlice(") == 0 ? 0 : ");
+                    }
+                    if (std.mem.eql(u8, g.name, "toString")) {
                         try self.writer.appendSlice("eiwa_to_string((void*)(");
                         try self.emitExpression(g.object);
                         try self.writer.appendSlice("))");
+                        if (g.is_safe) try self.writer.appendSlice(")");
                         return;
                     } else if (std.mem.eql(u8, g.name, "hashCode")) {
                         try self.writer.appendSlice("eiwa_hash_code((void*)(");
                         try self.emitExpression(g.object);
                         try self.writer.appendSlice("))");
+                        if (g.is_safe) try self.writer.appendSlice(")");
                         return;
                     }
 
@@ -623,6 +630,9 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         try self.emitExpression(arg);
                     }
                     try self.writer.appendSlice(")");
+                    if (g.is_safe) {
+                        try self.writer.appendSlice(")");
+                    }
                 } else if (g.is_safe) {
                     const actual_c_fn = g.resolved_c_name orelse try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{class_name, g.name});
                     try self.writer.appendSlice("((");
@@ -936,9 +946,11 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                 if (self.isContract(contract_c_name)) {
                     try self.writer.appendSlice("((uintptr_t)(");
                     try self.emitExpression(i.value);
+                    try self.writer.writer().print(") != 0 && ((uintptr_t)(", .{});
+                    try self.emitExpression(i.value);
                     try self.writer.writer().print(") < 0x10000 || eiwa_implements(*(const EiwaTypeDescriptor**) (", .{});
                     try self.emitExpression(i.value);
-                    try self.writer.writer().print("), &{s}_contract))", .{contract_c_name});
+                    try self.writer.writer().print("), &{s}_contract)))", .{contract_c_name});
                 } else {
                     try self.writer.appendSlice("((uintptr_t)(");
                     try self.emitExpression(i.value);

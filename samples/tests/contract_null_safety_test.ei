@@ -1,0 +1,49 @@
+contract Printable {
+    fun printText(): String
+}
+
+type Article(val title: String) : Printable {
+    implement fun printText(): String {
+        return "Title: " + title
+    }
+}
+
+type Book(val title: String) : Printable {
+    implement fun printText(): String {
+        return "Book: " + title
+    }
+}
+
+test "should safely return null when calling method on null contract receiver" {
+    val p: Printable? = null
+    val res = p?.printText()
+    assert(res == null)
+}
+
+test "should invoke contract method when safe calling on non-null contract receiver" {
+    val a: Printable = Article("Eiwa Guide")
+    val p: Printable? = a
+    val res = p?.printText()
+    assert(res != null)
+    assert(res!! == "Title: Eiwa Guide")
+}
+
+test "should work with elvis operator on null contract receiver" {
+    val p: Printable? = null
+    val defaultText = "Default Title"
+    val res = p?.printText() ?: defaultText
+    assert(res == "Default Title")
+}
+
+test "should work with non-null assertion on contract receiver" {
+    val a: Printable = Book("Systems Programming")
+    val p: Printable? = a
+    val asserted = p!!
+    assert(asserted.printText() == "Book: Systems Programming")
+}
+
+test "is check on null contract receiver returns false" {
+    val p: Printable? = null
+    val check = p is Printable
+    assert(check == false)
+}

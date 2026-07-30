@@ -271,12 +271,12 @@ Replace implementation inheritance entirely with the composition model defined i
 
 > **Known trade-offs (accepted):** skill methods are cloned per consuming type (C++ template-style code duplication in exchange for zero-cost static dispatch); contract-typed values are erased to `void*` in C (the TypeChecker is the only type-safety layer for dynamic dispatch). Follow-ups live in Phases 42–44.
 
-### Phase 42: Null Safety on Contract Receivers (PENDING)
-Contract-typed receivers are erased to `void*` and dispatch dynamically through `eiwa_find_vtable`. The safe-call path (`?.`) currently ignores the null check for contract method calls, and nullable contract types (`Drawable?`) are untested — a null receiver segfaults instead of short-circuiting.
-- [ ] **Task 42.1:** Emit the null short-circuit (`(obj) == 0 ? 0 : dispatch`) for `?.` calls on contract-typed receivers in the C Transpiler (`expression.zig` contract dispatch branch).
-- [ ] **Task 42.2:** Validate nullable contract types end-to-end: `val d: Drawable? = null`, `d?.draw()`, `d ?: fallback`, and `!!` assertions on contracts.
-- [ ] **Task 42.3:** TypeChecker: reject non-safe member access on nullable contract receivers with the standard null-safety error.
-- [ ] **Verify:** Tests covering `null` contract references using `?.`, `?:` and `!!` pass without crashes.
+### Phase 42: Null Safety on Contract Receivers (COMPLETED)
+Contract-typed receivers are erased to `void*` and dispatch dynamically through `eiwa_find_vtable`. The safe-call path (`?.`) emits a null check wrapper for contract method calls, enabling safe calls (`?.`), non-null assertions (`!!`), and elvis operations (`?:`) on nullable contract receivers (`Drawable?`) without segfaults.
+- [x] **Task 42.1:** Emit the null short-circuit (`(obj) == 0 ? 0 : dispatch`) for `?.` calls on contract-typed receivers in the C Transpiler (`expression.zig` contract dispatch branch).
+- [x] **Task 42.2:** Validate nullable contract types end-to-end: `val d: Drawable? = null`, `d?.draw()`, `d ?: fallback`, and `!!` assertions on contracts.
+- [x] **Task 42.3:** TypeChecker: reject non-safe member access on nullable contract receivers with the standard null-safety error.
+- [x] **Verify:** Tests covering `null` contract references using `?.`, `?:` and `!!` pass without crashes (`samples/tests/contract_null_safety_test.ei`).
 
 ### Phase 43: Heterogeneous Contract Collections (`List<Drawable>`) (PENDING / LATER)
 ADR 25 envisioned heterogeneous collections of contracts (e.g. `List<Drawable>`), but the monomorphizer generates concrete C containers and contract type erasure (`void*`) is not propagated into generic instantiations (element arrays would degrade to invalid `void` element types).
