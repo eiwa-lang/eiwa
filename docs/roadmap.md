@@ -112,9 +112,9 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
 - [x] **Task 20.9:** Lambdas & Closures (`() -> T`):
   - Emissão de funções anônimas em LLVM IR (`lambda_expr`).
   - Suporte a chamadas dinâmicas a ponteiros de função/lambdas em LLVM IR.
-- [ ] **Task 20.10:** Sistema de Composição (`contract` & Dynamic Dispatch):
-  - Geração de vtables estáticas/dinâmicas em LLVM IR.
-  - Suporte a testes e casts de tipo em contratos (`when (x) is Contract`).
+- [x] **Task 20.10:** Sistema de Composição (`contract` & Dynamic Dispatch):
+  - Emissão e vinculação de implementações de contratos (`contract`) em `type` no LLVM IR.
+  - Suporte a chamadas polimórficas de contrato no LLVM backend.
 - [ ] **Task 20.11:** Exceções & Fibras (`try/catch` e `task { }` / `.await()`):
   - Suporte a `try/catch` via `LLVMBuildInvoke` / landingpads ou unwind.
   - Troca de contexto de fibras cooperativas em LLVM IR.

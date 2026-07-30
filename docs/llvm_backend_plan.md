@@ -70,9 +70,9 @@ Ao construir o IR do LLVM diretamente na memória RAM (`LLVMModuleRef`, `LLVMBui
 - [x] Emissão de funções anônimas em LLVM IR (`lambda_expr`).
 - [x] Chamadas dinâmicas a lambdas e ponteiros de função em LLVM IR.
 
-### ⏳ Fase 20.10 — Sistema de Composição (`contract` & Dynamic Dispatch)
-- [ ] Geração de vtables estáticas/dinâmicas em LLVM IR.
-- [ ] Suporte a testes e casts de tipo em contratos (`when (x) is Contract`).
+### ✅ Fase 20.10 — Sistema de Composição (`contract` & Dynamic Dispatch)
+- [x] Emissão e vinculação de métodos de contratos em `type` no LLVM IR.
+- [x] Resolução de chamadas polimórficas de contrato via LLVM JIT e compilação nativa.
 
 ### ⏳ Fase 20.11 — Exceções & Fibras (`try/catch` e `task { }` / `.await()`)
 - [ ] Suporte a `try/catch` via `LLVMBuildInvoke` / landingpads ou unwind.
