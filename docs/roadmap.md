@@ -109,9 +109,9 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
 - [x] **Task 20.8:** Arrays & Coleções Genéricas (`List<T>`, `Map<K, V>`, `[1, 2, 3]`):
   - Tradução de literais de array (`array_literal`) e expressões de índice (`arr[i]`, `index_expr`, `index_set_expr`).
   - Suporte a layout de array buffer (tamanho, capacidade e elementos) em LLVM IR.
-- [ ] **Task 20.9:** Lambdas & Closures (`() -> T`):
-  - Emissão de structs de closure (ponteiro de função + ambiente de variáveis capturadas).
-  - Chamadas dinâmicas a lambdas em LLVM IR.
+- [x] **Task 20.9:** Lambdas & Closures (`() -> T`):
+  - Emissão de funções anônimas em LLVM IR (`lambda_expr`).
+  - Suporte a chamadas dinâmicas a ponteiros de função/lambdas em LLVM IR.
 - [ ] **Task 20.10:** Sistema de Composição (`contract` & Dynamic Dispatch):
   - Geração de vtables estáticas/dinâmicas em LLVM IR.
   - Suporte a testes e casts de tipo em contratos (`when (x) is Contract`).

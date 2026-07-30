@@ -14,7 +14,7 @@ pub fn emitStatement(
     scope: *std.StringHashMap(llvm.LLVMValueRef),
     structs: *std.StringHashMap(core.StructInfo),
     node: *ast.ASTNode,
-) !void {
+) anyerror!void {
     switch (node.data) {
         .var_decl => |v| {
             const name = v.resolved_c_name orelse v.name;

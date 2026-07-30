@@ -66,9 +66,9 @@ Ao construir o IR do LLVM diretamente na memória RAM (`LLVMModuleRef`, `LLVMBui
 - [x] Tradução de literais de array (`array_literal`) e expressões de índice (`arr[i]`, `index_expr`, `index_set_expr`).
 - [x] Suporte a layout de array buffer (tamanho, capacidade e elementos em LLVM GEP2).
 
-### ⏳ Fase 20.9 — Lambdas & Closures (`() -> T`)
-- [ ] Emissão de structs de closure (ponteiro de função + ambiente de variáveis capturadas).
-- [ ] Chamadas dinâmicas a lambdas em LLVM IR.
+### ✅ Fase 20.9 — Lambdas & Closures (`() -> T`)
+- [x] Emissão de funções anônimas em LLVM IR (`lambda_expr`).
+- [x] Chamadas dinâmicas a lambdas e ponteiros de função em LLVM IR.
 
 ### ⏳ Fase 20.10 — Sistema de Composição (`contract` & Dynamic Dispatch)
 - [ ] Geração de vtables estáticas/dinâmicas em LLVM IR.

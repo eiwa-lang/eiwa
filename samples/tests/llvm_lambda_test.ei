@@ -1,0 +1,10 @@
+import { assert } from "std.core"
+
+fun applyOp(a: Int, b: Int, op: (Int, Int) -> Int): Int {
+    return op(a, b)
+}
+
+test "llvm backend lambda execution" {
+    val sum = applyOp(15, 27, { x: Int, y: Int -> x + y })
+    assert(sum == 42)
+}

@@ -12,7 +12,7 @@ pub fn emitExpression(
     scope: *std.StringHashMap(llvm.LLVMValueRef),
     structs: *std.StringHashMap(core.StructInfo),
     node: *ast.ASTNode,
-) !llvm.LLVMValueRef {
+) anyerror!llvm.LLVMValueRef {
     switch (node.data) {
         .int_literal => |val| {
             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
@@ -222,49 +222,139 @@ pub fn emitExpression(
                 else => return error.UnsupportedBinaryOperator,
             }
         },
-        .call_expr => |call| {
-            var callee_name: []const u8 = "";
-            if (call.callee.data == .identifier) {
-                callee_name = call.callee.data.identifier.resolved_c_name orelse call.callee.data.identifier.name;
-            } else {
-                return error.DynamicCallNotSupportedYet;
+        .lambda_expr => |lam| {
+            const lam_name_z = try std.heap.page_allocator.dupeZ(u8, "lambda_anon_fn");
+            defer std.heap.page_allocator.free(lam_name_z);
+
+            var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, lam.params.len);
+            defer std.heap.page_allocator.free(param_types);
+
+            for (lam.params, 0..) |p, i| {
+                if (p.type_ref) |tr| {
+                    if (tr.resolved_type) |rt| {
+                        param_types[i] = types_mapping.getLLVMType(ctx, rt.*);
+                        continue;
+                    }
+                }
+                param_types[i] = llvm.LLVMInt64TypeInContext(ctx);
             }
 
-            const is_print_call = std.mem.eql(u8, callee_name, "print") or
-                std.mem.startsWith(u8, callee_name, "System_print") or
-                std.mem.startsWith(u8, callee_name, "io_print");
+            var ret_type: llvm.LLVMTypeRef = llvm.LLVMInt64TypeInContext(ctx);
+            if (node.resolved_type) |rt| {
+                if (rt.* == .Function) {
+                    ret_type = types_mapping.getLLVMType(ctx, rt.Function.return_type.*);
+                }
+            }
 
-            if (is_print_call) {
-                const printf_func = llvm.LLVMGetNamedFunction(mod, "printf") orelse return error.PrintfNotFound;
-                const printf_type = llvm.LLVMGlobalGetValueType(printf_func);
+            const func_type = llvm.LLVMFunctionType(ret_type, if (param_types.len > 0) param_types.ptr else null, @intCast(param_types.len), 0);
+            const func_val = llvm.LLVMAddFunction(mod, lam_name_z.ptr, func_type);
 
-                if (call.arguments.len > 0) {
-                    const arg_val = try emitExpression(ctx, mod, builder, scope, structs, call.arguments[0]);
-                    const arg_type = llvm.LLVMTypeOf(arg_val);
+            const parent_bb = llvm.LLVMGetInsertBlock(builder);
 
-                    var fmt_str: [*c]const u8 = "%lld\n";
-                    if (llvm.LLVMGetTypeKind(arg_type) == llvm.LLVMDoubleTypeKind) {
-                        fmt_str = "%f\n";
-                    } else if (llvm.LLVMGetTypeKind(arg_type) == llvm.LLVMPointerTypeKind) {
-                        fmt_str = "%s\n";
+            const entry_block = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "entry");
+            llvm.LLVMPositionBuilderAtEnd(builder, entry_block);
+
+            var lam_scope = std.StringHashMap(llvm.LLVMValueRef).init(std.heap.page_allocator);
+            defer lam_scope.deinit();
+
+            for (lam.params, 0..) |p, i| {
+                const param_val = llvm.LLVMGetParam(func_val, @intCast(i));
+                const p_type = llvm.LLVMTypeOf(param_val);
+                const p_name_z = try std.heap.page_allocator.dupeZ(u8, p.name);
+                defer std.heap.page_allocator.free(p_name_z);
+
+                const alloca_ptr = llvm.LLVMBuildAlloca(builder, p_type, p_name_z.ptr);
+                _ = llvm.LLVMBuildStore(builder, param_val, alloca_ptr);
+                try lam_scope.put(p.name, alloca_ptr);
+            }
+
+            const statement = @import("statement.zig");
+            for (lam.body) |stmt| {
+                try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, stmt);
+            }
+
+            const cur_bb = llvm.LLVMGetInsertBlock(builder);
+            if (llvm.LLVMGetBasicBlockTerminator(cur_bb) == null) {
+                const r_kind = llvm.LLVMGetTypeKind(ret_type);
+                if (r_kind == llvm.LLVMVoidTypeKind) {
+                    _ = llvm.LLVMBuildRetVoid(builder);
+                } else if (r_kind == llvm.LLVMIntegerTypeKind) {
+                    _ = llvm.LLVMBuildRet(builder, llvm.LLVMConstInt(ret_type, 0, 0));
+                } else if (r_kind == llvm.LLVMDoubleTypeKind) {
+                    _ = llvm.LLVMBuildRet(builder, llvm.LLVMConstReal(ret_type, 0.0));
+                } else {
+                    _ = llvm.LLVMBuildRetVoid(builder);
+                }
+            }
+
+            if (parent_bb) |pbb| {
+                llvm.LLVMPositionBuilderAtEnd(builder, pbb);
+            }
+
+            return func_val;
+        },
+        .call_expr => |call| {
+            if (call.callee.data == .identifier) {
+                const callee_name = call.callee.data.identifier.resolved_c_name orelse call.callee.data.identifier.name;
+
+                const is_print_call = std.mem.eql(u8, callee_name, "print") or
+                    std.mem.startsWith(u8, callee_name, "System_print") or
+                    std.mem.startsWith(u8, callee_name, "io_print");
+
+                if (is_print_call) {
+                    const printf_func = llvm.LLVMGetNamedFunction(mod, "printf") orelse return error.PrintfNotFound;
+                    const printf_type = llvm.LLVMGlobalGetValueType(printf_func);
+
+                    if (call.arguments.len > 0) {
+                        const arg_val = try emitExpression(ctx, mod, builder, scope, structs, call.arguments[0]);
+                        const arg_type = llvm.LLVMTypeOf(arg_val);
+
+                        var fmt_str: [*c]const u8 = "%lld\n";
+                        if (llvm.LLVMGetTypeKind(arg_type) == llvm.LLVMDoubleTypeKind) {
+                            fmt_str = "%f\n";
+                        } else if (llvm.LLVMGetTypeKind(arg_type) == llvm.LLVMPointerTypeKind) {
+                            fmt_str = "%s\n";
+                        }
+
+                        const fmt_val = llvm.LLVMBuildGlobalStringPtr(builder, fmt_str, "fmt_str");
+                        var printf_args = [_]llvm.LLVMValueRef{ fmt_val, arg_val };
+
+                        return llvm.LLVMBuildCall2(
+                            builder,
+                            printf_type,
+                            printf_func,
+                            &printf_args,
+                            2,
+                            "printftmp",
+                        );
+                    }
+                }
+
+                const callee_z = try std.heap.page_allocator.dupeZ(u8, callee_name);
+                defer std.heap.page_allocator.free(callee_z);
+
+                if (llvm.LLVMGetNamedFunction(mod, callee_z.ptr)) |func_val| {
+                    var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, call.arguments.len);
+                    defer std.heap.page_allocator.free(arg_vals);
+
+                    for (call.arguments, 0..) |arg_node, idx| {
+                        arg_vals[idx] = try emitExpression(ctx, mod, builder, scope, structs, arg_node);
                     }
 
-                    const fmt_val = llvm.LLVMBuildGlobalStringPtr(builder, fmt_str, "fmt_str");
-                    var printf_args = [_]llvm.LLVMValueRef{ fmt_val, arg_val };
-
+                    const func_type = llvm.LLVMGlobalGetValueType(func_val);
                     return llvm.LLVMBuildCall2(
                         builder,
-                        printf_type,
-                        printf_func,
-                        &printf_args,
-                        2,
-                        "printftmp",
+                        func_type,
+                        func_val,
+                        if (arg_vals.len > 0) arg_vals.ptr else null,
+                        @intCast(arg_vals.len),
+                        "calltmp",
                     );
                 }
             }
 
-            const callee_z = try std.heap.page_allocator.dupeZ(u8, callee_name);
-            defer std.heap.page_allocator.free(callee_z);
+            // Dynamic Function / Lambda Call
+            const callee_val = try emitExpression(ctx, mod, builder, scope, structs, call.callee);
 
             var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, call.arguments.len);
             defer std.heap.page_allocator.free(arg_vals);
@@ -273,28 +363,35 @@ pub fn emitExpression(
                 arg_vals[idx] = try emitExpression(ctx, mod, builder, scope, structs, arg_node);
             }
 
-            var func_val = llvm.LLVMGetNamedFunction(mod, callee_z.ptr);
-            if (func_val == null) {
-                const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
-                var arg_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, call.arguments.len);
-                defer std.heap.page_allocator.free(arg_types);
+            var ret_type: llvm.LLVMTypeRef = llvm.LLVMInt64TypeInContext(ctx);
+            var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, call.arguments.len);
+            defer std.heap.page_allocator.free(param_types);
 
-                for (arg_vals, 0..) |a_val, idx| {
-                    arg_types[idx] = llvm.LLVMTypeOf(a_val);
+            if (call.callee.resolved_type) |rt| {
+                if (rt.* == .Function) {
+                    ret_type = types_mapping.getLLVMType(ctx, rt.Function.return_type.*);
+                    for (call.arguments, 0..) |_, idx| {
+                        if (idx < rt.Function.params.len) {
+                            param_types[idx] = types_mapping.getLLVMType(ctx, rt.Function.params[idx].*);
+                        } else {
+                            param_types[idx] = llvm.LLVMInt64TypeInContext(ctx);
+                        }
+                    }
                 }
-
-                const func_type = llvm.LLVMFunctionType(ptr_type, if (arg_types.len > 0) arg_types.ptr else null, @intCast(arg_types.len), 0);
-                func_val = llvm.LLVMAddFunction(mod, callee_z.ptr, func_type);
+            } else {
+                for (call.arguments, 0..) |_, idx| {
+                    param_types[idx] = llvm.LLVMInt64TypeInContext(ctx);
+                }
             }
 
-            const func_type = llvm.LLVMGlobalGetValueType(func_val);
+            const dynamic_fn_type = llvm.LLVMFunctionType(ret_type, if (param_types.len > 0) param_types.ptr else null, @intCast(param_types.len), 0);
             return llvm.LLVMBuildCall2(
                 builder,
-                func_type,
-                func_val,
+                dynamic_fn_type,
+                callee_val,
                 if (arg_vals.len > 0) arg_vals.ptr else null,
                 @intCast(arg_vals.len),
-                "calltmp",
+                "dyn_calltmp",
             );
         },
         else => return error.UnsupportedExpressionNode,
