@@ -1,43 +1,18 @@
 import { File } from "std.fs"
 import { Env } from "std.env"
+import { Process } from "std.process"
 import { MutableList } from "std.collections"
-
-@Header("<stdlib.h>", "<stdio.h>", "<string.h>", "<unistd.h>")
-lib NativeCli {
-    fun system(cmd: String): Int
-    fun strlen(s: Pointer): Int
-    fun malloc(size: Int): Pointer
-    fun popen(cmd: String, mode: String): Pointer
-    fun pclose(stream: Pointer): Int
-    fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer
-    fun chdir(path: String): Int
-    fun realpath(path: String, resolved: Pointer): Pointer
-    fun eiwa_args_count(): Int
-    fun eiwa_args_get(i: Int): Pointer
-}
 
 // TODO: converter este parser minimalista em um DTO tipado do manifesto
 // (eiwa.yaml) quando houver um parser YAML/serde disponivel em Eiwa.
 type Dependency(val name: String, var github: String = "", var branch: String = "", var tag: String = "", var commit: String = "")
-
-fun argAt(i: Int): String? {
-    val count = NativeCli.eiwa_args_count()
-    if (i < 0 || i >= count) {
-        return null
-    }
-    val ptr = NativeCli.eiwa_args_get(i)
-    if (ptr == null) {
-        return null
-    }
-    return String(ptr, NativeCli.strlen(ptr))
-}
 
 fun eiwacPath(): String {
     val fromEnv = Env.get("EIWAC")
     if (fromEnv != null) {
         return fromEnv!!
     }
-    val selfOpt = argAt(0)
+    val selfOpt = Process.argAt(0)
     if (selfOpt != null) {
         val self = selfOpt!!
         var slash = -1
@@ -50,9 +25,9 @@ fun eiwacPath(): String {
         }
         if (slash != -1) {
             val candidate = self.substring(0, slash + 1) + "eiwac"
-            val buf = NativeCli.malloc(4096)
-            if (NativeCli.realpath(candidate, buf) != null) {
-                return String(buf, NativeCli.strlen(buf))
+            val resolved = Process.realpath(candidate)
+            if (resolved != null) {
+                return resolved!!
             }
             return candidate
         }
@@ -98,23 +73,9 @@ fun indentOf(line: String): Int {
     return n
 }
 
-fun execCapture(cmd: String): String {
-    val stream = NativeCli.popen(cmd, "r")
-    if (stream == null) {
-        return ""
-    }
-    val buf = NativeCli.malloc(4096)
-    var out = ""
-    while (NativeCli.fgets(buf, 4096, stream) != null) {
-        out = out + String(buf, NativeCli.strlen(buf))
-    }
-    NativeCli.pclose(stream)
-    return trim(out)
-}
-
 fun runOrFail(cmd: String) {
     println("$ " + cmd)
-    val code = NativeCli.system(cmd)
+    val code = Process.exec(cmd)
     if (code != 0) {
         println("Error: command failed: " + cmd)
         exit(1)
@@ -196,7 +157,7 @@ fun parseManifest(content: String): MutableList<Dependency> {
 fun resolveDependency(dep: Dependency, repositoryRoot: String): String {
     val ref = if (dep.commit != "") dep.commit else if (dep.tag != "") dep.tag else if (dep.branch != "") dep.branch else "HEAD"
     val url = "https://github.com/" + dep.github + ".git"
-    val remoteCommit = trim(execCapture("git ls-remote " + url + " " + ref))
+    val remoteCommit = trim(Process.capture("git ls-remote " + url + " " + ref))
     if (remoteCommit == "") {
         println("Error: could not resolve '" + ref + "' for dependency '" + dep.name + "'")
         exit(1)
@@ -236,7 +197,7 @@ fun printHelp() {
 }
 
 fun main() {
-    val cmdOpt = argAt(1)
+    val cmdOpt = Process.argAt(1)
     if (cmdOpt == null) {
         printHelp()
         exit(1)
@@ -256,9 +217,9 @@ fun main() {
 
     val eiwac = eiwacPath()
 
-    val dirOpt = argAt(2)
+    val dirOpt = Process.argAt(2)
     if (dirOpt != null) {
-        if (NativeCli.chdir(dirOpt!!) != 0) {
+        if (Process.chdir(dirOpt!!) == false) {
             println("Error: cannot enter directory: " + dirOpt!!)
             exit(1)
         }
@@ -307,7 +268,7 @@ fun main() {
     }
 
     val fullCmd = eiwac + " " + cmd + " --backend=c" + modulePaths + " -o " + output + " " + entry
-    val code = NativeCli.system(fullCmd)
+    val code = Process.exec(fullCmd)
     if (code != 0) {
         exit(1)
     }

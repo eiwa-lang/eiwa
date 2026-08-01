@@ -30,6 +30,7 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "uuid.ei", @embedFile("../../std/uuid.ei") },
     .{ "ulid.ei", @embedFile("../../std/ulid.ei") },
     .{ "random.ei", @embedFile("../../std/random.ei") },
+    .{ "process.ei", @embedFile("../../std/process.ei") },
     // --- Database layer ---
     .{ "db.ei", @embedFile("../../std/db.ei") },
     // --- Domain & Math layer ---

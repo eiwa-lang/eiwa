@@ -1158,6 +1158,36 @@ fun main() {
 
 Because time math is just adding integers (`epoch + seconds`), it avoids the historic timezone bugs that plague other languages when dealing with daylight savings and calendar math. The `std.time` package makes all duration math explicit (e.g., `hours(2)`) and heavily leverages Operator Overloading for ergonomics.
 
+### 17.1 Process API (`std.process`)
+
+Process execution, program arguments and working-directory utilities. All internal buffers are allocated through the Boehm GC — user code never touches raw `malloc`.
+
+```kotlin
+import { Process } from "std.process"
+
+fun main() {
+    // Run a shell command, returns the exit code
+    val code = Process.exec("ls -la")
+
+    // Run a command and capture stdout
+    val commit = Process.capture("git rev-parse HEAD")
+
+    // Program arguments (argv)
+    var i = 0
+    while (i < Process.argsCount()) {
+        val arg = Process.argAt(i)
+        if (arg != null) {
+            println(arg!!)
+        }
+        i = i + 1
+    }
+
+    // Working directory & path resolution
+    Process.chdir("/tmp")
+    val abs = Process.realpath("./file.txt") // String? (null if it doesn't exist)
+}
+```
+
 ---
 
 ## 18. Environment Variables (`std.env`)

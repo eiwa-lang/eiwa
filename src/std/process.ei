@@ -1,0 +1,63 @@
+// std.process
+// Process execution, argument access and working directory utilities.
+// All buffers are allocated via the Boehm GC (Standard.gcMalloc).
+
+@Header("<stdlib.h>", "<stdio.h>", "<unistd.h>")
+lib NativeProcess {
+    fun system(cmd: String): Int
+    fun popen(cmd: String, mode: String): Pointer
+    fun pclose(stream: Pointer): Int
+    fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer
+    fun chdir(path: String): Int
+    fun realpath(path: String, resolved: Pointer): Pointer
+    fun eiwa_args_count(): Int
+    fun eiwa_args_get(i: Int): Pointer
+}
+
+object Process {
+
+    fun exec(cmd: String): Int {
+        return NativeProcess.system(cmd)
+    }
+
+    fun capture(cmd: String): String {
+        val stream = NativeProcess.popen(cmd, "r")
+        if (stream == null) {
+            return ""
+        }
+        val buf = Standard.gcMalloc(4096)
+        var out = ""
+        while (NativeProcess.fgets(buf, 4096, stream) != null) {
+            out = out + String(buf, NativeString.strlen(buf))
+        }
+        NativeProcess.pclose(stream)
+        return out
+    }
+
+    fun chdir(path: String): Bool {
+        return NativeProcess.chdir(path) == 0
+    }
+
+    fun realpath(path: String): String? {
+        val buf = Standard.gcMalloc(4096)
+        if (NativeProcess.realpath(path, buf) == null) {
+            return null
+        }
+        return String(buf, NativeString.strlen(buf))
+    }
+
+    fun argsCount(): Int {
+        return NativeProcess.eiwa_args_count()
+    }
+
+    fun argAt(i: Int): String? {
+        if (i < 0 || i >= Process.argsCount()) {
+            return null
+        }
+        val ptr = NativeProcess.eiwa_args_get(i)
+        if (ptr == null) {
+            return null
+        }
+        return String(ptr, NativeString.strlen(ptr))
+    }
+}
