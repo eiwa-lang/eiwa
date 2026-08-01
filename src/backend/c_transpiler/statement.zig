@@ -185,6 +185,16 @@ pub fn emitStatement(self: *CTranspiler, node: *ASTNode) anyerror!void {
             try self.writer.appendSlice(");\n");
         },
         .try_stmt => |ts| {
+            // PRE-EXISTING: exceptions use the setjmp/longjmp frame model
+            // (EiwaExceptionFrame + eiwa_push/pop_exception_frame) — this
+            // predates the LLVM emitter, which reimplemented the same model in
+            // IR (see llvm_emitter/statement.zig try_stmt/throw_stmt). It
+            // relies on the C runtime's frame helpers, so it is exact here.
+            // Recommendation: the LLVM emitter should keep following this
+            // layout (or ideally call these same runtime helpers), so the two
+            // backends stay behaviorally identical. Note: this C path handles
+            // typed multi-catch and else-rethrow (lines below); the LLVM
+            // emitter only handles catches[0] — see its TODO.
             try self.writer.appendSlice("    {\n");
             try self.writer.appendSlice("        EiwaExceptionFrame __frame;\n");
             try self.writer.appendSlice("        eiwa_push_exception_frame(&__frame);\n");

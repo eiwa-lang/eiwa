@@ -48,6 +48,7 @@ pub fn main(init: std.process.Init) !void {
     defer positionals.deinit();
 
     var backend_kind: BackendKind = if (build_options.has_llvm) .llvm else .c;
+    var backend_explicit: bool = false;
     var is_release: bool = false;
 
     var arg_idx: usize = 2;
@@ -55,8 +56,10 @@ pub fn main(init: std.process.Init) !void {
         const arg = args[arg_idx];
         if (std.mem.eql(u8, arg, "--backend=llvm")) {
             backend_kind = .llvm;
+            backend_explicit = true;
         } else if (std.mem.eql(u8, arg, "--backend=c")) {
             backend_kind = .c;
+            backend_explicit = true;
         } else if (std.mem.eql(u8, arg, "--release")) {
             is_release = true;
         } else if (std.mem.startsWith(u8, arg, "-I") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-D")) {
@@ -72,6 +75,15 @@ pub fn main(init: std.process.Init) !void {
         } else {
             try positionals.append(arg);
         }
+    }
+
+    if (is_test and backend_kind == .llvm) {
+        if (backend_explicit) {
+            std.debug.print("Error: The LLVM emitter does not support `eiwa test` yet (no test-runner or import support). Use --backend=c.\n", .{});
+            std.process.exit(1);
+        }
+        std.debug.print("Note: test mode uses the C backend (the LLVM emitter does not support `eiwa test` yet).\n", .{});
+        backend_kind = .c;
     }
 
     if (is_test) {

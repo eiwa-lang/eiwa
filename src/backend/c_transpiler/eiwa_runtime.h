@@ -136,6 +136,17 @@ int64_t core_Bool_hashCode(bool val);
 int64_t core_Int_hashCode(int64_t val);
 
 static inline core_String* eiwa_to_string(void* ptr) {
+    // PRE-EXISTING: this `val <= 1` / `val < 0x10000` heuristic is the
+    // runtime's small-int tagging convention — it predates the LLVM emitter,
+    // which inherited the same rule (see llvm_emitter emitToStringHelper).
+    // Booleans and small ints are stored directly in the pointer (never
+    // heap-allocated); values >= 0x10000 are real heap pointers with an
+    // EiwaTypeDescriptor header. The `desc == &core_String_descriptor` fast
+    // path and the `eiwa_find_vtable` fallback below make custom-type dispatch
+    // exact. Recommendation: keep the tag constant in one place (an enum/
+    // define shared with the LLVM emitter) so 0x10000 never drifts between
+    // backends, and prefer an explicit `desc` null-check over relying on the
+    // range check for null/uninitialized pointers.
     if (!ptr) {
         typedef struct { const void* _desc; const char* ptr; int length; } Str;
         Str* s = (Str*)GC_MALLOC(sizeof(Str));
@@ -153,6 +164,11 @@ static inline core_String* eiwa_to_string(void* ptr) {
 }
 
 static inline int64_t eiwa_hash_code(void* ptr) {
+    // PRE-EXISTING: same small-int tagging heuristic as eiwa_to_string above
+    // (see its comment) — predates the LLVM emitter. Recommendation: share the
+    // tag constant between backends; for boxed values consider a null-check on
+    // the descriptor before dereferencing to be robust against malformed
+    // pointers.
     if (!ptr) return 0;
     uintptr_t val = (uintptr_t)ptr;
     if (val <= 1) return core_Bool_hashCode((bool)val);

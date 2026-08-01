@@ -512,6 +512,11 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                     return;
                 }
 
+                // PRE-EXISTING: mirror of the name-based `toString` dispatch
+                // above (see its comment) — already here before the LLVM
+                // emitter; the LLVM backend inherited the same pattern.
+                // Recommendation: same as toString — route through contract
+                // dispatch and drop the per-primitive if/else chain.
                 if (std.mem.eql(u8, g.name, "hashCode")) {
                     if (rt.* == .Bool) {
                         try self.writer.appendSlice("core_Bool_hashCode(");
@@ -635,6 +640,15 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         try self.emitExpression(g.object);
                         try self.writer.appendSlice(") == 0 ? 0 : ");
                     }
+                    // PRE-EXISTING: this name-based `toString` dispatch (and the
+                    // sibling `hashCode` block below) already existed before the
+                    // LLVM emitter — the LLVM backend inherited this pattern.
+                    // It resolves methods by method NAME + static type rather than
+                    // through the contract/vtable machinery, and special-cases each
+                    // primitive. Recommendation: resolve `.toString()` through the
+                    // contract dispatch path (isContract + contract method index)
+                    // like other contract calls, so primitive/string/custom cases
+                    // share one code path instead of this if/else chain.
                     if (std.mem.eql(u8, g.name, "toString")) {
                         try self.writer.appendSlice("eiwa_to_string((void*)(");
                         try self.emitExpression(g.object);
@@ -648,7 +662,6 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                         if (g.is_safe) try self.writer.appendSlice(")");
                         return;
                     }
-
                     try self.writer.writer().print("(({s}(*)(void*{s}))eiwa_find_vtable(*(const EiwaTypeDescriptor**) (", .{ ret_str, params_str.items });
                     try self.emitExpression(g.object);
                     try self.writer.writer().print("), &{s}_contract)[{d}])(", .{ actual_contract_name, contract_method_index });
@@ -1068,6 +1081,19 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
                                 if (type_cond.is_not) {
                                     try self.writer.appendSlice("!(");
                                 }
+                                // PRE-EXISTING: the `< 0x10000` / `<= 1` checks
+                                // below are the runtime's small-int tagging
+                                // convention (see eiwa_runtime.h). They were
+                                // already here before the LLVM emitter; the
+                                // LLVM backend inherited the same heuristic
+                                // (see the `when (x) is T` TODO in
+                                // llvm_emitter/expression.zig). For primitives
+                                // the range check is exact, but for custom
+                                // types it relies on EiwaTypeDescriptor
+                                // dereferencing further down. Recommendation:
+                                // consider a single `isTypeCheck(value,
+                                // target)` helper shared by both backends so
+                                // the tagging rules never drift apart.
                                 if (std.mem.eql(u8, target_c_name, "core_Null")) {
                                     try self.writer.writer().print("({s} == 0)", .{subj_var_name});
                                 } else if (std.mem.eql(u8, target_c_name, "core_Int")) {
