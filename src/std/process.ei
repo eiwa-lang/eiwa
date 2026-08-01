@@ -2,6 +2,8 @@
 // Process execution, argument access and working directory utilities.
 // All buffers are allocated via the Boehm GC (Standard.gcMalloc).
 
+import { List, MutableList } from "std.collections"
+
 @Header("<stdlib.h>", "<stdio.h>", "<unistd.h>")
 lib NativeProcess {
     fun system(cmd: String): Int
@@ -59,5 +61,18 @@ object Process {
             return null
         }
         return String(ptr, NativeString.strlen(ptr))
+    }
+
+    fun args(): List<String> {
+        val list = MutableList<String>()
+        var i = 0
+        while (i < Process.argsCount()) {
+            val arg = Process.argAt(i)
+            if (arg != null) {
+                list.add(arg!!)
+            }
+            i = i + 1
+        }
+        return list.freeze()
     }
 }

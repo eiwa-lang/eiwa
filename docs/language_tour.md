@@ -1100,24 +1100,16 @@ Options:
   -h, --help         Show help
 ```
 
-**Program arguments.** Extra positional arguments after the file are forwarded to the program by `eiwac run`. Inside Eiwa, the runtime exposes them through two C functions (available without any `@Header`, since they live in the Eiwa runtime):
+**Program arguments.** Extra positional arguments after the file are forwarded to the program by `eiwac run`. Programs read them through `std.process` (Section 17.1):
 
 ```kotlin
-@Header("<string.h>")
-lib NativeArgs {
-    fun eiwa_args_count(): Int
-    fun eiwa_args_get(i: Int): Pointer
-    fun strlen(s: Pointer): Int
-}
+import { Process } from "std.process"
 
 fun main() {
-    val count = NativeArgs.eiwa_args_count()
+    val args = Process.args() // List<String>, args[0] is the executable
     var i = 0
-    while (i < count) {
-        val ptr = NativeArgs.eiwa_args_get(i)
-        if (ptr != null) {
-            println(String(ptr, NativeArgs.strlen(ptr)))
-        }
+    while (i < args.size()) {
+        println(args[i])
         i = i + 1
     }
 }
@@ -1173,13 +1165,9 @@ fun main() {
     val commit = Process.capture("git rev-parse HEAD")
 
     // Program arguments (argv)
-    var i = 0
-    while (i < Process.argsCount()) {
-        val arg = Process.argAt(i)
-        if (arg != null) {
-            println(arg!!)
-        }
-        i = i + 1
+    val args = Process.args()
+    for (arg in args) {
+        println(arg)
     }
 
     // Working directory & path resolution
