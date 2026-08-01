@@ -21,13 +21,13 @@ zig build
 zig build test
 
 # 3. Run an Eiwa program using the freshly built compiler
-./zig-out/bin/eiwa run samples/path_to_file.ei
+./bin/eiwac run samples/path_to_file.ei
 
 # 4. Compile an Eiwa program to a static native binary
-./zig-out/bin/eiwa build samples/path_to_file.ei
+./bin/eiwac build samples/path_to_file.ei
 
 # 5. Run the native Eiwa test suite (executes `test "name" {}` blocks)
-./zig-out/bin/eiwa test
+./bin/eiwac test
 ```
 
 ---

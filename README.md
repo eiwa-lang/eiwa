@@ -21,7 +21,8 @@ Instead of running inside a heavy JVM or relying on interpreted bytecode, Eiwa c
 - 🕒 **Epoch-First Time API:** Time handling done right, inspired by Go. Zero-overhead Time and Duration mathematics leveraging the language's native Operator Overloading.
 - 🔁 **Native Collections:** First-class support for typed `List<T>`, `Map<K,V>`, and `Set<T>` literals — and their mutable counterparts. Write `[1, 2, 3]` for a list and `["key" of "value"]` for a map. Read and write with the familiar `collection[key]` bracket syntax.
 - ⚙️ **Operator Overloading:** Overload math operators in types with explicit contracts via the `operator` modifier (e.g., `operator fun plus()`).
-- 🧪 **Native Test System:** First-class testing support. Write `test "name" {}` blocks directly and run `eiwa test` for an isolated and fast native testing suite.
+- 📦 **Package Manager & Projects:** The `eiwa` CLI manages projects and git dependencies out of the box — declare them in `eiwa.yaml` and `eiwa run` resolves, clones and wires everything automatically.
+- 🧪 **Native Test System:** First-class testing support. Write `test "name" {}` blocks directly and run `eiwac test` for an isolated and fast native testing suite.
 - 🗑️ **Memory Safe:** Native integration with a conservative Garbage Collector (Boehm GC) eliminates memory leaks without the overhead of reference counting or pausing VMs.
 
 ---
@@ -85,32 +86,64 @@ test "adding duration to flight shifts departure" {
     assert(delayed.departure > f.departure)
 }
 ```
-Run it simply with `eiwa test`.
+Run it with `eiwac test`.
 
 ---
 
 ## 💻 Using Eiwa (For Developers)
 
-Writing code in Eiwa is extremely lightweight. The Eiwa CLI comes with two main operational modes:
+The **`eiwa` CLI** is the single entry point for the entire developer experience: projects, dependencies, compilation and execution. You rarely need to touch the compiler backend (`eiwac`) directly.
+
+### Project Layout
+
+An Eiwa project is just a directory with an `eiwa.yaml` manifest and a `src/main.ei` entry point:
+
+```text
+my-project/
+├── src/
+│   └── main.ei
+└── eiwa.yaml
+```
+
+```yaml
+name: my-project
+version: 1.0.0
+output: bin/my-tool   # optional, default: bin/<name>
+
+dependencies:
+  html:
+    github: eiwa-lang/html
+    branch: main
+```
 
 ### `eiwa run` (Development)
-Perfect for development. It compiles a temporary binary, executes it instantly, and cleans up the mess. You get sub-second feedback as if it were a dynamic scripting language.
+Compiles the project (resolving and cloning git dependencies into the shared local repository on first use) and executes it instantly. Sub-second feedback, as if it were a dynamic scripting language.
 ```bash
-eiwa run my_script.ei
+eiwa run              # inside the project directory
+eiwa run my-project/  # or pointing to a project directory
 ```
 
 ### `eiwa build` (Production)
-Perfect for distribution. Generates a standalone native binary locally with an incredibly low memory footprint, ready to be deployed to servers.
+Generates a standalone native binary with an incredibly low memory footprint, ready to be deployed. Output defaults to `bin/<name>` and is configurable via `output:` in the manifest.
 ```bash
-eiwa build my_script.ei
+eiwa build my-project/
 ```
 
-### `eiwa test` (Testing)
-Eiwa has native test integration. Simply create files ending in `_test.ei` containing native `test "name" { }` blocks and run the test CLI.
-The compiler will automatically find, group, and execute all tests locally, isolating them from your production binaries.
-```bash
-eiwa test
+### Dependencies
+Declare git dependencies in `eiwa.yaml` and that's it — `eiwa` clones them once into `~/.eiwa/repository/` and wires the imports for the compiler:
+
+```kotlin
+// src/main.ei
+import { html } from "html"
 ```
+
+### Single-file scripts & tests
+For quick scripts and the native test suite, the compiler backend `eiwac` is available directly:
+```bash
+eiwac run my_script.ei    # run a standalone script
+eiwac test                # run test "name" {} blocks
+```
+
 ---
 
 ## 🛠️ Contributing to the Compiler (For Contributors)
@@ -137,7 +170,11 @@ git clone https://github.com/your-username/eiwa.git
 cd eiwa
 zig build
 ```
-This generates the `eiwa` binary inside `./zig-out/bin/`. *(For a more detailed breakdown, see our [Setup Guide](docs/setup.md)).*
+This generates the `eiwac` compiler binary in `./bin/`. To also build the `eiwa` CLI (written in Eiwa itself):
+```bash
+./bin/eiwac build --backend=c -o bin/eiwa cli/src/main.ei
+```
+*(For a more detailed breakdown, see our [Setup Guide](docs/setup.md)).*
 
 ---
 
@@ -155,7 +192,9 @@ Eiwa's compiler is fully documented. If you are curious about how we process AST
 
 ## 🛣️ What's Next? (Roadmap)
 
-The **composition type system** (Phase 41) just landed: `type`, `contract`, `skill` and `implement` replaced classes and inheritance entirely. The immediate next steps include:
+The **package manager** (`eiwa` CLI) just landed: projects with `eiwa.yaml`, git dependencies cloned into a shared local repository, and `build`/`run` commands. Next steps for it: `init`/`add`/`update`/`freeze` commands, registry dependencies and transitive resolution (MVS) — see [docs/plan_package_manager.md](docs/plan_package_manager.md).
+
+The **composition type system** (Phase 41) also landed recently: `type`, `contract`, `skill` and `implement` replaced classes and inheritance entirely. Other next steps include:
 - **Phase 42:** Null safety on contract receivers (`?.` dispatch on nullable contracts).
 - **Phase 43:** Heterogeneous contract collections (`List<Drawable>` with dynamic dispatch per element).
 - **Phase 44:** Composition test coverage hardening (cross-module skills, negative fixtures).

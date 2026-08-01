@@ -51,6 +51,7 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption(bool, "has_llvm", has_llvm);
+    options.addOption([]const u8, "eiwa_home", b.path("src").getPath(b));
 
     const exe_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -72,11 +73,14 @@ pub fn build(b: *std.Build) void {
     }
 
     const exe = b.addExecutable(.{
-        .name = "eiwa",
+        .name = "eiwac",
         .root_module = exe_module,
     });
 
-    b.installArtifact(exe);
+    const install_eiwac = b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = .{ .custom = "../bin" } },
+    });
+    b.getInstallStep().dependOn(&install_eiwac.step);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

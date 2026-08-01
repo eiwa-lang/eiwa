@@ -536,6 +536,28 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 
 ---
 
+### Phase 59: Package Manager — `eiwa` CLI + `eiwac` backend (IN PROGRESS)
+> **Motivação:** Unificar a experiência do desenvolvedor em um único CLI (`eiwa`) para projetos e dependências, com o compilador renomeado para `eiwac` e usado apenas como backend. Spec completa em [docs/plan_package_manager.md](plan_package_manager.md).
+>
+> **Recursos:**
+> - Binário do compilador renomeado para `eiwac` (`zig build` instala em `bin/eiwac`).
+> - CLI `eiwa` escrito 100% em Eiwa (`cli/src/main.ei`), compilado com `eiwac build -o bin/eiwa`.
+> - Projetos com manifesto `eiwa.yaml` (`name`, `version`, `output`, `dependencies`) e entry point fixo `src/main.ei`.
+> - Dependências git (`github:` + `branch`/`tag`/`commit`) clonadas em `~/.eiwa/repository/<nome>/<commit>` e repassadas ao compilador como `--module-path`.
+> - Compilador: novos flags `-o <nome>` e `--module-path <dir>`; argv exposto ao programa (`eiwa_args_count`/`eiwa_args_get`); includes e `@Source`/`@Include` resolvidos por caminho absoluto independente do cwd; `run` repassa argumentos extras ao programa.
+> - Bibliotecas extraídas para repos próprios: `eiwa-lang/html`, `eiwa-lang/arest`, `eiwa-lang/postgres`.
+
+- [x] **Task 59.1:** Renomear binário para `eiwac` e instalar em `bin/` via `zig build`.
+- [x] **Task 59.2:** Flags `-o`, `--module-path`, `--help` no `eiwac`; repasse de args em `run`; paths independentes do cwd.
+- [x] **Task 59.3:** Runtime expõe argc/argv (`eiwa_args_count`/`eiwa_args_get` em `eiwa_runtime.h`).
+- [x] **Task 59.4:** CLI `eiwa` em Eiwa com `build`, `run`, `--help`, `project-dir` e resolução de dependências git (parser minimalista do manifesto, TODO para DTO).
+- [x] **Task 59.5:** Extrair `samples/html`, `samples/arest`, `samples/postgres` para os repos `eiwa-lang/*` e consumi-los via `eiwa.yaml` em `samples/project/*`.
+- [ ] **Task 59.6:** Comandos `init`, `add`, `remove`, `update`, `freeze`, `test` no CLI.
+- [ ] **Task 59.7:** Resolução transitiva (MVS), arquivos `resolutions/` e `eiwa.freeze`.
+- [ ] **Task 59.8:** Dependências de registry (versões exatas) quando houver registry.
+
+---
+
 ## ✅ Definition of Done (Per Phase)
 * [x] **Security/Lint:** No memory leaks in tests (utilizing `std.testing.allocator` across internal Zig modules).
 * [x] **Build:** `zig build test` and `zig build run` execute successfully.

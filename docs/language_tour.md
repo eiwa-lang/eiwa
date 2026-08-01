@@ -1032,7 +1032,7 @@ Annotated `lib` blocks instruct the compiler and linker on how to process native
 A `lib` block is self-contained: everything the C toolchain needs to build the binding is declared next to it, with no hardcoded flags in the compiler:
 
 ```kotlin
-// samples/postgres/native.ei
+// From the eiwa-lang/postgres package: src/native.ei
 @Link("pq")
 @Header("<libpq-fe.h>")
 @Header("libpq/libpq_wrapper.h")
@@ -1067,22 +1067,63 @@ lib NativeHttp {
 
 ### 16.2 Custom CLI C-Flags (`-I`, `-L`, `-l`, `-D`)
 
-When building or running Eiwa applications, you can pass custom C compiler and linker flags directly to `eiwa run`, `eiwa build`, or `eiwa test`:
+When building or running Eiwa applications, you can pass custom C compiler and linker flags directly to `eiwac run`, `eiwac build`, or `eiwac test`:
 
 ```bash
 # Pass custom include (-I) and library (-L) search paths
-eiwa run app.ei -I /opt/homebrew/opt/libpq/include -L /opt/homebrew/opt/libpq/lib
+eiwac run app.ei -I /opt/homebrew/opt/libpq/include -L /opt/homebrew/opt/libpq/lib
 
 # Build a binary with custom C defines and linked libraries
-eiwa build main.ei -I/usr/local/include -L/usr/local/lib -l custom -DDEBUG_MODE
+eiwac build main.ei -I/usr/local/include -L/usr/local/lib -l custom -DDEBUG_MODE
 
 # Run tests with custom C flags
-eiwa test samples/tests/postgres_test.ei -I /opt/homebrew/opt/libpq/include
+eiwac test samples/tests/postgres_test.ei -I /opt/homebrew/opt/libpq/include
 ```
 
 All C flags passed on the CLI are automatically collected and forwarded to `zig cc` during compilation.
 
 *(Note: In the current phase, Annotations are structural compiler pragmas. In future phases, Eiwa will support declaring custom user-defined annotations natively).*
+
+### 16.3 Compiler Options & Program Arguments
+
+The compiler backend binary is **`eiwac`** (the `eiwa` command is the developer CLI, see Section 30).
+
+```bash
+eiwac <run|build|test> [options] [file.ei] [program args...]
+
+Options:
+  --backend=c        Use the C backend (stable)
+  --backend=llvm     Use the LLVM backend (if available)
+  --release          Optimized build (LLVM backend)
+  -o <name>          Output binary name/path (build command)
+  --module-path <d>  Extra directory to resolve imports (repeatable)
+  -h, --help         Show help
+```
+
+**Program arguments.** Extra positional arguments after the file are forwarded to the program by `eiwac run`. Inside Eiwa, the runtime exposes them through two C functions (available without any `@Header`, since they live in the Eiwa runtime):
+
+```kotlin
+@Header("<string.h>")
+lib NativeArgs {
+    fun eiwa_args_count(): Int
+    fun eiwa_args_get(i: Int): Pointer
+    fun strlen(s: Pointer): Int
+}
+
+fun main() {
+    val count = NativeArgs.eiwa_args_count()
+    var i = 0
+    while (i < count) {
+        val ptr = NativeArgs.eiwa_args_get(i)
+        if (ptr != null) {
+            println(String(ptr, NativeArgs.strlen(ptr)))
+        }
+        i = i + 1
+    }
+}
+```
+
+**Module search paths.** With `--module-path <dir>`, bare imports that do not resolve relative to the importing file are looked up in each module path (in order). Explicit relative imports (`./x`, `../x`) and `std.*` packages are never affected. This is how the `eiwa` CLI wires external dependencies (Section 30) without the compiler knowing about `~/.eiwa`.
 
 ---
 
@@ -1990,3 +2031,64 @@ assert(allocated[1].cents == 300)
 
 ```
 
+---
+
+## 30. Developer CLI (`eiwa`)
+
+`eiwa` is the official developer CLI (project and dependency management). It is written in Eiwa itself (`cli/`) and drives the `eiwac` compiler backend. See `docs/plan_package_manager.md` for the full specification.
+
+```bash
+eiwa <command> [project-dir]
+
+Commands (implemented):
+  build        Compile the project (src/main.ei) to a native binary
+  run          Compile and execute the project
+  -h, --help   Show help
+
+Arguments:
+  project-dir  Project directory (default: current directory)
+```
+
+### 30.1 Project Layout & Manifest
+
+A project is a directory with an `eiwa.yaml` manifest and a fixed `src/main.ei` entry point:
+
+```text
+my-project/
+├── src/
+│   └── main.ei
+├── test/
+└── eiwa.yaml
+```
+
+```yaml
+name: my-project
+version: 1.0.0
+output: bin/my-tool   # optional, default: bin/<name>
+
+dependencies:
+  html:
+    github: eiwa-lang/html
+    branch: main
+```
+
+### 30.2 Git Dependencies (implemented)
+
+Git dependencies are resolved with `git ls-remote`, cloned once into the shared local repository `~/.eiwa/repository/<name>/<commit>`, and passed to `eiwac` as `--module-path <repo>/src`. Sources: `github:` (with optional `branch`, `tag`, or `commit`). `eiwac build` never upgrades dependencies by itself.
+
+```kotlin
+// src/main.ei
+import { html } from "html"
+```
+
+### 30.3 Compiler Location
+
+The CLI locates `eiwac` in this order:
+
+1. `EIWAC` environment variable
+2. An `eiwac` binary next to the `eiwa` executable
+3. `eiwac` on `PATH`
+
+### 30.4 Not Yet Implemented
+
+`init`, `add`, `remove`, `update`, `freeze`, `test`, registry dependencies, transitive resolution (MVS) and `eiwa.freeze`. The manifest parser is currently a minimal indentation parser (marked with a TODO in the code) to be replaced by a typed DTO.

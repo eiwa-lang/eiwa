@@ -1,0 +1,10 @@
+import { html } from "html"
+
+fun main() {
+    val page = html {
+        body {
+            h1("Hello com dependencia git!", class = "title")
+        }
+    }
+    println(page)
+}

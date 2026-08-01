@@ -28,8 +28,34 @@ pub fn main(init: std.process.Init) !void {
     }
     const args = args_list.items;
 
+    if (args.len >= 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
+        std.debug.print(
+            \\eiwac - Eiwa compiler backend
+            \\
+            \\Usage: eiwac <command> [options] [file.ei] [program args...]
+            \\
+            \\Commands:
+            \\  run        Compile and execute the program
+            \\  build      Compile to a native binary
+            \\  test       Run test blocks ("test \"name\" {{ ... }}")
+            \\
+            \\Options:
+            \\  --backend=c      Use the C backend (stable)
+            \\  --backend=llvm   Use the LLVM backend (if available)
+            \\  --release        Optimized build (LLVM backend)
+            \\  -o <name>        Output binary name (build command)
+            \\  -I, -L, -l, -D   Extra flags forwarded to the C compiler
+            \\  -h, --help       Show this help
+            \\
+            \\Extra positional arguments after the file are forwarded to
+            \\the program when using the run command.
+            \\
+        , .{});
+        return;
+    }
+
     if (args.len < 2 or (!std.mem.eql(u8, args[1], "run") and !std.mem.eql(u8, args[1], "build") and !std.mem.eql(u8, args[1], "test"))) {
-        std.debug.print("Usage: eiwa <run|build|test> [file.ei]\n", .{});
+        std.debug.print("Usage: eiwac <run|build|test> [options] [file.ei]  (see eiwac --help)\n", .{});
         return;
     }
     const is_build = std.mem.eql(u8, args[1], "build");
@@ -50,6 +76,9 @@ pub fn main(init: std.process.Init) !void {
     var backend_kind: BackendKind = if (build_options.has_llvm) .llvm else .c;
     var backend_explicit: bool = false;
     var is_release: bool = false;
+    var output_name: ?[]const u8 = null;
+    var module_paths = ArrayList([]const u8).init(allocator);
+    defer module_paths.deinit();
 
     var arg_idx: usize = 2;
     while (arg_idx < args.len) : (arg_idx += 1) {
@@ -60,6 +89,20 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--backend=c")) {
             backend_kind = .c;
             backend_explicit = true;
+        } else if (std.mem.eql(u8, arg, "-o")) {
+            if (arg_idx + 1 >= args.len) {
+                std.debug.print("Error: -o requires an output name\n", .{});
+                return;
+            }
+            arg_idx += 1;
+            output_name = args[arg_idx];
+        } else if (std.mem.eql(u8, arg, "--module-path")) {
+            if (arg_idx + 1 >= args.len) {
+                std.debug.print("Error: --module-path requires a directory\n", .{});
+                return;
+            }
+            arg_idx += 1;
+            try module_paths.append(args[arg_idx]);
         } else if (std.mem.eql(u8, arg, "--release")) {
             is_release = true;
         } else if (std.mem.startsWith(u8, arg, "-I") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-D")) {
@@ -76,6 +119,9 @@ pub fn main(init: std.process.Init) !void {
             try positionals.append(arg);
         }
     }
+
+    type_checker.module_search_paths = module_paths.items;
+    type_checker.module_search_io = io;
 
     if (is_test and backend_kind == .llvm) {
         if (backend_explicit) {
@@ -313,7 +359,7 @@ pub fn main(init: std.process.Init) !void {
             const basename = std.fs.path.basename(filename);
             const ext = std.fs.path.extension(basename);
             const out_bin_name = basename[0 .. basename.len - ext.len];
-            const final_bin = if (out_bin_name.len > 0) out_bin_name else "a.out";
+            const final_bin = output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
 
             try emitter.emitNativeBinary(final_bin, io);
             std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
@@ -347,9 +393,17 @@ pub fn main(init: std.process.Init) !void {
     const basename = std.fs.path.basename(filename);
     const ext = std.fs.path.extension(basename);
     const out_bin_name = basename[0 .. basename.len - ext.len];
-    const final_bin = if (is_test) "test_runner" else if (out_bin_name.len > 0) out_bin_name else "a.out";
+    const final_bin = if (is_test) "test_runner" else output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
 
     const actual_zig = "zig";
+
+    const self_src_dir = build_options.eiwa_home;
+    const repo_root = std.fs.path.dirname(self_src_dir) orelse ".";
+
+    const inc_transpiler = try std.fs.path.join(allocator, &.{ repo_root, "src/backend/c_transpiler" });
+    const inc_third_party = try std.fs.path.join(allocator, &.{ repo_root, "src/runtime/third_party" });
+    const inc_transpiler_flag = try std.fmt.allocPrint(allocator, "-I{s}", .{inc_transpiler});
+    const inc_third_party_flag = try std.fmt.allocPrint(allocator, "-I{s}", .{inc_third_party});
 
     var cc_argv = ArrayList([]const u8).init(allocator);
     try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", "-O0", "-fwrapv", "-fno-sanitize=undefined" });
@@ -357,8 +411,8 @@ pub fn main(init: std.process.Init) !void {
         try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
     }
     try cc_argv.appendSlice(&[_][]const u8{
-        "-Isrc/backend/c_transpiler",
-        "-Isrc/runtime/third_party",
+        inc_transpiler_flag,
+        inc_third_party_flag,
         out_c_filename,
         "-lgc",
     });
@@ -479,8 +533,17 @@ pub fn main(init: std.process.Init) !void {
         var exe_path_buf: [1024]u8 = undefined;
         const exe_path = try std.fmt.bufPrint(&exe_path_buf, "./{s}", .{final_bin});
 
+        var child_argv = ArrayList([]const u8).init(allocator);
+        defer child_argv.deinit();
+        try child_argv.append(exe_path);
+        if (positionals.items.len > 1) {
+            for (positionals.items[1..]) |extra| {
+                try child_argv.append(extra);
+            }
+        }
+
         var child = try std.process.spawn(io, .{
-            .argv = &[_][]const u8{exe_path},
+            .argv = child_argv.items,
         });
         const term = try child.wait(io);
 

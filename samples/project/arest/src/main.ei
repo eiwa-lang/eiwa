@@ -1,4 +1,4 @@
-import { arest } from "./arest"
+import { arest } from "arest"
 
 import { date, now, Time } from "std.time"
 import { List, MutableList, MutableMap } from "std.collections"
@@ -7,8 +7,8 @@ import { Json } from "std.json"
 import { Yaml } from "std.yaml"
 
 import { Log } from "std.log"
-import { Postgres } from "../postgres/postgres"
-import { html } from "../html/html"
+import { Postgres } from "postgres"
+import { html } from "html"
 
 import { brl } from "std.money"
 
@@ -40,7 +40,7 @@ fun main() {
                             span(class = "inline-block px-4 py-1.5 rounded-full text-xs font-semibold bg-blue-950 text-blue-400 border border-blue-800 mb-6", text = "⚡ Arest Web Framework v1.0")
                             h1("Eiwa Programming Language", class = "text-4xl font-extrabold text-white tracking-tight mb-3")
                             h2("Natively compiled systems language with Kotlin-inspired syntax.", class = "text-base text-gray-400 mb-8")
-                            
+
                             div(class = "grid grid-cols-3 gap-4 mb-8 text-left") {
                                 div(class = "bg-gray-950 p-4 rounded-xl border border-gray-800") {
                                     h3("Native C Backend", class = "text-xs font-bold text-blue-400 uppercase tracking-wider mb-1")

@@ -140,6 +140,15 @@ pub const TypeChecker = struct {
     }
 };
 
+pub var module_search_paths: []const []const u8 = &.{};
+pub var module_search_io: ?std.Io = null;
+
+fn pathExists(path: []const u8) bool {
+    const io = module_search_io orelse return false;
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
 pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, actual_module_path: []const u8) ![]const u8 {
     if (std.mem.startsWith(u8, actual_module_path, "std.")) {
         var pkg_name = actual_module_path[4..];
@@ -153,11 +162,27 @@ pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, act
         }
         return try std.fmt.allocPrint(allocator, "std/{s}.ei", .{pkg_buf});
     } else {
-        if (std.mem.eql(u8, dir_path, ".")) {
-            return actual_module_path;
-        } else {
-            return try std.fs.path.join(allocator, &.{ dir_path, actual_module_path });
+        const relative = if (std.mem.eql(u8, dir_path, "."))
+            actual_module_path
+        else
+            try std.fs.path.join(allocator, &.{ dir_path, actual_module_path });
+
+        const is_explicit_relative = std.mem.startsWith(u8, actual_module_path, "./") or
+            std.mem.startsWith(u8, actual_module_path, "../") or
+            std.fs.path.isAbsolute(actual_module_path);
+        if (is_explicit_relative or module_search_paths.len == 0) {
+            return relative;
         }
+        if (pathExists(relative)) {
+            return relative;
+        }
+        for (module_search_paths) |search_dir| {
+            const candidate = try std.fs.path.join(allocator, &.{ search_dir, actual_module_path });
+            if (pathExists(candidate)) {
+                return candidate;
+            }
+        }
+        return relative;
     }
 }
 

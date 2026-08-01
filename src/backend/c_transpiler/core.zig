@@ -388,7 +388,7 @@ pub const CTranspiler = struct {
                     }
 
                     if (self.is_test_mode) {
-                        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    (void)argc;\n    (void)argv;\n");
+                        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    eiwa_argc = argc;\n    eiwa_argv = argv;\n");
                         for (self.static_initializers.items) |si| {
                             try self.writer.writer().print("    {s} = ", .{si.name});
                             try self.emitExpression(si.init);
@@ -426,8 +426,8 @@ pub const CTranspiler = struct {
                         try self.writer.appendSlice("    return __failed;\n}\n");
                     } else if (!has_main) {
                         try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n");
-                        try self.writer.appendSlice("    (void)argc;\n");
-                        try self.writer.appendSlice("    (void)argv;\n");
+                        try self.writer.appendSlice("    eiwa_argc = argc;\n");
+                        try self.writer.appendSlice("    eiwa_argv = argv;\n");
                         for (self.static_initializers.items) |si| {
                             try self.writer.writer().print("    {s} = ", .{si.name});
                             try self.emitExpression(si.init);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const compat = @import("../../core/compat.zig");
 const ArrayList = compat.ArrayList;
 const core = @import("core.zig");
@@ -6,6 +7,13 @@ const ts = @import("../../core/type_system.zig");
 
 const ASTNode = core.ASTNode;
 const CTranspiler = core.CTranspiler;
+
+fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (!std.mem.startsWith(u8, path, "src/")) return path;
+    const src_dir = build_options.eiwa_home;
+    const repo_root = std.fs.path.dirname(src_dir) orelse return path;
+    return try std.fs.path.join(allocator, &.{ repo_root, path });
+}
 
 pub fn emitTypeDecl(self: *CTranspiler, node: *ASTNode) !void {
     const type_decl = node.data.type_decl;
@@ -341,7 +349,7 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     try self.writer.appendSlice("}\n\n");
 
     if (is_main) {
-        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    (void)argc;\n    (void)argv;\n");
+        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    eiwa_argc = argc;\n    eiwa_argv = argv;\n");
         for (self.static_initializers.items) |si| {
             try self.writer.writer().print("    {s} = ", .{si.name});
             try self.emitExpression(si.init);
@@ -393,9 +401,9 @@ pub fn emitLibDecl(self: *CTranspiler, node: *ASTNode) !void {
                 try self.link_libraries.put(arg, {});
             }
         } else if (std.mem.eql(u8, ann.name, "Source")) {
-            // C source file to compile and link (path relative to cwd).
+            // C source file to compile and link (relative to cwd, falling back to repo root).
             for (ann.arguments) |arg| {
-                try self.c_sources.put(arg, {});
+                try self.c_sources.put(try resolveRepoPath(self.allocator, arg), {});
             }
         } else if (std.mem.eql(u8, ann.name, "Include")) {
             // Extra -I directory for the C compiler.
@@ -405,7 +413,7 @@ pub fn emitLibDecl(self: *CTranspiler, node: *ASTNode) !void {
                     const resolved = try std.fs.path.join(self.allocator, &.{ dir, arg });
                     try self.c_includes.put(resolved, {});
                 } else {
-                    try self.c_includes.put(arg, {});
+                    try self.c_includes.put(try resolveRepoPath(self.allocator, arg), {});
                 }
             }
         } else if (std.mem.eql(u8, ann.name, "Define")) {

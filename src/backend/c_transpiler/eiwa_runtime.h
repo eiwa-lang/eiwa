@@ -93,6 +93,12 @@ typedef struct EiwaExceptionFrame {
 extern __thread EiwaExceptionFrame* eiwa_exception_stack;
 extern __thread void* eiwa_active_exception;
 
+static int eiwa_argc = 0;
+static char** eiwa_argv = 0;
+
+static inline int eiwa_args_count(void) { return eiwa_argc; }
+static inline char* eiwa_args_get(int i) { return (i >= 0 && i < eiwa_argc) ? eiwa_argv[i] : 0; }
+
 static inline void eiwa_push_exception_frame(EiwaExceptionFrame* frame) {
     frame->next = eiwa_exception_stack;
     eiwa_exception_stack = frame;

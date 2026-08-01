@@ -3,3 +3,4 @@ zig-out/
 temp_out.c
 test_runner
 synthetic_test.ei
+bin/

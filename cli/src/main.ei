@@ -1,0 +1,314 @@
+import { File } from "std.fs"
+import { Env } from "std.env"
+import { MutableList } from "std.collections"
+
+@Header("<stdlib.h>", "<stdio.h>", "<string.h>", "<unistd.h>")
+lib NativeCli {
+    fun system(cmd: String): Int
+    fun strlen(s: Pointer): Int
+    fun malloc(size: Int): Pointer
+    fun popen(cmd: String, mode: String): Pointer
+    fun pclose(stream: Pointer): Int
+    fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer
+    fun chdir(path: String): Int
+    fun realpath(path: String, resolved: Pointer): Pointer
+    fun eiwa_args_count(): Int
+    fun eiwa_args_get(i: Int): Pointer
+}
+
+// TODO: converter este parser minimalista em um DTO tipado do manifesto
+// (eiwa.yaml) quando houver um parser YAML/serde disponivel em Eiwa.
+type Dependency(val name: String, var github: String = "", var branch: String = "", var tag: String = "", var commit: String = "")
+
+fun argAt(i: Int): String? {
+    val count = NativeCli.eiwa_args_count()
+    if (i < 0 || i >= count) {
+        return null
+    }
+    val ptr = NativeCli.eiwa_args_get(i)
+    if (ptr == null) {
+        return null
+    }
+    return String(ptr, NativeCli.strlen(ptr))
+}
+
+fun eiwacPath(): String {
+    val fromEnv = Env.get("EIWAC")
+    if (fromEnv != null) {
+        return fromEnv!!
+    }
+    val selfOpt = argAt(0)
+    if (selfOpt != null) {
+        val self = selfOpt!!
+        var slash = -1
+        var i = 0
+        while (i < self.length) {
+            if (self.substring(i, i + 1) == "/") {
+                slash = i
+            }
+            i = i + 1
+        }
+        if (slash != -1) {
+            val candidate = self.substring(0, slash + 1) + "eiwac"
+            val buf = NativeCli.malloc(4096)
+            if (NativeCli.realpath(candidate, buf) != null) {
+                return String(buf, NativeCli.strlen(buf))
+            }
+            return candidate
+        }
+    }
+    return "eiwac"
+}
+
+fun trim(s: String): String {
+    var start = 0
+    var end = s.length
+    while (start < end && isSpace(s.substring(start, start + 1))) {
+        start = start + 1
+    }
+    while (end > start && isSpace(s.substring(end - 1, end))) {
+        end = end - 1
+    }
+    return s.substring(start, end)
+}
+
+fun isSpace(c: String): Bool {
+    return c == " " || c == "\t" || c == "\r" || c == "\n"
+}
+
+fun startsWith(s: String, prefix: String): Bool {
+    if (s.length < prefix.length) {
+        return false
+    }
+    return s.substring(0, prefix.length) == prefix
+}
+
+fun endsWith(s: String, suffix: String): Bool {
+    if (s.length < suffix.length) {
+        return false
+    }
+    return s.substring(s.length - suffix.length, s.length) == suffix
+}
+
+fun indentOf(line: String): Int {
+    var n = 0
+    while (n < line.length && line.substring(n, n + 1) == " ") {
+        n = n + 1
+    }
+    return n
+}
+
+fun execCapture(cmd: String): String {
+    val stream = NativeCli.popen(cmd, "r")
+    if (stream == null) {
+        return ""
+    }
+    val buf = NativeCli.malloc(4096)
+    var out = ""
+    while (NativeCli.fgets(buf, 4096, stream) != null) {
+        out = out + String(buf, NativeCli.strlen(buf))
+    }
+    NativeCli.pclose(stream)
+    return trim(out)
+}
+
+fun runOrFail(cmd: String) {
+    println("$ " + cmd)
+    val code = NativeCli.system(cmd)
+    if (code != 0) {
+        println("Error: command failed: " + cmd)
+        exit(1)
+    }
+}
+
+fun parseTopField(content: String, key: String): String? {
+    var rest = content
+    var looping = true
+    while (looping) {
+        val idx = rest.indexOf("\n")
+        val line = if (idx == -1) rest else rest.substring(0, idx)
+        val trimmed = trim(line)
+        if (trimmed != "" && indentOf(line) == 0 && startsWith(trimmed, key + ":")) {
+            val value = trim(trimmed.substring(key.length + 1, trimmed.length))
+            if (value != "") {
+                return value
+            }
+        }
+        if (idx == -1) {
+            looping = false
+        } else {
+            rest = rest.substring(idx + 1, rest.length)
+        }
+    }
+    return null
+}
+
+fun parseManifest(content: String): MutableList<Dependency> {
+    val deps = MutableList<Dependency>()
+    var inDeps = false
+    var current: Dependency? = null
+
+    var rest = content
+    var looping = true
+    while (looping) {
+        val idx = rest.indexOf("\n")
+        val line = if (idx == -1) rest else rest.substring(0, idx)
+        val trimmed = trim(line)
+
+        if (trimmed != "" && startsWith(trimmed, "#") == false) {
+            val indent = indentOf(line)
+            if (indent == 0) {
+                inDeps = trimmed == "dependencies:"
+                current = null
+            } else if (inDeps && indent == 2 && endsWith(trimmed, ":")) {
+                val name = trim(trimmed.substring(0, trimmed.length - 1))
+                val dep = Dependency(name)
+                deps.add(dep)
+                current = dep
+            } else if (inDeps && indent >= 4 && current != null) {
+                val colon = trimmed.indexOf(":")
+                if (colon != -1) {
+                    val key = trim(trimmed.substring(0, colon))
+                    val value = trim(trimmed.substring(colon + 1, trimmed.length))
+                    val dep = current!!
+                    if (key == "github") {
+                        dep.github = value
+                    } else if (key == "branch") {
+                        dep.branch = value
+                    } else if (key == "tag") {
+                        dep.tag = value
+                    } else if (key == "commit") {
+                        dep.commit = value
+                    }
+                }
+            }
+        }
+
+        if (idx == -1) {
+            looping = false
+        } else {
+            rest = rest.substring(idx + 1, rest.length)
+        }
+    }
+    return deps
+}
+
+fun resolveDependency(dep: Dependency, repositoryRoot: String): String {
+    val ref = if (dep.commit != "") dep.commit else if (dep.tag != "") dep.tag else if (dep.branch != "") dep.branch else "HEAD"
+    val url = "https://github.com/" + dep.github + ".git"
+    val remoteCommit = trim(execCapture("git ls-remote " + url + " " + ref))
+    if (remoteCommit == "") {
+        println("Error: could not resolve '" + ref + "' for dependency '" + dep.name + "'")
+        exit(1)
+    }
+    var commit = remoteCommit
+    val tabIdx = remoteCommit.indexOf("\t")
+    if (tabIdx != -1) {
+        commit = remoteCommit.substring(0, tabIdx)
+    }
+
+    val dest = repositoryRoot + "/" + dep.name + "/" + commit
+    if (File.exists(dest + "/eiwa.yaml") == false) {
+        runOrFail("mkdir -p " + repositoryRoot + "/" + dep.name)
+        runOrFail("git clone --quiet " + url + " " + dest)
+        runOrFail("git -C " + dest + " checkout --quiet " + commit)
+    }
+    return dest
+}
+
+fun printHelp() {
+    println("eiwa - Eiwa developer CLI")
+    println("")
+    println("Usage: eiwa <command> [project-dir]")
+    println("")
+    println("Commands:")
+    println("  build      Compile the project (src/main.ei) to a native binary")
+    println("  run        Compile and execute the project")
+    println("")
+    println("Arguments:")
+    println("  project-dir  Project directory (default: current directory)")
+    println("")
+    println("Options:")
+    println("  -h, --help   Show this help")
+    println("")
+    println("Environment:")
+    println("  EIWAC        Path to the eiwac compiler (default: eiwac next to the eiwa binary)")
+}
+
+fun main() {
+    val cmdOpt = argAt(1)
+    if (cmdOpt == null) {
+        printHelp()
+        exit(1)
+    }
+    val cmd = cmdOpt!!
+
+    if (cmd == "--help" || cmd == "-h") {
+        printHelp()
+        exit(0)
+    }
+
+    if (cmd != "build" && cmd != "run") {
+        println("Unknown command: " + cmd)
+        printHelp()
+        exit(1)
+    }
+
+    val eiwac = eiwacPath()
+
+    val dirOpt = argAt(2)
+    if (dirOpt != null) {
+        if (NativeCli.chdir(dirOpt!!) != 0) {
+            println("Error: cannot enter directory: " + dirOpt!!)
+            exit(1)
+        }
+    }
+
+    if (File.exists("eiwa.yaml") == false) {
+        println("Error: eiwa.yaml not found in current directory.")
+        exit(1)
+    }
+
+    val entry = "src/main.ei"
+    if (File.exists(entry) == false) {
+        println("Error: entry point not found: " + entry)
+        exit(1)
+    }
+
+    val homeOpt = Env.get("HOME")
+    if (homeOpt == null) {
+        println("Error: HOME not set.")
+        exit(1)
+    }
+    val repositoryRoot = homeOpt!! + "/.eiwa/repository"
+
+    val manifest = File.read("eiwa.yaml")
+    val deps = parseManifest(manifest)
+
+    val nameOpt = parseTopField(manifest, "name")
+    val projectName = if (nameOpt == null) "app" else nameOpt!!
+    val outputOpt = parseTopField(manifest, "output")
+    val output = if (outputOpt == null) "bin/" + projectName else outputOpt!!
+
+    val slash = output.indexOf("/")
+    if (slash != -1) {
+        runOrFail("mkdir -p " + output.substring(0, slash))
+    }
+
+    var modulePaths = ""
+    var i = 0
+    while (i < deps.size()) {
+        val dep = deps[i]
+        if (dep.github != "") {
+            val dest = resolveDependency(dep, repositoryRoot)
+            modulePaths = modulePaths + " --module-path " + dest + "/src"
+        }
+        i = i + 1
+    }
+
+    val fullCmd = eiwac + " " + cmd + " --backend=c" + modulePaths + " -o " + output + " " + entry
+    val code = NativeCli.system(fullCmd)
+    if (code != 0) {
+        exit(1)
+    }
+}
