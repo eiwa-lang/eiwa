@@ -15,19 +15,19 @@ fun main() {
     val arr = [10, 20, 30]
     val sum = sumArray(arr)
     assert(sum == 60)
-    
+
     val strings = ["Hello", "World"]
     val first = getFirstElement(strings)
     assert(first == "Hello")
-    
+
     val person1 = Person("Leo", 25)
     val person2 = Person("Ana", 22)
     val people = [person1, person2]
 
     for (person in people) {
-        print(person.name)
-        print(person.age)
+        echo(person.name)
+        echo(person.age)
     }
-    
-    print("Array and loop tests passed!")
+
+    echo("Array and loop tests passed!")
 }

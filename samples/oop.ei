@@ -2,9 +2,9 @@ type Person(val name: String, var age: Int)
 
 fun main() {
     val p = Person("Leo", 28)
-    print(p.name)
-    print(p.age)
+    echo(p.name)
+    echo(p.age)
     
     p.age = 29
-    print(p.age)
+    echo(p.age)
 }

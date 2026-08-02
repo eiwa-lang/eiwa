@@ -136,10 +136,20 @@ pub const LLVMEmitter = struct {
         const strlen_type = llvm.LLVMFunctionType(size_t_type, &strlen_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "strlen", strlen_type);
 
+        // strstr/memcpy prototypes for the eiwa_str_replace helper.
+        var strstr_params = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
+        const strstr_type = llvm.LLVMFunctionType(ptr_type, &strstr_params, 2, 0);
+        _ = llvm.LLVMAddFunction(mod, "strstr", strstr_type);
+
+        var memcpy_params = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type, size_t_type };
+        const memcpy_type = llvm.LLVMFunctionType(ptr_type, &memcpy_params, 3, 0);
+        _ = llvm.LLVMAddFunction(mod, "memcpy", memcpy_type);
+
         // eiwa_to_string(i64) -> i8* — mirrors the eiwa_runtime.h heuristic:
         //   val == 0 -> "null"; val == 1 -> "true"; val < 0x10000 -> int via sprintf; else it's a String (char*) as-is.
         try self.emitToStringHelper(mod);
         try self.emitHashStringHelper(mod);
+        try self.emitStrReplaceHelper(mod);
 
         // Collect the entry module and every module it (transitively) imports.
         var modules = ArrayList(*ast.ASTNode).init(self.allocator);
@@ -727,6 +737,135 @@ pub const LLVMEmitter = struct {
         llvm.LLVMPositionBuilderAtEnd(self.builder, done_bb);
         const final_hash = llvm.LLVMBuildLoad2(self.builder, i64_type, hash_ptr, "hs_final");
         _ = llvm.LLVMBuildRet(self.builder, final_hash);
+    }
+
+    /// Emits `eiwa_str_replace(i8* s, i8* old, i8* new) -> i8*` — replace all
+    /// occurrences of `old` by `new` in `s`, mirroring `String.replace` in
+    /// std/core.ei (strstr + memcpy loop).
+    ///
+    /// TODO(emitter): SPECIAL CASE — review before promoting LLVM to default.
+    /// Like emitToStringHelper/emitHashStringHelper, this is a hand-emitted
+    /// copy of the stdlib body because the LLVM model treats String as a bare
+    /// char* and can't run `core_String.replace` (which reads this.ptr /
+    /// this.length). malloc-first ordering is the libgc-linking workaround
+    /// (the stdlib body uses Standard.gcMalloc). LLVM-SPECIFIC (NOT inherited
+    /// from C): the C backend emits the real core_String.replace body.
+    fn emitStrReplaceHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
+        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+
+        var params = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type, ptr_type };
+        const fn_type = llvm.LLVMFunctionType(ptr_type, &params, 3, 0);
+        const fn_val = llvm.LLVMAddFunction(mod, "eiwa_str_replace", fn_type);
+
+        const entry = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const count_head = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "count_head");
+        const count_body = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "count_body");
+        const count_done = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "count_done");
+        const no_match_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "no_match");
+        const alloc_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "alloc");
+        const copy_head = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "copy_head");
+        const copy_body = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "copy_body");
+        const tail_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "tail");
+
+        const strlen_fn = llvm.LLVMGetNamedFunction(mod, "strlen") orelse return error.StrlenNotFound;
+        const strlen_type = llvm.LLVMGlobalGetValueType(strlen_fn);
+        const strstr_fn = llvm.LLVMGetNamedFunction(mod, "strstr") orelse return error.StrstrNotFound;
+        const strstr_type = llvm.LLVMGlobalGetValueType(strstr_fn);
+        const memcpy_fn = llvm.LLVMGetNamedFunction(mod, "memcpy") orelse return error.MemcpyNotFound;
+        const memcpy_type = llvm.LLVMGlobalGetValueType(memcpy_fn);
+        const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse return error.MallocNotFound;
+        const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const s = llvm.LLVMGetParam(fn_val, 0);
+        const old = llvm.LLVMGetParam(fn_val, 1);
+        const new_str = llvm.LLVMGetParam(fn_val, 2);
+
+        var slen_args = [_]llvm.LLVMValueRef{s};
+        const slen = llvm.LLVMBuildCall2(self.builder, strlen_type, strlen_fn, &slen_args, 1, "slen");
+        var olen_args = [_]llvm.LLVMValueRef{old};
+        const olen = llvm.LLVMBuildCall2(self.builder, strlen_type, strlen_fn, &olen_args, 1, "olen");
+        var nlen_args = [_]llvm.LLVMValueRef{new_str};
+        const nlen = llvm.LLVMBuildCall2(self.builder, strlen_type, strlen_fn, &nlen_args, 1, "nlen");
+
+        const count_ptr = llvm.LLVMBuildAlloca(self.builder, i64_type, "count");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, 0, 0), count_ptr);
+        const curr_ptr = llvm.LLVMBuildAlloca(self.builder, ptr_type, "curr");
+        _ = llvm.LLVMBuildStore(self.builder, s, curr_ptr);
+        _ = llvm.LLVMBuildBr(self.builder, count_head);
+
+        // Pass 1: count occurrences
+        llvm.LLVMPositionBuilderAtEnd(self.builder, count_head);
+        const curr1 = llvm.LLVMBuildLoad2(self.builder, ptr_type, curr_ptr, "curr1");
+        var strstr_args1 = [_]llvm.LLVMValueRef{ curr1, old };
+        const match1 = llvm.LLVMBuildCall2(self.builder, strstr_type, strstr_fn, &strstr_args1, 2, "match1");
+        const found1 = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntNE, match1, llvm.LLVMConstNull(ptr_type), "found1");
+        _ = llvm.LLVMBuildCondBr(self.builder, found1, count_body, count_done);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, count_body);
+        const c_val = llvm.LLVMBuildLoad2(self.builder, i64_type, count_ptr, "c_val");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMBuildAdd(self.builder, c_val, llvm.LLVMConstInt(i64_type, 1, 0), "c_inc"), count_ptr);
+        const match1_int = llvm.LLVMBuildPtrToInt(self.builder, match1, i64_type, "match1_int");
+        const next_curr = llvm.LLVMBuildAdd(self.builder, match1_int, olen, "next_curr");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMBuildIntToPtr(self.builder, next_curr, ptr_type, "next_curr_ptr"), curr_ptr);
+        _ = llvm.LLVMBuildBr(self.builder, count_head);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, count_done);
+        const final_count = llvm.LLVMBuildLoad2(self.builder, i64_type, count_ptr, "final_count");
+        const has_match = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntNE, final_count, llvm.LLVMConstInt(i64_type, 0, 0), "has_match");
+        _ = llvm.LLVMBuildCondBr(self.builder, has_match, alloc_bb, no_match_bb);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, no_match_bb);
+        _ = llvm.LLVMBuildRet(self.builder, s);
+
+        // newlen = slen + count * (nlen - olen); buf = malloc(newlen + 1)
+        llvm.LLVMPositionBuilderAtEnd(self.builder, alloc_bb);
+        const delta = llvm.LLVMBuildSub(self.builder, nlen, olen, "delta");
+        const total_delta = llvm.LLVMBuildMul(self.builder, final_count, delta, "total_delta");
+        const newlen = llvm.LLVMBuildAdd(self.builder, slen, total_delta, "newlen");
+        const alloc_size = llvm.LLVMBuildAdd(self.builder, newlen, llvm.LLVMConstInt(i64_type, 1, 0), "alloc_size");
+        var malloc_args = [_]llvm.LLVMValueRef{alloc_size};
+        const buf = llvm.LLVMBuildCall2(self.builder, malloc_type, malloc_fn, &malloc_args, 1, "buf");
+
+        _ = llvm.LLVMBuildStore(self.builder, s, curr_ptr);
+        const out_ptr = llvm.LLVMBuildAlloca(self.builder, ptr_type, "out");
+        _ = llvm.LLVMBuildStore(self.builder, buf, out_ptr);
+        _ = llvm.LLVMBuildBr(self.builder, copy_head);
+
+        // Pass 2: copy segments interleaved with the replacement
+        llvm.LLVMPositionBuilderAtEnd(self.builder, copy_head);
+        const curr2 = llvm.LLVMBuildLoad2(self.builder, ptr_type, curr_ptr, "curr2");
+        var strstr_args2 = [_]llvm.LLVMValueRef{ curr2, old };
+        const match2 = llvm.LLVMBuildCall2(self.builder, strstr_type, strstr_fn, &strstr_args2, 2, "match2");
+        const found2 = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntNE, match2, llvm.LLVMConstNull(ptr_type), "found2");
+        _ = llvm.LLVMBuildCondBr(self.builder, found2, copy_body, tail_bb);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, copy_body);
+        const out1 = llvm.LLVMBuildLoad2(self.builder, ptr_type, out_ptr, "out1");
+        const seg_len = llvm.LLVMBuildSub(self.builder, llvm.LLVMBuildPtrToInt(self.builder, match2, i64_type, "m2i"), llvm.LLVMBuildPtrToInt(self.builder, curr2, i64_type, "c2i"), "seg_len");
+        var cp1_args = [_]llvm.LLVMValueRef{ out1, curr2, seg_len };
+        _ = llvm.LLVMBuildCall2(self.builder, memcpy_type, memcpy_fn, &cp1_args, 3, "cp_seg");
+        const out1_int = llvm.LLVMBuildPtrToInt(self.builder, out1, i64_type, "out1_int");
+        const out2 = llvm.LLVMBuildIntToPtr(self.builder, llvm.LLVMBuildAdd(self.builder, out1_int, seg_len, "out2_int"), ptr_type, "out2");
+        var cp2_args = [_]llvm.LLVMValueRef{ out2, new_str, nlen };
+        _ = llvm.LLVMBuildCall2(self.builder, memcpy_type, memcpy_fn, &cp2_args, 3, "cp_new");
+        const out2_int = llvm.LLVMBuildPtrToInt(self.builder, out2, i64_type, "out2_int2");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMBuildIntToPtr(self.builder, llvm.LLVMBuildAdd(self.builder, out2_int, nlen, "out3_int"), ptr_type, "out3"), out_ptr);
+        const m2_int = llvm.LLVMBuildPtrToInt(self.builder, match2, i64_type, "m2_int");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMBuildIntToPtr(self.builder, llvm.LLVMBuildAdd(self.builder, m2_int, olen, "next2_int"), ptr_type, "next2"), curr_ptr);
+        _ = llvm.LLVMBuildBr(self.builder, copy_head);
+
+        // Copy the tail (including NUL terminator) and return
+        llvm.LLVMPositionBuilderAtEnd(self.builder, tail_bb);
+        const curr3 = llvm.LLVMBuildLoad2(self.builder, ptr_type, curr_ptr, "curr3");
+        const out4 = llvm.LLVMBuildLoad2(self.builder, ptr_type, out_ptr, "out4");
+        var tail_len_args = [_]llvm.LLVMValueRef{curr3};
+        const tail_len = llvm.LLVMBuildCall2(self.builder, strlen_type, strlen_fn, &tail_len_args, 1, "tail_len");
+        const tail_len_nul = llvm.LLVMBuildAdd(self.builder, tail_len, llvm.LLVMConstInt(i64_type, 1, 0), "tail_len_nul");
+        var cp3_args = [_]llvm.LLVMValueRef{ out4, curr3, tail_len_nul };
+        _ = llvm.LLVMBuildCall2(self.builder, memcpy_type, memcpy_fn, &cp3_args, 3, "cp_tail");
+        _ = llvm.LLVMBuildRet(self.builder, buf);
     }
 
     fn declareLib(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, lib_node: *ast.ASTNode) !void {

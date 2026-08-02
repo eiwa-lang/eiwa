@@ -107,6 +107,26 @@ pub fn emitExpression(
                 }
             }
 
+            // NativeArray builtins: `.length` loads slot 0 of the raw buffer
+            // layout (slot 0 = size, slot 1 = capacity, slots 2.. = elements),
+            // matching the array_literal emission below.
+            // TODO(emitter): SPECIAL CASE — review before promoting LLVM to
+            // default backend. `push`/`get`/`set`/`length` on .Array are
+            // inlined here instead of emitting shared EiwaArray_* helpers like
+            // the C transpiler does (src/backend/c_transpiler/core.zig:290).
+            // LLVM-SPECIFIC (NOT inherited from C): the C backend generates one
+            // EiwaArray struct + push/set functions per element type; the LLVM
+            // emitter uses an untyped i64 buffer and inlines the operations.
+            if (get.object.resolved_type) |obj_rt| {
+                if (obj_rt.* == .Array and std.mem.eql(u8, get.name, "length")) {
+                    const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                    var idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+                    const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &idx0, 1, "arr_len_ptr");
+                    return llvm.LLVMBuildLoad2(builder, i64_type, size_ptr, "arr_len");
+                }
+            }
+
             // Contract method dispatch: `value.toString()` where the static type
             // is a contract (e.g. `Stringable`). In the LLVM model the object is
             // a raw boxed value, so call the eiwa_to_string runtime helper.
@@ -151,6 +171,13 @@ pub fn emitExpression(
             // `this.length`/`this.ptr` struct fields the LLVM model doesn't
             // materialize, so use the eiwa_hash_string helper instead. Int's
             // hashCode is the value itself.
+            // TODO(emitter): SPECIAL CASE — review before promoting LLVM to
+            // default backend. This bypasses method dispatch entirely: Int/Bool
+            // return the raw value, Double bitcasts to i64, String/Pointer call
+            // eiwa_hash_string. If `hashCode` is ever overridden on a contract
+            // or redefined in std, this special case will silently shadow the
+            // real implementation. LLVM-SPECIFIC (NOT inherited from C): the C
+            // transpiler resolves hashCode through normal std method emission.
             if (std.mem.eql(u8, get.name, "hashCode")) {
                 if (get.object.resolved_type) |obj_rt| {
                     const obj_base = obj_rt.*;
@@ -160,6 +187,13 @@ pub fn emitExpression(
                         const fn_type = llvm.LLVMGlobalGetValueType(fn_val);
                         var args = [_]llvm.LLVMValueRef{obj_val};
                         return llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 1, "hash_tmp");
+                    }
+                    if (obj_base == .Int or obj_base == .Bool) {
+                        return try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                    }
+                    if (obj_base == .Double) {
+                        const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                        return llvm.LLVMBuildBitCast(builder, obj_val, llvm.LLVMInt64TypeInContext(ctx), "hash_double");
                     }
                 }
             }
@@ -199,6 +233,10 @@ pub fn emitExpression(
                         }
                     }
                 }
+            }
+            {
+                const rt = get.object.resolved_type;
+                std.debug.print("[llvm-dbg] get_expr '.{s}' on object kind={s} resolved_type={?}\n", .{ get.name, @tagName(get.object.data), rt });
             }
             return error.PropertyNotFound;
         },
@@ -732,6 +770,61 @@ pub fn emitExpression(
                 }
             }
 
+            // NativeArray builtins: `arr.get(i)`, `arr.set(i, v)`, `arr.push(v)`
+            // on the raw buffer layout (slot 0 = size, slot 1 = capacity,
+            // slots 2.. = elements). See the TODO(emitter) on `.length` above.
+            if (call.callee.data == .get_expr) {
+                const g = call.callee.data.get_expr;
+                if (g.object.resolved_type) |obj_rt| {
+                    if (obj_rt.* == .Array) {
+                        const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                        if (std.mem.eql(u8, g.name, "get") and call.arguments.len == 1) {
+                            const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            const i_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                            const offset_val = llvm.LLVMBuildAdd(builder, i_val, llvm.LLVMConstInt(i64_type, 2, 0), "offset");
+                            var elem_idx = [_]llvm.LLVMValueRef{offset_val};
+                            const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &elem_idx, 1, "arr_get_gep");
+                            return llvm.LLVMBuildLoad2(builder, i64_type, elem_ptr, "arr_get_val");
+                        }
+                        if (std.mem.eql(u8, g.name, "set") and call.arguments.len == 2) {
+                            const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            const i_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                            const val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[1]);
+                            const offset_val = llvm.LLVMBuildAdd(builder, i_val, llvm.LLVMConstInt(i64_type, 2, 0), "offset");
+                            var elem_idx = [_]llvm.LLVMValueRef{offset_val};
+                            const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &elem_idx, 1, "arr_set_gep");
+                            _ = llvm.LLVMBuildStore(builder, val, elem_ptr);
+                            return val;
+                        }
+                        if (std.mem.eql(u8, g.name, "push") and call.arguments.len == 1) {
+                            return try emitNativeArrayPush(ctx, mod, builder, scope, structs, libs, g.object, call.arguments[0]);
+                        }
+                    }
+                }
+            }
+
+            // String.replace(old, new) — routed to the hand-emitted
+            // eiwa_str_replace helper (see emitStrReplaceHelper in core.zig).
+            // TODO(emitter): SPECIAL CASE — same review bucket as hashCode /
+            // toString: bypasses method dispatch and will shadow any future
+            // std reimplementation of String.replace.
+            if (call.callee.data == .get_expr) {
+                const g = call.callee.data.get_expr;
+                if (std.mem.eql(u8, g.name, "replace") and call.arguments.len == 2) {
+                    if (g.object.resolved_type) |obj_rt| {
+                        if (obj_rt.* == .String) {
+                            const s_val = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            const old_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                            const new_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[1]);
+                            const fn_val = llvm.LLVMGetNamedFunction(mod, "eiwa_str_replace") orelse return error.StrReplaceHelperNotFound;
+                            const fn_type = llvm.LLVMGlobalGetValueType(fn_val);
+                            var args = [_]llvm.LLVMValueRef{ s_val, old_val, new_val };
+                            return llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 3, "replace_tmp");
+                        }
+                    }
+                }
+            }
+
             // Dynamic Function / Lambda Call
             const callee_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
 
@@ -1016,4 +1109,134 @@ fn coerceArg(
         }
     }
     return arg_val;
+}
+
+/// Resolves the memory address (lvalue) of an array buffer variable, so
+/// `push` can write back the (possibly reallocated) buffer pointer.
+/// Supports identifiers (local allocas) and field chains (`this.items`).
+fn emitArrayLvalue(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    node: *ast.ASTNode,
+) anyerror!llvm.LLVMValueRef {
+    switch (node.data) {
+        .identifier => |ident| {
+            const name = ident.resolved_c_name orelse ident.name;
+            if (scope.get(name)) |var_val| {
+                if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(var_val)) == llvm.LLVMPointerTypeKind) {
+                    return var_val;
+                }
+            }
+            return error.ArrayLvalueNotAddressable;
+        },
+        .get_expr => |get| {
+            const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+            if (get.object.resolved_type) |rt| {
+                var type_name: []const u8 = "";
+                if (rt.* == .Custom) {
+                    type_name = rt.Custom;
+                } else if (rt.* == .Pointer and rt.Pointer.* == .Custom) {
+                    type_name = rt.Pointer.Custom;
+                }
+                if (structs.get(type_name)) |s_info| {
+                    for (s_info.field_names, 0..) |f_name, f_idx| {
+                        if (std.mem.eql(u8, f_name, get.name)) {
+                            const field_name_z = try std.heap.page_allocator.dupeZ(u8, f_name);
+                            defer std.heap.page_allocator.free(field_name_z);
+                            return llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, obj_val, @intCast(f_idx), field_name_z.ptr);
+                        }
+                    }
+                }
+            }
+            return error.ArrayLvalueNotAddressable;
+        },
+        else => return error.ArrayLvalueNotAddressable,
+    }
+}
+
+/// Emits `arr.push(val)` on the raw buffer layout (slot 0 = size,
+/// slot 1 = capacity, slots 2.. = elements), growing via realloc when full
+/// and writing the (possibly moved) buffer pointer back to the lvalue.
+/// TODO(emitter): realloc-first ordering is the same libgc-linking workaround
+/// as malloc in emitTypeConstructor — the C backend uses GC_REALLOC inside
+/// EiwaArray_push (src/backend/c_transpiler/core.zig:315). LLVM-SPECIFIC.
+fn emitNativeArrayPush(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    object_node: *ast.ASTNode,
+    value_node: *ast.ASTNode,
+) anyerror!llvm.LLVMValueRef {
+    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+
+    const arr_addr = try emitArrayLvalue(ctx, mod, builder, scope, structs, libs, object_node);
+    const arr_val = llvm.LLVMBuildLoad2(builder, ptr_type, arr_addr, "arr_buf");
+    const val = try emitExpression(ctx, mod, builder, scope, structs, libs, value_node);
+
+    var idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+    const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &idx0, 1, "size_ptr");
+    const size_val = llvm.LLVMBuildLoad2(builder, i64_type, size_ptr, "size_val");
+
+    var idx1 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
+    const cap_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &idx1, 1, "cap_ptr");
+    const cap_val = llvm.LLVMBuildLoad2(builder, i64_type, cap_ptr, "cap_val");
+
+    const is_full = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, size_val, cap_val, "arr_full");
+
+    const func_val = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const pre_bb = llvm.LLVMGetInsertBlock(builder);
+    const grow_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "arr_grow");
+    const cont_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "arr_push_cont");
+    _ = llvm.LLVMBuildCondBr(builder, is_full, grow_bb, cont_bb);
+
+    // Grow: newcap = cap == 0 ? 4 : cap * 2; arr = realloc(arr, (newcap+2)*8)
+    llvm.LLVMPositionBuilderAtEnd(builder, grow_bb);
+    const cap_is_zero = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, cap_val, llvm.LLVMConstInt(i64_type, 0, 0), "cap_zero");
+    const doubled = llvm.LLVMBuildMul(builder, cap_val, llvm.LLVMConstInt(i64_type, 2, 0), "cap_doubled");
+    const new_cap = llvm.LLVMBuildSelect(builder, cap_is_zero, llvm.LLVMConstInt(i64_type, 4, 0), doubled, "new_cap");
+    const total_slots = llvm.LLVMBuildAdd(builder, new_cap, llvm.LLVMConstInt(i64_type, 2, 0), "total_slots");
+    const new_bytes = llvm.LLVMBuildMul(builder, total_slots, llvm.LLVMConstInt(i64_type, 8, 0), "new_bytes");
+
+    var realloc_fn = llvm.LLVMGetNamedFunction(mod, "realloc");
+    if (realloc_fn == null) {
+        var realloc_params = [_]llvm.LLVMTypeRef{ ptr_type, i64_type };
+        const realloc_type = llvm.LLVMFunctionType(ptr_type, &realloc_params, 2, 0);
+        realloc_fn = llvm.LLVMAddFunction(mod, "realloc", realloc_type);
+    }
+    const realloc_type = llvm.LLVMGlobalGetValueType(realloc_fn);
+    var realloc_args = [_]llvm.LLVMValueRef{ arr_val, new_bytes };
+    const grown_arr = llvm.LLVMBuildCall2(builder, realloc_type, realloc_fn, &realloc_args, 2, "grown_arr");
+
+    var grow_idx1 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
+    const new_cap_ptr = llvm.LLVMBuildGEP2(builder, i64_type, grown_arr, &grow_idx1, 1, "new_cap_ptr");
+    _ = llvm.LLVMBuildStore(builder, new_cap, new_cap_ptr);
+    _ = llvm.LLVMBuildBr(builder, cont_bb);
+
+    // Continue: store element, bump size, write buffer pointer back
+    llvm.LLVMPositionBuilderAtEnd(builder, cont_bb);
+    const phi = llvm.LLVMBuildPhi(builder, ptr_type, "arr_phi");
+    var phi_vals = [_]llvm.LLVMValueRef{ arr_val, grown_arr };
+    var phi_bbs = [_]llvm.LLVMBasicBlockRef{ pre_bb, grow_bb };
+    llvm.LLVMAddIncoming(phi, &phi_vals, &phi_bbs, 2);
+
+    const elem_offset = llvm.LLVMBuildAdd(builder, size_val, llvm.LLVMConstInt(i64_type, 2, 0), "elem_offset");
+    var elem_idx = [_]llvm.LLVMValueRef{elem_offset};
+    const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, phi, &elem_idx, 1, "push_elem_ptr");
+    _ = llvm.LLVMBuildStore(builder, val, elem_ptr);
+
+    const new_size = llvm.LLVMBuildAdd(builder, size_val, llvm.LLVMConstInt(i64_type, 1, 0), "new_size");
+    var phi_idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+    const phi_size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, phi, &phi_idx0, 1, "phi_size_ptr");
+    _ = llvm.LLVMBuildStore(builder, new_size, phi_size_ptr);
+
+    _ = llvm.LLVMBuildStore(builder, phi, arr_addr);
+    return val;
 }
