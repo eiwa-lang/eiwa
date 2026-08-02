@@ -42,11 +42,13 @@
     for `eiwa.yaml` (git dependencies only, marked with a TODO in the
     code). It must be replaced by a typed manifest DTO once a YAML
     parser/serde exists in Eiwa.
--   **Dependency resolution**: git dependencies are cloned to
-    `~/.eiwa/repository/<name>/<commit>` and passed to `eiwac` as
-    `--module-path <repo>/src`. Still missing: registry dependencies,
-    transitive resolution (MVS), `resolutions/` state files and
-    `eiwa.freeze`.
+-   **Dependency resolution**: git dependencies are resolved once via
+    `git ls-remote` and recorded in `~/.eiwa/resolutions/<manifest-hash>.yaml`;
+    subsequent builds reuse the recorded commit without network access.
+    Packages are cloned to `~/.eiwa/repository/<name>/<commit>` and passed
+    to `eiwac` as `--module-path <repo>/src`.     and `eiwa.freeze`. Still missing: `eiwa update`
+    (re-resolution), registry dependencies and transitive
+    resolution (MVS).
 
 ## Executables
 

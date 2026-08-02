@@ -553,7 +553,8 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 59.4:** CLI `eiwa` em Eiwa com `build`, `run`, `--help`, `project-dir` e resolução de dependências git (parser minimalista do manifesto, TODO para DTO).
 - [x] **Task 59.5:** Extrair `samples/html`, `samples/arest`, `samples/postgres` para os repos `eiwa-lang/*` e consumi-los via `eiwa.yaml` em `samples/project/*`.
 - [x] **Task 59.6:** Comando `test` no CLI (executa `test/` do projeto com dependências resolvidas).
-- [ ] **Task 59.6b:** Comandos `init`, `add`, `remove`, `update`, `freeze` no CLI.
+- [ ] **Task 59.6b:** Comandos `init`, `add`, `remove`, `update` no CLI.
+- [x] **Task 59.6c:** Comando `freeze` no CLI + flag `--frozen` e prioridade do `eiwa.freeze` sobre `resolutions/`.
 - [ ] **Task 59.7:** Resolução transitiva (MVS), arquivos `resolutions/` e `eiwa.freeze`.
 - [ ] **Task 59.8:** Dependências de registry (versões exatas) quando houver registry.
 

@@ -153,7 +153,7 @@ fun parseManifest(content: String): MutableList<Dependency> {
     return deps
 }
 
-fun resolveDependency(dep: Dependency, repositoryRoot: String): String {
+fun resolveCommit(dep: Dependency) {
     val ref = if (dep.commit != "") dep.commit else if (dep.tag != "") dep.tag else if (dep.branch != "") dep.branch else "HEAD"
     val url = "https://github.com/" + dep.github + ".git"
     val remoteCommit = trim(Process.capture("git ls-remote " + url + " " + ref))
@@ -166,14 +166,31 @@ fun resolveDependency(dep: Dependency, repositoryRoot: String): String {
     if (tabIdx != -1) {
         commit = remoteCommit.substring(0, tabIdx)
     }
+    dep.commit = commit
+}
 
-    val dest = repositoryRoot + "/" + dep.name + "/" + commit
+fun ensureCloned(dep: Dependency, repositoryRoot: String): String {
+    val dest = repositoryRoot + "/" + dep.name + "/" + dep.commit
     if (File.exists(dest + "/eiwa.yaml") == false) {
+        val url = "https://github.com/" + dep.github + ".git"
         runOrFail("mkdir -p " + repositoryRoot + "/" + dep.name)
         runOrFail("git clone --quiet " + url + " " + dest)
-        runOrFail("git -C " + dest + " checkout --quiet " + commit)
+        runOrFail("git -C " + dest + " checkout --quiet " + dep.commit)
     }
     return dest
+}
+
+fun serializeResolutions(deps: MutableList<Dependency>): String {
+    var out = "dependencies:\n"
+    var i = 0
+    while (i < deps.size()) {
+        val dep = deps[i]
+        out = out + "  " + dep.name + ":\n"
+        out = out + "    github: " + dep.github + "\n"
+        out = out + "    commit: " + dep.commit + "\n"
+        i = i + 1
+    }
+    return out
 }
 
 fun printHelp() {
@@ -185,12 +202,14 @@ fun printHelp() {
     println("  build      Compile the project (src/main.ei) to a native binary")
     println("  run        Compile and execute the project")
     println("  test       Run all test blocks found in the project")
+    println("  freeze     Pin resolved dependency commits into eiwa.freeze")
     println("")
     println("Arguments:")
     println("  project-dir  Project directory (default: current directory)")
     println("")
     println("Options:")
     println("  -h, --help   Show this help")
+    println("  --frozen     Fail if eiwa.freeze does not exist (for CI)")
     println("")
     println("Environment:")
     println("  EIWAC        Path to the eiwac compiler (default: eiwac next to the eiwa binary)")
@@ -209,7 +228,7 @@ fun main() {
         exit(0)
     }
 
-    if (cmd != "build" && cmd != "run" && cmd != "test") {
+    if (cmd != "build" && cmd != "run" && cmd != "test" && cmd != "freeze") {
         println("Unknown command: " + cmd)
         printHelp()
         exit(1)
@@ -218,7 +237,7 @@ fun main() {
     val eiwac = eiwacPath()
 
     val dirOpt = Process.argAt(2)
-    if (dirOpt != null) {
+    if (dirOpt != null && startsWith(dirOpt!!, "-") == false) {
         if (Process.chdir(dirOpt!!) == false) {
             println("Error: cannot enter directory: " + dirOpt!!)
             exit(1)
@@ -231,7 +250,7 @@ fun main() {
     }
 
     val entry = "src/main.ei"
-    if (cmd != "test" && File.exists(entry) == false) {
+    if (cmd != "test" && cmd != "freeze" && File.exists(entry) == false) {
         println("Error: entry point not found: " + entry)
         exit(1)
     }
@@ -244,14 +263,62 @@ fun main() {
     val repositoryRoot = homeOpt!! + "/.eiwa/repository"
 
     val manifest = File.read("eiwa.yaml")
-    val deps = parseManifest(manifest)
+    var deps = parseManifest(manifest)
+
+    val resolutionsDir = homeOpt!! + "/.eiwa/resolutions"
+    val resolutionsFile = resolutionsDir + "/" + manifest.hashCode().toString() + ".yaml"
+    val hasFreeze = File.exists("eiwa.freeze")
+
+    if (hasFreeze) {
+        deps = parseManifest(File.read("eiwa.freeze"))
+    } else if (File.exists(resolutionsFile)) {
+        deps = parseManifest(File.read(resolutionsFile))
+    } else {
+        var j = 0
+        while (j < deps.size()) {
+            val dep = deps[j]
+            if (dep.github != "") {
+                resolveCommit(dep)
+            }
+            j = j + 1
+        }
+        if (deps.size() > 0) {
+            runOrFail("mkdir -p " + resolutionsDir)
+            File.write(resolutionsFile, serializeResolutions(deps))
+        }
+    }
+
+    var frozenFlag = false
+    var argIdx = 2
+    while (argIdx < Process.argsCount()) {
+        val a = Process.argAt(argIdx)
+        if (a != null && a!! == "--frozen") {
+            frozenFlag = true
+        }
+        argIdx = argIdx + 1
+    }
+    if (frozenFlag && hasFreeze == false) {
+        println("Error: --frozen requires an eiwa.freeze file. Run 'eiwa freeze' first.")
+        exit(1)
+    }
+
+    if (cmd == "freeze") {
+        if (deps.size() == 0) {
+            println("No dependencies to freeze.")
+            exit(0)
+        }
+        File.write("eiwa.freeze", serializeResolutions(deps))
+        println("Wrote eiwa.freeze:")
+        print(serializeResolutions(deps))
+        exit(0)
+    }
 
     val nameOpt = parseTopField(manifest, "name")
     val projectName = if (nameOpt == null) "app" else nameOpt!!
     val outputOpt = parseTopField(manifest, "output")
     val output = if (outputOpt == null) "bin/" + projectName else outputOpt!!
 
-    if (cmd != "test") {
+    if (cmd != "test" && cmd != "freeze") {
         val slash = output.indexOf("/")
         if (slash != -1) {
             runOrFail("mkdir -p " + output.substring(0, slash))
@@ -263,7 +330,7 @@ fun main() {
     while (i < deps.size()) {
         val dep = deps[i]
         if (dep.github != "") {
-            val dest = resolveDependency(dep, repositoryRoot)
+            val dest = ensureCloned(dep, repositoryRoot)
             modulePaths = modulePaths + " --module-path " + dest + "/src"
         }
         i = i + 1
