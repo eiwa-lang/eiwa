@@ -74,7 +74,6 @@ fun indentOf(line: String): Int {
 }
 
 fun runOrFail(cmd: String) {
-    println("$ " + cmd)
     val code = Process.exec(cmd)
     if (code != 0) {
         println("Error: command failed: " + cmd)
@@ -185,7 +184,7 @@ fun printHelp() {
     println("Commands:")
     println("  build      Compile the project (src/main.ei) to a native binary")
     println("  run        Compile and execute the project")
-    println("  test       Run test blocks in the project test/ directory")
+    println("  test       Run all test blocks found in the project")
     println("")
     println("Arguments:")
     println("  project-dir  Project directory (default: current directory)")
@@ -237,11 +236,6 @@ fun main() {
         exit(1)
     }
 
-    if (cmd == "test" && File.exists("test") == false) {
-        println("Error: test directory not found: test/")
-        exit(1)
-    }
-
     val homeOpt = Env.get("HOME")
     if (homeOpt == null) {
         println("Error: HOME not set.")
@@ -276,10 +270,11 @@ fun main() {
     }
 
     var fullCmd = ""
+    val backend = "c"
     if (cmd == "test") {
-        fullCmd = eiwac + " test --backend=c" + modulePaths + " test"
+        fullCmd = eiwac + " test --backend=" + backend + modulePaths
     } else {
-        fullCmd = eiwac + " " + cmd + " --backend=c" + modulePaths + " -o " + output + " " + entry
+        fullCmd = eiwac + " " + cmd + " --backend=" + backend + modulePaths + " -o " + output + " " + entry
     }
     val code = Process.exec(fullCmd)
     if (code != 0) {
