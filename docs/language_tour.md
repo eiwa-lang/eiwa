@@ -2059,17 +2059,26 @@ assert(allocated[1].cents == 300)
 eiwa <command> [project-dir]
 
 Commands (implemented):
+  init         Create a new project (eiwa init [dir])
+  add          Add a dependency (eiwa add <name> <source> [--branch|--tag|--commit <ref>])
+  remove       Remove a dependency (eiwa remove <name>)
   build        Compile the project (src/main.ei) to a native binary
   run          Compile and execute the project
+  test         Run all test blocks (*_test.ei) found in the project
+  freeze       Pin resolved dependency commits into eiwa.freeze
+  update       Re-resolve dependencies (or one: eiwa update <name>)
   -h, --help   Show help
 
 Arguments:
   project-dir  Project directory (default: current directory)
+
+Options:
+  --frozen     Fail if eiwa.freeze does not exist (for CI)
 ```
 
 ### 30.1 Project Layout & Manifest
 
-A project is a directory with an `eiwa.yaml` manifest and a fixed `src/main.ei` entry point:
+A project is a directory with an `eiwa.yaml` manifest and a fixed `src/main.ei` entry point. `eiwa init [dir]` scaffolds it (manifest, `src/main.ei` hello world and `test/`):
 
 ```text
 my-project/
@@ -2090,16 +2099,37 @@ dependencies:
     branch: main
 ```
 
-### 30.2 Git Dependencies (implemented)
+### 30.2 Git Dependencies
 
-Git dependencies are resolved with `git ls-remote`, cloned once into the shared local repository `~/.eiwa/repository/<name>/<commit>`, and passed to `eiwac` as `--module-path <repo>/src`. Sources: `github:` (with optional `branch`, `tag`, or `commit`). `eiwac build` never upgrades dependencies by itself.
+Dependencies come exclusively from git hosts — there is no central registry. Sources: `github:` and `gitlab:` (`org/repo` shorthand) or `git:` (any git URL), each with optional `branch`, `tag`, or `commit` (default: HEAD of the default branch).
+
+Dependencies are resolved with `git ls-remote`, cloned once into the shared local repository `~/.eiwa/repository/<name>/<commit>`, and passed to `eiwac` as `--module-path <repo>/src`. `eiwa build` never upgrades dependencies by itself — only `eiwa update` re-resolves refs.
+
+```bash
+eiwa add orm github:eiwa-lang/orm --branch main
+eiwa add pg gitlab:eiwa-lang/postgres --tag v1.0.0
+eiwa add util https://git.example.com/util.git --commit 84d2ab3
+eiwa remove orm
+```
 
 ```kotlin
 // src/main.ei
 import { html } from "html"
 ```
 
-### 30.3 Compiler Location
+### 30.3 Freeze & Reproducible Builds
+
+The first resolution is recorded in `~/.eiwa/resolutions/<manifest-hash>.yaml` and reused without network access. `eiwa freeze` writes `eiwa.freeze` with every dependency pinned to its exact resolved commit (`branch`/`tag` are replaced by `commit`). If `eiwa.freeze` exists, it overrides the local resolution; commit it for reproducible builds. `eiwa build --frozen` fails when no freeze file exists (intended for CI). `eiwa update [name]` re-resolves from `eiwa.yaml` and refreshes both the resolution cache and the freeze file.
+
+```yaml
+# eiwa.freeze
+dependencies:
+  html:
+    github: eiwa-lang/html
+    commit: 84d2ab3
+```
+
+### 30.4 Compiler Location
 
 The CLI locates `eiwac` in this order:
 
@@ -2107,6 +2137,6 @@ The CLI locates `eiwac` in this order:
 2. An `eiwac` binary next to the `eiwa` executable
 3. `eiwac` on `PATH`
 
-### 30.4 Not Yet Implemented
+### 30.5 Not Yet Implemented
 
-`init`, `add`, `remove`, `update`, `freeze`, `test`, registry dependencies, transitive resolution (MVS) and `eiwa.freeze`. The manifest parser is currently a minimal indentation parser (marked with a TODO in the code) to be replaced by a typed DTO.
+Transitive dependency resolution (MVS). The manifest parser is currently a minimal indentation parser (marked with a TODO in the code) to be replaced by a typed DTO.

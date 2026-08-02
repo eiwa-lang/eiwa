@@ -1,7 +1,0 @@
-name: hello
-version: 0.1.0
-
-dependencies:
-  html:
-    github: eiwa-lang/html
-    branch: main

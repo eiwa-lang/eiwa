@@ -14,14 +14,15 @@
 
 ## Out of Scope (v0.1)
 
--   **`eiwa publish`**: not implemented in v0.1. There is no registry
-    publishing flow yet; dependencies are consumed from the local
-    repository or GitHub. Publishing will be specified in a future
-    version.
+-   **Own registry**: there is no Eiwa package registry. Dependencies
+    are consumed exclusively from git hosts (GitHub, GitLab or any
+    custom git server).
+-   **`eiwa publish`**: not implemented in v0.1. Distribution happens
+    through git repositories (tags/branches); a publishing flow, if
+    ever needed, will be specified in a future version.
 -   **`eiwa doc`**: not implemented in v0.1.
 -   **Version ranges** (e.g. `^1.3`): not supported in v0.1. Only exact
-    versions are allowed. A decision on supporting ranges (or not) is
-    deferred to a future version of this spec.
+    git refs (branch, tag or commit) are allowed.
 -   **Security hardening** (checksum verification of tarballs,
     signatures, mandatory TLS policy): deferred to v0.2.
 
@@ -46,9 +47,8 @@
     `git ls-remote` and recorded in `~/.eiwa/resolutions/<manifest-hash>.yaml`;
     subsequent builds reuse the recorded commit without network access.
     Packages are cloned to `~/.eiwa/repository/<name>/<commit>` and passed
-    to `eiwac` as `--module-path <repo>/src`.     and `eiwa.freeze`. Still missing: `eiwa update`
-    (re-resolution), registry dependencies and transitive
-    resolution (MVS).
+    to `eiwac` as `--module-path <repo>/src` and `eiwa.freeze`. Still
+    missing: transitive resolution and GitLab/custom git sources.
 
 ## Executables
 
@@ -71,11 +71,11 @@ Example:
 ``` bash
 eiwa init
 
-eiwa add postgres
-eiwa remove postgres
+eiwa add orm github:eiwa-lang/orm
+eiwa remove orm
 
 eiwa update
-eiwa update postgres
+eiwa update orm
 
 eiwa build
 eiwa run
@@ -127,11 +127,17 @@ name: my-project
 version: 1.0.0
 
 dependencies:
-  postgres: 1.3.0
-  http: 2.0.0
+  orm:
+    github: eiwa-lang/orm
+    tag: v2.0.0
+  postgres:
+    gitlab: eiwa-lang/postgres
+    branch: main
 ```
 
-Only exact versions are allowed in v0.1 (no ranges like `^1.3`).
+Dependencies are always git repositories, referenced by an exact git
+ref (branch, tag or commit). There is no version shorthand: versions
+are expressed as git tags.
 
 Optional build output path (default: `bin/<name>`):
 
@@ -140,22 +146,7 @@ name: my-project
 output: bin/my-tool
 ```
 
-Alternative syntax:
-
-``` yaml
-dependencies:
-  postgres:
-    version: 1.3.0
-```
-
 ## Dependency Sources
-
-### Registry (local)
-
-``` yaml
-dependencies:
-  postgres: 1.3.0
-```
 
 ### GitHub
 
@@ -164,6 +155,28 @@ dependencies:
   orm:
     github: eiwa-lang/orm
 ```
+
+Expands to `https://github.com/eiwa-lang/orm.git`.
+
+### GitLab
+
+``` yaml
+dependencies:
+  orm:
+    gitlab: eiwa-lang/orm
+```
+
+Expands to `https://gitlab.com/eiwa-lang/orm.git`.
+
+### Custom git server
+
+``` yaml
+dependencies:
+  orm:
+    git: https://git.example.com/eiwa-lang/orm.git
+```
+
+Any HTTPS git URL.
 
 ### Branch
 
@@ -205,17 +218,23 @@ dependencies:
     commit: 84d2ab3
 ```
 
+`branch`, `tag` and `commit` work identically for `github`, `gitlab`
+and `git` sources. When no ref is given, the default branch HEAD is
+resolved.
+
 ## Dependency Resolution
 
 `eiwa build` never upgrades dependencies automatically.
 
-Only `eiwa update` changes resolved versions.
+Only `eiwa update` changes resolved refs.
 
-Transitive dependencies use **Minimal Version Selection** (Go-style):
-each package declares the exact minimum version of its dependencies,
-and the resolved version of each package is the maximum of all versions
-required in the dependency graph. Resolution is deterministic, without
-backtracking.
+Transitive dependencies are read from each dependency's own
+`eiwa.yaml`. When the same package appears multiple times in the graph
+with tag refs, **Minimal Version Selection** (Go-style) applies: the
+resolved tag is the maximum of all tags required in the dependency
+graph (tags must follow semver ordering). Resolution is deterministic,
+without backtracking. Conflicting non-tag refs (different branches or
+commits) are a hard error.
 
 ## Local Repository
 
@@ -226,7 +245,6 @@ Suggested layout:
 ``` text
 ~/.eiwa/
 ├── repository/
-├── metadata.db
 ├── resolutions/
 └── cache/
 ```
@@ -240,8 +258,7 @@ the resolution, and per-project files avoid locking and corruption
 issues of a single shared database. Each file records:
 
 -   manifest hash
--   resolved versions
--   resolved commits
+-   resolved refs (commits)
 -   repository locations
 
 ## Build Algorithm
@@ -287,13 +304,6 @@ dependencies:
   orm:
     github: eiwa-lang/orm
     commit: 84d2ab3
-```
-
-Registry dependencies are also pinned to their exact resolved version:
-
-``` yaml
-dependencies:
-  postgres: 1.3.7
 ```
 
 If `eiwa.freeze` exists, it overrides local resolution data.

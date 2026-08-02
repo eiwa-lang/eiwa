@@ -1,0 +1,176 @@
+import { trim, isSpace, startsWith, endsWith, indentOf, parseTopField, parseManifest, gitUrl, hasSource, serializeSource, serializeResolutions, serializeFreeze, hasDependenciesSection, eiwacPath, resolveCommit, ensureCloned, runOrFail, Dependency } from "../src/main"
+import { File } from "std.fs"
+import { Process } from "std.process"
+
+fun sampleManifest(): String {
+    return "name: app\noutput: bin/app\n\ndependencies:\n  orm:\n    github: eiwa-lang/orm\n    branch: main\n  pg:\n    gitlab: eiwa-lang/pg\n    tag: v1.0.0\n  util:\n    git: https://example.com/util.git\n    commit: abc123\n"
+}
+
+test "trim: removes whitespace from both ends" {
+    assert(trim("  hello \t\n") == "hello")
+    assert(trim("") == "")
+    assert(trim("x") == "x")
+    assert(trim("   ") == "")
+}
+
+test "isSpace: recognizes whitespace characters" {
+    assert(isSpace(" "))
+    assert(isSpace("\t"))
+    assert(isSpace("\r"))
+    assert(isSpace("\n"))
+    assert(isSpace("a") == false)
+}
+
+test "startsWith: matches prefixes" {
+    assert(startsWith("github:eiwa/orm", "github:"))
+    assert(startsWith("gitlab:x", "github:") == false)
+    assert(startsWith("ab", "abc") == false)
+}
+
+test "endsWith: matches suffixes" {
+    assert(endsWith("orm:", ":"))
+    assert(endsWith("main.ei", ".ei"))
+    assert(endsWith("ab", "abc") == false)
+}
+
+test "indentOf: counts leading spaces" {
+    assert(indentOf("name: app") == 0)
+    assert(indentOf("  orm:") == 2)
+    assert(indentOf("    github: x") == 4)
+}
+
+test "parseTopField: reads top-level manifest fields" {
+    val manifest = sampleManifest()
+    val name = parseTopField(manifest, "name")
+    assert(name != null && name!! == "app")
+    val output = parseTopField(manifest, "output")
+    assert(output != null && output!! == "bin/app")
+    val missing = parseTopField(manifest, "nope")
+    assert(missing == null)
+}
+
+test "parseManifest: parses github, gitlab and git dependencies" {
+    val deps = parseManifest(sampleManifest())
+    assert(deps.size() == 3)
+
+    val orm = deps[0]
+    assert(orm.name == "orm")
+    assert(orm.github == "eiwa-lang/orm")
+    assert(orm.branch == "main")
+
+    val pg = deps[1]
+    assert(pg.name == "pg")
+    assert(pg.gitlab == "eiwa-lang/pg")
+    assert(pg.tag == "v1.0.0")
+
+    val util = deps[2]
+    assert(util.name == "util")
+    assert(util.git == "https://example.com/util.git")
+    assert(util.commit == "abc123")
+}
+
+test "parseManifest: ignores comments and blank lines" {
+    val deps = parseManifest("# comment\n\ndependencies:\n  # another\n  orm:\n    github: a/b\n")
+    assert(deps.size() == 1)
+    assert(deps[0].github == "a/b")
+}
+
+test "gitUrl: expands all dependency sources" {
+    val gh = Dependency("a")
+    gh.github = "eiwa-lang/orm"
+    assert(gitUrl(gh) == "https://github.com/eiwa-lang/orm.git")
+
+    val gl = Dependency("b")
+    gl.gitlab = "eiwa-lang/pg"
+    assert(gitUrl(gl) == "https://gitlab.com/eiwa-lang/pg.git")
+
+    val custom = Dependency("c")
+    custom.git = "https://git.example.com/x.git"
+    assert(gitUrl(custom) == "https://git.example.com/x.git")
+}
+
+test "hasSource: detects whether a dependency has a git source" {
+    val none = Dependency("a")
+    assert(hasSource(none) == false)
+    val gh = Dependency("b")
+    gh.github = "x/y"
+    assert(hasSource(gh))
+}
+
+test "serializeSource: writes the correct source key" {
+    val gh = Dependency("a")
+    gh.github = "x/y"
+    assert(serializeSource(gh) == "    github: x/y\n")
+    val gl = Dependency("b")
+    gl.gitlab = "x/y"
+    assert(serializeSource(gl) == "    gitlab: x/y\n")
+    val custom = Dependency("c")
+    custom.git = "https://e.com/x.git"
+    assert(serializeSource(custom) == "    git: https://e.com/x.git\n")
+    assert(serializeSource(Dependency("d")) == "")
+}
+
+test "serializeResolutions: keeps branch, tag and commit" {
+    val deps = parseManifest(sampleManifest())
+    val out = serializeResolutions(deps)
+    assert(startsWith(out, "dependencies:\n"))
+    assert(out.indexOf("branch: main") != -1)
+    assert(out.indexOf("tag: v1.0.0") != -1)
+    assert(out.indexOf("commit: abc123") != -1)
+    assert(out.indexOf("gitlab: eiwa-lang/pg") != -1)
+}
+
+test "serializeFreeze: pins only source and commit" {
+    val deps = parseManifest(sampleManifest())
+    val out = serializeFreeze(deps)
+    assert(out.indexOf("branch") == -1)
+    assert(out.indexOf("tag") == -1)
+    assert(out.indexOf("github: eiwa-lang/orm") != -1)
+    assert(out.indexOf("commit: abc123") != -1)
+}
+
+test "serializeFreeze: output parses back into pinned dependencies" {
+    val deps = parseManifest(sampleManifest())
+    val pinned = parseManifest(serializeFreeze(deps))
+    assert(pinned.size() == 3)
+    assert(pinned[0].name == "orm")
+    assert(pinned[0].branch == "")
+    assert(pinned[0].commit == "")
+    assert(pinned[2].commit == "abc123")
+}
+
+test "hasDependenciesSection: detects the dependencies block" {
+    assert(hasDependenciesSection(sampleManifest()))
+    assert(hasDependenciesSection("name: app\nversion: 1.0.0\n") == false)
+}
+
+test "eiwacPath: always returns a non-empty path" {
+    assert(eiwacPath().length > 0)
+}
+
+test "runOrFail: succeeds on zero exit code" {
+    runOrFail("true")
+}
+
+test "resolveCommit and ensureCloned: resolve and clone a local git repo" {
+    val repo = "/tmp/eiwa_cli_unit_repo"
+    val root = "/tmp/eiwa_cli_unit_root"
+    Process.exec("rm -rf " + repo + " " + root)
+    runOrFail("mkdir -p " + repo + "/src")
+    runOrFail("git -C " + repo + " init -q")
+    File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.1.0\n")
+    runOrFail("git -C " + repo + " add -A")
+    runOrFail("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qm init")
+
+    val dep = Dependency("dep")
+    dep.git = repo
+    resolveCommit(dep)
+    val head = trim(Process.capture("git -C " + repo + " rev-parse HEAD"))
+    assert(dep.commit == head)
+
+    val dest = ensureCloned(dep, root)
+    assert(File.exists(dest + "/eiwa.yaml"))
+    assert(dest == root + "/dep/" + head)
+
+    Process.exec("rm -rf " + repo + " " + root)
+}
