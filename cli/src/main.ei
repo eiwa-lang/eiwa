@@ -185,6 +185,7 @@ fun printHelp() {
     println("Commands:")
     println("  build      Compile the project (src/main.ei) to a native binary")
     println("  run        Compile and execute the project")
+    println("  test       Run test blocks in the project test/ directory")
     println("")
     println("Arguments:")
     println("  project-dir  Project directory (default: current directory)")
@@ -209,7 +210,7 @@ fun main() {
         exit(0)
     }
 
-    if (cmd != "build" && cmd != "run") {
+    if (cmd != "build" && cmd != "run" && cmd != "test") {
         println("Unknown command: " + cmd)
         printHelp()
         exit(1)
@@ -231,8 +232,13 @@ fun main() {
     }
 
     val entry = "src/main.ei"
-    if (File.exists(entry) == false) {
+    if (cmd != "test" && File.exists(entry) == false) {
         println("Error: entry point not found: " + entry)
+        exit(1)
+    }
+
+    if (cmd == "test" && File.exists("test") == false) {
+        println("Error: test directory not found: test/")
         exit(1)
     }
 
@@ -251,9 +257,11 @@ fun main() {
     val outputOpt = parseTopField(manifest, "output")
     val output = if (outputOpt == null) "bin/" + projectName else outputOpt!!
 
-    val slash = output.indexOf("/")
-    if (slash != -1) {
-        runOrFail("mkdir -p " + output.substring(0, slash))
+    if (cmd != "test") {
+        val slash = output.indexOf("/")
+        if (slash != -1) {
+            runOrFail("mkdir -p " + output.substring(0, slash))
+        }
     }
 
     var modulePaths = ""
@@ -267,7 +275,12 @@ fun main() {
         i = i + 1
     }
 
-    val fullCmd = eiwac + " " + cmd + " --backend=c" + modulePaths + " -o " + output + " " + entry
+    var fullCmd = ""
+    if (cmd == "test") {
+        fullCmd = eiwac + " test --backend=c" + modulePaths + " test"
+    } else {
+        fullCmd = eiwac + " " + cmd + " --backend=c" + modulePaths + " -o " + output + " " + entry
+    }
     val code = Process.exec(fullCmd)
     if (code != 0) {
         exit(1)

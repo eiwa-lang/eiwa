@@ -1,0 +1,11 @@
+import { html } from "html"
+
+test "hello: renders h1" {
+    val page = html {
+        body {
+            h1("Hi", class = "x")
+        }
+    }
+    assert(page.contains("Hello") == false)
+    assert(page.contains("<h1"))
+}
