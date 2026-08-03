@@ -203,6 +203,39 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
         return this.indexOf(other) != -1
     }
 
+    fun startsWith(prefix: String): Bool {
+        if (prefix.length > this.length) {
+            return false
+        }
+    
+        var i = 0
+        while (i < prefix.length) {
+            if (NativeMemory.readByte(this.ptr, i) != NativeMemory.readByte(prefix.ptr, i)) {
+                return false
+            }
+            i = i + 1
+        }
+    
+        return true
+    }
+    
+    fun endsWith(suffix: String): Bool {
+        if (suffix.length > this.length) {
+            return false
+        }
+    
+        val offset = this.length - suffix.length
+    
+        var i = 0
+        while (i < suffix.length) {
+            if (NativeMemory.readByte(this.ptr, offset + i) != NativeMemory.readByte(suffix.ptr, i)) {
+                return false
+            }
+            i = i + 1
+        }
+    
+        return true
+    }
 
     fun substring(start: Int, end: Int): String {
         if (start < 0 || end > this.length || start > end) {

@@ -8,6 +8,181 @@ const core = @import("core.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 
+// ---------------------------------------------------------------------------
+// Closure fat-pointer helpers
+// ---------------------------------------------------------------------------
+
+/// Metadata for a single captured variable.
+const CaptureInfo = struct {
+    name: []const u8,
+    llvm_type: llvm.LLVMTypeRef,
+};
+
+/// Walk `node` and record every `var_decl` name (and `for` item names) into
+/// `locals`.  These are variables that are *declared* inside the lambda body
+/// and therefore must NOT be treated as captures.
+fn collectDeclaredLocalsLLVM(node: *ast.ASTNode, locals: *std.StringHashMap(void)) anyerror!void {
+    switch (node.data) {
+        .var_decl => |v| try locals.put(v.name, {}),
+        .block => |b| for (b.statements) |s| try collectDeclaredLocalsLLVM(s, locals),
+        .if_expr => |i| {
+            try collectDeclaredLocalsLLVM(i.then_branch, locals);
+            if (i.else_branch) |eb| try collectDeclaredLocalsLLVM(eb, locals);
+        },
+        .while_stmt => |w| try collectDeclaredLocalsLLVM(w.body, locals),
+        .for_stmt => |f| {
+            try locals.put(f.item_name, {});
+            try collectDeclaredLocalsLLVM(f.body, locals);
+        },
+        .try_stmt => |t| {
+            try collectDeclaredLocalsLLVM(t.body, locals);
+            for (t.catches) |c| {
+                if (c.var_name) |vn| try locals.put(vn, {});
+                try collectDeclaredLocalsLLVM(c.body, locals);
+            }
+        },
+        .when_expr => |w| for (w.cases) |c| try collectDeclaredLocalsLLVM(c.body, locals),
+        else => {},
+    }
+}
+
+/// Walk `node` and collect every identifier that:
+///   - is not in `locals` (not declared inside the lambda)
+///   - is not a class property
+///   - is not an LLVM global function
+///   - is not a struct/type name
+///   - has a resolved type
+/// Nested lambdas are walked with an extended `inner_locals` so their own
+/// declarations don't leak upward as captures.
+fn collectCapturesLLVM(
+    node: *ast.ASTNode,
+    locals: *const std.StringHashMap(void),
+    captures: *compat.ArrayList(CaptureInfo),
+    mod: llvm.LLVMModuleRef,
+    structs: *std.StringHashMap(core.StructInfo),
+    ctx: llvm.LLVMContextRef,
+) anyerror!void {
+    switch (node.data) {
+        .identifier => |i| {
+            if (locals.contains(i.name)) return;
+            if (i.is_class_property) return;
+            const name = i.resolved_c_name orelse i.name;
+            // Skip global functions and type names
+            const name_z = try std.heap.page_allocator.dupeZ(u8, name);
+            defer std.heap.page_allocator.free(name_z);
+            if (llvm.LLVMGetNamedFunction(mod, name_z.ptr) != null) return;
+            const iname_z = try std.heap.page_allocator.dupeZ(u8, i.name);
+            defer std.heap.page_allocator.free(iname_z);
+            if (llvm.LLVMGetNamedFunction(mod, iname_z.ptr) != null) return;
+            if (structs.contains(name) or structs.contains(i.name)) return;
+            // Already captured?
+            for (captures.items) |cap| {
+                if (std.mem.eql(u8, cap.name, i.name)) return;
+            }
+            if (node.resolved_type) |rt| {
+                const llvm_t = types_mapping.getLLVMType(ctx, rt.*);
+                try captures.append(.{ .name = i.name, .llvm_type = llvm_t });
+            }
+        },
+        .call_expr => |c| {
+            try collectCapturesLLVM(c.callee, locals, captures, mod, structs, ctx);
+            for (c.arguments) |arg| try collectCapturesLLVM(arg, locals, captures, mod, structs, ctx);
+        },
+        .unary_expr => |u| try collectCapturesLLVM(u.operand, locals, captures, mod, structs, ctx),
+        .binary_expr => |b| {
+            try collectCapturesLLVM(b.left, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(b.right, locals, captures, mod, structs, ctx);
+        },
+        .if_expr => |i| {
+            try collectCapturesLLVM(i.condition, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(i.then_branch, locals, captures, mod, structs, ctx);
+            if (i.else_branch) |eb| try collectCapturesLLVM(eb, locals, captures, mod, structs, ctx);
+        },
+        .index_expr => |idx| {
+            try collectCapturesLLVM(idx.object, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(idx.index, locals, captures, mod, structs, ctx);
+        },
+        .index_set_expr => |s| {
+            try collectCapturesLLVM(s.object, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(s.index, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(s.value, locals, captures, mod, structs, ctx);
+        },
+        .assignment => |a| {
+            try collectCapturesLLVM(a.value, locals, captures, mod, structs, ctx);
+            // The target name can also be a capture (if assigned-to from outer scope)
+            if (!locals.contains(a.name)) {
+                for (captures.items) |cap| {
+                    if (std.mem.eql(u8, cap.name, a.name)) return;
+                }
+                if (node.resolved_type) |rt| {
+                    const llvm_t = types_mapping.getLLVMType(ctx, rt.*);
+                    try captures.append(.{ .name = a.name, .llvm_type = llvm_t });
+                }
+            }
+        },
+        .get_expr => |g| try collectCapturesLLVM(g.object, locals, captures, mod, structs, ctx),
+        .set_expr => |s| {
+            try collectCapturesLLVM(s.object, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(s.value, locals, captures, mod, structs, ctx);
+        },
+        .block => |b| for (b.statements) |s| try collectCapturesLLVM(s, locals, captures, mod, structs, ctx),
+        .while_stmt => |w| {
+            try collectCapturesLLVM(w.condition, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(w.body, locals, captures, mod, structs, ctx);
+        },
+        .for_stmt => |f| {
+            try collectCapturesLLVM(f.iterable, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(f.body, locals, captures, mod, structs, ctx);
+        },
+        .return_stmt => |r| { if (r.value) |v| try collectCapturesLLVM(v, locals, captures, mod, structs, ctx); },
+        .throw_stmt => |t| try collectCapturesLLVM(t.expr, locals, captures, mod, structs, ctx),
+        .var_decl => |v| { if (v.initializer) |init| try collectCapturesLLVM(init, locals, captures, mod, structs, ctx); },
+        .ternary_expr => |t| {
+            try collectCapturesLLVM(t.condition, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(t.then_branch, locals, captures, mod, structs, ctx);
+            if (t.else_branch) |eb| try collectCapturesLLVM(eb, locals, captures, mod, structs, ctx);
+        },
+        .as_expr => |a| try collectCapturesLLVM(a.value, locals, captures, mod, structs, ctx),
+        .named_arg => |na| try collectCapturesLLVM(na.value, locals, captures, mod, structs, ctx),
+        .is_expr => |i| try collectCapturesLLVM(i.value, locals, captures, mod, structs, ctx),
+        .try_stmt => |t| {
+            try collectCapturesLLVM(t.body, locals, captures, mod, structs, ctx);
+            for (t.catches) |c| try collectCapturesLLVM(c.body, locals, captures, mod, structs, ctx);
+        },
+        .when_expr => |w| {
+            if (w.subject) |subj| try collectCapturesLLVM(subj, locals, captures, mod, structs, ctx);
+            for (w.cases) |case| {
+                for (case.conds) |cond| try collectCapturesLLVM(cond, locals, captures, mod, structs, ctx);
+                try collectCapturesLLVM(case.body, locals, captures, mod, structs, ctx);
+            }
+        },
+        // Nested lambda: build inner_locals (outer locals + inner params + inner decls)
+        // so the inner lambda's own variables are not treated as captures.
+        // Pass the outer `captures` list directly — anything not in inner_locals
+        // will be added to the outer closure's capture set (same as C backend).
+        .lambda_expr => |l| {
+            var inner_locals = std.StringHashMap(void).init(std.heap.page_allocator);
+            defer inner_locals.deinit();
+            var loc_it = locals.iterator();
+            while (loc_it.next()) |entry| try inner_locals.put(entry.key_ptr.*, {});
+            for (l.params) |p| try inner_locals.put(p.name, {});
+            if (l.params.len == 0) try inner_locals.put("it", {});
+            for (l.body) |s| try collectDeclaredLocalsLLVM(s, &inner_locals);
+            for (l.body) |s| try collectCapturesLLVM(s, &inner_locals, captures, mod, structs, ctx);
+        },
+        else => {},
+    }
+}
+
+/// Returns a monotonically increasing counter for unique lambda naming.
+/// Uses a file-level variable (safe: single-threaded compilation).
+var lambda_counter_val: usize = 0;
+fn lambdaCounter() usize {
+    const c = lambda_counter_val;
+    lambda_counter_val += 1;
+    return c;
+}
+
 pub fn emitExpression(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -474,12 +649,33 @@ pub fn emitExpression(
             }
         },
         .lambda_expr => |lam| {
-            const lam_name_z = try std.heap.page_allocator.dupeZ(u8, "lambda_anon_fn");
-            defer std.heap.page_allocator.free(lam_name_z);
+            const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
 
+            // --- Step 1: Collect captures ------------------------------------------
+            var locals = std.StringHashMap(void).init(std.heap.page_allocator);
+            defer locals.deinit();
+
+            // Add explicit params to locals
+            for (lam.params) |p| try locals.put(p.name, {});
+            // If no params but the type expects one, treat it as `it`
+            if (lam.params.len == 0) {
+                if (node.resolved_type) |rt| {
+                    if (rt.* == .Function and rt.Function.params.len == 1) {
+                        try locals.put("it", {});
+                    }
+                }
+            }
+            // Add vars declared inside the body
+            for (lam.body) |stmt| try collectDeclaredLocalsLLVM(stmt, &locals);
+
+            var captures = compat.ArrayList(CaptureInfo).init(std.heap.page_allocator);
+            defer captures.deinit();
+            for (lam.body) |stmt| try collectCapturesLLVM(stmt, &locals, &captures, mod, structs, ctx);
+
+            // --- Step 2: Determine param types (excluding env) ----------------------
             var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, lam.params.len);
             defer std.heap.page_allocator.free(param_types);
-
             for (lam.params, 0..) |p, i| {
                 if (p.type_ref) |tr| {
                     if (tr.resolved_type) |rt| {
@@ -487,42 +683,126 @@ pub fn emitExpression(
                         continue;
                     }
                 }
-                param_types[i] = llvm.LLVMInt64TypeInContext(ctx);
+                param_types[i] = i64_type;
+            }
+            // Handle implicit `it` param
+            var it_param_type: ?llvm.LLVMTypeRef = null;
+            if (lam.params.len == 0) {
+                if (node.resolved_type) |rt| {
+                    if (rt.* == .Function and rt.Function.params.len == 1) {
+                        it_param_type = types_mapping.getLLVMType(ctx, rt.Function.params[0].*);
+                    }
+                }
             }
 
-            var ret_type: llvm.LLVMTypeRef = llvm.LLVMInt64TypeInContext(ctx);
+            var ret_type: llvm.LLVMTypeRef = llvm.LLVMVoidTypeInContext(ctx);
             if (node.resolved_type) |rt| {
                 if (rt.* == .Function) {
                     ret_type = types_mapping.getLLVMType(ctx, rt.Function.return_type.*);
                 }
             }
 
-            const func_type = llvm.LLVMFunctionType(ret_type, if (param_types.len > 0) param_types.ptr else null, @intCast(param_types.len), 0);
+            // --- Step 3: Build env struct type (only when there are captures) ------
+            const has_captures = captures.items.len > 0;
+            var cap_type_arr = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, captures.items.len);
+            defer std.heap.page_allocator.free(cap_type_arr);
+            for (captures.items, 0..) |cap, ci| cap_type_arr[ci] = cap.llvm_type;
+            // env_struct_type is only used inside `if (has_captures)` blocks below
+            const env_struct_type = llvm.LLVMStructTypeInContext(ctx, cap_type_arr.ptr, @intCast(captures.items.len), 0);
+
+            // --- Step 4: Build LLVM function signature (ptr_env, params...) → ret ---
+            const n_user_params = if (it_param_type != null) @as(usize, 1) else lam.params.len;
+            var full_param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, 1 + n_user_params);
+            defer std.heap.page_allocator.free(full_param_types);
+            full_param_types[0] = ptr_type; // env
+            if (it_param_type) |ipt| {
+                full_param_types[1] = ipt;
+            } else {
+                for (param_types, 0..) |pt, idx| full_param_types[1 + idx] = pt;
+            }
+
+            const func_type = llvm.LLVMFunctionType(ret_type, full_param_types.ptr, @intCast(1 + n_user_params), 0);
+
+            // Give each emitted lambda a unique name using a counter approach
+            const lam_name_z = blk: {
+                const counter = lambdaCounter();
+                break :blk try std.fmt.allocPrint(std.heap.page_allocator, "lambda_anon_{d}\x00", .{counter});
+            };
+            defer std.heap.page_allocator.free(lam_name_z);
+
             const func_val = llvm.LLVMAddFunction(mod, lam_name_z.ptr, func_type);
 
             const parent_bb = llvm.LLVMGetInsertBlock(builder);
 
+            // --- Step 5: Emit the lambda body in a new basic block ------------------
             const entry_block = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "entry");
             llvm.LLVMPositionBuilderAtEnd(builder, entry_block);
 
             var lam_scope = std.StringHashMap(llvm.LLVMValueRef).init(std.heap.page_allocator);
             defer lam_scope.deinit();
 
-            for (lam.params, 0..) |p, i| {
-                const param_val = llvm.LLVMGetParam(func_val, @intCast(i));
-                const p_type = llvm.LLVMTypeOf(param_val);
-                const p_name_z = try std.heap.page_allocator.dupeZ(u8, p.name);
-                defer std.heap.page_allocator.free(p_name_z);
-
-                const alloca_ptr = llvm.LLVMBuildAlloca(builder, p_type, p_name_z.ptr);
+            // Re-stack user params (indices 1..)
+            if (it_param_type != null) {
+                const param_val = llvm.LLVMGetParam(func_val, 1);
+                const alloca_ptr = llvm.LLVMBuildAlloca(builder, it_param_type.?, "it");
                 _ = llvm.LLVMBuildStore(builder, param_val, alloca_ptr);
-                try lam_scope.put(p.name, alloca_ptr);
+                try lam_scope.put("it", alloca_ptr);
+            } else {
+                for (lam.params, 0..) |p, i| {
+                    const param_val = llvm.LLVMGetParam(func_val, @intCast(1 + i));
+                    const p_type = llvm.LLVMTypeOf(param_val);
+                    const p_name_z = try std.heap.page_allocator.dupeZ(u8, p.name);
+                    defer std.heap.page_allocator.free(p_name_z);
+                    const alloca_ptr = llvm.LLVMBuildAlloca(builder, p_type, p_name_z.ptr);
+                    _ = llvm.LLVMBuildStore(builder, param_val, alloca_ptr);
+                    try lam_scope.put(p.name, alloca_ptr);
+                }
             }
 
-            for (lam.body) |stmt| {
-                try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, stmt);
+            // Re-stack captures from env (param 0)
+            if (has_captures) {
+                const env_param = llvm.LLVMGetParam(func_val, 0);
+                for (captures.items, 0..) |cap, ci| {
+                    const cap_name_z = try std.heap.page_allocator.dupeZ(u8, cap.name);
+                    defer std.heap.page_allocator.free(cap_name_z);
+                    var gep_idx = [_]llvm.LLVMValueRef{
+                        llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), 0, 0),
+                        llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), @intCast(ci), 0),
+                    };
+                    const field_ptr = llvm.LLVMBuildGEP2(builder, env_struct_type, env_param, &gep_idx, 2, cap_name_z.ptr);
+                    const field_val = llvm.LLVMBuildLoad2(builder, cap.llvm_type, field_ptr, "cap_val");
+                    const alloca_ptr = llvm.LLVMBuildAlloca(builder, cap.llvm_type, cap_name_z.ptr);
+                    _ = llvm.LLVMBuildStore(builder, field_val, alloca_ptr);
+                    try lam_scope.put(cap.name, alloca_ptr);
+                }
             }
 
+            // Emit body — special-case the last statement for non-void lambdas:
+            // if the body is non-empty and the last stmt is not a return_stmt,
+            // treat it as an implicit return expression (mirrors C backend).
+            const is_void_ret = llvm.LLVMGetTypeKind(ret_type) == llvm.LLVMVoidTypeKind;
+            if (lam.body.len > 0 and !is_void_ret) {
+                const last_idx = lam.body.len - 1;
+                // Emit all but the last statement normally
+                for (lam.body[0..last_idx]) |stmt| {
+                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, stmt);
+                }
+                const last = lam.body[last_idx];
+                if (last.data == .return_stmt) {
+                    // Already a return — emit normally, terminator will be set
+                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, last);
+                } else {
+                    // Implicit return: evaluate the expression and return its value
+                    const ret_val = try emitExpression(ctx, mod, builder, &lam_scope, structs, libs, last);
+                    _ = llvm.LLVMBuildRet(builder, ret_val);
+                }
+            } else {
+                for (lam.body) |stmt| {
+                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, stmt);
+                }
+            }
+
+            // Add implicit terminator if needed
             const cur_bb = llvm.LLVMGetInsertBlock(builder);
             if (llvm.LLVMGetBasicBlockTerminator(cur_bb) == null) {
                 const r_kind = llvm.LLVMGetTypeKind(ret_type);
@@ -537,11 +817,67 @@ pub fn emitExpression(
                 }
             }
 
-            if (parent_bb) |pbb| {
-                llvm.LLVMPositionBuilderAtEnd(builder, pbb);
-            }
+            // --- Step 6: Back in parent_bb, build the closure struct ----------------
+            if (parent_bb) |pbb| llvm.LLVMPositionBuilderAtEnd(builder, pbb);
 
-            return func_val;
+            // Get the malloc/GC_malloc function
+            const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse
+                llvm.LLVMGetNamedFunction(mod, "GC_malloc") orelse return error.MallocNotFound;
+            const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+
+            // Allocate and fill the env struct
+            const env_ptr: llvm.LLVMValueRef = if (has_captures) blk: {
+                const env_size = llvm.LLVMSizeOf(env_struct_type);
+                var env_alloc_args = [_]llvm.LLVMValueRef{env_size};
+                const env_mem = llvm.LLVMBuildCall2(builder, malloc_type, malloc_fn, &env_alloc_args, 1, "env_mem");
+                // Fill each field with the current value from the outer scope
+                for (captures.items, 0..) |cap, ci| {
+                    const cap_name_for_scope = cap.name;
+                    const outer_val: llvm.LLVMValueRef = outer: {
+                        if (scope.get(cap_name_for_scope)) |alloca| {
+                            const vt = llvm.LLVMTypeOf(alloca);
+                            if (llvm.LLVMGetTypeKind(vt) == llvm.LLVMPointerTypeKind) {
+                                break :outer llvm.LLVMBuildLoad2(builder, cap.llvm_type, alloca, "cap_outer");
+                            }
+                            break :outer alloca;
+                        }
+                        // Fallback: null/zero for unknown captures
+                        break :outer llvm.LLVMConstNull(cap.llvm_type);
+                    };
+                    var gep_idx = [_]llvm.LLVMValueRef{
+                        llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), 0, 0),
+                        llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), @intCast(ci), 0),
+                    };
+                    const field_ptr = llvm.LLVMBuildGEP2(builder, env_struct_type, env_mem, &gep_idx, 2, "env_field");
+                    _ = llvm.LLVMBuildStore(builder, outer_val, field_ptr);
+                }
+                break :blk env_mem;
+            } else llvm.LLVMConstNull(ptr_type);
+
+            // Allocate the closure struct { fn_ptr: ptr, env: ptr }
+            var closure_field_types = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
+            const closure_struct_type = llvm.LLVMStructTypeInContext(ctx, &closure_field_types, 2, 0);
+            const closure_size = llvm.LLVMSizeOf(closure_struct_type);
+            var cl_alloc_args = [_]llvm.LLVMValueRef{closure_size};
+            const closure_mem = llvm.LLVMBuildCall2(builder, malloc_type, malloc_fn, &cl_alloc_args, 1, "closure_mem");
+
+            // Store fn_ptr at field 0
+            var fn_gep_idx = [_]llvm.LLVMValueRef{
+                llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), 0, 0),
+                llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), 0, 0),
+            };
+            const fn_ptr_field = llvm.LLVMBuildGEP2(builder, closure_struct_type, closure_mem, &fn_gep_idx, 2, "fn_ptr_field");
+            _ = llvm.LLVMBuildStore(builder, func_val, fn_ptr_field);
+
+            // Store env_ptr at field 1
+            var env_gep_idx = [_]llvm.LLVMValueRef{
+                llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), 0, 0),
+                llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), 1, 0),
+            };
+            const env_ptr_field = llvm.LLVMBuildGEP2(builder, closure_struct_type, closure_mem, &env_gep_idx, 2, "env_ptr_field");
+            _ = llvm.LLVMBuildStore(builder, env_ptr, env_ptr_field);
+
+            return closure_mem;
         },
         .call_expr => |call| {
             if (call.callee.data == .identifier) {
@@ -582,7 +918,7 @@ pub fn emitExpression(
                         func_val,
                         if (arg_vals.len > 0) arg_vals.ptr else null,
                         @intCast(arg_vals.len),
-                        "calltmp",
+                        if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) "" else "calltmp",
                     );
                 }
             }
@@ -621,7 +957,7 @@ pub fn emitExpression(
                                     func_val,
                                     if (arg_vals.len > 0) arg_vals.ptr else null,
                                     @intCast(arg_vals.len),
-                                    "ffitmp",
+                                    if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) "" else "ffitmp",
                                 );
                             }
                         }
@@ -674,7 +1010,7 @@ pub fn emitExpression(
                                     func_val,
                                     if (arg_vals.len > 0) arg_vals.ptr else null,
                                     @intCast(arg_vals.len),
-                                    "static_tmp",
+                                    if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) "" else "static_tmp",
                                 );
                             }
                         }
@@ -789,7 +1125,7 @@ pub fn emitExpression(
                                 func_val,
                                 if (arg_vals.len > 0) arg_vals.ptr else null,
                                 @intCast(arg_vals.len),
-                                "method_tmp",
+                                if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) "" else "method_tmp",
                             );
                         }
                     }
@@ -884,18 +1220,21 @@ pub fn emitExpression(
                 }
             }
 
-            // Dynamic Function / Lambda Call
-            const callee_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
+            // Dynamic Function / Lambda Call (closure fat pointer path)
+            // All Function-typed callees are treated as closure fat pointers:
+            //   closure_ptr -> { fn_ptr: ptr, env: ptr }
+            // We load both fields, then call fn_ptr(env, args...).
+            const is_fn_callee = if (call.callee.resolved_type) |rt| rt.* == .Function else false;
 
-            var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, call.arguments.len);
-            defer std.heap.page_allocator.free(arg_vals);
+            if (is_fn_callee) {
+                const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
 
-            var ret_type: llvm.LLVMTypeRef = llvm.LLVMInt64TypeInContext(ctx);
-            var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, call.arguments.len);
-            defer std.heap.page_allocator.free(param_types);
+                // Determine ret_type and param_types from the Function type
+                var ret_type: llvm.LLVMTypeRef = llvm.LLVMVoidTypeInContext(ctx);
+                var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, call.arguments.len);
+                defer std.heap.page_allocator.free(param_types);
 
-            if (call.callee.resolved_type) |rt| {
-                if (rt.* == .Function) {
+                if (call.callee.resolved_type) |rt| {
                     ret_type = types_mapping.getLLVMType(ctx, rt.Function.return_type.*);
                     for (call.arguments, 0..) |_, idx| {
                         if (idx < rt.Function.params.len) {
@@ -904,11 +1243,64 @@ pub fn emitExpression(
                             param_types[idx] = llvm.LLVMInt64TypeInContext(ctx);
                         }
                     }
+                } else {
+                    for (call.arguments, 0..) |_, idx| param_types[idx] = llvm.LLVMInt64TypeInContext(ctx);
                 }
-            } else {
-                for (call.arguments, 0..) |_, idx| {
-                    param_types[idx] = llvm.LLVMInt64TypeInContext(ctx);
+
+                // Emit callee — yields a closure_ptr (ptr to { fn_ptr: ptr, env: ptr })
+                const callee_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
+
+                // Load the closure struct from the heap
+                var closure_field_types = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
+                const closure_struct_type = llvm.LLVMStructTypeInContext(ctx, &closure_field_types, 2, 0);
+                const closure = llvm.LLVMBuildLoad2(builder, closure_struct_type, callee_val, "closure_load");
+
+                const fn_ptr = llvm.LLVMBuildExtractValue(builder, closure, 0, "fn_ptr");
+                const env_ptr = llvm.LLVMBuildExtractValue(builder, closure, 1, "env_ptr");
+
+                // Build the full arg list: [env, args...]
+                var full_arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, 1 + call.arguments.len);
+                defer std.heap.page_allocator.free(full_arg_vals);
+                full_arg_vals[0] = env_ptr;
+
+                for (call.arguments, 0..) |arg_node, idx| {
+                    var arg_val = try emitExpression(ctx, mod, builder, scope, structs, libs, arg_node);
+                    if (llvm.LLVMGetTypeKind(param_types[idx]) != llvm.LLVMVoidTypeKind) {
+                        arg_val = coerceArg(builder, arg_val, param_types[idx]);
+                    }
+                    full_arg_vals[1 + idx] = arg_val;
                 }
+
+                // fn_type: (ptr_env, ...param_types) -> ret_type
+                var full_param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, 1 + call.arguments.len);
+                defer std.heap.page_allocator.free(full_param_types);
+                full_param_types[0] = ptr_type;
+                for (param_types, 0..) |pt, idx| full_param_types[1 + idx] = pt;
+
+                const dyn_fn_type = llvm.LLVMFunctionType(ret_type, full_param_types.ptr, @intCast(1 + call.arguments.len), 0);
+                const call_name: [*c]const u8 = if (llvm.LLVMGetTypeKind(ret_type) == llvm.LLVMVoidTypeKind) "" else "cl_calltmp";
+                return llvm.LLVMBuildCall2(
+                    builder,
+                    dyn_fn_type,
+                    fn_ptr,
+                    full_arg_vals.ptr,
+                    @intCast(1 + call.arguments.len),
+                    call_name,
+                );
+            }
+
+            // Non-Function dynamic call (fallback — should rarely be reached)
+            const callee_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
+
+            var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, call.arguments.len);
+            defer std.heap.page_allocator.free(arg_vals);
+
+            const ret_type: llvm.LLVMTypeRef = llvm.LLVMInt64TypeInContext(ctx);
+            var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, call.arguments.len);
+            defer std.heap.page_allocator.free(param_types);
+
+            for (call.arguments, 0..) |_, idx| {
+                param_types[idx] = llvm.LLVMInt64TypeInContext(ctx);
             }
 
             for (call.arguments, 0..) |arg_node, idx| {

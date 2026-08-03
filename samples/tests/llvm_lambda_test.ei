@@ -8,3 +8,10 @@ test "llvm backend lambda execution" {
     val sum = applyOp(15, 27, { x: Int, y: Int -> x + y })
     assert(sum == 42)
 }
+
+fun main(): Void {
+    val sum = applyOp(15, 27, { x: Int, y: Int -> x + y })
+    echo("sum = " + sum.toString())
+    assert(sum == 42)
+    echo("PASS: lambda fat pointer test")
+}

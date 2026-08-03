@@ -112,11 +112,16 @@ pub fn main(init: std.process.Init) !void {
     var arg_idx: usize = 2;
     while (arg_idx < args.len) : (arg_idx += 1) {
         const arg = args[arg_idx];
-        if (std.mem.eql(u8, arg, "--backend=llvm")) {
-            backend_kind = .llvm;
-            backend_explicit = true;
-        } else if (std.mem.eql(u8, arg, "--backend=c")) {
-            backend_kind = .c;
+        if (std.mem.startsWith(u8, arg, "--backend=")) {
+            const val = arg["--backend=".len..];
+            if (std.mem.eql(u8, val, "llvm")) {
+                backend_kind = .llvm;
+            } else if (std.mem.eql(u8, val, "c")) {
+                backend_kind = .c;
+            } else {
+                std.debug.print("Error: unknown backend '{s}'. Valid options: --backend=c, --backend=llvm\n", .{val});
+                std.process.exit(1);
+            }
             backend_explicit = true;
         } else if (std.mem.eql(u8, arg, "-o")) {
             if (arg_idx + 1 >= args.len) {
@@ -151,15 +156,6 @@ pub fn main(init: std.process.Init) !void {
 
     type_checker.module_search_paths = module_paths.items;
     type_checker.module_search_io = io;
-
-    if (is_test and backend_kind == .llvm) {
-        if (backend_explicit) {
-            std.debug.print("Error: The LLVM emitter does not support `eiwa test` yet (no test-runner or import support). Use --backend=c.\n", .{});
-            std.process.exit(1);
-        }
-        std.debug.print("Note: test mode uses the C backend (the LLVM emitter does not support `eiwa test` yet).\n", .{});
-        backend_kind = .c;
-    }
 
     if (is_test) {
         var search_path: []const u8 = ".";
@@ -397,6 +393,7 @@ pub fn main(init: std.process.Init) !void {
         }
         var emitter = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
         defer emitter.deinit();
+        emitter.is_test_mode = is_test;
 
         try emitter.emitModule(ast_root);
 
