@@ -335,8 +335,7 @@ pub const LLVMEmitter = struct {
                     const fname = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
                     if (!reachable.contains(fname)) continue;
                     if (m != ast_root) {
-                        self.emitFunctionBody(mod, stmt) catch |err| {
-                            std.debug.print("LLVM Warning: emitting stub for {s} (unsupported: {})\n", .{ fname, err });
+                        self.emitFunctionBody(mod, stmt) catch {
                             self.emitFunctionStub(mod, fname) catch {};
                             continue;
                         };
@@ -388,8 +387,7 @@ pub const LLVMEmitter = struct {
                         // actually called at runtime, the JIT/linker will fail
                         // on the bodiless declaration. Remove this tolerance
                         // once Phase 61 lands and parity is reached.
-                        self.emitFunctionBody(mod, m_node) catch |err| {
-                            std.debug.print("LLVM Warning: emitting stub for {s} (unsupported: {})\n", .{ fname, err });
+                        self.emitFunctionBody(mod, m_node) catch {
                             self.emitFunctionStub(mod, fname) catch {};
                             continue;
                         };
@@ -400,8 +398,7 @@ pub const LLVMEmitter = struct {
                         if (member.data.fun_decl.generic_params.len > 0) continue;
                         const fname = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
                         if (!reachable.contains(fname)) continue;
-                        self.emitFunctionBody(mod, member) catch |err| {
-                            std.debug.print("LLVM Warning: emitting stub for {s} (unsupported: {})\n", .{ fname, err });
+                        self.emitFunctionBody(mod, member) catch {
                             self.emitFunctionStub(mod, fname) catch {};
                             continue;
                         };

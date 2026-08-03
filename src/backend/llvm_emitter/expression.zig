@@ -409,10 +409,6 @@ pub fn emitExpression(
                     }
                 }
             }
-            {
-                const rt = get.object.resolved_type;
-                std.debug.print("[llvm-dbg] get_expr '.{s}' on object kind={s} resolved_type={?}\n", .{ get.name, @tagName(get.object.data), rt });
-            }
             return error.PropertyNotFound;
         },
         .set_expr => |set| {

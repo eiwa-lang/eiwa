@@ -163,7 +163,11 @@ pub fn main(init: std.process.Init) !void {
             search_path = positionals.items[0];
         }
         if (std.mem.endsWith(u8, search_path, ".ei")) {
-            type_checker.module_root = std.fs.path.dirname(search_path) orelse ".";
+            //TODO: isso foi modificado porque deu esse erro:
+            // ➜ ./bin/eiwac test samples/tests/oop_test.ei --backend=c
+            // Error: Failed to read module file 'samples/tests/samples/oop.ei': error.FileNotFound
+            //type_checker.module_root = std.fs.path.dirname(search_path) orelse ".";
+            type_checker.module_root = ".";
             const dot_path = try toRootDotPath(allocator, search_path);
             defer allocator.free(dot_path);
             try source_alloc.print("import {{}} from \"{s}\"\n", .{dot_path});
@@ -173,7 +177,7 @@ pub fn main(init: std.process.Init) !void {
                 return;
             };
             defer dir.close(io);
-            type_checker.module_root = search_path;
+            type_checker.module_root = ".";
             var walker = try dir.walk(allocator);
             defer walker.deinit();
 
