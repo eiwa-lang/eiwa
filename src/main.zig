@@ -15,6 +15,35 @@ pub const BackendKind = enum {
     llvm,
 };
 
+/// Converts a filesystem path (relative to the module root) into a
+/// root-relative dot import path. e.g. "samples/tests/foo_test.ei" -> ".samples.tests.foo_test".
+fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    var rel = path;
+    if (std.mem.startsWith(u8, rel, "./")) {
+        rel = rel[2..];
+    }
+    const root = type_checker.module_root;
+    if (!std.mem.eql(u8, root, ".")) {
+        if (std.mem.startsWith(u8, rel, root)) {
+            const rest = rel[root.len..];
+            if (rest.len > 0 and std.mem.startsWith(u8, rest, "/")) {
+                rel = rest[1..];
+            }
+        }
+    }
+    var name = rel;
+    if (std.mem.endsWith(u8, name, ".ei")) {
+        name = name[0 .. name.len - 3];
+    }
+    var buf = ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
+    try buf.append('.');
+    for (name) |c| {
+        try buf.append(if (c == '/') '.' else c);
+    }
+    return buf.toOwnedSlice();
+}
+
 /// Main entry point for the Eiwa CLI.
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
 pub fn main(init: std.process.Init) !void {
@@ -138,22 +167,30 @@ pub fn main(init: std.process.Init) !void {
             search_path = positionals.items[0];
         }
         if (std.mem.endsWith(u8, search_path, ".ei")) {
-            try source_alloc.print("import {{}} from \"{s}\"\n", .{search_path});
+            type_checker.module_root = std.fs.path.dirname(search_path) orelse ".";
+            const dot_path = try toRootDotPath(allocator, search_path);
+            defer allocator.free(dot_path);
+            try source_alloc.print("import {{}} from \"{s}\"\n", .{dot_path});
         } else {
             var dir = std.Io.Dir.cwd().openDir(io, search_path, .{ .iterate = true }) catch |err| {
                 std.debug.print("Failed to open test path '{s}': {}\n", .{ search_path, err });
                 return;
             };
             defer dir.close(io);
+            type_checker.module_root = search_path;
             var walker = try dir.walk(allocator);
             defer walker.deinit();
 
             while (try walker.next(io)) |entry| {
                 if (entry.kind == .file) {
                     if (std.mem.endsWith(u8, entry.basename, "_test.ei")) {
-                        const full_import_path = try std.fs.path.join(allocator, &.{ search_path, entry.path });
-                        defer allocator.free(full_import_path);
-                        try source_alloc.print("import {{}} from \"{s}\"\n", .{full_import_path});
+                        var rel_path = entry.path;
+                        if (std.mem.startsWith(u8, rel_path, "./")) {
+                            rel_path = rel_path[2..];
+                        }
+                        const dot_path = try toRootDotPath(allocator, rel_path);
+                        defer allocator.free(dot_path);
+                        try source_alloc.print("import {{}} from \"{s}\"\n", .{dot_path});
                     }
                 }
             }
@@ -172,6 +209,9 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("Error: Unsupported file extension. Please use .ei files.\n", .{});
             return;
         }
+        var module_root = std.fs.path.dirname(filename) orelse ".";
+        if (module_root.len == 0) module_root = ".";
+        type_checker.module_root = module_root;
         const file_content = try std.Io.Dir.cwd().readFileAlloc(io, filename, allocator, .limited(1024 * 1024));
         defer allocator.free(file_content);
         try source_alloc.appendSlice(file_content);
@@ -265,7 +305,12 @@ pub fn main(init: std.process.Init) !void {
                     if (!std.mem.endsWith(u8, actual_module_path, ".ei")) {
                         actual_module_path = try std.fmt.allocPrint(arena.allocator(), "{s}.ei", .{actual_module_path});
                     }
-                    const import_resolved_path = try type_checker.resolveModulePath(arena.allocator(), dir_path, actual_module_path);
+                    const import_resolved_path = type_checker.resolveModulePath(arena.allocator(), dir_path, actual_module_path) catch |err| {
+                        std.debug.print("\n\x1b[31mError\x1b[0m in {s}:{}:{}:\n", .{ cur_path, stmt.line, stmt.column });
+                        std.debug.print("ImportError: invalid module path '{s}': {s}\n", .{ i.module_path, @errorName(err) });
+                        std.debug.print("Use '.' separators (e.g. \"mcp.mcp_builder\") and a leading '.' for the project root (e.g. \".arest_builder\").\n", .{});
+                        std.process.exit(1);
+                    };
                     try queue.append(import_resolved_path);
                 }
             }

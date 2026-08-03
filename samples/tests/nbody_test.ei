@@ -1,6 +1,6 @@
 import { assert } from "std.core"
 import { MutableList } from "std.collections"
-import { Body, NBodySystem } from "../nbody"
+import { Body, NBodySystem } from ".samples.nbody"
 
 test "N-Body simulation step and values" {
     val b1 = Body("Sun", 0, 0, 0, 0, 1000)

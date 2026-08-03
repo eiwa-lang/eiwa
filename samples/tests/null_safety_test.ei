@@ -1,4 +1,4 @@
-import { User } from "../null_safety"
+import { User } from ".samples.null_safety"
 
 test "null_safety.ae: should handle null safety operators correctly" {
     val u: User | null = null

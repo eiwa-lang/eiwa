@@ -1,4 +1,4 @@
-import { Vector } from "../operator_overloading"
+import { Vector } from ".samples.operator_overloading"
 
 test "operator_overloading.ae: '+' operator should sum vectors correctly" {
     val a = Vector(10, 5)

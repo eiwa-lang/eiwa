@@ -1,4 +1,4 @@
-import { Person } from "../oop"
+import { Person } from ".samples.oop"
 
 test "oop.ae: classes devem ser instanciadas e lidar com getters e setters" {
     val p = Person("Leo", 28)

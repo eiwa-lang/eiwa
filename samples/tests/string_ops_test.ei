@@ -1,4 +1,4 @@
-import { combine } from "../string_ops"
+import { combine } from ".samples.string_ops"
 
 test "string_ops.ae: should concatenate two strings correctly" {
     val a = "Hello, "

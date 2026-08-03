@@ -25,6 +25,19 @@ fun main() {
 }
 ```
 
+**Module path resolution.** Module paths use `.` as the separator — never `/`. There are exactly three resolution rules:
+
+| Form | Resolves against | Example |
+|------|------------------|---------|
+| `.x` | the **project root** (directory of the entry file) | `import { ArestBuilder } from ".arest_builder"` |
+| `x` / `x.y` | the **importing file's directory** | `import { McpCall } from "mcp_call"` |
+| `std.x` | the standard library package | `import { Time } from "std.time"` |
+
+- `.mcp.mcp_builder` = `<root>/mcp/mcp_builder.ei`; `mcp.mcp_builder` = `<file_dir>/mcp/mcp_builder.ei`.
+- Filesystem separators (`/`) and parent-relative prefixes (`./`, `../`, `..`) are **compile errors**. If you need a file in a parent directory, import it from the project root: `import { ArestBuilder } from ".arest_builder"`.
+- The project root is the directory containing the entry file passed to `eiwa run`/`build` (or the tested directory for `eiwa test`). This keeps module paths canonical, so moving a file never silently breaks imports, and circular imports resolve to the same path instead of growing `../../..` chains.
+- The `.ei` extension is optional and inferred automatically.
+
 **The Implicit Standard Library**
 Eiwa comes with a core module named `system.ei` which contains fundamental types, C-bindings, and intrinsic functions (like `print`). The compiler automatically injects an `import {} from "system"` at the top of every file, making all standard functions globally available without explicitly requiring an import statement.
 
@@ -1115,7 +1128,7 @@ fun main() {
 }
 ```
 
-**Module search paths.** With `--module-path <dir>`, bare imports that do not resolve relative to the importing file are looked up in each module path (in order). Explicit relative imports (`./x`, `../x`) and `std.*` packages are never affected. This is how the `eiwa` CLI wires external dependencies (Section 30) without the compiler knowing about `~/.eiwa`.
+**Module search paths.** With `--module-path <dir>`, bare imports that do not resolve relative to the importing file are looked up in each module path (in order). Root-relative imports (`.x`) and `std.*` packages are never affected. This is how the `eiwa` CLI wires external dependencies (Section 30) without the compiler knowing about `~/.eiwa`.
 
 ---
 

@@ -1,6 +1,6 @@
 import { assert } from "std.core"
 import { MutableMap } from "std.collections"
-import { Person } from "../person"
+import { Person } from ".samples.person"
 
 test "should create a union type" {
     var a: String | Int = "asd"

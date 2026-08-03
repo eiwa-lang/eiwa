@@ -1,4 +1,6 @@
-import { trim, isSpace, startsWith, endsWith, indentOf, parseTopField, parseManifest, gitUrl, hasSource, serializeSource, serializeResolutions, serializeFreeze, hasDependenciesSection, eiwacPath, resolveCommit, ensureCloned, runOrFail, Dependency } from "../src/main"
+import { trim, isSpace, startsWith, endsWith, indentOf, parseTopField, parseManifest, 
+    gitUrl, hasSource, serializeSource, serializeResolutions, serializeFreeze, 
+    hasDependenciesSection, eiwacPath, resolveCommit, ensureCloned, runOrFail, Dependency } from ".cli.src.main"
 import { File } from "std.fs"
 import { Process } from "std.process"
 

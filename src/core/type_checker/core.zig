@@ -141,12 +141,29 @@ pub const TypeChecker = struct {
 };
 
 pub var module_search_paths: []const []const u8 = &.{};
+pub var module_root: []const u8 = ".";
 pub var module_search_io: ?std.Io = null;
 
 fn pathExists(path: []const u8) bool {
     const io = module_search_io orelse return false;
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
+}
+
+/// Converts a dot-separated module path into a filesystem-relative path.
+/// e.g. "mcp.mcp_builder" -> "mcp/mcp_builder.ei", "foo.ei" -> "foo.ei".
+fn modulePathToFile(allocator: std.mem.Allocator, mod_path: []const u8) ![]const u8 {
+    var path = mod_path;
+    if (std.mem.endsWith(u8, path, ".ei")) {
+        path = path[0 .. path.len - 3];
+    }
+    var buf = ArrayList(u8).init(allocator);
+    defer buf.deinit();
+    for (path) |c| {
+        try buf.append(if (c == '.') '/' else c);
+    }
+    try buf.appendSlice(".ei");
+    return buf.toOwnedSlice();
 }
 
 pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, actual_module_path: []const u8) ![]const u8 {
@@ -161,29 +178,47 @@ pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, act
             if (ch.* == '.') ch.* = '/';
         }
         return try std.fmt.allocPrint(allocator, "std/{s}.ei", .{pkg_buf});
-    } else {
-        const relative = if (std.mem.eql(u8, dir_path, "."))
-            actual_module_path
-        else
-            try std.fs.path.join(allocator, &.{ dir_path, actual_module_path });
+    }
 
-        const is_explicit_relative = std.mem.startsWith(u8, actual_module_path, "./") or
-            std.mem.startsWith(u8, actual_module_path, "../") or
-            std.fs.path.isAbsolute(actual_module_path);
-        if (is_explicit_relative or module_search_paths.len == 0) {
-            return relative;
-        }
-        if (pathExists(relative)) {
-            return relative;
-        }
-        for (module_search_paths) |search_dir| {
-            const candidate = try std.fs.path.join(allocator, &.{ search_dir, actual_module_path });
-            if (pathExists(candidate)) {
-                return candidate;
-            }
-        }
+    // Module paths are dot-separated. Filesystem-style separators and
+    // parent/current-relative prefixes are not allowed.
+    if (std.mem.startsWith(u8, actual_module_path, "..") or
+        std.mem.startsWith(u8, actual_module_path, "./") or
+        std.mem.indexOfScalar(u8, actual_module_path, '/') != null)
+    {
+        return error.InvalidModulePath;
+    }
+
+    // Root-relative: a leading '.' resolves against the project root.
+    // ".arest_builder" -> <root>/arest_builder.ei
+    if (std.mem.startsWith(u8, actual_module_path, ".")) {
+        if (actual_module_path.len == 1) return error.InvalidModulePath;
+        const inner = actual_module_path[1..];
+        const file_path = try modulePathToFile(allocator, inner);
+        return try std.fs.path.join(allocator, &.{ module_root, file_path });
+    }
+
+    // Bare module path: resolve relative to the importing file's directory,
+    // falling back to the configured module search paths (dependencies).
+    const file_path = try modulePathToFile(allocator, actual_module_path);
+    const relative = if (std.mem.eql(u8, dir_path, "."))
+        file_path
+    else
+        try std.fs.path.join(allocator, &.{ dir_path, file_path });
+
+    if (module_search_paths.len == 0) {
         return relative;
     }
+    if (pathExists(relative)) {
+        return relative;
+    }
+    for (module_search_paths) |search_dir| {
+        const candidate = try std.fs.path.join(allocator, &.{ search_dir, file_path });
+        if (pathExists(candidate)) {
+            return candidate;
+        }
+    }
+    return relative;
 }
 
 fn core_reportError(self: *TypeChecker, line: usize, column: usize, comptime message: []const u8, args: anytype) void {

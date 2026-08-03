@@ -1,4 +1,4 @@
-import { sum } from "../math"
+import { sum } from ".samples.math"
 
 test "math.ae: should sum two numbers correctly" {
     val result = sum(10, 5)

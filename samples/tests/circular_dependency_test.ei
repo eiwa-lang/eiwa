@@ -1,5 +1,5 @@
-import { CircularUser } from "../circular_user"
-import { CircularGroup } from "../circular_group"
+import { CircularUser } from ".samples.circular_user"
+import { CircularGroup } from ".samples.circular_group"
 import { assert } from "std.core"
 
 test "circular dependency type instantiation" {

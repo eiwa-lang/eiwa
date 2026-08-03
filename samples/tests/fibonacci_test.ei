@@ -1,4 +1,4 @@
-import { fibonacci } from "../fibonacci"
+import { fibonacci } from ".samples.fibonacci"
 
 test "fibonacci.ae: should calculate the 10th fibonacci number correctly" {
     val result: Int = fibonacci(10)
