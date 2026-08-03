@@ -61,7 +61,7 @@ pub fn emitStatement(
             // Emit then branch
             llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
             try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, if_node.then_branch);
-            if (llvm.LLVMGetBasicBlockTerminator(then_bb) == null) {
+            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
             }
 
@@ -70,7 +70,7 @@ pub fn emitStatement(
                 if (else_bb) |eb| {
                     llvm.LLVMPositionBuilderAtEnd(builder, eb);
                     try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, else_branch);
-                    if (llvm.LLVMGetBasicBlockTerminator(eb) == null) {
+                    if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                         _ = llvm.LLVMBuildBr(builder, merge_bb);
                     }
                 }
@@ -93,11 +93,83 @@ pub fn emitStatement(
             // Body block
             llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
             try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, w.body);
-            if (llvm.LLVMGetBasicBlockTerminator(body_bb) == null) {
+            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 _ = llvm.LLVMBuildBr(builder, cond_bb);
             }
 
             // After block
+            llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
+        },
+        .for_stmt => |f| {
+            // For-in over NativeArray/List on the raw buffer layout
+            // (slot 0 = size, slots 2.. = elements). Item values are loaded as
+            // i64 slots and bitcast to pointers when the element type is a
+            // reference type. LLVM-SPECIFIC (NOT inherited from C): the C
+            // transpiler iterates EiwaArray struct fields (data/length) — see
+            // src/backend/c_transpiler/statement.zig (for_stmt).
+            const arr_rt = if (f.iterable.resolved_type) |rt| rt.* else return error.UnsupportedForIterable;
+            if (arr_rt != .Array and arr_rt != .Custom) return error.UnsupportedForIterable;
+
+            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+            const arr_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, f.iterable);
+
+            var idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+            const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &idx0, 1, "for_size_ptr");
+            const size_val = llvm.LLVMBuildLoad2(builder, i64_type, size_ptr, "for_size");
+
+            const i_ptr = llvm.LLVMBuildAlloca(builder, i64_type, "for_i");
+            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), i_ptr);
+
+            const cond_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.cond");
+            const body_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.body");
+            const after_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.after");
+
+            _ = llvm.LLVMBuildBr(builder, cond_bb);
+
+            llvm.LLVMPositionBuilderAtEnd(builder, cond_bb);
+            const i_cur = llvm.LLVMBuildLoad2(builder, i64_type, i_ptr, "for_i_cur");
+            const cond = llvm.LLVMBuildICmp(builder, llvm.LLVMIntSLT, i_cur, size_val, "for_cond");
+            _ = llvm.LLVMBuildCondBr(builder, cond, body_bb, after_bb);
+
+            llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
+            const i_body = llvm.LLVMBuildLoad2(builder, i64_type, i_ptr, "for_i_body");
+            const elem_offset = llvm.LLVMBuildAdd(builder, i_body, llvm.LLVMConstInt(i64_type, 2, 0), "for_offset");
+            var elem_idx = [_]llvm.LLVMValueRef{elem_offset};
+            const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &elem_idx, 1, "for_elem_ptr");
+            var item_val = llvm.LLVMBuildLoad2(builder, i64_type, elem_ptr, "for_item");
+            if (arr_rt == .Array) {
+                const elem_t = arr_rt.Array.*;
+                if (elem_t == .Custom or elem_t == .String or elem_t == .Pointer or elem_t == .Array or elem_t == .Union or elem_t == .Function) {
+                    item_val = llvm.LLVMBuildIntToPtr(builder, item_val, llvm.LLVMPointerTypeInContext(ctx, 0), "for_item_ptr");
+                } else if (elem_t == .Double) {
+                    item_val = llvm.LLVMBuildBitCast(builder, item_val, llvm.LLVMDoubleTypeInContext(ctx), "for_item_double");
+                }
+            }
+
+            var loop_scope = std.StringHashMap(llvm.LLVMValueRef).init(scope.allocator);
+            defer loop_scope.deinit();
+            var scope_it = scope.iterator();
+            while (scope_it.next()) |entry| {
+                try loop_scope.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+            // The item lives in an alloca (like function params and var decls)
+            // so the identifier path loads it correctly instead of treating a
+            // direct pointer value as an alloca address.
+            const item_type = llvm.LLVMTypeOf(item_val);
+            const item_name_z = try std.heap.page_allocator.dupeZ(u8, f.item_name);
+            defer std.heap.page_allocator.free(item_name_z);
+            const item_alloca = llvm.LLVMBuildAlloca(builder, item_type, item_name_z.ptr);
+            _ = llvm.LLVMBuildStore(builder, item_val, item_alloca);
+            try loop_scope.put(f.item_name, item_alloca);
+
+            try emitStatement(ctx, mod, builder, func_val, &loop_scope, structs, libs, f.body);
+
+            const i_next = llvm.LLVMBuildAdd(builder, i_body, llvm.LLVMConstInt(i64_type, 1, 0), "for_i_next");
+            _ = llvm.LLVMBuildStore(builder, i_next, i_ptr);
+            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
+                _ = llvm.LLVMBuildBr(builder, cond_bb);
+            }
+
             llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
         },
         .return_stmt => |ret| {
@@ -148,8 +220,15 @@ pub fn emitStatement(
                 _ = llvm.LLVMBuildUnreachable(builder);
             }
 
+            // throw never falls through: both branches end in unreachable. Put
+            // the builder in a fresh unreachable block so subsequent statements
+            // (if any) still have a valid (dead) insertion point without
+            // leaving an unterminated basic block in the module.
             const cont_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.cont");
             llvm.LLVMPositionBuilderAtEnd(builder, cont_bb);
+            _ = llvm.LLVMBuildUnreachable(builder);
+            const dead_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.dead");
+            llvm.LLVMPositionBuilderAtEnd(builder, dead_bb);
         },
         .try_stmt => |ts| {
             const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);

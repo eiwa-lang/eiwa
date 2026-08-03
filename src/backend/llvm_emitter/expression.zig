@@ -317,6 +317,31 @@ pub fn emitExpression(
                 _ = llvm.LLVMBuildStore(builder, elem_val, elem_ptr);
             }
 
+            // The type checker types array literals as the monomorphized
+            // `List<T>` struct (`type List<T>(val items: NativeArray<T>)`),
+            // and downstream code (for-in desugar, index access, methods)
+            // reads the `.items` field. Wrap the raw buffer in the struct so
+            // the value matches its resolved type.
+            if (node.resolved_type) |rt| {
+                if (rt.* == .Custom) {
+                    if (structs.get(rt.Custom)) |s_info| {
+                        for (s_info.field_names, 0..) |f_name, f_idx| {
+                            if (std.mem.eql(u8, f_name, "items")) {
+                                const malloc_fn2 = llvm.LLVMGetNamedFunction(mod, "malloc") orelse break;
+                                const malloc_type2 = llvm.LLVMGlobalGetValueType(malloc_fn2);
+                                var size_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 128, 0)};
+                                const struct_ptr = llvm.LLVMBuildCall2(builder, malloc_type2, malloc_fn2, &size_args, 1, "list_alloc");
+                                const field_name_z = try std.heap.page_allocator.dupeZ(u8, f_name);
+                                defer std.heap.page_allocator.free(field_name_z);
+                                const items_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, struct_ptr, @intCast(f_idx), field_name_z.ptr);
+                                _ = llvm.LLVMBuildStore(builder, arr_ptr, items_ptr);
+                                return struct_ptr;
+                            }
+                        }
+                    }
+                }
+            }
+
             return arr_ptr;
         },
         .index_expr => |idx_expr| {
@@ -327,7 +352,11 @@ pub fn emitExpression(
             const offset_val = llvm.LLVMBuildAdd(builder, i_val, llvm.LLVMConstInt(i64_type, 2, 0), "offset");
             var elem_idx = [_]llvm.LLVMValueRef{offset_val};
             const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &elem_idx, 1, "arr_idx_gep");
-            return llvm.LLVMBuildLoad2(builder, i64_type, elem_ptr, "arr_elem_val");
+            // Load with the element's real type (slots are 8 bytes either
+            // way) so pointer/Double elements don't produce type-mismatched
+            // values in typed contexts (e.g. `ret ptr`).
+            const elem_type = arrayElemLLVMType(ctx, idx_expr.object.resolved_type);
+            return llvm.LLVMBuildLoad2(builder, elem_type, elem_ptr, "arr_elem_val");
         },
         .index_set_expr => |set_idx| {
             const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, set_idx.object);
@@ -404,10 +433,39 @@ pub fn emitExpression(
                 },
                 .eq_eq => {
                     if (is_double) return llvm.LLVMBuildFCmp(builder, llvm.LLVMRealOEQ, left_val, right_val, "feqtmp");
+                    // String `==` compares contents (C backend: core_String_equals).
+                    // TODO(emitter): SPECIAL CASE — review in Phase 61; proper
+                    // fix is dispatch through the Equatable contract vtable.
+                    if (isStringOperand(bin.left) or isStringOperand(bin.right)) {
+                        const strcmp_fn = llvm.LLVMGetNamedFunction(mod, "strcmp") orelse blk: {
+                            const p = llvm.LLVMPointerTypeInContext(ctx, 0);
+                            var ps = [_]llvm.LLVMTypeRef{ p, p };
+                            const ft = llvm.LLVMFunctionType(llvm.LLVMInt32TypeInContext(ctx), &ps, 2, 0);
+                            break :blk llvm.LLVMAddFunction(mod, "strcmp", ft);
+                        };
+                        const ft = llvm.LLVMGlobalGetValueType(strcmp_fn);
+                        var args = [_]llvm.LLVMValueRef{ left_val, right_val };
+                        const cmp = llvm.LLVMBuildCall2(builder, ft, strcmp_fn, &args, 2, "strcmp_tmp");
+                        const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(cmp), 0, 0);
+                        return llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, cmp, zero, "streq_tmp");
+                    }
                     return llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, left_val, right_val, "eqtmp");
                 },
                 .bang_eq => {
                     if (is_double) return llvm.LLVMBuildFCmp(builder, llvm.LLVMRealUNE, left_val, right_val, "fnetmp");
+                    if (isStringOperand(bin.left) or isStringOperand(bin.right)) {
+                        const strcmp_fn = llvm.LLVMGetNamedFunction(mod, "strcmp") orelse blk: {
+                            const p = llvm.LLVMPointerTypeInContext(ctx, 0);
+                            var ps = [_]llvm.LLVMTypeRef{ p, p };
+                            const ft = llvm.LLVMFunctionType(llvm.LLVMInt32TypeInContext(ctx), &ps, 2, 0);
+                            break :blk llvm.LLVMAddFunction(mod, "strcmp", ft);
+                        };
+                        const ft = llvm.LLVMGlobalGetValueType(strcmp_fn);
+                        var args = [_]llvm.LLVMValueRef{ left_val, right_val };
+                        const cmp = llvm.LLVMBuildCall2(builder, ft, strcmp_fn, &args, 2, "strcmp_tmp");
+                        const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(cmp), 0, 0);
+                        return llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cmp, zero, "strne_tmp");
+                    }
                     return llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, left_val, right_val, "netmp");
                 },
                 .and_and => return llvm.LLVMBuildAnd(builder, left_val, right_val, "andtmp"),
@@ -784,7 +842,8 @@ pub fn emitExpression(
                             const offset_val = llvm.LLVMBuildAdd(builder, i_val, llvm.LLVMConstInt(i64_type, 2, 0), "offset");
                             var elem_idx = [_]llvm.LLVMValueRef{offset_val};
                             const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &elem_idx, 1, "arr_get_gep");
-                            return llvm.LLVMBuildLoad2(builder, i64_type, elem_ptr, "arr_get_val");
+                            const elem_type = arrayElemLLVMType(ctx, g.object.resolved_type);
+                            return llvm.LLVMBuildLoad2(builder, elem_type, elem_ptr, "arr_get_val");
                         }
                         if (std.mem.eql(u8, g.name, "set") and call.arguments.len == 2) {
                             const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
@@ -861,13 +920,17 @@ pub fn emitExpression(
             }
 
             const dynamic_fn_type = llvm.LLVMFunctionType(ret_type, if (param_types.len > 0) param_types.ptr else null, @intCast(param_types.len), 0);
+            // Void-returning calls must NOT be given an SSA name (invalid IR);
+            // LLVMBuildCall2 dereferences the name unconditionally, so use the
+            // empty-string sentinel (LLVM treats "" as "no name") rather than null.
+            const call_name: [*c]const u8 = if (llvm.LLVMGetTypeKind(ret_type) == llvm.LLVMVoidTypeKind) "" else "dyn_calltmp";
             return llvm.LLVMBuildCall2(
                 builder,
                 dynamic_fn_type,
                 callee_val,
                 if (arg_vals.len > 0) arg_vals.ptr else null,
                 @intCast(arg_vals.len),
-                "dyn_calltmp",
+                call_name,
             );
         },
         .if_expr => |i| {
@@ -897,7 +960,7 @@ pub fn emitExpression(
                     _ = llvm.LLVMBuildStore(builder, val, rp);
                 }
             }
-            if (llvm.LLVMGetBasicBlockTerminator(then_bb) == null) {
+            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
             }
 
@@ -912,7 +975,7 @@ pub fn emitExpression(
                             _ = llvm.LLVMBuildStore(builder, val, rp);
                         }
                     }
-                    if (llvm.LLVMGetBasicBlockTerminator(eb) == null) {
+                    if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                         _ = llvm.LLVMBuildBr(builder, merge_bb);
                     }
                 }
@@ -1109,6 +1172,32 @@ fn coerceArg(
         }
     }
     return arg_val;
+}
+
+fn isStringOperand(node: *ast.ASTNode) bool {
+    const rt = node.resolved_type orelse return false;
+    return switch (rt.*) {
+        .String => true,
+        .Custom => |n| std.mem.eql(u8, n, "core_String") or std.mem.eql(u8, n, "String"),
+        else => false,
+    };
+}
+
+/// Maps the element type of an .Array-typed expression to its LLVM load type
+/// for the raw buffer slots (8 bytes each). Reference types load as ptr,
+/// Double as double (bitcast-compatible 8-byte slot), everything else as i64.
+fn arrayElemLLVMType(ctx: llvm.LLVMContextRef, obj_rt: ?*const ts.EiwaType) llvm.LLVMTypeRef {
+    if (obj_rt) |rt| {
+        if (rt.* == .Array) {
+            const elem_t = rt.Array.*;
+            switch (elem_t) {
+                .Custom, .String, .Pointer, .Array, .Union, .Function, .GenericInstance => return llvm.LLVMPointerTypeInContext(ctx, 0),
+                .Double => return llvm.LLVMDoubleTypeInContext(ctx),
+                else => return llvm.LLVMInt64TypeInContext(ctx),
+            }
+        }
+    }
+    return llvm.LLVMInt64TypeInContext(ctx);
 }
 
 /// Resolves the memory address (lvalue) of an array buffer variable, so

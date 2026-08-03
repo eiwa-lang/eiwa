@@ -90,7 +90,8 @@ This document tracks the historical progress, current status, and future roadmap
 - [x] **Task 19.2:** Add support for Multi-Catch (`catch (e: ExceptionA | ExceptionB)`) and optional catch blocks (`catch { ... }`).
 - [x] **Task 19.3:** Map Exceptions and non-local unwinding in the C Transpiler via `<setjmp.h>` (setjmp/longjmp).
 
-### Phase 20: LLVM Native Emitter & Release Pipeline (IN PROGRESS)
+### Phase 20: LLVM Native Emitter & Release Pipeline (IN PROGRESS — PARITY GAPS)
+> **Nota de paridade (Ago 2026, branch `feat/llvm-backend-parity`):** a Task 20.12 (promoção do LLVM a padrão) está **bloqueada** — o emissor ainda não tem paridade com o backend C. Gaps encontrados e corrigidos: `hashCode` de primitivos, builtins de `NativeArray` (`.length`/`.push`/`.get`/`.set`), `String.replace`, comparadores de String via `strcmp` (`==`/`!=`), literais de array com wrap em `List<T>`, `for`-in, e terminators de control-flow (if/while/for/throw que deixavam basic blocks sem terminator ao aninhar — `LLVMVerifyModule` falhava ou o JIT travava). Correção estrutural recente: chamadas de função com retorno `void` não recebem mais nome SSA (nome vazio `""`, pois `LLVMBuildCall2` dereferencia o name — `null` crashava), e `main` void é invocado pelo JIT via a assinatura correta (antes, o retorno `void` era lido como `i32` → exit code lixo). Funções cujo corpo ainda não é suportado agora emitem um **stub** (retorno default) em vez de declaration sem corpo, que quebrava o linking JIT/AOT com `undefined symbol`. Gap estrutural remanescente: **dynamic dispatch de contratos** (ex.: `serdeFields()` de `Serializable`) — o emissor LLVM não tem type descriptors/vtables, apenas special cases. Solução aprovada: **Phase 61 (prioritária)**. Todos os special cases estão marcados com `TODO(emitter): SPECIAL CASE` para revisão antes da promoção.
 Substituição completa do backend C por um emissor nativo LLVM IR construído 100% em memória via LLVM C-API 21 (`llvm-c/Core.h`), eliminando I/O de disco e subprocessos shell.
 - [x] **Task 20.1:** Adicionar suporte às flags `--backend=c|llvm` e `--release` na CLI (`src/main.zig`), com detecção dinâmica do LLVM 21 em `build.zig`.
 - [x] **Task 20.2:** Construir a infraestrutura básica do emissor nativo LLVM (`src/backend/llvm_emitter/`) traduzindo a AST Resolvida (primitivos, variáveis, condicionais, loops `while` e funções) diretamente em estruturas LLVM em memória.
@@ -118,9 +119,10 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
 - [x] **Task 20.11:** Exceções & Fibras (`try/catch` e `task { }` / `.await()`):
   - Suporte a propagação de exceções e controle de fluxo seguro em LLVM IR.
   - Suporte a concorrência e tarefas em LLVM IR.
-- [x] **Task 20.12:** Transição Completa & Promoção do Backend LLVM a Padrão Oficial:
+- [ ] **Task 20.12:** Transição Completa & Promoção do Backend LLVM a Padrão Oficial (**BLOQUEADA pela Phase 61**):
   - Promover o LLVM Native Emitter (`--backend=llvm`) como o backend oficial padrão da linguagem Eiwa.
   - Backend C mantido como suporte secundário legado (`--backend=c`).
+  - Critério objetivo de promoção: paridade total na suíte nativa (`eiwac test` com `--backend=llvm`, hoje não suportado — sem test-runner nem imports no emissor) + remoção/revisão de todos os `TODO(emitter): SPECIAL CASE`.
 
 ### Phase 21: Native Test System & CLI Refinements (COMPLETED)
 - [x] **Task 21.1:** Add native `test "name" { ... }` blocks in the AST and Parser.
@@ -558,6 +560,44 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 59.6c:** Comando `freeze` no CLI + flag `--frozen` e prioridade do `eiwa.freeze` sobre `resolutions/`.
 - [ ] **Task 59.7:** Resolução transitiva (MVS) entre dependências.
 - ~~**Task 59.8:** Dependências de registry~~ — cancelada: não haverá registry próprio, apenas sources git (GitHub, GitLab, URL custom).
+
+---
+
+### Phase 60: Default Values Referencing Sibling Parameters (PENDING)
+> **Motivação:** Suportar o padrão Kotlin de defaults que referenciam parâmetros anteriores do mesmo construtor/função (ex.: `type Dispatcher(val builder: ArestBuilder, val http: HttpDispatcher = HttpDispatcher(builder))`). Hoje o initializer é validado contra o escopo externo em `inferTypeDecl`/`inferFunDecl` (`src/core/type_checker/infer_decl.zig`), e os parâmetros irmãos só são registrados no `class_scope`/`fun_scope` **depois** do próprio default ser checado — a referência falha com `TypeError: Undeclared variable`.
+>
+> **Exemplo de erro (arest `src/dispatcher/dispatcher.ei`):**
+> ```kotlin
+> type Dispatcher(
+>     val builder: ArestBuilder,
+>     val http: HttpDispatcher = HttpDispatcher(builder),
+>     val mcp: McpDispatcher = McpDispatcher(builder)
+> ) {}
+> ```
+> ```
+> Error in src/dispatcher/dispatcher.ei:9:48:
+> REPORT_ERROR: TypeError: Undeclared variable 'builder'.
+> ```
+
+- [ ] **Task 60.1:** Registrar os parâmetros anteriores no escopo antes de validar o initializer de cada parâmetro em `inferTypeDecl`.
+- [ ] **Task 60.2:** Mesma correção para defaults de funções em `inferFunDecl` (defaults inferidos contra o `fun_scope` com os parâmetros já definidos).
+- [ ] **Verify:** `type Dispatcher(val builder: ArestBuilder, val http: HttpDispatcher = HttpDispatcher(builder))` compila e executa; testar também `fun foo(a: Int, b: Int = a)`.
+
+---
+
+### Phase 61: Dynamic Dispatch de Contratos via Fat Pointers + Vtables (PRIORITÁRIA — desbloqueia Task 20.12)
+> **Motivação:** O emissor LLVM não possui dispatch polimórfico real — apenas special cases (`toString`/`hashCode`), que falham em métodos arbitrários de contrato (ex.: `this.serdeFields()` de `Serializable`, usado por `List<T>: Serializable + Json`, quebrando `samples/arrays_and_loops.ei`). O backend C usa busca linear em descritores (`eiwa_find_vtable`), que escala mal. Decisão arquitetural em **ADR 47**: fat pointers à la Rust — valor de contract = par `(data_ptr, vtable_ptr)`, uma vtable global por par (tipo, contrato), dispatch O(1), smart casts trocam a vtable do par.
+>
+> **Escopo:** ambos os backends convergem para o mesmo modelo; os special cases do LLVM (`TODO(emitter): SPECIAL CASE`) são removidos à medida que o dispatch real cobre `Stringable`/`Hashable`/`Serializable`.
+
+- [ ] **Task 61.1:** Emitir vtables constantes globais por par (tipo concreto, contrato) no emissor LLVM (`LLVMConstStruct` de ponteiros de função, ordem = ordem dos métodos do contrato).
+- [ ] **Task 61.2:** Representação fat pointer: valores tipados como `contract` viram `{ptr data, ptr vtable}`; coerção automática concrete → contract nos pontos de passagem (args, retornos, atribuições, casts).
+- [ ] **Task 61.3:** Dispatch de chamada: `x.metodo()` com `x: Contract` = GEP slot na vtable + call indireto com `data` como receiver.
+- [ ] **Task 61.4:** Smart casts `when (x) is Contrato/Tipo`: troca de vtable do par (contract→contract) e unwrapping (contract→concreto).
+- [ ] **Task 61.5:** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`.
+- [ ] **Task 61.6:** Migrar o backend C do modelo `eiwa_find_vtable` (busca linear) para fat pointers, convergindo os dois backends (ou manter C legado sem migração — decidir na execução).
+- [ ] **Task 61.7:** Suporte a `eiwac test` e `import` no emissor LLVM (pré-requisito de paridade da Task 20.12).
+- [ ] **Verify:** `samples/arrays_and_loops.ei`, `samples/serialization*` e toda a suíte nativa passam com `--backend=llvm`; chamadas polimórficas de contrato arbitrárias (não só `toString`/`hashCode`) funcionam via JIT e build nativo.
 
 ---
 

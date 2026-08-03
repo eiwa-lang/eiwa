@@ -488,3 +488,21 @@ Elimina 100% do I/O de disco intermediário e da sobrecarga de spawn de subproce
 
 
 
+## ADR 47: Dynamic Dispatch de Contratos via Fat Pointers + Vtables por Contrato (Modelo Rust)
+**Status:** Aprovado / Prioritário
+**Data:** Agosto 2026
+
+**Contexto:**
+1. O sistema de composição do Eiwa (ADR 25) permite `type X : ContratoA + ContratoB`, exigindo dispatch polimórfico para múltiplos contratos por tipo concreto.
+2. O backend C resolve dispatch via `EiwaTypeDescriptor` + busca linear (`eiwa_implements`/`eiwa_find_vtable` em `eiwa_runtime.h`), que escala mal com o número de contratos.
+3. O backend LLVM (ADR 46) não possui nenhum mecanismo de dispatch real: apenas special cases stringly-typed para `toString`/`hashCode` (`src/backend/llvm_emitter/expression.zig`), que quebram ao encontrar métodos arbitrários de contrato (ex.: `serdeFields()` de `Serializable`, descoberto na investigação de paridade da branch `feat/llvm-backend-parity`).
+
+**Decisão:**
+Adotar **fat pointers à la Rust** como modelo canônico de dispatch de contratos:
+1. **Representação:** Todo valor tipado estaticamente como `contract` é um par `(data_ptr, vtable_ptr)`. Tipos concretos permanecem sem vptr embutido (zero custo quando não polimórfico).
+2. **Uma vtable por par (tipo, contrato):** Um `type` com N contratos gera N vtables constantes globais. Smart casts (`when (x) is Contrato`) trocam o par `(data, vtable)`.
+3. **Aplicável aos dois backends:** O emissor LLVM passa a ter dispatch real O(1); o backend C pode migrar do modelo de busca linear para o mesmo par posteriormente, convergindo os modelos.
+4. **Substituição gradual dos special cases:** Os helpers hand-emitted (`eiwa_to_string`, `eiwa_hash_string`, `eiwa_str_replace`) e os `TODO(emitter): SPECIAL CASE` em `llvm_emitter` são revisados e removidos à medida que o dispatch real cobre `Stringable`/`Hashable`.
+
+**Razão:**
+Dispatch O(1) sem busca linear, casa naturalmente com múltiplos contratos por tipo (impossível com vptr único estilo C++), é trivialmente devirtualizável pelo otimizador LLVM quando a vtable é constante conhecida, e é o modelo provado em produção pelo Rust (`&dyn Trait`). O custo é a mudança de representação de valores de contrato em todo o pipeline (coerção de argumentos, unions, coleções heterogêneas `List<Drawable>` — Phase 43), justificando uma fase dedicada.
