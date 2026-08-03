@@ -289,7 +289,7 @@ fun enterProjectDir(arg: String?) {
     }
 }
 
-fun loadProject(): ProjectContext {
+fun loadProject(eiwacResolved: String): ProjectContext {
     if (File.exists("eiwa.yaml") == false) {
         println("Error: eiwa.yaml not found in current directory.")
         exit(1)
@@ -322,7 +322,7 @@ fun loadProject(): ProjectContext {
         }
     }
 
-    val ctx = ProjectContext(eiwacPath(), repositoryRoot, resolutionsDir, resolutionsFile, manifest, deps, hasFreeze)
+    val ctx = ProjectContext(eiwacResolved, repositoryRoot, resolutionsDir, resolutionsFile, manifest, deps, hasFreeze)
     checkFrozen(ctx)
     return ctx
 }
@@ -355,8 +355,9 @@ fun checkFrozen(ctx: ProjectContext) {
 }
 
 fun freezeCommand() {
+    val eiwacResolved = eiwacPath()
     enterProjectDir(Process.argAt(2))
-    val ctx = loadProject()
+    val ctx = loadProject(eiwacResolved)
     if (ctx.deps.size() == 0) {
         println("No dependencies to freeze.")
         exit(0)
@@ -367,6 +368,7 @@ fun freezeCommand() {
 }
 
 fun updateCommand() {
+    val eiwacResolved = eiwacPath()
     var updateTarget: String? = null
     val dirOpt = Process.argAt(2)
     if (dirOpt != null && startsWith(dirOpt!!, "-") == false) {
@@ -375,7 +377,7 @@ fun updateCommand() {
         }
     }
 
-    val ctx = loadProject()
+    val ctx = loadProject(eiwacResolved)
     val deps = parseManifest(ctx.manifest)
     if (deps.size() == 0) {
         println("No dependencies to update.")
@@ -603,8 +605,9 @@ fun removeCommand() {
 }
 
 fun compilerCommand(cmd: String) {
+    val eiwacResolved = eiwacPath()
     enterProjectDir(Process.argAt(2))
-    val ctx = loadProject()
+    val ctx = loadProject(eiwacResolved)
 
     val entry = "src/main.ei"
     if (cmd != "test" && File.exists(entry) == false) {
