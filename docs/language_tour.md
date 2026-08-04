@@ -6,6 +6,10 @@ While Eiwa shares an almost identical baseline syntax with Kotlin, it operates i
 
 Because of this, some architectural decisions differ from Kotlin to provide extreme performance and absolute safety.
 
+### Core Philosophy: Unified Type System & Explicit Declarations
+- **No Primitive Types:** Eiwa has **no raw primitive types** visible to user code. Like Kotlin, every value is an instance of a `type` (`Int`, `Double`, `Bool`, `String`, `Pointer`, etc.). Built-in types are declared in `std.core` (`src/std/core.ei`) annotated with `@Primitive(...)` for backend layout mapping.
+- **No Magic APIs:** Everything accessible to user code (methods, properties, operators) **must be explicitly declared in the standard library (`src/std/`)**. The compiler backend never invents "magic" floating methods without a corresponding `type`/`contract` signature in `src/std/core.ei`.
+
 ---
 
 ## 1. Module System (File-Based Namespaces)
