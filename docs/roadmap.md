@@ -596,7 +596,8 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [ ] **Task 61.4:** Smart casts `when (x) is Contrato/Tipo`: troca de vtable do par (contract→contract) e unwrapping (contract→concreto).
 - [ ] **Task 61.5:** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`.
 - [ ] **Task 61.6:** Migrar o backend C do modelo `eiwa_find_vtable` (busca linear) para fat pointers, convergindo os dois backends (ou manter C legado sem migração — decidir na execução).
-- [ ] **Task 61.7:** Suporte a `eiwac test` e `import` no emissor LLVM (pré-requisito de paridade da Task 20.12).
+- [x] **Task 61.7 (parcial):** `eiwac test --backend=llvm <file.ei>` agora funciona via Pass 4 (test runner JIT com `eiwa_test_N` + stub pass para símbolos sem body). Bloqueio restante: funções da stdlib Eiwa (collections, exceptions com longjmp) não têm bodies emitidos pelo LLVM emitter — `collections_test.ei` requer Phase 61.1–61.5 para funcionar completamente.
+- [ ] **Task 61.8:** Emissão de bodies de stdlib Eiwa (MutableList, MutableMap, MutableSet) no emissor LLVM para que `collections_test.ei` passe com `--backend=llvm`. Bloqueado por: emissão de propriedades de struct, loops internos, hashing.
 - [ ] **Verify:** `samples/arrays_and_loops.ei`, `samples/serialization*` e toda a suíte nativa passam com `--backend=llvm`; chamadas polimórficas de contrato arbitrárias (não só `toString`/`hashCode`) funcionam via JIT e build nativo.
 
 ---

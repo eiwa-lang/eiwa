@@ -564,6 +564,46 @@ pub fn emitExpression(
             }
         },
         .binary_expr => |bin| {
+            // Elvis (?:) needs short-circuit: don't evaluate right if left is non-null.
+            // Implement as a ternary: left != 0/null ? left : right
+            if (bin.op == .elvis) {
+                const func_val = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+                const lhs_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.left);
+                const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+                const is_ptr = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(lhs_val)) == llvm.LLVMPointerTypeKind;
+                const not_null = if (is_ptr)
+                    llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, lhs_val, llvm.LLVMConstNull(ptr_type), "elvis_cond")
+                else
+                    llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, lhs_val, llvm.LLVMConstInt(i64_type, 0, 0), "elvis_cond");
+
+                const lhs_end_bb = llvm.LLVMGetInsertBlock(builder);
+                const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "elvis_nonnull");
+                const else_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "elvis_null");
+                const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "elvis_merge");
+                _ = llvm.LLVMBuildCondBr(builder, not_null, then_bb, else_bb);
+
+                llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+                _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+                llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+                const rhs_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.right);
+                const rhs_end_bb = llvm.LLVMGetInsertBlock(builder);
+                if (llvm.LLVMGetBasicBlockTerminator(rhs_end_bb) == null) {
+                    _ = llvm.LLVMBuildBr(builder, merge_bb);
+                }
+
+                llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+                const phi_type = llvm.LLVMTypeOf(lhs_val);
+                const phi = llvm.LLVMBuildPhi(builder, phi_type, "elvis_val");
+                var incoming_vals = [_]llvm.LLVMValueRef{ lhs_val, rhs_val };
+                var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_bb, rhs_end_bb };
+                llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+
+                _ = lhs_end_bb;
+                return phi;
+            }
+
             const left_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.left);
             const right_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.right);
 
@@ -1509,6 +1549,71 @@ pub fn emitExpression(
                 return llvm.LLVMBuildLoad2(builder, ret_type, rp, "when_res_load");
             }
             return llvm.LLVMConstInt(i64_type, 0, 0);
+        },
+        .ternary_expr => |t| {
+            const func_val = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+            const i1_type = llvm.LLVMInt1TypeInContext(ctx);
+            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+
+            // Alloca in the function entry block first, before any branches.
+            const cond_val = try emitExpression(ctx, mod, builder, scope, structs, libs, t.condition);
+            const cond_i1 = if (llvm.LLVMTypeOf(cond_val) == i1_type)
+                cond_val
+            else
+                llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cond_val, llvm.LLVMConstInt(i64_type, 0, 0), "ternary_cond_i1");
+
+            const start_bb = llvm.LLVMGetInsertBlock(builder);
+            const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "ternary_then");
+            const else_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "ternary_else");
+            const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "ternary_merge");
+
+            _ = llvm.LLVMBuildCondBr(builder, cond_i1, then_bb, else_bb);
+
+            // Emit then branch
+            llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+            const then_val = try emitExpression(ctx, mod, builder, scope, structs, libs, t.then_branch);
+            const then_end_bb = llvm.LLVMGetInsertBlock(builder);
+            if (llvm.LLVMGetBasicBlockTerminator(then_end_bb) == null) {
+                _ = llvm.LLVMBuildBr(builder, merge_bb);
+            }
+            if (llvm.LLVMGetBasicBlockTerminator(then_bb) == null) {
+                llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+                _ = llvm.LLVMBuildBr(builder, merge_bb);
+            }
+
+            // Emit else branch
+            llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+            const ret_type = llvm.LLVMTypeOf(then_val);
+            const else_val: llvm.LLVMValueRef = if (t.else_branch) |eb|
+                try emitExpression(ctx, mod, builder, scope, structs, libs, eb)
+            else blk: {
+                if (llvm.LLVMGetTypeKind(ret_type) == llvm.LLVMIntegerTypeKind) {
+                    break :blk llvm.LLVMConstInt(ret_type, 0, 0);
+                } else if (llvm.LLVMGetTypeKind(ret_type) == llvm.LLVMDoubleTypeKind) {
+                    break :blk llvm.LLVMConstReal(ret_type, 0.0);
+                } else {
+                    break :blk llvm.LLVMConstNull(ret_type);
+                }
+            };
+            const else_end_bb = llvm.LLVMGetInsertBlock(builder);
+            if (llvm.LLVMGetBasicBlockTerminator(else_end_bb) == null) {
+                _ = llvm.LLVMBuildBr(builder, merge_bb);
+            }
+            if (llvm.LLVMGetBasicBlockTerminator(else_bb) == null) {
+                llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+                _ = llvm.LLVMBuildBr(builder, merge_bb);
+            }
+
+            // Coerce types if needed (e.g. one branch returned i64 vs ptr) or use phi
+            llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+            const phi_type = llvm.LLVMTypeOf(then_val);
+            const phi = llvm.LLVMBuildPhi(builder, phi_type, "ternary_val");
+            var incoming_vals = [_]llvm.LLVMValueRef{ then_val, else_val };
+            var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };
+            llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+
+            _ = start_bb;
+            return phi;
         },
         else => {
             std.debug.print("LLVM Debug: unsupported expression node type {any}\n", .{node.data});
