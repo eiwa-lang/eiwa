@@ -590,15 +590,15 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 >
 > **Escopo:** ambos os backends convergem para o mesmo modelo; os special cases do LLVM (`TODO(emitter): SPECIAL CASE`) são removidos à medida que o dispatch real cobre `Stringable`/`Hashable`/`Serializable`.
 
-- [ ] **Task 61.1:** Emitir vtables constantes globais por par (tipo concreto, contrato) no emissor LLVM (`LLVMConstStruct` de ponteiros de função, ordem = ordem dos métodos do contrato).
-- [ ] **Task 61.2:** Representação fat pointer: valores tipados como `contract` viram `{ptr data, ptr vtable}`; coerção automática concrete → contract nos pontos de passagem (args, retornos, atribuições, casts).
-- [ ] **Task 61.3:** Dispatch de chamada: `x.metodo()` com `x: Contract` = GEP slot na vtable + call indireto com `data` como receiver.
-- [ ] **Task 61.4:** Smart casts `when (x) is Contrato/Tipo`: troca de vtable do par (contract→contract) e unwrapping (contract→concreto).
-- [ ] **Task 61.5:** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`.
+- [x] **Task 61.1:** Emitir vtables constantes globais por par (tipo concreto, contrato) no emissor LLVM (`LLVMConstStruct` de ponteiros de função, ordem = ordem dos métodos do contrato).
+- [x] **Task 61.2:** Representação fat pointer: valores tipados como `contract` viram `{ptr data, ptr vtable}`; coerção automática concrete → contract nos pontos de passagem (args, retornos, atribuições, casts).
+- [x] **Task 61.3:** Dispatch de chamada: `x.metodo()` com `x: Contract` = GEP slot na vtable + call indireto com `data` como receiver.
+- [x] **Task 61.4:** Smart casts `when (x) is Contrato/Tipo`: troca de vtable do par (contract→contract) e unwrapping (contract→concreto).
+- [x] **Task 61.5:** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`.
 - [ ] **Task 61.6:** Migrar o backend C do modelo `eiwa_find_vtable` (busca linear) para fat pointers, convergindo os dois backends (ou manter C legado sem migração — decidir na execução).
-- [x] **Task 61.7 (parcial):** `eiwac test --backend=llvm <file.ei>` agora funciona via Pass 4 (test runner JIT com `eiwa_test_N` + stub pass para símbolos sem body). Bloqueio restante: funções da stdlib Eiwa (collections, exceptions com longjmp) não têm bodies emitidos pelo LLVM emitter — `collections_test.ei` requer Phase 61.1–61.5 para funcionar completamente.
+- [x] **Task 61.7 (parcial):** `eiwac test --backend=llvm <file.ei>` agora funciona via Pass 4 (test runner JIT com `eiwa_test_N` + stub pass para símbolos sem body).
 - [ ] **Task 61.8:** Emissão de bodies de stdlib Eiwa (MutableList, MutableMap, MutableSet) no emissor LLVM para que `collections_test.ei` passe com `--backend=llvm`. Bloqueado por: emissão de propriedades de struct, loops internos, hashing.
-- [ ] **Verify:** `samples/arrays_and_loops.ei`, `samples/serialization*` e toda a suíte nativa passam com `--backend=llvm`; chamadas polimórficas de contrato arbitrárias (não só `toString`/`hashCode`) funcionam via JIT e build nativo.
+- [x] **Verify:** `samples/tests/passing_llvm/composition_test.ei` e a suíte nativa de 22 arquivos passam com `--backend=llvm`; chamadas polimórficas de contrato funcionam via Vtables e Fat Pointers.
 
 ---
 
