@@ -10,6 +10,20 @@ Eiwa is a pragmatic, statically typed, natively compiled systems language with a
 
 ---
 
+## 📐 Core Language Principles
+
+1. **Unified Class-Only Type System (No Raw Primitive Types in User-Space):**
+   - Eiwa has **NO raw primitive types** visible to the user (like Kotlin).
+   - Everything visible to the user is a **`type`** (`Int`, `Double`, `Bool`, `String`, `Pointer`, etc.) defined and declared in `src/std/core.ei` (annotated with `@Primitive(...)` for internal C/LLVM backend layout representation).
+   - User code interacts strictly with `type`, `contract`, `skill`, and `object`.
+
+2. **Explicit Stdlib Declarations (No Magic Methods or Floating APIs):**
+   - Every method, operator, type, or property accessible to the end user **MUST be explicitly declared** in `src/std/` (e.g. `src/std/core.ei`).
+   - Compiler backend passes (C Transpiler / LLVM Emitter) **MUST NOT introduce magic methods** or hidden user-accessible APIs out of thin air without a matching declaration in the standard library.
+   - If a standard feature or builtin method is backed by internal compiler intrinsics or backend instructions, it must still have its formal signature declared in `src/std/core.ei` (annotated with `@Primitive` or `@Alias` where appropriate) for documentation, IDE resolution, and architectural consistency.
+
+---
+
 ## 🛠️ CLI & Build Commands Quick Reference
 Always use these commands to build, run, and test the project:
 
