@@ -597,8 +597,8 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 61.5:** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`.
 - [ ] **Task 61.6:** Migrar o backend C do modelo `eiwa_find_vtable` (busca linear) para fat pointers, convergindo os dois backends (ou manter C legado sem migração — decidir na execução).
 - [x] **Task 61.7 (parcial):** `eiwac test --backend=llvm <file.ei>` agora funciona via Pass 4 (test runner JIT com `eiwa_test_N` + stub pass para símbolos sem body).
-- [ ] **Task 61.8:** Emissão de bodies de stdlib Eiwa (MutableList, MutableMap, MutableSet) no emissor LLVM para que `collections_test.ei` passe com `--backend=llvm`. Bloqueado por: emissão de propriedades de struct, loops internos, hashing.
-- [x] **Verify:** `samples/tests/passing_llvm/composition_test.ei` e a suíte nativa de 22 arquivos passam com `--backend=llvm`; chamadas polimórficas de contrato funcionam via Vtables e Fat Pointers.
+- [x] **Task 61.8:** Emissão de bodies de stdlib Eiwa (MutableList, MutableMap, MutableSet) no emissor LLVM para que `collections_test.ei` passe com `--backend=llvm`.
+- [x] **Verify:** `samples/tests/passing_llvm/composition_test.ei`, `samples/tests/passing_llvm/collections_test.ei` e toda a suíte nativa de 23 arquivos passam com `--backend=llvm`; chamadas polimórficas de contrato funcionam via Vtables e Fat Pointers.
 
 ---
 

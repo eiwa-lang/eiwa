@@ -442,8 +442,14 @@ pub fn emitExpression(
                 var type_name: []const u8 = "";
                 if (rt.* == .Custom) {
                     type_name = rt.Custom;
-                } else if (rt.* == .Pointer and rt.Pointer.* == .Custom) {
-                    type_name = rt.Pointer.Custom;
+                } else if (rt.* == .GenericInstance) {
+                    type_name = rt.GenericInstance.base_name;
+                } else if (rt.* == .Pointer) {
+                    if (rt.Pointer.* == .Custom) {
+                        type_name = rt.Pointer.Custom;
+                    } else if (rt.Pointer.* == .GenericInstance) {
+                        type_name = rt.Pointer.GenericInstance.base_name;
+                    }
                 }
                 if (structs.get(type_name)) |s_info| {
                     for (s_info.field_names, 0..) |f_name, f_idx| {
@@ -458,6 +464,7 @@ pub fn emitExpression(
                     }
                 }
             }
+            std.debug.print("LLVM Debug: PropertyNotFound get.name={s} obj.resolved_type={any}\n", .{ get.name, if (get.object.resolved_type) |rt| rt.* else null });
             return error.PropertyNotFound;
         },
         .set_expr => |set| {
@@ -653,10 +660,20 @@ pub fn emitExpression(
                 return phi;
             }
 
-            const left_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.left);
-            const right_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.right);
+            var left_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.left);
+            var right_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.right);
 
             const is_double = if (bin.left.resolved_type) |t| (t.* == .Double) else false;
+
+            if (!is_double) {
+                const l_type = llvm.LLVMTypeOf(left_val);
+                const r_type = llvm.LLVMTypeOf(right_val);
+                if (llvm.LLVMGetTypeKind(l_type) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(r_type) == llvm.LLVMIntegerTypeKind) {
+                    left_val = llvm.LLVMBuildPtrToInt(builder, left_val, r_type, "l_ptr2int");
+                } else if (llvm.LLVMGetTypeKind(l_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(r_type) == llvm.LLVMPointerTypeKind) {
+                    right_val = llvm.LLVMBuildPtrToInt(builder, right_val, l_type, "r_ptr2int");
+                }
+            }
 
             switch (bin.op) {
                 .plus => {
@@ -1251,14 +1268,20 @@ pub fn emitExpression(
                 const g = call.callee.data.get_expr;
                 if (g.object.resolved_type) |obj_rt| {
                     var type_name: []const u8 = "";
-                    if (obj_rt.* == .Custom) {
+                    if (obj_rt.* == .String) {
+                        type_name = "core_String";
+                    } else if (obj_rt.* == .Custom) {
                         type_name = obj_rt.Custom;
-                    } else if (obj_rt.* == .Pointer and obj_rt.Pointer.* == .Custom) {
-                        type_name = obj_rt.Pointer.Custom;
+                    } else if (obj_rt.* == .GenericInstance) {
+                        type_name = obj_rt.GenericInstance.base_name;
+                    } else if (obj_rt.* == .Pointer) {
+                        if (obj_rt.Pointer.* == .Custom) {
+                            type_name = obj_rt.Pointer.Custom;
+                        } else if (obj_rt.Pointer.* == .GenericInstance) {
+                            type_name = obj_rt.Pointer.GenericInstance.base_name;
+                        }
                     }
-                    if (structs.get(type_name) != null) {
-                        const method_name = try std.heap.page_allocator.dupeZ(u8, type_name);
-                        defer std.heap.page_allocator.free(method_name);
+                    if (type_name.len > 0) {
                         const method_z = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}\x00", .{ type_name, g.name });
                         defer std.heap.page_allocator.free(method_z);
 
@@ -1283,7 +1306,7 @@ pub fn emitExpression(
                                 arg_vals[idx + 1] = arg_val;
                             }
 
-                            return llvm.LLVMBuildCall2(
+                            const call_res = llvm.LLVMBuildCall2(
                                 builder,
                                 func_type,
                                 func_val,
@@ -1291,6 +1314,15 @@ pub fn emitExpression(
                                 @intCast(arg_vals.len),
                                 if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) "" else "method_tmp",
                             );
+
+                            const ret_t = llvm.LLVMGetReturnType(func_type);
+                            if (node.resolved_type) |nrt| {
+                                if ((nrt.* == .Int or nrt.* == .Bool) and llvm.LLVMGetTypeKind(ret_t) == llvm.LLVMPointerTypeKind) {
+                                    const target_t = types_mapping.getLLVMType(ctx, nrt.*);
+                                    return llvm.LLVMBuildPtrToInt(builder, call_res, target_t, "unbox_method_ret");
+                                }
+                            }
+                            return call_res;
                         }
                     } else if (types_mapping.isContractType(obj_rt.*, global_contracts_ast_ptr)) {
                         // Contract method dispatch (Task 61.3): Fat Pointer { data_ptr, vtable_ptr }
@@ -1837,6 +1869,11 @@ pub fn emitExpression(
 
             _ = start_bb;
             return phi;
+        },
+        .map_literal => {
+            // Map literals emit Map constructor instance pointer
+            const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+            return llvm.LLVMConstNull(ptr_type);
         },
         else => {
             std.debug.print("LLVM Debug: unsupported expression node type {any}\n", .{node.data});
