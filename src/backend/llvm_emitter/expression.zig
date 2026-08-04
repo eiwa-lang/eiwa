@@ -174,6 +174,9 @@ fn collectCapturesLLVM(
     }
 }
 
+/// Global contracts AST pointer set during emitModule for contract vtable lookups.
+pub var global_contracts_ast_ptr: ?*std.StringHashMap(*ast.ASTNode) = null;
+
 /// Returns a monotonically increasing counter for unique lambda naming.
 /// Uses a file-level variable (safe: single-threaded compilation).
 var lambda_counter_val: usize = 0;
@@ -259,10 +262,10 @@ pub fn emitExpression(
             }
             if (scope.get(name)) |var_val| {
                 const val_type = llvm.LLVMTypeOf(var_val);
-                // Check if variable is an alloca pointer vs direct parameter value
                 if (llvm.LLVMGetTypeKind(val_type) == llvm.LLVMPointerTypeKind) {
                     const res_type = node.resolved_type orelse return var_val;
-                    const elem_type = types_mapping.getLLVMType(ctx, res_type.*);
+                    const is_contract = types_mapping.isContractType(res_type.*, global_contracts_ast_ptr);
+                    const elem_type = if (is_contract) types_mapping.getFatPointerType(ctx) else types_mapping.getLLVMType(ctx, res_type.*);
                     const name_z = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_val\x00", .{name});
                     defer std.heap.page_allocator.free(name_z);
                     return llvm.LLVMBuildLoad2(builder, elem_type, var_val, name_z.ptr);
@@ -279,6 +282,23 @@ pub fn emitExpression(
                 const base = obj_rt.*;
                 if ((base == .String or base == .Pointer) and std.mem.eql(u8, get.name, "ptr")) {
                     return emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                }
+                // String.length — LLVM models String as a bare char*, so length
+                // calls C's strlen directly.
+                // TODO(emitter): SPECIAL CASE — review before promoting LLVM to default
+                // backend. Bypasses method dispatch on String. If String is ever
+                // materialized as a struct (e.g. length + ptr), this should read the field instead.
+                if ((base == .String or base == .Pointer) and std.mem.eql(u8, get.name, "length")) {
+                    const str_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                    const strlen_fn = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
+                        const p = llvm.LLVMPointerTypeInContext(ctx, 0);
+                        var ps = [_]llvm.LLVMTypeRef{p};
+                        const ft = llvm.LLVMFunctionType(llvm.LLVMInt64TypeInContext(ctx), &ps, 1, 0);
+                        break :blk llvm.LLVMAddFunction(mod, "strlen", ft);
+                    };
+                    const ft = llvm.LLVMGlobalGetValueType(strlen_fn);
+                    var args = [_]llvm.LLVMValueRef{str_ptr};
+                    return llvm.LLVMBuildCall2(builder, ft, strlen_fn, &args, 1, "strlen_tmp");
                 }
             }
 
@@ -332,12 +352,41 @@ pub fn emitExpression(
                         // eiwa_to_string takes a ptr (boxed value). Int/Bool are
                         // raw i64 in the LLVM model, so box them via inttoptr.
                         var arg_val = obj_val;
-                        if (obj_base == .Int or obj_base == .Bool or obj_base == .Double) {
+                        if (obj_base == .Int or obj_base == .Bool) {
                             const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                             arg_val = llvm.LLVMBuildIntToPtr(builder, obj_val, ptr_type, "tostr_box");
+                        } else if (obj_base == .Double) {
+                            const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+                            const i64_val = llvm.LLVMBuildBitCast(builder, obj_val, llvm.LLVMInt64TypeInContext(ctx), "double_i64_box");
+                            arg_val = llvm.LLVMBuildIntToPtr(builder, i64_val, ptr_type, "tostr_box");
                         }
                         var args = [_]llvm.LLVMValueRef{arg_val};
                         return llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 1, "tostr_tmp");
+                    }
+                }
+            }
+
+            // Primitive method: Double.toInt() and Int.toDouble()
+            // TODO(emitter): SPECIAL CASE — review before promoting LLVM to default
+            // backend. Primitive type conversions (Double <-> Int) bypass standard
+            // method dispatch and emit direct LLVM cast instructions (FPToSI / SIToFP).
+            if (std.mem.eql(u8, get.name, "toInt")) {
+                if (get.object.resolved_type) |obj_rt| {
+                    if (obj_rt.* == .Double) {
+                        const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                        return llvm.LLVMBuildFPToSI(builder, obj_val, llvm.LLVMInt64TypeInContext(ctx), "double_to_int");
+                    } else if (obj_rt.* == .Int) {
+                        return try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                    }
+                }
+            }
+            if (std.mem.eql(u8, get.name, "toDouble")) {
+                if (get.object.resolved_type) |obj_rt| {
+                    if (obj_rt.* == .Int) {
+                        const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                        return llvm.LLVMBuildSIToFP(builder, obj_val, llvm.LLVMDoubleTypeInContext(ctx), "int_to_double");
+                    } else if (obj_rt.* == .Double) {
+                        return try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                     }
                 }
             }
@@ -715,7 +764,7 @@ pub fn emitExpression(
             for (lam.params, 0..) |p, i| {
                 if (p.type_ref) |tr| {
                     if (tr.resolved_type) |rt| {
-                        param_types[i] = types_mapping.getLLVMType(ctx, rt.*);
+                        param_types[i] = types_mapping.getLLVMTypeWithContracts(ctx, rt.*, global_contracts_ast_ptr);
                         continue;
                     }
                 }
@@ -726,7 +775,7 @@ pub fn emitExpression(
             if (lam.params.len == 0) {
                 if (node.resolved_type) |rt| {
                     if (rt.* == .Function and rt.Function.params.len == 1) {
-                        it_param_type = types_mapping.getLLVMType(ctx, rt.Function.params[0].*);
+                        it_param_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.params[0].*, global_contracts_ast_ptr);
                     }
                 }
             }
@@ -734,7 +783,7 @@ pub fn emitExpression(
             var ret_type: llvm.LLVMTypeRef = llvm.LLVMVoidTypeInContext(ctx);
             if (node.resolved_type) |rt| {
                 if (rt.* == .Function) {
-                    ret_type = types_mapping.getLLVMType(ctx, rt.Function.return_type.*);
+                    ret_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.return_type.*, global_contracts_ast_ptr);
                 }
             }
 
@@ -848,6 +897,8 @@ pub fn emitExpression(
                     _ = llvm.LLVMBuildRet(builder, llvm.LLVMConstInt(ret_type, 0, 0));
                 } else if (r_kind == llvm.LLVMDoubleTypeKind) {
                     _ = llvm.LLVMBuildRet(builder, llvm.LLVMConstReal(ret_type, 0.0));
+                } else if (r_kind == llvm.LLVMPointerTypeKind or r_kind == llvm.LLVMStructTypeKind) {
+                    _ = llvm.LLVMBuildRet(builder, llvm.LLVMConstNull(ret_type));
                 } else {
                     _ = llvm.LLVMBuildRetVoid(builder);
                 }
@@ -930,6 +981,43 @@ pub fn emitExpression(
                     }
                 }
 
+                // `with(receiver, lambda)` builtin desugaring
+                if (std.mem.eql(u8, callee_name, "with") and call.arguments.len == 2) {
+                    const receiver_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                    const lambda_node = call.arguments[1];
+                    if (lambda_node.data == .lambda_expr) {
+                        const lam = lambda_node.data.lambda_expr;
+                        var lam_scope = std.StringHashMap(llvm.LLVMValueRef).init(std.heap.page_allocator);
+                        defer lam_scope.deinit();
+                        var scope_it = scope.iterator();
+                        while (scope_it.next()) |entry| {
+                            try lam_scope.put(entry.key_ptr.*, entry.value_ptr.*);
+                        }
+
+                        const rec_type = llvm.LLVMTypeOf(receiver_val);
+                        const it_alloca = llvm.LLVMBuildAlloca(builder, rec_type, "it");
+                        _ = llvm.LLVMBuildStore(builder, receiver_val, it_alloca);
+                        try lam_scope.put("it", it_alloca);
+
+                        if (call.arguments[0].resolved_type) |rec_rt| {
+                            const is_contract = types_mapping.isContractType(rec_rt.*, global_contracts_ast_ptr);
+                            if (is_contract) {
+                                // Keep node resolved type intact for it.draw()
+                            }
+                        }
+
+                        var last_val: llvm.LLVMValueRef = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+                        for (lam.body) |stmt| {
+                            if (stmt.data == .return_stmt and stmt.data.return_stmt.value != null) {
+                                last_val = try emitExpression(ctx, mod, builder, &lam_scope, structs, libs, stmt.data.return_stmt.value.?);
+                            } else {
+                                try statement.emitStatement(ctx, mod, builder, llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder)), &lam_scope, structs, libs, stmt);
+                            }
+                        }
+                        return last_val;
+                    }
+                }
+
                 if (llvm.LLVMGetNamedFunction(mod, callee_z.ptr)) |func_val| {
                     var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, call.arguments.len);
                     defer std.heap.page_allocator.free(arg_vals);
@@ -943,7 +1031,47 @@ pub fn emitExpression(
                     for (call.arguments, 0..) |arg_node, idx| {
                         var arg_val = try emitExpression(ctx, mod, builder, scope, structs, libs, arg_node);
                         if (idx < param_count) {
-                            arg_val = coerceArg(builder, arg_val, func_param_types[idx]);
+                            const expected_type = func_param_types[idx];
+                            if (llvm.LLVMGetTypeKind(expected_type) == llvm.LLVMStructTypeKind) {
+                                // Target parameter is a Fat Pointer { ptr data, ptr vtable }
+                                if (arg_node.resolved_type) |arg_rt| {
+                                    const arg_c_name = switch (arg_rt.*) {
+                                        .Custom => |n| n,
+                                        .GenericInstance => |gi| gi.base_name,
+                                        else => "",
+                                    };
+                                    // Target contract name (from callee AST parameter if available)
+                                    var contract_c_name: []const u8 = "";
+                                    if (call.callee.resolved_type) |crt| {
+                                        if (crt.* == .Function and idx < crt.Function.params.len) {
+                                            switch (crt.Function.params[idx].*) {
+                                                .Custom => |n| contract_c_name = n,
+                                                .GenericInstance => |gi| contract_c_name = gi.base_name,
+                                                else => {},
+                                            }
+                                        }
+                                    }
+                                    if (arg_c_name.len > 0) {
+                                        if (contract_c_name.len == 0) {
+                                            if (global_contracts_ast_ptr) |ca| {
+                                                var it = ca.iterator();
+                                                while (it.next()) |entry| {
+                                                    const c_name = entry.key_ptr.*;
+                                                    const test_fat = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, c_name) catch arg_val;
+                                                    if (llvm.LLVMTypeOf(test_fat) == expected_type) {
+                                                        arg_val = test_fat;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            arg_val = try coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name);
+                                        }
+                                    }
+                                }
+                            } else {
+                                arg_val = coerceArg(builder, arg_val, expected_type);
+                            }
                         }
                         arg_vals[idx] = arg_val;
                     }
@@ -1164,6 +1292,72 @@ pub fn emitExpression(
                                 if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) "" else "method_tmp",
                             );
                         }
+                    } else if (types_mapping.isContractType(obj_rt.*, global_contracts_ast_ptr)) {
+                        // Contract method dispatch (Task 61.3): Fat Pointer { data_ptr, vtable_ptr }
+                        const contract_name = switch (obj_rt.*) {
+                            .Custom => |n| n,
+                            .GenericInstance => |gi| gi.base_name,
+                            else => "",
+                        };
+                        const contract_node = if (global_contracts_ast_ptr) |ca| ca.get(contract_name) else null;
+                        if (contract_node) |cnode| {
+                            const c_decl = cnode.data.contract_decl;
+                            var method_idx: ?usize = null;
+                            var target_fun_decl: ?*ast.ASTNode = null;
+
+                            for (c_decl.methods, 0..) |cm, idx| {
+                                if (cm.data == .fun_decl and std.mem.eql(u8, cm.data.fun_decl.name, g.name)) {
+                                    method_idx = idx;
+                                    target_fun_decl = cm;
+                                    break;
+                                }
+                            }
+
+                            if (method_idx) |m_idx| {
+                                const fat_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                                const data_ptr = llvm.LLVMBuildExtractValue(builder, fat_ptr, 0, "fat_data");
+                                const vtable_ptr = llvm.LLVMBuildExtractValue(builder, fat_ptr, 1, "fat_vtable");
+
+                                const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+                                const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+
+                                // GEP to vtable method slot
+                                var gep_indices = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(m_idx), 0)};
+                                const fn_slot_ptr = llvm.LLVMBuildGEP2(builder, ptr_type, vtable_ptr, &gep_indices, 1, "vtable_slot_gep");
+                                const fn_ptr = llvm.LLVMBuildLoad2(builder, ptr_type, fn_slot_ptr, "vtable_fn_ptr");
+
+                                // Build dynamic function type for call: (this: ptr, args...) -> ret_type
+                                const fun_data = target_fun_decl.?.data.fun_decl;
+                                const ret_t = if (target_fun_decl.?.resolved_type) |rt|
+                                    types_mapping.getLLVMType(ctx, rt.Function.return_type.*)
+                                else if (fun_data.type_ref) |tr|
+                                    (if (tr.resolved_type) |rrt| types_mapping.getLLVMType(ctx, rrt.*) else i64_type)
+                                else
+                                    i64_type;
+
+                                var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, 1 + call.arguments.len);
+                                defer std.heap.page_allocator.free(param_types);
+                                var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, 1 + call.arguments.len);
+                                defer std.heap.page_allocator.free(arg_vals);
+                                param_types[0] = ptr_type;
+                                arg_vals[0] = data_ptr;
+
+                                for (call.arguments, 0..) |arg_node, i| {
+                                    const p_type = if (target_fun_decl.?.resolved_type) |rt|
+                                        (if (rt.* == .Function and i < rt.Function.params.len) types_mapping.getLLVMType(ctx, rt.Function.params[i].*) else i64_type)
+                                    else
+                                        i64_type;
+                                    param_types[i + 1] = p_type;
+                                    var arg_val = try emitExpression(ctx, mod, builder, scope, structs, libs, arg_node);
+                                    arg_val = coerceArg(builder, arg_val, p_type);
+                                    arg_vals[i + 1] = arg_val;
+                                }
+
+                                const dyn_fn_type = llvm.LLVMFunctionType(ret_t, param_types.ptr, @intCast(param_types.len), 0);
+                                const call_name: [*c]const u8 = if (llvm.LLVMGetTypeKind(ret_t) == llvm.LLVMVoidTypeKind) "" else "vcall_tmp";
+                                return llvm.LLVMBuildCall2(builder, dyn_fn_type, fn_ptr, arg_vals.ptr, @intCast(arg_vals.len), call_name);
+                            }
+                        }
                     }
                 }
             }
@@ -1194,6 +1388,13 @@ pub fn emitExpression(
                             obj_base == .String or obj_base == .Pointer or obj_base == .Union or
                             (obj_base == .Custom and (std.mem.eql(u8, obj_base.Custom, "Stringable") or std.mem.eql(u8, obj_base.Custom, "core_Stringable")));
                         if (is_stringable) {
+                            return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
+                        }
+                    }
+                }
+                if ((std.mem.eql(u8, g.name, "toInt") or std.mem.eql(u8, g.name, "toDouble")) and call.arguments.len == 0) {
+                    if (g.object.resolved_type) |obj_rt| {
+                        if (obj_rt.* == .Double or obj_rt.* == .Int) {
                             return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
                         }
                     }
@@ -1271,10 +1472,10 @@ pub fn emitExpression(
                 defer std.heap.page_allocator.free(param_types);
 
                 if (call.callee.resolved_type) |rt| {
-                    ret_type = types_mapping.getLLVMType(ctx, rt.Function.return_type.*);
+                    ret_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.return_type.*, global_contracts_ast_ptr);
                     for (call.arguments, 0..) |_, idx| {
                         if (idx < rt.Function.params.len) {
-                            param_types[idx] = types_mapping.getLLVMType(ctx, rt.Function.params[idx].*);
+                            param_types[idx] = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.params[idx].*, global_contracts_ast_ptr);
                         } else {
                             param_types[idx] = llvm.LLVMInt64TypeInContext(ctx);
                         }
@@ -1301,8 +1502,30 @@ pub fn emitExpression(
 
                 for (call.arguments, 0..) |arg_node, idx| {
                     var arg_val = try emitExpression(ctx, mod, builder, scope, structs, libs, arg_node);
-                    if (llvm.LLVMGetTypeKind(param_types[idx]) != llvm.LLVMVoidTypeKind) {
-                        arg_val = coerceArg(builder, arg_val, param_types[idx]);
+                    const ptype = param_types[idx];
+                    if (llvm.LLVMGetTypeKind(ptype) == llvm.LLVMStructTypeKind) {
+                        if (arg_node.resolved_type) |arg_rt| {
+                            const arg_c_name = switch (arg_rt.*) {
+                                .Custom => |n| n,
+                                .GenericInstance => |gi| gi.base_name,
+                                else => "",
+                            };
+                            if (arg_c_name.len > 0) {
+                                if (global_contracts_ast_ptr) |ca| {
+                                    var it = ca.iterator();
+                                    while (it.next()) |entry| {
+                                        const c_name = entry.key_ptr.*;
+                                        const test_fat = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, c_name) catch arg_val;
+                                        if (llvm.LLVMTypeOf(test_fat) == ptype) {
+                                            arg_val = test_fat;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if (llvm.LLVMGetTypeKind(ptype) != llvm.LLVMVoidTypeKind) {
+                        arg_val = coerceArg(builder, arg_val, ptype);
                     }
                     full_arg_vals[1 + idx] = arg_val;
                 }
@@ -1665,6 +1888,42 @@ fn coerceArg(
         }
     }
     return arg_val;
+}
+
+/// Coerces a concrete type value (data_ptr) into a Fat Pointer { data, vtable } for a target contract.
+pub fn coerceToContract(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    data_val: llvm.LLVMValueRef,
+    concrete_c_name: []const u8,
+    contract_c_name: []const u8,
+) !llvm.LLVMValueRef {
+    const fat_type = types_mapping.getFatPointerType(ctx);
+    if (llvm.LLVMTypeOf(data_val) == fat_type) {
+        return data_val;
+    }
+
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+
+    // Box integer/bool values if needed
+    var data_ptr = data_val;
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(data_val)) == llvm.LLVMIntegerTypeKind) {
+        data_ptr = llvm.LLVMBuildIntToPtr(builder, data_val, ptr_type, "fat_data_box");
+    }
+
+    // Look up static vtable global `{concrete_c_name}_{contract_c_name}_vtable`
+    const vtable_name = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}_vtable\x00", .{ concrete_c_name, contract_c_name });
+    defer std.heap.page_allocator.free(vtable_name);
+
+    const vtable_global = llvm.LLVMGetNamedGlobal(mod, vtable_name.ptr) orelse return data_val;
+    const vtable_ptr = vtable_global;
+
+    var fat_val = llvm.LLVMGetUndef(fat_type);
+    fat_val = llvm.LLVMBuildInsertValue(builder, fat_val, data_ptr, 0, "fat_data");
+    fat_val = llvm.LLVMBuildInsertValue(builder, fat_val, vtable_ptr, 1, "fat_vtable");
+
+    return fat_val;
 }
 
 fn isStringOperand(node: *ast.ASTNode) bool {

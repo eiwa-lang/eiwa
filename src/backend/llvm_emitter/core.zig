@@ -27,6 +27,7 @@ pub const LLVMEmitter = struct {
     structs: std.StringHashMap(StructInfo),
     /// Maps lib-block names (e.g. "Console") to their set of functions.
     libs: std.StringHashMap(std.StringHashMap([]const u8)),
+    contracts_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         _ = llvm.LLVMInitializeNativeTarget();
@@ -152,6 +153,8 @@ pub const LLVMEmitter = struct {
         try self.emitHashStringHelper(mod);
         try self.emitStrReplaceHelper(mod);
 
+        expression.global_contracts_ast_ptr = self.contracts_ast;
+
         // Collect the entry module and every module it (transitively) imports.
         var modules = ArrayList(*ast.ASTNode).init(self.allocator);
         defer modules.deinit();
@@ -223,6 +226,59 @@ pub const LLVMEmitter = struct {
                     defer self.allocator.free(var_name_z);
                     const global = llvm.LLVMAddGlobal(mod, llvm_type, var_name_z.ptr);
                     llvm.LLVMSetInitializer(global, llvm.LLVMConstNull(llvm_type));
+                }
+            }
+        }
+
+        // Pass 1e: Emit static vtables for implemented contracts (Task 61.1)
+        // Named `{type_c_name}_{contract_c_name}_vtable`
+        for (modules.items) |m| {
+            if (m.data != .program) continue;
+            for (m.data.program.statements) |stmt| {
+                if (stmt.data == .type_decl) {
+                    const t = stmt.data.type_decl;
+                    if (t.generic_params.len > 0) continue;
+                    const type_c_name = t.resolved_c_name orelse t.name;
+
+                    for (t.contracts) |contract_src| {
+                        const contract_node = if (self.contracts_ast) |ca| ca.get(contract_src) orelse continue else continue;
+                        const c_decl = contract_node.data.contract_decl;
+
+                        var vtable_funcs = ArrayList(llvm.LLVMValueRef).init(self.allocator);
+                        defer vtable_funcs.deinit();
+
+                        for (c_decl.methods) |cm| {
+                            if (cm.data != .fun_decl) continue;
+                            const cm_name = cm.data.fun_decl.name;
+                            var impl_fn: ?llvm.LLVMValueRef = null;
+
+                            // Look for matching method implementation in the type
+                            for (t.methods) |m_node| {
+                                if (m_node.data != .fun_decl) continue;
+                                if (std.mem.eql(u8, m_node.data.fun_decl.name, cm_name)) {
+                                    const impl_c_name = m_node.data.fun_decl.resolved_c_name orelse try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_c_name, cm_name });
+                                    impl_fn = self.functions.get(impl_c_name);
+                                    break;
+                                }
+                            }
+
+                            if (impl_fn) |fn_val| {
+                                try vtable_funcs.append(fn_val);
+                            } else {
+                                try vtable_funcs.append(llvm.LLVMConstNull(ptr_type));
+                            }
+                        }
+
+                        const vtable_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, contract_src });
+                        defer self.allocator.free(vtable_name);
+                        const vtable_name_z = try self.allocator.dupeZ(u8, vtable_name);
+                        defer self.allocator.free(vtable_name_z);
+
+                        const vtable_const = llvm.LLVMConstStructInContext(self.context, vtable_funcs.items.ptr, @intCast(vtable_funcs.items.len), 0);
+                        const vtable_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(vtable_const), vtable_name_z.ptr);
+                        llvm.LLVMSetInitializer(vtable_global, vtable_const);
+                        llvm.LLVMSetGlobalConstant(vtable_global, 1);
+                    }
                 }
             }
         }
@@ -404,9 +460,9 @@ pub const LLVMEmitter = struct {
                         };
                     }
                 } else if (m == ast_root and stmt.data != .type_decl and stmt.data != .lib_decl and stmt.data != .test_decl) {
-                try top_level_stmts.append(stmt);
+                    try top_level_stmts.append(stmt);
+                }
             }
-        }
         }
 
         // Pass 3: Handle Hybrid Main (top-level statements inside main())
@@ -750,7 +806,8 @@ pub const LLVMEmitter = struct {
         llvm.LLVMPositionBuilderAtEnd(self.builder, small_bb);
         const max_small = llvm.LLVMConstInt(i64_type, 0x10000, 0);
         const is_small = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntULT, int_val, max_small, "ts_small");
-        _ = llvm.LLVMBuildCondBr(self.builder, is_small, int_bb, str_bb);
+        const double_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_double");
+        _ = llvm.LLVMBuildCondBr(self.builder, is_small, int_bb, double_bb);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, int_bb);
         // buf = malloc(32); sprintf(buf, "%lld", val); ret buf
@@ -769,9 +826,20 @@ pub const LLVMEmitter = struct {
         const sprintf_func = llvm.LLVMGetNamedFunction(mod, "sprintf") orelse return error.SprintfNotFound;
         const sprintf_type = llvm.LLVMGlobalGetValueType(sprintf_func);
         const fmt = llvm.LLVMBuildGlobalStringPtr(self.builder, "%lld", "ts_fmt");
-        var sp_args = [_]llvm.LLVMValueRef{ buf, fmt, val };
+        var sp_args = [_]llvm.LLVMValueRef{ buf, fmt, int_val };
         _ = llvm.LLVMBuildCall2(self.builder, sprintf_type, sprintf_func, &sp_args, 3, "ts_sprintf");
         _ = llvm.LLVMBuildRet(self.builder, buf);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, double_bb);
+        // Check if value looks like a Double (bitcast val to double, then formatted) vs char pointer (> 0x10000 pointer)
+        // If val >= 0x10000 and < 0x7FFFFFFFFFFFFFFF, or if formatted via %g:
+        const d_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &gc_args, 1, "ts_dbuf");
+        const d_i64 = llvm.LLVMBuildPtrToInt(self.builder, val, i64_type, "ts_di64");
+        const d_val = llvm.LLVMBuildBitCast(self.builder, d_i64, llvm.LLVMDoubleTypeInContext(self.context), "ts_dval");
+        const dfmt = llvm.LLVMBuildGlobalStringPtr(self.builder, "%g", "ts_dfmt");
+        var dsp_args = [_]llvm.LLVMValueRef{ d_buf, dfmt, d_val };
+        _ = llvm.LLVMBuildCall2(self.builder, sprintf_type, sprintf_func, &dsp_args, 3, "ts_dsprintf");
+        _ = llvm.LLVMBuildRet(self.builder, d_buf);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, str_bb);
         _ = llvm.LLVMBuildRet(self.builder, val);
@@ -1060,7 +1128,7 @@ pub const LLVMEmitter = struct {
 
         for (t.primary_constructor) |prop| {
             try field_names.append(prop.name);
-            const f_llvm_type = if (prop.resolved_type) |rt| types_mapping.getLLVMType(self.context, rt.*) else llvm.LLVMInt64TypeInContext(self.context);
+            const f_llvm_type = if (prop.resolved_type) |rt| types_mapping.getLLVMTypeWithContracts(self.context, rt.*, self.contracts_ast) else llvm.LLVMInt64TypeInContext(self.context);
             try field_types.append(f_llvm_type);
         }
 
@@ -1142,22 +1210,22 @@ pub const LLVMEmitter = struct {
 
         if (func_node.resolved_type) |rt| {
             if (rt.* == .Function) {
-                ret_type = types_mapping.getLLVMType(self.context, rt.Function.return_type.*);
+                ret_type = types_mapping.getLLVMTypeWithContracts(self.context, rt.Function.return_type.*, self.contracts_ast);
                 var param_idx: usize = 0;
                 if (rt.Function.receiver) |rec| {
-                    param_types[0] = types_mapping.getLLVMType(self.context, rec.*);
+                    param_types[0] = types_mapping.getLLVMTypeWithContracts(self.context, rec.*, self.contracts_ast);
                     param_idx = 1;
                 }
                 for (f.params, 0..) |_, i| {
                     if (i < rt.Function.params.len) {
-                        param_types[param_idx] = types_mapping.getLLVMType(self.context, rt.Function.params[i].*);
+                        param_types[param_idx] = types_mapping.getLLVMTypeWithContracts(self.context, rt.Function.params[i].*, self.contracts_ast);
                     } else {
                         param_types[param_idx] = llvm.LLVMInt64TypeInContext(self.context);
                     }
                     param_idx += 1;
                 }
             } else {
-                ret_type = types_mapping.getLLVMType(self.context, rt.*);
+                ret_type = types_mapping.getLLVMTypeWithContracts(self.context, rt.*, self.contracts_ast);
                 for (f.params, 0..) |_, i| {
                     param_types[i] = llvm.LLVMInt64TypeInContext(self.context);
                 }
@@ -1247,7 +1315,7 @@ pub const LLVMEmitter = struct {
             } else if (kind == llvm.LLVMDoubleTypeKind) {
                 const zero = llvm.LLVMConstReal(ret_type, 0.0);
                 _ = llvm.LLVMBuildRet(self.builder, zero);
-            } else if (kind == llvm.LLVMPointerTypeKind) {
+            } else if (kind == llvm.LLVMPointerTypeKind or kind == llvm.LLVMStructTypeKind) {
                 const null_ptr = llvm.LLVMConstNull(ret_type);
                 _ = llvm.LLVMBuildRet(self.builder, null_ptr);
             } else {
@@ -1394,7 +1462,7 @@ pub const LLVMEmitter = struct {
             _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstInt(ret_type, 0, 0));
         } else if (kind == llvm.LLVMDoubleTypeKind) {
             _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstReal(ret_type, 0.0));
-        } else if (kind == llvm.LLVMPointerTypeKind) {
+        } else if (kind == llvm.LLVMPointerTypeKind or kind == llvm.LLVMStructTypeKind) {
             _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstNull(ret_type));
         } else {
             _ = llvm.LLVMBuildRetVoid(self.builder);

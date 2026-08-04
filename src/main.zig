@@ -398,6 +398,7 @@ pub fn main(init: std.process.Init) !void {
         var emitter = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
         defer emitter.deinit();
         emitter.is_test_mode = is_test;
+        emitter.contracts_ast = &global_contracts_ast;
 
         try emitter.emitModule(ast_root);
 

@@ -20,22 +20,37 @@ pub fn emitStatement(
         .var_decl => |v| {
             const name = v.resolved_c_name orelse v.name;
             const res_type = node.resolved_type orelse return error.MissingTypeForVarDecl;
-            const llvm_type = types_mapping.getLLVMType(ctx, res_type.*);
+            const is_contract = types_mapping.isContractType(res_type.*, expression.global_contracts_ast_ptr);
+            const llvm_type = if (is_contract) types_mapping.getFatPointerType(ctx) else types_mapping.getLLVMType(ctx, res_type.*);
 
             const name_z = try std.heap.page_allocator.dupeZ(u8, name);
             defer std.heap.page_allocator.free(name_z);
 
             const alloca_ptr = llvm.LLVMBuildAlloca(builder, llvm_type, name_z.ptr);
             try scope.put(name, alloca_ptr);
-            // Locals inside object/type methods get a mangled resolved_c_name
-            // ({Object}_{name}); keep the plain name in scope too so plain
-            // identifier references resolve.
             if (!std.mem.eql(u8, name, v.name)) {
                 try scope.put(v.name, alloca_ptr);
             }
 
             if (v.initializer) |init_node| {
-                const val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, init_node);
+                var val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, init_node);
+                if (is_contract) {
+                    const contract_name = switch (res_type.*) {
+                        .Custom => |n| n,
+                        .GenericInstance => |gi| gi.base_name,
+                        else => "",
+                    };
+                    if (init_node.resolved_type) |init_rt| {
+                        const init_c_name = switch (init_rt.*) {
+                            .Custom => |n| n,
+                            .GenericInstance => |gi| gi.base_name,
+                            else => "",
+                        };
+                        if (init_c_name.len > 0 and contract_name.len > 0) {
+                            val = try expression.coerceToContract(ctx, mod, builder, val, init_c_name, contract_name);
+                        }
+                    }
+                }
                 _ = llvm.LLVMBuildStore(builder, val, alloca_ptr);
             }
         },
@@ -174,7 +189,32 @@ pub fn emitStatement(
         },
         .return_stmt => |ret| {
             if (ret.value) |val_node| {
-                const ret_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+                var ret_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+                const fn_type = llvm.LLVMGlobalGetValueType(func_val);
+                const expected_ret_type = llvm.LLVMGetReturnType(fn_type);
+
+                const fat_type = types_mapping.getFatPointerType(ctx);
+                if (expected_ret_type == fat_type and llvm.LLVMTypeOf(ret_val) != fat_type) {
+                    if (val_node.resolved_type) |val_rt| {
+                        const val_c_name = switch (val_rt.*) {
+                            .Custom => |n| n,
+                            .GenericInstance => |gi| gi.base_name,
+                            else => "",
+                        };
+                        // Extract target contract name from function return type
+                        if (val_c_name.len > 0) {
+                            // Find contract name from func_val
+                            if (expression.global_contracts_ast_ptr) |ca| {
+                                var it = ca.iterator();
+                                while (it.next()) |entry| {
+                                    const c_name = entry.key_ptr.*;
+                                    ret_val = expression.coerceToContract(ctx, mod, builder, ret_val, val_c_name, c_name) catch ret_val;
+                                    if (llvm.LLVMTypeOf(ret_val) == fat_type) break;
+                                }
+                            }
+                        }
+                    }
+                }
                 _ = llvm.LLVMBuildRet(builder, ret_val);
             } else {
                 _ = llvm.LLVMBuildRetVoid(builder);
@@ -301,9 +341,39 @@ pub fn emitStatement(
                 if (c.var_name) |var_name| {
                     const v_z = try std.heap.page_allocator.dupeZ(u8, var_name);
                     defer std.heap.page_allocator.free(v_z);
-                    const var_alloca = llvm.LLVMBuildAlloca(builder, ptr_type, v_z.ptr);
-                    _ = llvm.LLVMBuildStore(builder, exc_val, var_alloca);
-                    try scope.put(var_name, var_alloca);
+
+                    var final_exc_val = exc_val;
+                    if (c.types.len > 0) {
+                        const tr = c.types[0];
+                        if (tr.resolved_type) |rt| {
+                            if (types_mapping.isContractType(rt.*, expression.global_contracts_ast_ptr)) {
+                                const contract_name = switch (rt.*) {
+                                    .Custom => |n| n,
+                                    .GenericInstance => |gi| gi.base_name,
+                                    else => "",
+                                };
+                                const fat_type = types_mapping.getFatPointerType(ctx);
+                                const var_alloca = llvm.LLVMBuildAlloca(builder, fat_type, v_z.ptr);
+                                if (contract_name.len > 0) {
+                                    final_exc_val = expression.coerceToContract(ctx, mod, builder, exc_val, "BoomException", contract_name) catch exc_val;
+                                }
+                                _ = llvm.LLVMBuildStore(builder, final_exc_val, var_alloca);
+                                try scope.put(var_name, var_alloca);
+                            } else {
+                                const var_alloca = llvm.LLVMBuildAlloca(builder, ptr_type, v_z.ptr);
+                                _ = llvm.LLVMBuildStore(builder, final_exc_val, var_alloca);
+                                try scope.put(var_name, var_alloca);
+                            }
+                        } else {
+                            const var_alloca = llvm.LLVMBuildAlloca(builder, ptr_type, v_z.ptr);
+                            _ = llvm.LLVMBuildStore(builder, final_exc_val, var_alloca);
+                            try scope.put(var_name, var_alloca);
+                        }
+                    } else {
+                        const var_alloca = llvm.LLVMBuildAlloca(builder, ptr_type, v_z.ptr);
+                        _ = llvm.LLVMBuildStore(builder, final_exc_val, var_alloca);
+                        try scope.put(var_name, var_alloca);
+                    }
                 }
                 try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, c.body);
             }
