@@ -184,7 +184,9 @@ pub fn main(init: std.process.Init) !void {
             while (try walker.next(io)) |entry| {
                 if (entry.kind == .file) {
                     if (std.mem.endsWith(u8, entry.basename, "_test.ei")) {
-                        var rel_path = entry.path;
+                        const full_rel_path = try std.fs.path.join(allocator, &[_][]const u8{ search_path, entry.path });
+                        defer allocator.free(full_rel_path);
+                        var rel_path: []const u8 = full_rel_path;
                         if (std.mem.startsWith(u8, rel_path, "./")) {
                             rel_path = rel_path[2..];
                         }

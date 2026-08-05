@@ -1768,7 +1768,14 @@ pub fn emitExpression(
                             // Value check: subject == cond (or plain Bool condition).
                             var cond_val = try emitExpression(ctx, mod, builder, scope, structs, libs, cond);
                             if (subj_ptr != null) {
-                                const subj_load = llvm.LLVMBuildLoad2(builder, llvm.LLVMTypeOf(subj_ptr.?), subj_ptr.?, "when_subj_load");
+                                var subj_load = llvm.LLVMBuildLoad2(builder, llvm.LLVMTypeOf(subj_ptr.?), subj_ptr.?, "when_subj_load");
+                                const s_type = llvm.LLVMTypeOf(subj_load);
+                                const c_type = llvm.LLVMTypeOf(cond_val);
+                                if (llvm.LLVMGetTypeKind(s_type) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(c_type) == llvm.LLVMIntegerTypeKind) {
+                                    subj_load = llvm.LLVMBuildPtrToInt(builder, subj_load, c_type, "subj_ptr2int");
+                                } else if (llvm.LLVMGetTypeKind(s_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(c_type) == llvm.LLVMPointerTypeKind) {
+                                    cond_val = llvm.LLVMBuildPtrToInt(builder, cond_val, s_type, "cond_ptr2int");
+                                }
                                 cond_val = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_load, cond_val, "when_val_eq");
                             }
                             try cond_vals.append(cond_val);
