@@ -6,6 +6,10 @@ type Box(val value: Int = 42)
 
 type Vector3D(val x: Int, val y: Int = 0, val z: Int = 0)
 
+type SiblingType(val first: Int, val second: Int = first * 2)
+
+fun computeWithSibling(a: Int, b: Int = a + 5) = a + b
+
 type Child(val a: Int = 1)
 
 test "default_params: should use default arguments in top-level functions" {
@@ -45,4 +49,15 @@ test "default_params: should mix provided and default constructor properties" {
 test "default_params: should use default constructor arguments" {
     val c = Child()
     assert(c.a == 1)
+
+    val s1 = SiblingType(10)
+    assert(s1.first == 10)
+    assert(s1.second == 20)
+
+    val s2 = SiblingType(10, 99)
+    assert(s2.first == 10)
+    assert(s2.second == 99)
+
+    assert(computeWithSibling(10) == 25)
+    assert(computeWithSibling(10, 3) == 13)
 }

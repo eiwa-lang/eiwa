@@ -13,6 +13,7 @@ const infer_expr_mod = @import("infer_expr.zig");
 const infer_stmt_mod = @import("infer_stmt.zig");
 const infer_decl_mod = @import("infer_decl.zig");
 const infer_when_mod = @import("infer_when.zig");
+const infer_call_mod = @import("infer_call.zig");
 pub const isNullable = type_system.isNullable;
 pub const extractBaseType = type_system.extractBaseType;
 pub const isBool = type_system.isBool;
@@ -94,6 +95,7 @@ pub const TypeChecker = struct {
     pub const conformsTo = core_conformsTo;
     pub const implementsContract = core_implementsContract;
     pub const injectImplicitImports = core_injectImplicitImports;
+    pub const substituteParam = infer_call_mod.substituteParam;
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8, filename: []const u8) TypeChecker {
         const checker = TypeChecker{

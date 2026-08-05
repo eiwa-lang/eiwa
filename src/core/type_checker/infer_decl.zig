@@ -409,6 +409,9 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     self.current_type_c_name = actual_c_name;
     defer self.current_type_c_name = old_type_c_name;
 
+    var ctor_scope = Scope.init(self.allocator, scope);
+    defer ctor_scope.deinit();
+
     for (c.primary_constructor) |*prop| {
         const param_type = prop.resolved_type orelse try self.resolveTypeRef(prop.type_ref);
         prop.resolved_type = param_type;
@@ -417,7 +420,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             if (self.pass == .validation) {
                 const cloned_init = try self.cloneNode(init_node);
                 cloned_init.expected_type = param_type;
-                const init_type = try self.inferNode(cloned_init, scope);
+                const init_type = try self.inferNode(cloned_init, &ctor_scope);
                 if (!self.isCompatible(param_type, init_type)) {
                     self.reportError(node.line, node.column, "TypeError: Default value type {} is incompatible with property type {}.", .{ init_type.*, param_type.* });
                     return error.TypeError;
@@ -425,6 +428,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
         }
 
+        try ctor_scope.define(prop.name, param_type, prop.is_mut, false);
         if (prop.is_property) {
             try class_props.put(prop.name, {});
             try class_scope.define(prop.name, param_type, prop.is_mut, false);
@@ -970,20 +974,20 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             }
         }
 
+        try fun_scope.define(p.name, param_type, false, false);
+        try param_types.append(param_type);
+
         if (p.initializer) |init_node| {
             if (self.pass == .validation) {
                 const cloned_init = try self.cloneNode(init_node);
                 cloned_init.expected_type = param_type;
-                const init_type = try self.inferNode(cloned_init, scope);
+                const init_type = try self.inferNode(cloned_init, &fun_scope);
                 if (!self.isCompatible(param_type, init_type)) {
                     self.reportError(node.line, node.column, "TypeError: Default value type {} is incompatible with parameter type {}.", .{ init_type.*, param_type.* });
                     return error.TypeError;
                 }
             }
         }
-
-        try fun_scope.define(p.name, param_type, false, false);
-        try param_types.append(param_type);
     }
 
     if (f.resolved_c_name != null) {

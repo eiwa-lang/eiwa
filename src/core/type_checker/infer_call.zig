@@ -57,6 +57,63 @@ fn createGetExprNode(self: *TypeChecker, obj_name: []const u8, resolved_c_name: 
     return get_expr_node;
 }
 
+pub fn substituteParam(self: *TypeChecker, target_node: *ASTNode, param_name: []const u8, replacement: *ASTNode) anyerror!void {
+    switch (target_node.data) {
+        .identifier => |*id| {
+            if (std.mem.eql(u8, id.name, param_name)) {
+                const cloned_repl = try self.cloneNode(replacement);
+                target_node.data = cloned_repl.data;
+                target_node.resolved_type = cloned_repl.resolved_type;
+            }
+        },
+        .binary_expr => |*b| {
+            try self.substituteParam(b.left, param_name, replacement);
+            try self.substituteParam(b.right, param_name, replacement);
+        },
+        .unary_expr => |*u| {
+            try self.substituteParam(u.operand, param_name, replacement);
+        },
+        .call_expr => |*c| {
+            try self.substituteParam(c.callee, param_name, replacement);
+            for (c.arguments) |arg| {
+                try self.substituteParam(arg, param_name, replacement);
+            }
+        },
+        .get_expr => |*g| {
+            try self.substituteParam(g.object, param_name, replacement);
+        },
+        .index_expr => |*idx| {
+            try self.substituteParam(idx.object, param_name, replacement);
+            try self.substituteParam(idx.index, param_name, replacement);
+        },
+        .if_expr => |*i| {
+            try self.substituteParam(i.condition, param_name, replacement);
+            try self.substituteParam(i.then_branch, param_name, replacement);
+            if (i.else_branch) |eb| try self.substituteParam(eb, param_name, replacement);
+        },
+        .ternary_expr => |*t| {
+            try self.substituteParam(t.condition, param_name, replacement);
+            try self.substituteParam(t.then_branch, param_name, replacement);
+            if (t.else_branch) |eb| try self.substituteParam(eb, param_name, replacement);
+        },
+        .as_expr => |*a| {
+            try self.substituteParam(a.value, param_name, replacement);
+        },
+        .is_expr => |*is_e| {
+            try self.substituteParam(is_e.value, param_name, replacement);
+        },
+        .array_literal => |*arr| {
+            for (arr.elements) |elem| {
+                try self.substituteParam(elem, param_name, replacement);
+            }
+        },
+        .named_arg => |*na| {
+            try self.substituteParam(na.value, param_name, replacement);
+        },
+        else => {},
+    }
+}
+
 pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const ast.Param, scope: *Scope) anyerror!void {
     var c = &node.data.call_expr;
     var has_named = false;
@@ -132,6 +189,11 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
         if (new_args[pi] == null) {
             if (p.initializer) |init_node| {
                 const cloned = try self.cloneNode(init_node);
+                for (params[0..pi], 0..) |prev_p, prev_i| {
+                    if (new_args[prev_i]) |prev_arg| {
+                        try self.substituteParam(cloned, prev_p.name, prev_arg);
+                    }
+                }
                 _ = try self.inferNode(cloned, scope);
                 new_args[pi] = cloned;
             } else {
@@ -1041,8 +1103,11 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 if (prop.initializer) |init_node| {
                                     const cloned = try self.cloneNode(init_node);
                                     cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
-                                    new_args[i] = cloned;
+                                    for (mono_type_decl.primary_constructor[0..i], 0..) |prev_prop, prev_i| {
+                                        try self.substituteParam(cloned, prev_prop.name, new_args[prev_i]);
+                                    }
                                     _ = try self.inferNode(cloned, scope);
+                                    new_args[i] = cloned;
                                 } else {
                                     self.reportError(node.line, node.column, "TypeError: Missing argument for generic constructor parameter '{s}' of '{s}' which has no default value.", .{ prop.name, name });
                                     return error.TypeError;
@@ -1085,8 +1150,11 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 if (prop.initializer) |init_node| {
                                     const cloned = try self.cloneNode(init_node);
                                     cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
-                                    new_args[i] = cloned;
+                                    for (type_decl.primary_constructor[0..i], 0..) |prev_prop, prev_i| {
+                                        try self.substituteParam(cloned, prev_prop.name, new_args[prev_i]);
+                                    }
                                     _ = try self.inferNode(cloned, scope);
+                                    new_args[i] = cloned;
                                 } else {
                                     self.reportError(node.line, node.column, "TypeError: Missing argument for constructor parameter '{s}' of '{s}' which has no default value.", .{ prop.name, name });
                                     return error.TypeError;
