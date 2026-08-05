@@ -579,9 +579,9 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 > REPORT_ERROR: TypeError: Undeclared variable 'builder'.
 > ```
 
-- [ ] **Task 60.1:** Registrar os parâmetros anteriores no escopo antes de validar o initializer de cada parâmetro em `inferTypeDecl`.
-- [ ] **Task 60.2:** Mesma correção para defaults de funções em `inferFunDecl` (defaults inferidos contra o `fun_scope` com os parâmetros já definidos).
-- [ ] **Verify:** `type Dispatcher(val builder: ArestBuilder, val http: HttpDispatcher = HttpDispatcher(builder))` compila e executa; testar também `fun foo(a: Int, b: Int = a)`.
+- [x] **Task 60.1:** Registrar os parâmetros anteriores no escopo antes de validar o initializer de cada parâmetro em `inferTypeDecl`.
+- [x] **Task 60.2:** Mesma correção para defaults de funções em `inferFunDecl` (defaults inferidos contra o `fun_scope` com os parâmetros já definidos).
+- [x] **Verify:** `type Dispatcher(val builder: ArestBuilder, val http: HttpDispatcher = HttpDispatcher(builder))` compila e executa; testar também `fun foo(a: Int, b: Int = a)`.
 
 ---
 
