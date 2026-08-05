@@ -1474,7 +1474,7 @@ pub const LLVMEmitter = struct {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         {
             var verify_err: [*c]u8 = null;
-            if (llvm.LLVMVerifyModule(mod, llvm.LLVMPrintMessageAction, &verify_err) != 0) {
+            if (llvm.LLVMVerifyModule(mod, llvm.LLVMReturnStatusAction, &verify_err) != 0) {
                 if (verify_err != null) {
                     std.debug.print("LLVM Verify Error: {s}\n", .{verify_err});
                     llvm.LLVMDisposeMessage(verify_err);

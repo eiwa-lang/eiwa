@@ -1035,7 +1035,24 @@ pub fn emitExpression(
                     }
                 }
 
-                if (llvm.LLVMGetNamedFunction(mod, callee_z.ptr)) |func_val| {
+                const target_func = llvm.LLVMGetNamedFunction(mod, callee_z.ptr) orelse blk: {
+                    if (call.callee.resolved_type) |_| {
+                        // Fallback lookup if callee_name is mangled in LLVM module
+                        var func_it = llvm.LLVMGetFirstFunction(mod);
+                        while (func_it) |f| : (func_it = llvm.LLVMGetNextFunction(f)) {
+                            const name_ptr = llvm.LLVMGetValueName(f);
+                            const f_name = std.mem.span(name_ptr);
+                            const target_suffix = try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{callee_name});
+                            defer std.heap.page_allocator.free(target_suffix);
+                            if (std.mem.endsWith(u8, f_name, target_suffix) or std.mem.eql(u8, f_name, callee_name)) {
+                                break :blk f;
+                            }
+                        }
+                    }
+                    break :blk null;
+                };
+
+                if (target_func) |func_val| {
                     var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, call.arguments.len);
                     defer std.heap.page_allocator.free(arg_vals);
 
@@ -1285,7 +1302,53 @@ pub fn emitExpression(
                         const method_z = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}\x00", .{ type_name, g.name });
                         defer std.heap.page_allocator.free(method_z);
 
-                        if (llvm.LLVMGetNamedFunction(mod, method_z.ptr)) |func_val| {
+                        var target_func: ?llvm.LLVMValueRef = null;
+                        if (call.callee.resolved_type) |crt| {
+                            if (crt.* == .Function and crt.Function.c_name.len > 0) {
+                                const c_name_z = try std.heap.page_allocator.dupeZ(u8, crt.Function.c_name);
+                                defer std.heap.page_allocator.free(c_name_z);
+                                target_func = llvm.LLVMGetNamedFunction(mod, c_name_z.ptr);
+                            }
+                        }
+
+                        if (target_func) |tf| {
+                            const ft = llvm.LLVMGlobalGetValueType(tf);
+                            if (llvm.LLVMCountParamTypes(ft) != 1 + call.arguments.len) {
+                                target_func = null;
+                            }
+                        }
+
+                        if (target_func == null) {
+                            const exact_fn = llvm.LLVMGetNamedFunction(mod, method_z.ptr);
+                            if (exact_fn) |ef| {
+                                const ft = llvm.LLVMGlobalGetValueType(ef);
+                                if (llvm.LLVMCountParamTypes(ft) == 1 + call.arguments.len) {
+                                    target_func = ef;
+                                }
+                            }
+
+                            if (target_func == null) {
+                                target_func = blk: {
+                                    const method_prefix = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}_", .{ type_name, g.name });
+                                    defer std.heap.page_allocator.free(method_prefix);
+                                    var func_it = llvm.LLVMGetFirstFunction(mod);
+                                    while (func_it) |f| : (func_it = llvm.LLVMGetNextFunction(f)) {
+                                        const name_ptr = llvm.LLVMGetValueName(f);
+                                        const f_name = std.mem.span(name_ptr);
+                                        if (std.mem.startsWith(u8, f_name, method_prefix)) {
+                                            const ft = llvm.LLVMGlobalGetValueType(f);
+                                            const pc = llvm.LLVMCountParamTypes(ft);
+                                            if (pc == 1 + call.arguments.len) {
+                                                break :blk f;
+                                            }
+                                        }
+                                    }
+                                    break :blk null;
+                                };
+                            }
+                        }
+
+                        if (target_func) |func_val| {
                             const func_type = llvm.LLVMGlobalGetValueType(func_val);
                             const param_count = llvm.LLVMCountParamTypes(func_type);
                             const func_param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, param_count);
@@ -1915,6 +1978,12 @@ fn coerceArg(
     const arg_type = llvm.LLVMTypeOf(arg_val);
     const arg_kind = llvm.LLVMGetTypeKind(arg_type);
     const param_kind = llvm.LLVMGetTypeKind(param_type);
+    if (arg_kind == llvm.LLVMIntegerTypeKind and param_kind == llvm.LLVMDoubleTypeKind) {
+        return llvm.LLVMBuildSIToFP(builder, arg_val, param_type, "int2double");
+    }
+    if (arg_kind == llvm.LLVMDoubleTypeKind and param_kind == llvm.LLVMIntegerTypeKind) {
+        return llvm.LLVMBuildFPToSI(builder, arg_val, param_type, "double2int");
+    }
     if (arg_kind == llvm.LLVMIntegerTypeKind and param_kind == llvm.LLVMPointerTypeKind) {
         return llvm.LLVMBuildIntToPtr(builder, arg_val, param_type, "box_arg");
     }
