@@ -1,5 +1,14 @@
 import { List } from "std.collections"
-import { sumArray, getFirstElement } from ".samples.arrays_and_loops"
+
+fun sumArray(arr: List<Int>): Int {
+    var sum = 0
+    for (item in arr) {
+        sum = sum + item
+    }
+    return sum
+}
+
+fun getFirstElement(arr: List<String>): String = arr[0]
 
 test "arrays_and_loops_test.ae: should iterate over array of integers" {
     val arr = [1, 2, 3]

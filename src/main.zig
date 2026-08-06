@@ -386,6 +386,13 @@ pub fn main(init: std.process.Init) !void {
                 try global_contracts_ast.put(entry.value_ptr.*.data.contract_decl.name, entry.value_ptr.*);
             }
         }
+        var skill_it = mod.checker.skills_ast.iterator();
+        while (skill_it.next()) |entry| {
+            try global_contracts_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+            if (entry.value_ptr.*.data == .skill_decl) {
+                try global_contracts_ast.put(entry.value_ptr.*.data.skill_decl.name, entry.value_ptr.*);
+            }
+        }
         var alias_it = mod.checker.alias_map.iterator();
         while (alias_it.next()) |entry| {
             try global_alias_map.put(entry.key_ptr.*, entry.value_ptr.*);
@@ -414,9 +421,7 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
         } else {
             const exit_code = try emitter.executeJIT();
-            if (exit_code != 0) {
-                std.process.exit(@intCast(exit_code));
-            }
+            std.process.exit(@intCast(exit_code));
         }
         return;
     }
