@@ -225,7 +225,8 @@ type ServerConnection(val sock: Socket) {
                       "Content-Length: " + body.length.toString() + "\r\n" +
                       "Connection: close\r\n\r\n"
         
-        this.sock.write(statusLine + headers + body)
+        this.sock.write(statusLine + headers)
+        this.sock.write(body)
     }
     
     fun close(): Void {

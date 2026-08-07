@@ -152,6 +152,24 @@ fn pathExists(path: []const u8) bool {
     return true;
 }
 
+/// Returns the library source root that `dir_path` (a module's parent
+/// directory) belongs to, if any. This lets a leading-dot (root-relative)
+/// import inside a dependency resolve against that dependency's own source
+/// root rather than the entry project's root. Falls back to null when the
+/// module lives in the entry project itself.
+fn findLibraryRoot(dir: []const u8) ?[]const u8 {
+    for (module_search_paths) |search_dir| {
+        if (std.mem.eql(u8, dir, search_dir)) return search_dir;
+        if (std.mem.startsWith(u8, dir, search_dir)) {
+            const rest = dir[search_dir.len..];
+            if (rest.len > 0 and std.mem.startsWith(u8, rest, "/")) {
+                return search_dir;
+            }
+        }
+    }
+    return null;
+}
+
 /// Converts a dot-separated module path into a filesystem-relative path.
 /// e.g. "mcp.mcp_builder" -> "mcp/mcp_builder.ei", "foo.ei" -> "foo.ei".
 fn modulePathToFile(allocator: std.mem.Allocator, mod_path: []const u8) ![]const u8 {
@@ -191,13 +209,16 @@ pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, act
         return error.InvalidModulePath;
     }
 
-    // Root-relative: a leading '.' resolves against the project root.
-    // ".arest_builder" -> <root>/arest_builder.ei
+    // Root-relative: a leading '.' resolves against the root of the library
+    // the importing module belongs to (a dependency's source root), or the
+    // project root when the module is part of the entry project.
+    // ".arest_builder" -> <library-or-project root>/arest_builder.ei
     if (std.mem.startsWith(u8, actual_module_path, ".")) {
         if (actual_module_path.len == 1) return error.InvalidModulePath;
         const inner = actual_module_path[1..];
         const file_path = try modulePathToFile(allocator, inner);
-        return try std.fs.path.join(allocator, &.{ module_root, file_path });
+        const root = findLibraryRoot(dir_path) orelse module_root;
+        return try std.fs.path.join(allocator, &.{ root, file_path });
     }
 
     // Bare module path: resolve relative to the importing file's directory,
