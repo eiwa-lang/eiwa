@@ -1,0 +1,51 @@
+// Cross-module enum used as a struct field type, alongside generic
+// collections. Regression test for the C backend ordering bug where an enum
+// type referenced as a field of a `type` was emitted after the struct that
+// used it, producing `unknown type name '<Module>_<Enum>'`.
+
+enum PayloadKind {
+    OBJECT,
+    ARRAY,
+    STRING,
+    NUMBER,
+    BOOL,
+    NULL
+}
+
+type Payload(
+    var kind: PayloadKind = PayloadKind.NULL,
+    var obj: Map<String, Payload> = Map(),
+    var arr: List<Payload> = [],
+    var str: String = "",
+    var num: Double = 0.0,
+    var flag: Bool = false
+) {
+    fun isString(): Bool = this.kind == PayloadKind.STRING
+    fun isObject(): Bool = this.kind == PayloadKind.OBJECT
+    fun isArray(): Bool = this.kind == PayloadKind.ARRAY
+    fun isNull(): Bool = this.kind == PayloadKind.NULL
+
+    fun get(key: String): Payload? {
+        if (this.kind != PayloadKind.OBJECT) {
+            return null
+        }
+        return this.obj.get(key)
+    }
+
+    fun asString(): String = this.str
+    fun asNumber(): Double = this.num
+}
+
+fun payloadString(s: String): Payload {
+    val p = Payload()
+    p.kind = PayloadKind.STRING
+    p.str = s
+    return p
+}
+
+fun payloadObject(map: Map<String, Payload>): Payload {
+    val p = Payload()
+    p.kind = PayloadKind.OBJECT
+    p.obj = map
+    return p
+}

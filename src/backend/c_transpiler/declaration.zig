@@ -461,11 +461,16 @@ pub fn emitEnumDecl(self: *CTranspiler, node: *ASTNode) !void {
     if (self.classes.contains(actual_name)) return;
     try self.classes.put(actual_name, {});
 
+    const fw = self.forward_writer.writer();
     const hw = self.header_writer.writer();
     const w = self.writer.writer();
 
+    // Forward declaration goes first (before any struct that references this
+    // enum type as a field), mirroring how `type` forward decls are emitted.
+    try fw.print("typedef struct {s} {s};\n", .{ actual_name, actual_name });
+    try self.forward_writer.appendSlice("\n");
+
     // Struct & Type Descriptor in Header
-    try hw.print("typedef struct {s} {s};\n", .{ actual_name, actual_name });
     try hw.print("extern const EiwaTypeDescriptor {s}_descriptor;\n", .{actual_name});
     try hw.print("struct {s} {{\n", .{actual_name});
     try hw.print("    const EiwaTypeDescriptor* _desc;\n", .{});

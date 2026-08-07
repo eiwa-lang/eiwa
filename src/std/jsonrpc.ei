@@ -1,0 +1,84 @@
+import { parseJson, JsonValue } from "std.json"
+
+type JsonRpc(val id: JsonValue, val method: String, val params: JsonValue) {
+
+    fun argument(name: String): JsonValue? {
+        return this.params.get(name)
+    }
+
+    fun argumentString(name: String): String {
+        val v = this.argument(name)
+        if (v == null) {
+            return ""
+        }
+        val node = v!!
+        if (node.isString()) {
+            return node.asString()
+        }
+        return ""
+    }
+
+    fun argumentInt(name: String): Int {
+        val v = this.argument(name)
+        if (v == null) {
+            return 0
+        }
+        val node = v!!
+        if (node.isNumber()) {
+            return node.asNumber().toInt()
+        }
+        return 0
+    }
+
+    fun argumentDouble(name: String): Double {
+        val v = this.argument(name)
+        if (v == null) {
+            return 0.0
+        }
+        val node = v!!
+        if (node.isNumber()) {
+            return node.asNumber()
+        }
+        return 0.0
+    }
+
+    fun argumentBool(name: String): Bool {
+        val v = this.argument(name)
+        if (v == null) {
+            return false
+        }
+        val node = v!!
+        if (node.isBool()) {
+            return node.asBool()
+        }
+        return false
+    }
+
+    fun response(result: String): String {
+        return "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": " + this.id.write() + ",\n  \"result\": " + result + "\n}"
+    }
+
+    fun errorResponse(code: Int, message: String): String {
+        return "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": " + this.id.write() + ",\n  \"error\": {\n    \"code\": " + code.toString() + ",\n    \"message\": \"" + message + "\"\n  }\n}"
+    }
+} object {
+    fun parse(body: String): JsonRpc {
+        val root = parseJson(body)
+        val methodVal = root.get("method")
+        var method = ""
+        if (methodVal != null) {
+            val m = methodVal!!
+            if (m.isString()) {
+                method = m.asString()
+            }
+        }
+
+        val idVal = root.get("id")
+        val id = if (idVal != null) idVal else JsonValue()
+
+        val paramsVal = root.get("params")
+        val params = if (paramsVal != null) paramsVal else JsonValue()
+
+        return JsonRpc(id, method, params)
+    }
+}

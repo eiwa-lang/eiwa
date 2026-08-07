@@ -1,0 +1,31 @@
+// Tests for std.jsonrpc (Part 1.2: promote arest JSON-RPC layer to std).
+import { JsonRpc } from "std.jsonrpc"
+import { assert } from "std.exceptions"
+
+test "jsonrpc parse extracts method, id and params" {
+    val rpc = JsonRpc.parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"add\",\"a\":2,\"b\":3,\"flag\":true}}")
+    assert(rpc.method == "tools/call")
+    assert(rpc.id.isNumber())
+    assert(rpc.id.asNumber() == 1.0)
+}
+
+test "jsonrpc typed parameter accessors" {
+    val rpc = JsonRpc.parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"m\",\"params\":{\"s\":\"hi\",\"i\":42,\"d\":3.5,\"b\":true,\"missing\":false}}")
+    assert(rpc.argumentString("s") == "hi")
+    assert(rpc.argumentInt("i") == 42)
+    assert(rpc.argumentDouble("d") == 3.5)
+    assert(rpc.argumentBool("b") == true)
+    assert(rpc.argumentString("missing") == "")
+    assert(rpc.argumentInt("missing") == 0)
+}
+
+test "jsonrpc response carries id and result" {
+    val rpc = JsonRpc.parse("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"m\"}")
+    assert(rpc.response("42") == "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 5,\n  \"result\": 42\n}")
+}
+
+test "jsonrpc error response carries code and message" {
+    val rpc = JsonRpc.parse("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"m\"}")
+    val out = rpc.errorResponse(-32601, "Method not found")
+    assert(out == "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 5,\n  \"error\": {\n    \"code\": -32601,\n    \"message\": \"Method not found\"\n  }\n}")
+}

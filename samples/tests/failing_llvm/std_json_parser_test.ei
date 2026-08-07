@@ -1,0 +1,62 @@
+// Tests for std.json JsonValue + parser (Part 1: promote arest parser to std).
+import { parseJson, JsonValue, jsonObject, jsonArray, jsonString, jsonNumber, jsonBool, jsonNull, JsonKind } from "std.json"
+import { assert } from "std.exceptions"
+import { List } from "std.collections"
+
+test "json parser round-trips primitives" {
+    val s = parseJson("\"hi\"")
+    assert(s.isString())
+    assert(s.asString() == "hi")
+
+    val n = parseJson("42")
+    assert(n.isNumber())
+    assert(n.asNumber() == 42.0)
+
+    val f = parseJson("3.5")
+    assert(f.isNumber())
+    assert(f.asNumber() == 3.5)
+
+    val b = parseJson("true")
+    assert(b.isBool())
+    assert(b.asBool() == true)
+
+    val nul = parseJson("null")
+    assert(nul.isNull())
+}
+
+test "json enum kind values match payload variants" {
+    assert(JsonKind.STRING == JsonKind.STRING)
+    assert(JsonKind.OBJECT.ordinal == 0)
+    assert(JsonKind.ARRAY.ordinal == 1)
+    assert(JsonKind.STRING.ordinal == 2)
+    assert(JsonKind.NUMBER.ordinal == 3)
+    assert(JsonKind.BOOL.ordinal == 4)
+    assert(JsonKind.NULL.ordinal == 5)
+    assert(jsonString("a").kind == JsonKind.STRING)
+    assert(jsonNull().kind == JsonKind.NULL)
+}
+
+test "json parses nested object and array" {
+    val o = parseJson("{\"a\": 1, \"b\": [true, null]}")
+    assert(o.isObject())
+    assert(o.isArray() == false)
+    val a = o.get("a")
+    assert(a != null)
+    assert(a!!.isNumber())
+    assert(a!!.asNumber() == 1.0)
+    val b = o.get("b")
+    assert(b != null)
+    assert(b!!.isArray())
+    assert(b!!.getIndex(0)!!.isBool())
+    assert(b!!.getIndex(1)!!.isNull())
+}
+
+test "json serialization writes valid documents" {
+    val o = parseJson("{\"a\": 1}")
+    val out = o.write()
+    assert(out == "{\"a\":1}")
+}
+
+test "jsonEscape escapes quotes and backslashes" {
+    assert(jsonString("he\"llo").write() == "\"he\\\"llo\"")
+}

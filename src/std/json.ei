@@ -1,4 +1,353 @@
 import { Serializable, SerdeField, SerdeValue, SerdeInt, SerdeDouble, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
+import { Map, MutableMap, List, MutableList } from "std.collections"
+
+enum JsonKind {
+    OBJECT,
+    ARRAY,
+    STRING,
+    NUMBER,
+    BOOL,
+    NULL
+}
+
+type JsonValue(
+    var kind: JsonKind = JsonKind.NULL,
+    var obj: Map<String, JsonValue> = Map(),
+    var arr: List<JsonValue> = [],
+    var str: String = "",
+    var num: Double = 0.0,
+    var boolean: Bool = false
+) {
+
+    fun isObject(): Bool = this.kind == JsonKind.OBJECT
+    fun isArray(): Bool = this.kind == JsonKind.ARRAY
+    fun isString(): Bool = this.kind == JsonKind.STRING
+    fun isNumber(): Bool = this.kind == JsonKind.NUMBER
+    fun isBool(): Bool = this.kind == JsonKind.BOOL
+    fun isNull(): Bool = this.kind == JsonKind.NULL
+
+    fun get(key: String): JsonValue? {
+        if (this.kind != JsonKind.OBJECT) {
+            return null
+        }
+        return this.obj.get(key)
+    }
+
+    fun getIndex(index: Int): JsonValue? {
+        if (this.kind != JsonKind.ARRAY) {
+            return null
+        }
+        if (index < 0 || index >= this.arr.size()) {
+            return null
+        }
+        return this.arr.get(index)
+    }
+
+    fun asString(): String = this.str
+    fun asNumber(): Double = this.num
+    fun asBool(): Bool = this.boolean
+
+    fun write(): String = when (this.kind) {
+        JsonKind.OBJECT -> this.writeObject()
+        JsonKind.ARRAY -> this.writeArray()
+        JsonKind.STRING -> this.writeString(this.str)
+        JsonKind.NUMBER -> this.num.toString()
+        JsonKind.BOOL -> this.boolean.toString()
+        JsonKind.NULL -> "null"
+        else -> "null"
+    }
+
+    fun writeString(s: String): String {
+        return "\"" + jsonEscape(s) + "\""
+    }
+
+    fun writeObject(): String {
+        var out = "{"
+        var first = true
+        var i = 0
+        while (i < this.obj.entries.size()) {
+            var curr = this.obj.entries.items[i]
+            while (curr != null) {
+                if (first == false) {
+                    out = out + ","
+                }
+                out = out + this.writeString(curr!!.key) + ":" + curr!!.value.write()
+                first = false
+                curr = curr!!.next
+            }
+            i = i + 1
+        }
+        return out + "}"
+    }
+
+    fun writeArray(): String {
+        var out = "["
+        var i = 0
+        while (i < this.arr.size()) {
+            if (i > 0) {
+                out = out + ","
+            }
+            out = out + this.arr.get(i).write()
+            i = i + 1
+        }
+        return out + "]"
+    }
+}
+
+fun jsonEscape(s: String): String {
+    var out = ""
+    var i = 0
+    while (i < s.length) {
+        val c = s.substring(i, i + 1)
+        if (c == "\"") {
+            out = out + "\\\""
+        } else if (c == "\\") {
+            out = out + "\\\\"
+        } else if (c == "\n") {
+            out = out + "\\n"
+        } else if (c == "\t") {
+            out = out + "\\t"
+        } else if (c == "\r") {
+            out = out + "\\r"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fun jsonObject(map: Map<String, JsonValue>): JsonValue {
+    val v = JsonValue()
+    v.kind = JsonKind.OBJECT
+    v.obj = map
+    return v
+}
+
+fun jsonArray(list: List<JsonValue>): JsonValue {
+    val v = JsonValue()
+    v.kind = JsonKind.ARRAY
+    v.arr = list
+    return v
+}
+
+fun jsonString(s: String): JsonValue {
+    val v = JsonValue()
+    v.kind = JsonKind.STRING
+    v.str = s
+    return v
+}
+
+fun jsonNumber(d: Double): JsonValue {
+    val v = JsonValue()
+    v.kind = JsonKind.NUMBER
+    v.num = d
+    return v
+}
+
+fun jsonBool(b: Bool): JsonValue {
+    val v = JsonValue()
+    v.kind = JsonKind.BOOL
+    v.boolean = b
+    return v
+}
+
+fun jsonNull(): JsonValue {
+    return JsonValue()
+}
+
+type JsonParser(val source: String, var pos: Int) {
+
+    fun parse(): JsonValue {
+        this.skipWhitespace()
+        return this.parseValue()
+    }
+
+    fun parseValue(): JsonValue {
+        this.skipWhitespace()
+        if (this.pos >= this.source.length) {
+            return JsonValue()
+        }
+        val c = this.source.substring(this.pos, this.pos + 1)
+        if (c == "{") {
+            return this.parseObject()
+        }
+        if (c == "[") {
+            return this.parseArray()
+        }
+        if (c == "\"") {
+            return this.parseString()
+        }
+        if (c == "t") {
+            this.expect("true")
+            return jsonBool(true)
+        }
+        if (c == "f") {
+            this.expect("false")
+            return jsonBool(false)
+        }
+        if (c == "n") {
+            this.expect("null")
+            return JsonValue()
+        }
+        return this.parseNumber()
+    }
+
+    fun skipWhitespace() {
+        var scanning = true
+        while (scanning) {
+            if (this.pos >= this.source.length) {
+                scanning = false
+            } else {
+                val c = this.source.substring(this.pos, this.pos + 1)
+                if (c == " " || c == "\n" || c == "\t" || c == "\r") {
+                    this.pos = this.pos + 1
+                } else {
+                    scanning = false
+                }
+            }
+        }
+    }
+
+    fun expect(word: String) {
+        var i = 0
+        var scanning = true
+        while (scanning) {
+            if (i >= word.length) {
+                scanning = false
+            } else {
+                val expected = word.substring(i, i + 1)
+                val actual = this.source.substring(this.pos, this.pos + 1)
+                if (actual == expected) {
+                    this.pos = this.pos + 1
+                }
+                i = i + 1
+            }
+        }
+    }
+
+    fun parseString(): JsonValue {
+        this.pos = this.pos + 1
+        var out = ""
+        var scanning = true
+        while (scanning) {
+            if (this.pos >= this.source.length) {
+                scanning = false
+            } else {
+                val c = this.source.substring(this.pos, this.pos + 1)
+                if (c == "\"") {
+                    this.pos = this.pos + 1
+                    scanning = false
+                } else if (c == "\\") {
+                    this.pos = this.pos + 1
+                    val e = this.source.substring(this.pos, this.pos + 1)
+                    if (e == "n") {
+                        out = out + "\n"
+                    } else if (e == "t") {
+                        out = out + "\t"
+                    } else if (e == "r") {
+                        out = out + "\r"
+                    } else if (e == "\"") {
+                        out = out + "\""
+                    } else if (e == "\\") {
+                        out = out + "\\"
+                    } else if (e == "/") {
+                        out = out + "/"
+                    } else if (e == "u") {
+                        out = out + "?"
+                        this.pos = this.pos + 4
+                    }
+                    this.pos = this.pos + 1
+                } else {
+                    out = out + c
+                    this.pos = this.pos + 1
+                }
+            }
+        }
+        return jsonString(out)
+    }
+
+    fun parseNumber(): JsonValue {
+        val start = this.pos
+        var scanning = true
+        while (scanning) {
+            if (this.pos >= this.source.length) {
+                scanning = false
+            } else {
+                val c = this.source.substring(this.pos, this.pos + 1)
+                if (c == "," || c == "}" || c == "]" || c == " " || c == "\n" || c == "\t" || c == "\r") {
+                    scanning = false
+                } else {
+                    this.pos = this.pos + 1
+                }
+            }
+        }
+        val text = this.source.substring(start, this.pos)
+        return jsonNumber(text.toDouble())
+    }
+
+    fun parseObject(): JsonValue {
+        this.pos = this.pos + 1
+        val map = MutableMap<String, JsonValue>()
+        var scanning = true
+        while (scanning) {
+            if (this.pos >= this.source.length) {
+                scanning = false
+            } else {
+                val c = this.source.substring(this.pos, this.pos + 1)
+                if (c == "}") {
+                    this.pos = this.pos + 1
+                    scanning = false
+                } else if (c == ",") {
+                    this.pos = this.pos + 1
+                    this.skipWhitespace()
+                } else {
+                    this.skipWhitespace()
+                    val key = this.parseString().str
+                    this.skipWhitespace()
+                    if (this.pos < this.source.length && this.source.substring(this.pos, this.pos + 1) == ":") {
+                        this.pos = this.pos + 1
+                    }
+                    this.skipWhitespace()
+                    val value = this.parseValue()
+                    map.put(key, value)
+                    this.skipWhitespace()
+                }
+            }
+        }
+        return jsonObject(map.freeze())
+    }
+
+    fun parseArray(): JsonValue {
+        this.pos = this.pos + 1
+        val list = MutableList<JsonValue>()
+        var scanning = true
+        while (scanning) {
+            if (this.pos >= this.source.length) {
+                scanning = false
+            } else {
+                val c = this.source.substring(this.pos, this.pos + 1)
+                if (c == "]") {
+                    this.pos = this.pos + 1
+                    scanning = false
+                } else if (c == ",") {
+                    this.pos = this.pos + 1
+                    this.skipWhitespace()
+                } else {
+                    this.skipWhitespace()
+                    val value = this.parseValue()
+                    list.add(value)
+                    this.skipWhitespace()
+                }
+            }
+        }
+        return jsonArray(list.freeze())
+    }
+}
+
+fun parseJson(source: String): JsonValue {
+    return JsonParser(source, 0).parse()
+}
 
 skill Json : Serializable {
     fun escapeJsonString(s: String): String {

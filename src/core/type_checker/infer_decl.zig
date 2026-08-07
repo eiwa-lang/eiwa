@@ -24,6 +24,7 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "env.ei", @embedFile("../../std/env.ei") },
     .{ "serde.ei", @embedFile("../../std/serde.ei") },
     .{ "json.ei", @embedFile("../../std/json.ei") },
+    .{ "jsonrpc.ei", @embedFile("../../std/jsonrpc.ei") },
     .{ "yaml.ei", @embedFile("../../std/yaml.ei") },
     .{ "log.ei", @embedFile("../../std/log.ei") },
     .{ "coroutines.ei", @embedFile("../../std/coroutines.ei") },

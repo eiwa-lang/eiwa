@@ -908,7 +908,10 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
 
             const callee_node = try self.allocator.create(ASTNode);
             const resolved_c_name = self.alias_map.get("String");
-            const actual_c_name = resolved_c_name orelse "String";
+            const actual_c_name = if (resolved_c_name) |rcn|
+                (if (std.mem.eql(u8, rcn, "String")) "core_String" else rcn)
+            else
+                "core_String";
 
             callee_node.* = .{
                 .line = node.line,

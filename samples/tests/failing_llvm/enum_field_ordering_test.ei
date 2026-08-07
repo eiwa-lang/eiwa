@@ -1,0 +1,49 @@
+// Regression test for the C backend ordering bug where an enum type used as a
+// struct field is emitted after the struct that references it, causing
+// `unknown type name '<Module>_<Enum>'` when the module also uses generic
+// collections. The shared module is `samples/payload.ei`.
+import { Payload, PayloadKind, payloadString, payloadObject } from ".samples.payload"
+import { MutableMap, List } from "std.collections"
+import { assert } from "std.exceptions"
+
+test "enum type field on cross-module type with collections compiles" {
+    val s = payloadString("hi")
+    assert(s.isString())
+    assert(s.asString() == "hi")
+    assert(s.kind == PayloadKind.STRING)
+    assert(s.kind.ordinal == 2)
+    assert(s.kind.name == "STRING")
+}
+
+test "enum kind distinguishes object and array carriers" {
+    val m = MutableMap<String, Payload>()
+    m.put("a", payloadString("x"))
+    val o = payloadObject(m.freeze())
+    assert(o.isObject())
+    assert(o.isArray() == false)
+    assert(o.isNull() == false)
+    val got = o.get("a")
+    assert(got != null)
+    val g = got!!
+    assert(g.isString())
+    assert(g.asString() == "x")
+}
+
+test "empty constructor defaults to NULL enum variant" {
+    val blank = Payload()
+    assert(blank.isNull())
+    assert(blank.kind == PayloadKind.NULL)
+    assert(blank.kind.ordinal == 5)
+    assert(blank.kind.name == "NULL")
+}
+
+test "enum ordinal and name for all variants" {
+    assert(PayloadKind.OBJECT.ordinal == 0)
+    assert(PayloadKind.ARRAY.ordinal == 1)
+    assert(PayloadKind.STRING.ordinal == 2)
+    assert(PayloadKind.NUMBER.ordinal == 3)
+    assert(PayloadKind.BOOL.ordinal == 4)
+    assert(PayloadKind.NULL.ordinal == 5)
+    assert(PayloadKind.OBJECT.name == "OBJECT")
+    assert(PayloadKind.NUMBER.name == "NUMBER")
+}
