@@ -454,7 +454,9 @@ pub fn emitExpression(
             if (std.mem.eql(u8, get.name, "hashCode")) {
                 if (get.object.resolved_type) |obj_rt| {
                     const obj_base = obj_rt.*;
-                    if (obj_base == .String or obj_base == .Pointer) {
+                    const obj_is_string = obj_base == .String or
+                        (obj_base == .Custom and (std.mem.eql(u8, obj_base.Custom, "String") or std.mem.eql(u8, obj_base.Custom, "core_String")));
+                    if (obj_is_string or obj_base == .Pointer) {
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                         const fn_val = llvm.LLVMGetNamedFunction(mod, "eiwa_hash_string") orelse return error.HashStringHelperNotFound;
                         const fn_type = llvm.LLVMGlobalGetValueType(fn_val);
@@ -468,6 +470,12 @@ pub fn emitExpression(
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                         return llvm.LLVMBuildBitCast(builder, obj_val, llvm.LLVMInt64TypeInContext(ctx), "hash_double");
                     }
+                } else if (get.object.data == .string_literal) {
+                    const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
+                    const fn_val = llvm.LLVMGetNamedFunction(mod, "eiwa_hash_string") orelse return error.HashStringHelperNotFound;
+                    const fn_type = llvm.LLVMGlobalGetValueType(fn_val);
+                    var args = [_]llvm.LLVMValueRef{obj_val};
+                    return llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 1, "hash_tmp");
                 }
             }
 
@@ -1122,6 +1130,14 @@ pub fn emitExpression(
                         var args = [_]llvm.LLVMValueRef{ left_val, right_val };
                         return llvm.LLVMBuildCall2(builder, seq_type, seq_fn, &args, 2, "streq_tmp");
                     }
+                    if (bin.right.data == .null_literal and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(left_val)) == llvm.LLVMStructTypeKind) {
+                        const data_ptr = llvm.LLVMBuildExtractValue(builder, left_val, 0, "eq_null_data");
+                        return llvm.LLVMBuildIsNull(builder, data_ptr, "eq_null");
+                    }
+                    if (bin.left.data == .null_literal and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(right_val)) == llvm.LLVMStructTypeKind) {
+                        const data_ptr = llvm.LLVMBuildExtractValue(builder, right_val, 0, "eq_null_data");
+                        return llvm.LLVMBuildIsNull(builder, data_ptr, "eq_null");
+                    }
                     return llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, left_val, right_val, "eqtmp");
                 },
                 .bang_eq => {
@@ -1133,6 +1149,14 @@ pub fn emitExpression(
                         const seq_res = llvm.LLVMBuildCall2(builder, seq_type, seq_fn, &args, 2, "streq_tmp");
                         const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(seq_res), 0, 0);
                         return llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, seq_res, zero, "strne_tmp");
+                    }
+                    if (bin.right.data == .null_literal and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(left_val)) == llvm.LLVMStructTypeKind) {
+                        const data_ptr = llvm.LLVMBuildExtractValue(builder, left_val, 0, "ne_null_data");
+                        return llvm.LLVMBuildIsNotNull(builder, data_ptr, "ne_null");
+                    }
+                    if (bin.left.data == .null_literal and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(right_val)) == llvm.LLVMStructTypeKind) {
+                        const data_ptr = llvm.LLVMBuildExtractValue(builder, right_val, 0, "ne_null_data");
+                        return llvm.LLVMBuildIsNotNull(builder, data_ptr, "ne_null");
                     }
                     return llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, left_val, right_val, "netmp");
                 },
@@ -1817,6 +1841,24 @@ pub fn emitExpression(
                         } else if (base_obj == .Double) {
                             const d_val = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
                             return llvm.LLVMBuildBitCast(builder, d_val, llvm.LLVMInt64TypeInContext(ctx), "double_hash");
+                        } else {
+                            const is_string = switch (base_obj) {
+                                .String => true,
+                                .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String"),
+                                .Pointer => |p| switch (p.*) {
+                                    .String => true,
+                                    .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String"),
+                                    else => false,
+                                },
+                                else => false,
+                            };
+                            if (is_string) {
+                                const str_val = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                                const fn_val = llvm.LLVMGetNamedFunction(mod, "eiwa_hash_string") orelse return error.HashStringHelperNotFound;
+                                const fn_type = llvm.LLVMGlobalGetValueType(fn_val);
+                                var args = [_]llvm.LLVMValueRef{str_val};
+                                return llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 1, "string_hash");
+                            }
                         }
                     }
                 }
@@ -2060,6 +2102,12 @@ pub fn emitExpression(
 
                                         llvm.LLVMPositionBuilderAtEnd(c_builder, vt_merge_bb);
                                         if (llvm.LLVMGetTypeKind(c_ret_t) == llvm.LLVMVoidTypeKind) {
+                                            // Avoid leaving vt_merge unterminated: branch to a
+                                            // fresh continuation block where the enclosing function
+                                            // keeps emitting. Mirrors coerceArg/fat-pointer handling.
+                                            const vt_cont_bb = llvm.LLVMAppendBasicBlockInContext(c_ctx, parent_func, "vt_cont");
+                                            _ = llvm.LLVMBuildBr(c_builder, vt_cont_bb);
+                                            llvm.LLVMPositionBuilderAtEnd(c_builder, vt_cont_bb);
                                             return ok_val;
                                         }
                                         const phi = llvm.LLVMBuildPhi(c_builder, c_ret_t, "vcall_res");
@@ -2693,6 +2741,7 @@ pub fn emitExpression(
                             // descriptors exist in the LLVM model). The tag
                             // constant (0x10000) is duplicated across both
                             // backends and must not drift.
+                            const i1_type = llvm.LLVMInt1TypeInContext(ctx);
                             const type_cond = cond.data.is_type_cond;
                             const target_t = if (type_cond.type_ref.resolved_type) |rt| rt.* else ts.EiwaType.Unknown;
                             var target_c_name: []const u8 = "unknown";
@@ -2706,16 +2755,66 @@ pub fn emitExpression(
                                 else => {},
                             }
                             const subj_load = llvm.LLVMBuildLoad2(builder, llvm.LLVMTypeOf(subj_ptr.?), subj_ptr.?, "when_subj_load");
-                            const subj_int = llvm.LLVMBuildPtrToInt(builder, subj_load, i64_type, "when_subj_int");
+                            // Contract subjects are Fat Pointers { data, vtable }.
+                            // Type identity is carried by the vtable pointer (the C
+                            // backend tags boxed values with EiwaTypeDescriptor*;
+                            // the vtable slot plays that role here). Extract the data
+                            // pointer + vtable so we never PtrToInt() the struct.
+                            const subj_is_fat = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(subj_load)) == llvm.LLVMStructTypeKind;
+                            var subj_data = subj_load;
+                            var subj_vtable: ?llvm.LLVMValueRef = null;
+                            if (subj_is_fat) {
+                                subj_data = llvm.LLVMBuildExtractValue(builder, subj_load, 0, "when_subj_data");
+                                subj_vtable = llvm.LLVMBuildExtractValue(builder, subj_load, 1, "when_subj_vtable");
+                            }
+                            const subj_int = if (subj_is_fat)
+                                llvm.LLVMConstInt(i64_type, 0, 0)
+                            else
+                                llvm.LLVMBuildPtrToInt(builder, subj_load, i64_type, "when_subj_int");
+                            const i1_false = llvm.LLVMConstInt(i1_type, 0, 0);
+                            const i1_true = llvm.LLVMConstInt(i1_type, 1, 0);
                             var is_match: llvm.LLVMValueRef = undefined;
                             if (std.mem.eql(u8, target_c_name, "core_Null")) {
-                                is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_load, llvm.LLVMConstNull(ptr_type), "when_is_null");
+                                is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_data, llvm.LLVMConstNull(ptr_type), "when_is_null");
                             } else if (std.mem.eql(u8, target_c_name, "core_Int") or std.mem.eql(u8, target_c_name, "core_Double") or std.mem.eql(u8, target_c_name, "Double")) {
-                                is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntULT, subj_int, llvm.LLVMConstInt(i64_type, 0x10000, 0), "when_is_small");
+                                // A Fat Pointer (contract subject) is never a primitive.
+                                is_match = if (subj_is_fat) i1_false else llvm.LLVMBuildICmp(builder, llvm.LLVMIntULT, subj_int, llvm.LLVMConstInt(i64_type, 0x10000, 0), "when_is_small");
                             } else if (std.mem.eql(u8, target_c_name, "core_Bool")) {
-                                is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntULE, subj_int, llvm.LLVMConstInt(i64_type, 1, 0), "when_is_bool");
+                                is_match = if (subj_is_fat) i1_false else llvm.LLVMBuildICmp(builder, llvm.LLVMIntULE, subj_int, llvm.LLVMConstInt(i64_type, 1, 0), "when_is_bool");
+                            } else if (subj_is_fat) {
+                                // Custom type from a contract subject: match by vtable
+                                // identity. The subject's static contract tells us which
+                                // vtable slot to expect for the target concrete type,
+                                // so `when (v) is SomeType` == `v.vtable == &SomeType_Contract_vtable`.
+                                var subj_contract: []const u8 = "";
+                                if (w.subject) |subj_node| {
+                                    if (subj_node.resolved_type) |srt| {
+                                        const sb = ts.extractBaseType(srt).*;
+                                        switch (sb) {
+                                            .Custom => |cn2| subj_contract = cn2,
+                                            .GenericInstance => |gi| subj_contract = gi.base_name,
+                                            else => {},
+                                        }
+                                    }
+                                }
+                                if (subj_vtable) |svt| {
+                                    if (subj_contract.len > 0) {
+                                        if (try findVtableGlobal(mod, target_c_name, subj_contract)) |vglob| {
+                                            const vg_ptr = llvm.LLVMBuildBitCast(builder, vglob, ptr_type, "when_vt_global");
+                                            const svt_ptr = llvm.LLVMBuildBitCast(builder, svt, ptr_type, "when_vt_subj");
+                                            is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, svt_ptr, vg_ptr, "when_is_obj_of_type");
+                                        } else {
+                                            is_match = i1_false;
+                                        }
+                                    } else {
+                                        is_match = i1_false;
+                                    }
+                                } else {
+                                    is_match = i1_true;
+                                }
                             } else {
-                                // Custom type / contract: non-primitive boxed pointer.
+                                // Non-contract boxed pointer: pointer-range heuristic
+                                // (unchanged for the non-contract path).
                                 is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGE, subj_int, llvm.LLVMConstInt(i64_type, 0x10000, 0), "when_is_custom");
                             }
                             if (type_cond.is_not) {
@@ -2864,9 +2963,86 @@ pub fn emitExpression(
 
             return res;
         },
-        .map_literal => {
-            // Map literals emit Map constructor instance pointer
+        .map_literal => |m| {
+            // Map literals construct a real `Map` the same way the C transpiler
+            // does: a 16-slot bucket array -> `List<Node<K,V>?>` -> a
+            // `MutableMap` over that list -> `MutableMap_put(k, v)` for each
+            // pair -> finally a `Map` wrapping the same list. The `get`/`put`
+            // logic then hashes keys and chains nodes (Phase-61 hash equality).
+            // TODO(emitter): PREVIOUSLY returned `LLVMConstNull(ptr)` (a null
+            // receiver) — any map literal crashed on the first `map[k]`. The
+            // bucket size (16) mirrors std/collections.ei and the C backend.
             const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+            if (node.resolved_type) |rt| {
+                if (rt.* == .Custom and m.elements.len > 0) {
+                    const custom = rt.Custom;
+                    const inner = if (std.mem.startsWith(u8, custom, "collections_Map_"))
+                        custom["collections_Map_".len..]
+                    else if (std.mem.startsWith(u8, custom, "Map_"))
+                        custom["Map_".len..]
+                    else
+                        custom;
+                    if (inner.len == 0) return llvm.LLVMConstNull(ptr_type);
+
+                    const list_name = try std.fmt.allocPrint(std.heap.page_allocator, "collections_List_collections_Node_{s}Opt\x00", .{inner});
+                    defer std.heap.page_allocator.free(list_name);
+                    const mmap_name = try std.fmt.allocPrint(std.heap.page_allocator, "collections_MutableMap_{s}\x00", .{inner});
+                    defer std.heap.page_allocator.free(mmap_name);
+                    const map_name = try std.fmt.allocPrint(std.heap.page_allocator, "collections_Map_{s}\x00", .{inner});
+                    defer std.heap.page_allocator.free(map_name);
+                    const put_name = try std.fmt.allocPrint(std.heap.page_allocator, "collections_MutableMap_{s}_put\x00", .{inner});
+                    defer std.heap.page_allocator.free(put_name);
+
+                    const list_ctor = llvm.LLVMGetNamedFunction(mod, list_name.ptr) orelse return error.MapLiteralListCtorMissing;
+                    const mmap_ctor = llvm.LLVMGetNamedFunction(mod, mmap_name.ptr) orelse return error.MapLiteralMmapCtorMissing;
+                    const map_ctor = llvm.LLVMGetNamedFunction(mod, map_name.ptr) orelse return error.MapLiteralMapCtorMissing;
+                    const put_fn = llvm.LLVMGetNamedFunction(mod, put_name.ptr) orelse return error.MapLiteralPutMissing;
+
+                    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                    const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+                    const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+
+                    // 1. buckets buffer: [size, capacity, 16 x null]
+                    const slot_count: i64 = 18;
+                    const size_bytes: i64 = slot_count * 8;
+                    var m_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @bitCast(size_bytes), 0)};
+                    const buckets = llvm.LLVMBuildCall2(builder, malloc_type, malloc_fn, &m_args, 1, "map_buckets");
+                    var b0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+                    var b1 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
+                    const sixteen = llvm.LLVMConstInt(i64_type, 16, 0);
+                    _ = llvm.LLVMBuildStore(builder, sixteen, llvm.LLVMBuildGEP2(builder, i64_type, buckets, &b0, 1, "bs0"));
+                    _ = llvm.LLVMBuildStore(builder, sixteen, llvm.LLVMBuildGEP2(builder, i64_type, buckets, &b1, 1, "bs1"));
+                    const null_ptr = llvm.LLVMConstNull(ptr_type);
+                    for (2..18) |slot| {
+                        var sidx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(slot), 0)};
+                        _ = llvm.LLVMBuildStore(builder, null_ptr, llvm.LLVMBuildGEP2(builder, i64_type, buckets, &sidx, 1, "bs"));
+                    }
+
+                    // 2. List(items=buckets) -> 3. MutableMap(entries=list)
+                    var l_args = [_]llvm.LLVMValueRef{buckets};
+                    const list_t = llvm.LLVMGlobalGetValueType(list_ctor);
+                    const list_val = llvm.LLVMBuildCall2(builder, list_t, list_ctor, &l_args, 1, "map_list");
+                    var mm_args = [_]llvm.LLVMValueRef{list_val};
+                    const mm_t = llvm.LLVMGlobalGetValueType(mmap_ctor);
+                    const mmap_val = llvm.LLVMBuildCall2(builder, mm_t, mmap_ctor, &mm_args, 1, "map_mmap");
+
+                    // 4. put(k, v) for each pair
+                    const put_t = llvm.LLVMGlobalGetValueType(put_fn);
+                    for (m.elements) |elem| {
+                        if (elem.data == .call_expr and elem.data.call_expr.arguments.len >= 2) {
+                            const k_val = try emitExpression(ctx, mod, builder, scope, structs, libs, elem.data.call_expr.arguments[0]);
+                            const v_val = try emitExpression(ctx, mod, builder, scope, structs, libs, elem.data.call_expr.arguments[1]);
+                            var p_args = [_]llvm.LLVMValueRef{ mmap_val, k_val, v_val };
+                            _ = llvm.LLVMBuildCall2(builder, put_t, put_fn, &p_args, 3, "");
+                        }
+                    }
+
+                    // 5. Map(entries=list)
+                    var f_args = [_]llvm.LLVMValueRef{list_val};
+                    const map_t = llvm.LLVMGlobalGetValueType(map_ctor);
+                    return llvm.LLVMBuildCall2(builder, map_t, map_ctor, &f_args, 1, "map_literal");
+                }
+            }
             return llvm.LLVMConstNull(ptr_type);
         },
         .assignment => {
@@ -2878,6 +3054,27 @@ pub fn emitExpression(
                 return llvm.LLVMConstNull(ptr_type);
             }
             return llvm.LLVMConstNull(ret_t);
+        },
+        .as_expr => |as_e| {
+            const val = try emitExpression(ctx, mod, builder, scope, structs, libs, as_e.value);
+            if (as_e.value.resolved_type) |v_rt| {
+                if (node.resolved_type) |target_rt| {
+                    const concrete_c = switch (v_rt.*) {
+                        .Custom => |n| n,
+                        .GenericInstance => |gi| gi.base_name,
+                        else => "",
+                    };
+                    const target_c = switch (target_rt.*) {
+                        .Custom => |n| n,
+                        .GenericInstance => |gi| gi.base_name,
+                        else => "",
+                    };
+                    if (concrete_c.len > 0 and target_c.len > 0) {
+                        return coerceToContract(ctx, mod, builder, val, concrete_c, target_c) catch val;
+                    }
+                }
+            }
+            return val;
         },
         else => {
             std.debug.print("LLVM Debug: unsupported expression node type {any}\n", .{node.data});
@@ -2904,7 +3101,7 @@ pub fn emitExpression(
 /// checker's is_boxed decision directly; this LLVM coercion re-derives it from
 /// LLVM type kinds, which is the fragile part. Aligning both on the same
 /// type-checker flag removes the sniffing here.
-fn coerceArg(
+pub fn coerceArg(
     builder: llvm.LLVMBuilderRef,
     arg_val: llvm.LLVMValueRef,
     param_type: llvm.LLVMTypeRef,
@@ -2959,6 +3156,46 @@ fn coerceArg(
 }
 
 /// Coerces a concrete type value (data_ptr) into a Fat Pointer { data, vtable } for a target contract.
+/// Resolves the static vtable global symbol for a concrete type implementing a
+/// contract, mirroring the multi-stage short-name fallback used by
+/// `coerceToContract`. Returns null when no such vtable global exists in the
+/// module. Used by `when (x) is SomeType` on contract subjects to type-check by
+/// vtable identity.
+fn findVtableGlobal(mod: llvm.LLVMModuleRef, concrete_c_name: []const u8, contract_c_name: []const u8) anyerror!?llvm.LLVMValueRef {
+    const first_name = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}_vtable", .{ concrete_c_name, contract_c_name });
+    defer std.heap.page_allocator.free(first_name);
+    const first_z = try std.heap.page_allocator.dupeZ(u8, first_name);
+    defer std.heap.page_allocator.free(first_z);
+    if (llvm.LLVMGetNamedGlobal(mod, first_z.ptr)) |g| return g;
+
+    var short_contract = contract_c_name;
+    if (std.mem.lastIndexOfScalar(u8, contract_c_name, '_')) |idx| short_contract = contract_c_name[idx + 1 ..];
+    var short_concrete = concrete_c_name;
+    if (std.mem.lastIndexOfScalar(u8, concrete_c_name, '_')) |idx| short_concrete = concrete_c_name[idx + 1 ..];
+
+    const alt1 = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}_vtable", .{ concrete_c_name, short_contract });
+    defer std.heap.page_allocator.free(alt1);
+    const alt1_z = try std.heap.page_allocator.dupeZ(u8, alt1);
+    defer std.heap.page_allocator.free(alt1_z);
+    if (llvm.LLVMGetNamedGlobal(mod, alt1_z.ptr)) |g2| return g2;
+
+    const alt2 = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}_vtable", .{ short_concrete, short_contract });
+    defer std.heap.page_allocator.free(alt2);
+    const alt2_z = try std.heap.page_allocator.dupeZ(u8, alt2);
+    defer std.heap.page_allocator.free(alt2_z);
+    if (llvm.LLVMGetNamedGlobal(mod, alt2_z.ptr)) |g3| return g3;
+
+    var g_iter = llvm.LLVMGetFirstGlobal(mod);
+    while (g_iter != null) : (g_iter = llvm.LLVMGetNextGlobal(g_iter.?)) {
+        const g_name_ptr = llvm.LLVMGetValueName(g_iter.?);
+        const g_name_s = std.mem.span(g_name_ptr);
+        if ((std.mem.startsWith(u8, g_name_s, concrete_c_name) or std.mem.startsWith(u8, g_name_s, short_concrete)) and std.mem.endsWith(u8, g_name_s, "_vtable")) {
+            return g_iter.?;
+        }
+    }
+    return null;
+}
+
 pub fn coerceToContract(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,

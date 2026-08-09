@@ -280,6 +280,20 @@ pub const LLVMEmitter = struct {
             for (ast_root.data.program.statements) |stmt| {
                 try self.collectCallees(stmt, &reachable, &worklist);
             }
+            // In test mode ast_root is a synthetic wrapper that only holds
+            // import_stmt's; the actual `test "..." { }` bodies live in the
+            // imported modules. Seed their callees so the functions tests call
+            // are considered reachable and get real bodies emitted.
+            if (self.is_test_mode) {
+                for (modules.items) |m| {
+                    if (m.data != .program) continue;
+                    for (m.data.program.statements) |stmt| {
+                        if (stmt.data == .test_decl) {
+                            try self.collectCallees(stmt, &reachable, &worklist);
+                        }
+                    }
+                }
+            }
             for (ast_root.data.program.statements) |stmt| {
                 if (stmt.data == .fun_decl) {
                     if (stmt.data.fun_decl.generic_params.len > 0) continue;
@@ -450,11 +464,7 @@ pub const LLVMEmitter = struct {
                     const fname = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
                     if (!reachable.contains(fname)) continue;
                     if (m != ast_root) {
-                        self.emitFunctionBody(mod, stmt, false) catch |err| {
-                            std.debug.print("LLVM Emitter Error in std function {s}: {}\n", .{ fname, err });
-                            self.emitFunctionStub(mod, fname) catch {};
-                            continue;
-                        };
+                        self.emitFunctionBodyOrStub(mod, stmt, fname, false);
                     } else {
                         try self.emitFunctionBody(mod, stmt, false);
                     }
@@ -503,7 +513,7 @@ pub const LLVMEmitter = struct {
                         // actually called at runtime, the JIT/linker will fail
                         // on the bodiless declaration. Remove this tolerance
                         // once Phase 61 lands and parity is reached.
-                        try self.emitFunctionBody(mod, m_node, false);
+                        self.emitFunctionBodyOrStub(mod, m_node, fname, false);
                     }
                 } else if (stmt.data == .object_decl) {
                     for (stmt.data.object_decl.members) |member| {
@@ -511,7 +521,7 @@ pub const LLVMEmitter = struct {
                         if (member.data.fun_decl.generic_params.len > 0) continue;
                         const fname = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
                         if (!reachable.contains(fname)) continue;
-                        try self.emitFunctionBody(mod, member, true);
+                        self.emitFunctionBodyOrStub(mod, member, fname, true);
                     }
                 }
                 if (m == ast_root and stmt.data != .type_decl and stmt.data != .lib_decl and stmt.data != .test_decl) {
@@ -609,6 +619,7 @@ pub const LLVMEmitter = struct {
 
                 const puts_fn = llvm.LLVMGetNamedFunction(mod, "puts").?;
                 const puts_call_type = llvm.LLVMGlobalGetValueType(puts_fn);
+                const fflush_fn_opt = llvm.LLVMGetNamedFunction(mod, "fflush");
 
                 for (test_funcs.items, 0..) |test_fn, i| {
                     const test_fn_type_call = llvm.LLVMGlobalGetValueType(test_fn);
@@ -621,6 +632,11 @@ pub const LLVMEmitter = struct {
                     const pass_str = llvm.LLVMBuildGlobalStringPtr(self.builder, pass_fmt.ptr, "pass_msg");
                     var pass_args = [_]llvm.LLVMValueRef{pass_str};
                     _ = llvm.LLVMBuildCall2(self.builder, puts_call_type, puts_fn, &pass_args, 1, "");
+                    if (fflush_fn_opt) |fflush_fn| {
+                        const fflush_ft = llvm.LLVMGlobalGetValueType(fflush_fn);
+                        var null_arg = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(self.context, 0))};
+                        _ = llvm.LLVMBuildCall2(self.builder, fflush_ft, fflush_fn, &null_arg, 1, "");
+                    }
                 }
 
                 _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstInt(i32_type, 0, 0));
@@ -641,6 +657,7 @@ pub const LLVMEmitter = struct {
                 const fn_name_s = std.mem.span(fn_name_ptr);
                 const is_libc = std.mem.eql(u8, fn_name_s, "printf") or
                     std.mem.eql(u8, fn_name_s, "malloc") or
+                    std.mem.eql(u8, fn_name_s, "realloc") or
                     std.mem.eql(u8, fn_name_s, "GC_malloc") or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
                     std.mem.eql(u8, fn_name_s, "longjmp") or
@@ -833,11 +850,11 @@ pub const LLVMEmitter = struct {
         reachable: *std.StringHashMap(void),
         worklist: *ArrayList([]const u8),
     ) !void {
-        if (!reachable.contains(name)) {
-            const owned = try self.allocator.dupe(u8, name);
-            try reachable.put(owned, {});
-            try worklist.append(owned);
-        }
+        if (reachable.contains(name)) return;
+        const owned = try self.allocator.dupe(u8, name);
+        try reachable.put(owned, {});
+        try worklist.append(owned);
+
         const prefix = try std.fmt.allocPrint(self.allocator, "{s}_", .{name});
         defer self.allocator.free(prefix);
         const suffix = try std.fmt.allocPrint(self.allocator, "_{s}_", .{name});
@@ -868,6 +885,7 @@ pub const LLVMEmitter = struct {
         switch (node.data) {
             .program => |p| for (p.statements) |s| try self.collectCallees(s, reachable, worklist),
             .block => |b| for (b.statements) |s| try self.collectCallees(s, reachable, worklist),
+            .test_decl => |t| try self.collectCallees(t.body, reachable, worklist),
             .fun_decl => |f| {
                 if (f.generic_params.len > 0) return;
                 if (f.is_expr_body) {
@@ -927,7 +945,31 @@ pub const LLVMEmitter = struct {
                 try self.collectCallees(i.value, reachable, worklist);
             },
             .array_literal => |a| for (a.elements) |e| try self.collectCallees(e, reachable, worklist),
-            .map_literal => |m| for (m.elements) |e| try self.collectCallees(e, reachable, worklist),
+            .map_literal => |m| {
+                for (m.elements) |e| try self.collectCallees(e, reachable, worklist);
+                // The map literal emitter calls `MutableMap_{K,V}_put` for each
+                // pair via a bare LLVMGetNamedFunction, so `collectCallees`
+                // would never discover it and the stub pass would reduce it to
+                // a no-op `ret`, silently dropping every insertion. Mark it
+                // reachable (its body walk pulls in Node ctor, List ops, etc).
+                if (node.resolved_type) |rt| {
+                    var inner: []const u8 = "";
+                    if (rt.* == .Custom) {
+                        const custom = rt.Custom;
+                        if (std.mem.startsWith(u8, custom, "collections_Map_"))
+                            inner = custom["collections_Map_".len..]
+                        else if (std.mem.startsWith(u8, custom, "Map_"))
+                            inner = custom["Map_".len..]
+                        else
+                            inner = custom;
+                    }
+                    if (inner.len > 0) {
+                        const buf = try std.fmt.allocPrint(self.allocator, "collections_MutableMap_{s}_put", .{inner});
+                        try self.markReachable(buf, reachable, worklist);
+                        self.allocator.free(buf);
+                    }
+                }
+            },
             .set_expr => |s| {
                 try self.collectCallees(s.object, reachable, worklist);
                 try self.collectCallees(s.value, reachable, worklist);
@@ -1775,9 +1817,13 @@ pub const LLVMEmitter = struct {
         const f = func_node.data.fun_decl;
         const name = f.resolved_c_name orelse f.name;
 
-        // Methods bind the receiver (`this`) as the leading parameter if receiver is a struct (not an object method).
+        // Methods bind the receiver (`this`) as the leading parameter (not an
+        // object method). Any instance method with a receiver takes `this`,
+        // including primitive receivers (String/Int/Bool/Double) — gating this
+        // on `isStructReceiver` dropped the receiver for those and produced a
+        // zero-arg/stubbed hashCode etc.
         const has_rec = if (is_object_method) false else (if (func_node.resolved_type) |rt|
-            (if (rt.* == .Function) self.isStructReceiver(rt.Function.receiver) else false)
+            (if (rt.* == .Function) rt.Function.receiver != null else false)
         else
             false);
 
@@ -1846,7 +1892,7 @@ pub const LLVMEmitter = struct {
         var param_base: usize = 0;
         if (func_node.resolved_type) |rt| {
             if (rt.* == .Function) {
-                if (self.isStructReceiver(rt.Function.receiver)) {
+                if (rt.Function.receiver != null) {
                     const this_val = llvm.LLVMGetParam(func_val, 0);
                     const this_type = llvm.LLVMTypeOf(this_val);
                     const this_z = try self.allocator.dupeZ(u8, "this");
@@ -2005,6 +2051,36 @@ pub const LLVMEmitter = struct {
         }
     }
 
+    /// Returns true if the emitted function body is well-formed LLVM IR
+    /// (all blocks terminated, operand types consistent, etc.). Uses LLVM's
+    /// own per-function verifier so it catches type mismatches and bad calls
+    /// that a simple terminator scan would miss.
+    fn functionIsWellFormed(func_val: llvm.LLVMValueRef) bool {
+        if (llvm.LLVMVerifyFunction(func_val, llvm.LLVMReturnStatusAction) == 0) return true;
+        _ = llvm.LLVMVerifyFunction(func_val, llvm.LLVMPrintMessageAction);
+        return false;
+    }
+
+    /// Emits a function body, falling back to a complete stub when the body
+    /// either fails to emit OR emits malformed IR (e.g. `when`/smart-cast or
+    /// contract dispatch that leaves an unterminated block, an icmp on a
+    /// struct, or a return-type mismatch without raising an error). The stub
+    /// keeps the module verifiable for the JIT/linker.
+    fn emitFunctionBodyOrStub(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, fname: []const u8, is_object_method: bool) void {
+        var emitted_ok = true;
+        self.emitFunctionBody(mod, func_node, is_object_method) catch |err| {
+            std.debug.print("LLVM Emitter Error in {s}: {}\n", .{ fname, err });
+            emitted_ok = false;
+        };
+        if (emitted_ok) {
+            if (self.functions.get(fname)) |func_val| {
+                if (functionIsWellFormed(func_val)) return;
+                std.debug.print("LLVM Emitter: {s} produced invalid IR; stubbed.\n", .{fname});
+            }
+        }
+        self.emitFunctionStub(mod, fname) catch {};
+    }
+
     /// Removes any partially-emitted basic blocks from a function whose body
     /// failed to emit, leaving a clean external declaration. Without this the
     /// module keeps half-built IR (unterminated blocks) and the JIT hangs or
@@ -2052,6 +2128,12 @@ pub const LLVMEmitter = struct {
     /// Executes the in-memory LLVM module via JIT (for `eiwa run --backend=llvm`).
     pub fn executeJIT(self: *LLVMEmitter) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
+        {
+            const dump_z = try self.allocator.dupeZ(u8, "/tmp/eiwa_ir.ll");
+            defer self.allocator.free(dump_z);
+            var dump_err: [*c]u8 = null;
+            _ = llvm.LLVMPrintModuleToFile(mod, dump_z.ptr, &dump_err);
+        }
         {
             var verify_err: [*c]u8 = null;
             if (llvm.LLVMVerifyModule(mod, llvm.LLVMReturnStatusAction, &verify_err) != 0) {

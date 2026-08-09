@@ -215,6 +215,12 @@ pub fn emitStatement(
                         }
                     }
                 }
+                // Coerce the return value to the function's declared return
+                // type (e.g. a nullable primitive `Int?` is `ptr` while
+                // `curr!!.value` is a raw `i64`), mirroring argument coercion.
+                if (llvm.LLVMTypeOf(ret_val) != expected_ret_type) {
+                    ret_val = expression.coerceArg(builder, ret_val, expected_ret_type);
+                }
                 _ = llvm.LLVMBuildRet(builder, ret_val);
             } else {
                 _ = llvm.LLVMBuildRetVoid(builder);
