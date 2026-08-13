@@ -3936,9 +3936,23 @@ fn emitCustomEquals(
     _ = llvm.LLVMBuildCondBr(builder, both, call_bb, merge_bb);
 
     llvm.LLVMPositionBuilderAtEnd(builder, call_bb);
-    const fat_b = try coerceToContract(ctx, mod, builder, right_val, class_name, "");
     const eq_fn_type = llvm.LLVMGlobalGetValueType(eq_fn);
-    var eq_args = [_]llvm.LLVMValueRef{ left_val, fat_b };
+    const param_count: usize = @intCast(llvm.LLVMCountParamTypes(eq_fn_type));
+    const param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, param_count);
+    defer std.heap.page_allocator.free(param_types);
+    llvm.LLVMGetParamTypes(eq_fn_type, param_types.ptr);
+    var arg0 = left_val;
+    var arg1: llvm.LLVMValueRef = undefined;
+    if (param_count >= 2) {
+        arg0 = coerceArg(builder, left_val, param_types[0]);
+        if (llvm.LLVMGetTypeKind(param_types[1]) == llvm.LLVMStructTypeKind) {
+            arg1 = try coerceToContract(ctx, mod, builder, right_val, class_name, "");
+        } else {
+            arg1 = coerceArg(builder, right_val, param_types[1]);
+        }
+    } else {
+        arg1 = coerceArg(builder, right_val, llvm.LLVMPointerTypeInContext(ctx, 0));
+    }    var eq_args = [_]llvm.LLVMValueRef{ arg0, arg1 };
     const eq_res = llvm.LLVMBuildCall2(builder, eq_fn_type, eq_fn, &eq_args, 2, "eq_res");
     const call_end = llvm.LLVMGetInsertBlock(builder);
     _ = llvm.LLVMBuildBr(builder, merge_bb);
