@@ -1262,6 +1262,17 @@ pub fn emitExpression(
                         const data_ptr = llvm.LLVMBuildExtractValue(builder, right_val, 0, "eq_null_data");
                         return llvm.LLVMBuildIsNull(builder, data_ptr, "eq_null");
                     }
+                    {
+                        var eq_class: ?[]const u8 = null;
+                        if (customEqualsClass(bin.left, mod)) |cn| {
+                            eq_class = cn;
+                        } else if (customEqualsClass(bin.right, mod)) |cn| {
+                            eq_class = cn;
+                        }
+                        if (eq_class) |cn| {
+                            return try emitCustomEquals(ctx, mod, builder, left_val, right_val, cn);
+                        }
+                    }
                     var l_val = left_val;
                     var r_val = right_val;
                     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMStructTypeKind) {
@@ -1292,6 +1303,19 @@ pub fn emitExpression(
                     if (bin.left.data == .null_literal and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(right_val)) == llvm.LLVMStructTypeKind) {
                         const data_ptr = llvm.LLVMBuildExtractValue(builder, right_val, 0, "ne_null_data");
                         return llvm.LLVMBuildIsNotNull(builder, data_ptr, "ne_null");
+                    }
+                    {
+                        var eq_class: ?[]const u8 = null;
+                        if (customEqualsClass(bin.left, mod)) |cn| {
+                            eq_class = cn;
+                        } else if (customEqualsClass(bin.right, mod)) |cn| {
+                            eq_class = cn;
+                        }
+                        if (eq_class) |cn| {
+                            const eq_res = try emitCustomEquals(ctx, mod, builder, left_val, right_val, cn);
+                            const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(eq_res), 0, 0);
+                            return llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, eq_res, zero, "custom_ne_tmp");
+                        }
                     }
                     return llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, left_val, right_val, "netmp");
                 },
@@ -3839,6 +3863,94 @@ fn isStrictString(node: *ast.ASTNode) bool {
         .Custom => |n| std.mem.eql(u8, n, "core_String") or std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "std_core_String"),
         else => false,
     };
+}
+
+/// Returns the resolved C name of a custom (non-primitive) type that declares
+/// an `equals` method, or null. Mirrors the C backend's `string_or_custom_type`
+/// + `has_equals` logic: unwraps nullable wrappers, excludes primitives and
+/// String (handled separately), and requires a `{name}_equals` function to be
+/// present in the module.
+fn customEqualsClass(node: *ast.ASTNode, mod: llvm.LLVMModuleRef) ?[]const u8 {
+    const rt = node.resolved_type orelse return null;
+    var base = ts.extractBaseType(rt);
+    var depth: usize = 0;
+    while (depth < 8) : (depth += 1) {
+        switch (base.*) {
+            .Union => |u| {
+                if (u.right.* == .Null) {
+                    base = ts.extractBaseType(u.left);
+                } else {
+                    return null;
+                }
+            },
+            .Pointer => base = ts.extractBaseType(base.Pointer),
+            else => break,
+        }
+    }
+    if (base.* != .Custom) return null;
+    const cn = base.Custom;
+    if (std.mem.eql(u8, cn, "core_String") or std.mem.eql(u8, cn, "String") or std.mem.eql(u8, cn, "std_core_String") or
+        std.mem.eql(u8, cn, "core_Int") or std.mem.eql(u8, cn, "Int") or
+        std.mem.eql(u8, cn, "core_Double") or std.mem.eql(u8, cn, "Double") or
+        std.mem.eql(u8, cn, "core_Bool") or std.mem.eql(u8, cn, "Bool")) return null;
+    const fn_name = std.fmt.allocPrint(std.heap.page_allocator, "{s}_equals", .{cn}) catch return null;
+    defer std.heap.page_allocator.free(fn_name);
+    const fn_z = std.heap.page_allocator.dupeZ(u8, fn_name) catch return null;
+    defer std.heap.page_allocator.free(fn_z);
+    if (llvm.LLVMGetNamedFunction(mod, fn_z.ptr) == null) return null;
+    return cn;
+}
+
+/// Emits the custom-type `==` short-circuit used by the C backend:
+/// `(a == b) || (a != 0 && b != 0 && {class_name}_equals(a, b))`.
+/// Builds control-flow blocks since LLVM has no `||`/`&&` short-circuit op.
+fn emitCustomEquals(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    left_val: llvm.LLVMValueRef,
+    right_val: llvm.LLVMValueRef,
+    class_name: []const u8,
+) anyerror!llvm.LLVMValueRef {
+    const i1_type = llvm.LLVMInt1TypeInContext(ctx);
+    const fn_name = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_equals", .{class_name});
+    defer std.heap.page_allocator.free(fn_name);
+    const fn_name_z = try std.heap.page_allocator.dupeZ(u8, fn_name);
+    defer std.heap.page_allocator.free(fn_name_z);
+    const eq_fn = llvm.LLVMGetNamedFunction(mod, fn_name_z.ptr) orelse return error.EqualsFunctionNotFound;
+
+    const func_val = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const ptr_eq_bb = llvm.LLVMGetInsertBlock(builder);
+    const ptr_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, left_val, right_val, "eq_ptr");
+
+    const guard_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "eq_guard");
+    const call_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "eq_call");
+    const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "eq_merge");
+    _ = llvm.LLVMBuildCondBr(builder, ptr_eq, merge_bb, guard_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, guard_bb);
+    const a_nz = llvm.LLVMBuildIsNotNull(builder, left_val, "eq_a_nz");
+    const b_nz = llvm.LLVMBuildIsNotNull(builder, right_val, "eq_b_nz");
+    const both = llvm.LLVMBuildAnd(builder, a_nz, b_nz, "eq_both_nz");
+    const guard_end = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildCondBr(builder, both, call_bb, merge_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, call_bb);
+    const fat_b = try coerceToContract(ctx, mod, builder, right_val, class_name, "");
+    const eq_fn_type = llvm.LLVMGlobalGetValueType(eq_fn);
+    var eq_args = [_]llvm.LLVMValueRef{ left_val, fat_b };
+    const eq_res = llvm.LLVMBuildCall2(builder, eq_fn_type, eq_fn, &eq_args, 2, "eq_res");
+    const call_end = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+    const phi = llvm.LLVMBuildPhi(builder, i1_type, "eq_phi");
+    const t_val = llvm.LLVMConstInt(i1_type, 1, 0);
+    const f_val = llvm.LLVMConstInt(i1_type, 0, 0);
+    var in_vals = [_]llvm.LLVMValueRef{ t_val, f_val, eq_res };
+    var in_bbs = [_]llvm.LLVMBasicBlockRef{ ptr_eq_bb, guard_end, call_end };
+    llvm.LLVMAddIncoming(phi, &in_vals, &in_bbs, 3);
+    return phi;
 }
 
 /// Maps the element type of an .Array-typed expression to its LLVM load type

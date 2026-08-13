@@ -600,7 +600,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 61.2:** Representação fat pointer: valores tipados como `contract` viram `{ptr data, ptr vtable}`; coerção automática concrete → contract nos pontos de passagem (args, retornos, atribuições, casts).
 - [x] **Task 61.3:** Dispatch de chamada: `x.metodo()` com `x: Contract` = GEP slot na vtable + call indireto com `data` como receiver.
 - [~] **Task 61.4 (parcial — REABRIR):** Smart casts `when (x) is Contrato/Tipo`. As vtables **reais** (61.1) existem, mas o `when (x) is <Contracto>` compara contra **marcadores vazios** `constant {} zeroinitializer` (`@serde_SerdeXxx_SerdeValue_vtable`), não contra as vtables de função reais. Consequência: valor de contract lido de campo (ex. `SerdeField.value`) carrega a vtable real, o `when` compara com o marcador vazio → desce até o branch default ou pendura (`collections_test` teste 12). Alinhar o `when is Contract` às vtables reais.
-- [~] **Task 61.5 (NÃO CONCLUÍDA — reaberta):** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`. **Ainda há 7 `TODO(emitter): SPECIAL CASE`**; os helpers `emitToStringHelper`/`emitHashStringHelper`/`emitStrReplaceHelper` continuam presentes. `String.replace` foi redirecionado a `eiwa_str_replace` (fix AGO/2026) mas continua como special case, não via vtable.
+- [~] **Task 61.5 (NÃO CONCLUÍDA — reaberta):** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`. **Ainda há 6 `TODO(emitter): SPECIAL CASE`**; os helpers `emitToStringHelper`/`emitHashStringHelper`/`emitStrReplaceHelper` continuam presentes. `String.replace` foi redirecionado a `eiwa_str_replace` (fix AGO/2026) mas continua como special case, não via vtable.
 - [ ] **Task 61.6:** Migrar o backend C do modelo `eiwa_find_vtable` (busca linear) para fat pointers, convergindo os dois backends (ou manter C legado sem migração — decidir na execução).
 - [x] **Task 61.7 (parcial):** `eiwac test --backend=llvm <file.ei>` agora funciona via Pass 4 (test runner JIT com `eiwa_test_N` + stub pass para símbolos sem body).
 - [x] **Task 61.8:** Emissão de bodies de stdlib Eiwa (MutableList, MutableMap, MutableSet) no emissor LLVM para que `collections_test.ei` passe com `--backend=llvm`.
@@ -619,18 +619,22 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 ---
 
 ### Phase 64: Remaining LLVM Backend Parity (`failing_llvm` Test Suite) (IN PROGRESS)
-> **Motivação:** Resolver as falhas e segfaults restantes no backend LLVM para os 13 arquivos de teste em `samples/tests/failing_llvm`, alcançando a paridade completa com o backend C.
+> **Motivação:** Resolver as falhas e segfaults restantes no backend LLVM para os 11 arquivos de teste em `samples/tests/failing_llvm`, alcançando a paridade completa com o backend C.
 >
-> **Suítes em `failing_llvm` a corrigir:**
-> - `task_test.ei` & `http_test.ei`: Segfaults em corotinas/recursão no JIT LLVM.
-> - `std_json_parser_test.ei` & `serialization_test.ei`: Type mismatch em chamadas de concatenação e `when (x) is Contract` com vtables vazias.
-> - `generic_methods_test.ei` & `scope_functions_test.ei`: Operandos de tipos mistos em instruções binárias LLVM (`mul/add {ptr, ptr}, i64`).
-> - `money_test.ei`, `id_test.ei`, `log_test.ei`, `env_test.ei`, `lambda_test.ei`, `generics_test.ei`, `std_jsonrpc_test.ei`.
+> **Status medido (AGO 2026, binário `bin/eiwac` recompilado):** os 11 arquivos ainda estão em `failing_llvm` mas o estado real é heterogêneo:
+>
+> - 💥 **Segfaults (6):** `generic_methods_test.ei` (passa 2 testes, segfault no 3º — monomorfização com múltiplos type params), `http_test.ei` (0 pass — chamada HTTP GET), `lambda_test.ei` (0 pass), `scope_functions_test.ei` (0 pass — operandos de tipos mistos `{ptr, ptr}` vs `i64`), `serialization_test.ei` (0 pass), `task_test.ei` (0 pass — `Call parameter type does not match function signature` na corotina).
+> - ⚠️ **Falhas de asserção (não crash) (4):** `std_jsonrpc_test.ei` (0/4), `std_json_parser_test.ei` (2/5), `money_test.ei` (3/5 — operadores matemáticos e `.allocate`), `log_test.ei` (4/5 — lazy lambda). `id_test.ei` corrigido (6/6).
+>
+> **Caveat de medição (importante):** um `bin/eiwac` desatualizado compilado de um checkout diferente (`eiwa-merge`) estava quebrado — o backend C e o include path de `neco/neco_wrapper.h` falhavam em TODOS os arquivos. Após `zig build`, o backend C passa 100% tanto em `passing_llvm` (42) quanto em `failing_llvm` (11). Sempre recompilar antes de medir.
 
-- [ ] **Task 64.1:** Coerção de tipos em operadores aritméticos/métodos genéricos (`generic_methods_test` e `scope_functions_test`).
-- [ ] **Task 64.2:** Resolução de assinaturas e coerção em `String.plus` / concatenação em LLVM IR (`std_json_parser_test`).
-- [ ] **Task 64.3:** Suporte a Corotinas (`task { }`) e I/O no backend LLVM (`task_test` e `http_test`).
-- [ ] **Task 64.4:** Correção dos testes de serialização e lazy lambdas em logs (`serialization_test`, `log_test`, `money_test`, `id_test`).
+- [ ] **Task 64.1:** Segfaults de operandos de tipos mistos em instruções binárias (`scope_functions_test` — `mul/add {ptr, ptr}, i64`) e monomorfização multi-type-param (`generic_methods_test` segfault no 3º teste).
+- [ ] **Task 64.2:** Segfaults de corotinas e I/O no JIT LLVM (`task_test` e `http_test`).
+- [ ] **Task 64.3:** Segfault de lambdas/closures no JIT (`lambda_test` — saída vazia, exit 133).
+- [ ] **Task 64.4:** Segfault de serialização (`serialization_test` — `serdeFields`/fat-pointer de contract).
+- [ ] **Task 64.5:** Falhas de asserção em `std_jsonrpc_test` (0/4), `std_json_parser_test` (2/5), `money_test` (3/5) e `log_test` (4/5). `id_test` corrigido (6/6) na Task 64.7.
+- [x] **Task 64.6:** Mover `env_test.ei` (5/5) e `generics_test.ei` (2/2) — 100% no LLVM — de `failing_llvm` para `passing_llvm` (agora com 42 arquivos; ALL 42 TESTS PASSED nos backends LLVM e C).
+- [x] **Task 64.7:** Corrigir dispatch de `equals` custom no emissor LLVM (`id_test.ei` 6/6): `.eq_eq`/`.bang_eq` em `src/backend/llvm_emitter/expression.zig` desciam para comparação crua de ponteiros. Agora detectam tipo custom não-primitivo com método `equals` (`{name}_equals` presente no módulo) e emitem o short-circuit do backend C `(a == b) || (a != 0 && b != 0 && {name}_equals(a, b))` via blocos + PHI, com o operando direito coerçido a fat pointer (`coerceToContract` com vtable real de `Stringable`). `id_test.ei` movido para `passing_llvm` (43 arquivos); guardrail 42/42 mantido.
 - [ ] **Verify 64:** Mover suítes corrigidas de `samples/tests/failing_llvm` para `samples/tests/passing_llvm` até zerar a pasta de falhas.
 
 ---
