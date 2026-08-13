@@ -90,18 +90,17 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
         if (self.current_class_props) |props| {
             if (props.contains(a.name)) {
-                var is_shadowed = false;
                 var curr: ?*Scope = scope;
                 while (curr) |s| {
-                    if (s.symbols.contains("this")) break;
+                    if (s.symbols.contains("this")) {
+                        a.is_class_property = true;
+                        a.owner_type_c_name = self.current_type_c_name;
+                        break;
+                    }
                     if (s.symbols.contains(a.name)) {
-                        is_shadowed = true;
                         break;
                     }
                     curr = s.parent;
-                }
-                if (!is_shadowed) {
-                    a.is_class_property = true;
                 }
             }
         }
@@ -260,18 +259,17 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         i.is_boxed = vs.is_boxed;
         if (self.current_class_props) |props| {
             if (props.contains(i.name)) {
-                var is_shadowed = false;
                 var curr: ?*Scope = scope;
                 while (curr) |s| {
-                    if (s.symbols.contains("this")) break;
+                    if (s.symbols.contains("this")) {
+                        i.is_class_property = true;
+                        i.owner_type_c_name = self.current_type_c_name;
+                        break;
+                    }
                     if (s.symbols.contains(i.name)) {
-                        is_shadowed = true;
                         break;
                     }
                     curr = s.parent;
-                }
-                if (!is_shadowed) {
-                    i.is_class_property = true;
                 }
             }
         }
@@ -312,15 +310,14 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                 lookup_scope = s.parent;
             }
         }
-
-        return;
+    } else {
+        if (self.alias_map.get(i.name)) |c_name| {
+            t.* = .{ .Custom = c_name };
+            return;
+        }
+        self.reportError(node.line, node.column, "TypeError: Undeclared variable '{s}'.", .{i.name});
+        return error.TypeError;
     }
-    if (self.alias_map.get(i.name)) |c_name| {
-        t.* = .{ .Custom = c_name };
-        return;
-    }
-    self.reportError(node.line, node.column, "TypeError: Undeclared variable '{s}'.", .{i.name});
-    return error.TypeError;
 }
 
 pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {

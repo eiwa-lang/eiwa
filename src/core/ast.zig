@@ -243,6 +243,7 @@ pub const ASTNodeType = union(enum) {
         resolved_c_name: ?[]const u8,
         is_class_property: bool = false,
         is_boxed: bool = false,
+        owner_type_c_name: ?[]const u8 = null,
     },
 
     // Expressions
@@ -283,6 +284,7 @@ pub const ASTNodeType = union(enum) {
         value: *ASTNode,
         is_boxed: bool = false,
         is_class_property: bool = false,
+        owner_type_c_name: ?[]const u8 = null,
     },
     get_expr: struct {
         object: *ASTNode,

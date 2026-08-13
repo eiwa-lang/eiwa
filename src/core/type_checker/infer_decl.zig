@@ -410,6 +410,10 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     self.current_type_c_name = actual_c_name;
     defer self.current_type_c_name = old_type_c_name;
 
+    const old_class_name = self.current_class_name;
+    self.current_class_name = actual_c_name;
+    defer self.current_class_name = old_class_name;
+
     var ctor_scope = Scope.init(self.allocator, scope);
     defer ctor_scope.deinit();
 
@@ -480,6 +484,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 .c_name = m_c_name,
                 .receiver = class_type,
             } };
+            method.resolved_type = fn_type;
             try class_scope.define(m.name, fn_type, false, true);
         }
     }
@@ -922,20 +927,24 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     var param_types = ArrayList(*const EiwaType).init(self.allocator);
     var mangled_name = ArrayList(u8).init(self.allocator);
     const is_method = scope.lookupVariable("this") != null;
+    const old_fn_type_c_name = self.current_type_c_name;
     if (is_method) {
         const this_t = scope.lookupVariable("this").?;
         const base_t = core.extractBaseType(this_t);
         const class_name = if (self.current_class_name) |cname| (self.alias_map.get(cname) orelse cname) else (if (base_t.* == .Custom) base_t.Custom else (if (base_t.* == .Pointer and base_t.Pointer.* == .Custom) base_t.Pointer.Custom else (if (base_t.* == .Int) "core_Int" else (if (base_t.* == .Bool) "core_Bool" else (if (base_t.* == .String) "core_String" else f.name)))));
 
+        self.current_type_c_name = class_name;
         try mangled_name.writer().print("{s}_{s}", .{ class_name, f.name });
     } else if (self.current_class_name) |class_name| {
         const actual_class = self.alias_map.get(class_name) orelse class_name;
+        self.current_type_c_name = actual_class;
         try mangled_name.writer().print("{s}_{s}", .{ actual_class, f.name });
     } else if (self.module_prefix) |prefix| {
         try mangled_name.writer().print("{s}_{s}", .{ prefix, f.name });
     } else {
         try mangled_name.appendSlice(f.name);
     }
+    defer self.current_type_c_name = old_fn_type_c_name;
 
     var is_overloaded = false;
     if (is_method or self.current_class_name != null) {
@@ -1558,12 +1567,14 @@ fn makeMemberCallOrNullFallback(self: *TypeChecker, line: usize, col: usize, obj
 }
 
 fn makeIsTypeCond(self: *TypeChecker, line: usize, col: usize, type_name: []const u8) !*ASTNode {
+    const tr_type = try self.resolveTypeName(type_name, false);
     const tr = try self.allocator.create(ast.ASTTypeRef);
     tr.* = .{
         .name = type_name,
         .generic_args = &.{},
         .is_array = false,
         .is_nullable = false,
+        .resolved_type = tr_type,
     };
     const node = try self.allocator.create(ASTNode);
     node.* = .{
@@ -1739,26 +1750,90 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
 
     var prop_count: usize = 0;
     for (c.primary_constructor) |prop| {
-        if (prop.is_property) prop_count += 1;
+        if (!prop.is_property) continue;
+        if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and (prop.type_ref.resolved_type.?.* == .Function or prop.type_ref.resolved_type.?.* == .Array)) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun") or std.mem.eql(u8, prop.type_ref.name, "NativeArray")) continue;
+        prop_count += 1;
     }
 
+    const param_eq_type = try self.resolveTypeName("Equatable", false);
     var case_then_body: *ASTNode = undefined;
     if (prop_count == 0) {
         case_then_body = try makeBoolLiteral(self, node.line, node.column, true);
     } else {
         var curr_expr: ?*ASTNode = null;
+        const bool_type = try self.resolveTypeName("Bool", false);
+        const c_type = try self.resolveTypeName(c.name, false);
+        const this_ident = try makeIdent(self, node.line, node.column, "this");
+        this_ident.resolved_type = c_type;
+        const other_ident = try makeIdent(self, node.line, node.column, "other");
+        other_ident.resolved_type = param_eq_type;
+        const c_tr = try self.allocator.create(ast.ASTTypeRef);
+        c_tr.* = .{
+            .name = c.name,
+            .generic_args = &.{},
+            .is_array = false,
+            .is_nullable = false,
+            .resolved_type = c_type,
+        };
+        const other_casted = try self.allocator.create(ASTNode);
+        other_casted.* = .{
+            .line = node.line,
+            .column = node.column,
+            .resolved_type = c_type,
+            .expected_type = null,
+            .data = .{
+                .as_expr = .{
+                    .value = other_ident,
+                    .type_ref = c_tr,
+                },
+            },
+        };
         for (c.primary_constructor) |prop| {
             if (!prop.is_property) continue;
             if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and (prop.type_ref.resolved_type.?.* == .Function or prop.type_ref.resolved_type.?.* == .Array)) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun") or std.mem.eql(u8, prop.type_ref.name, "NativeArray")) continue;
 
-            const this_prop = try makeMemberAccess(self, node.line, node.column, "this", prop.name);
-            const other_prop = try makeMemberAccess(self, node.line, node.column, "other", prop.name);
+            var prop_rt = prop.resolved_type;
+            if (prop_rt == null) {
+                prop_rt = self.resolveTypeRef(prop.type_ref) catch null;
+            }
+            const this_prop = try self.allocator.create(ASTNode);
+            this_prop.* = .{
+                .line = node.line,
+                .column = node.column,
+                .resolved_type = prop_rt,
+                .expected_type = null,
+                .data = .{
+                    .get_expr = .{
+                        .object = this_ident,
+                        .name = prop.name,
+                        .is_safe = false,
+                        .resolved_c_name = c.name,
+                    },
+                },
+            };
+            const other_prop = try self.allocator.create(ASTNode);
+            other_prop.* = .{
+                .line = node.line,
+                .column = node.column,
+                .resolved_type = prop_rt,
+                .expected_type = null,
+                .data = .{
+                    .get_expr = .{
+                        .object = other_casted,
+                        .name = prop.name,
+                        .is_safe = false,
+                        .resolved_c_name = c.name,
+                    },
+                },
+            };
             const eq_expr = try makeBinaryOp(self, node.line, node.column, .eq_eq, this_prop, other_prop);
+            eq_expr.resolved_type = bool_type;
 
             if (curr_expr == null) {
                 curr_expr = eq_expr;
             } else {
                 curr_expr = try makeBinaryOp(self, node.line, node.column, .and_and, curr_expr.?, eq_expr);
+                curr_expr.?.resolved_type = bool_type;
             }
         }
         case_then_body = if (curr_expr) |expr| expr else try makeBoolLiteral(self, node.line, node.column, true);
@@ -1785,11 +1860,13 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
     cases[1] = case_else;
 
     const subj = try makeIdent(self, node.line, node.column, "other");
+    subj.resolved_type = param_eq_type;
+    const bool_type = try self.resolveTypeName("Bool", false);
     const when_body = try self.allocator.create(ASTNode);
     when_body.* = .{
         .line = node.line,
         .column = node.column,
-        .resolved_type = null,
+        .resolved_type = bool_type,
         .expected_type = null,
         .data = .{
             .when_expr = .{
@@ -1801,10 +1878,11 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
 
     const param_tr = try self.allocator.create(ast.ASTTypeRef);
     param_tr.* = .{
-        .name = "Stringable",
+        .name = "Equatable",
         .generic_args = &.{},
         .is_array = false,
         .is_nullable = false,
+        .resolved_type = param_eq_type,
     };
 
     const ret_tr = try self.allocator.create(ast.ASTTypeRef);
@@ -1813,6 +1891,7 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
         .generic_args = &.{},
         .is_array = false,
         .is_nullable = false,
+        .resolved_type = bool_type,
     };
 
     const params = try self.allocator.alloc(ast.Param, 1);
@@ -1822,11 +1901,20 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
         .initializer = null,
     };
 
+    const fn_t = try self.allocator.create(EiwaType);
+    fn_t.* = .{
+        .Function = .{
+            .params = try self.allocator.dupe(*const EiwaType, &.{param_eq_type}),
+            .return_type = bool_type,
+            .c_name = try std.fmt.allocPrint(self.allocator, "{s}_equals", .{c.name}),
+        },
+    };
+
     const method_node = try self.allocator.create(ASTNode);
     method_node.* = .{
         .line = node.line,
         .column = node.column,
-        .resolved_type = null,
+        .resolved_type = fn_t,
         .expected_type = null,
         .data = .{
             .fun_decl = .{

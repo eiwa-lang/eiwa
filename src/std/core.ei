@@ -55,7 +55,7 @@ contract Stringable {
 }
 
 contract Equatable {
-    operator fun equals(other: Stringable): Bool
+    operator fun equals(other: Equatable): Bool
 }
 
 contract Hashable {

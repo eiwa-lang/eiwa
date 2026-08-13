@@ -162,45 +162,83 @@ pub fn main(init: std.process.Init) !void {
         if (positionals.items.len > 0) {
             search_path = positionals.items[0];
         }
-        if (std.mem.endsWith(u8, search_path, ".ei")) {
-            //TODO: isso foi modificado porque deu esse erro:
-            // ➜ ./bin/eiwac test samples/tests/oop_test.ei --backend=c
-            // Error: Failed to read module file 'samples/tests/samples/oop.ei': error.FileNotFound
-            //type_checker.module_root = std.fs.path.dirname(search_path) orelse ".";
-            type_checker.module_root = ".";
-            const dot_path = try toRootDotPath(allocator, search_path);
-            defer allocator.free(dot_path);
-            try source_alloc.print("import {{}} from \"{s}\"\n", .{dot_path});
-        } else {
+
+        if (!std.mem.endsWith(u8, search_path, ".ei")) {
             var dir = std.Io.Dir.cwd().openDir(io, search_path, .{ .iterate = true }) catch |err| {
                 std.debug.print("Failed to open test path '{s}': {}\n", .{ search_path, err });
-                return;
+                std.process.exit(1);
             };
             defer dir.close(io);
-            type_checker.module_root = ".";
+
             var walker = try dir.walk(allocator);
             defer walker.deinit();
 
+            var test_files = ArrayList([]const u8).init(allocator);
+            defer test_files.deinit();
+
             while (try walker.next(io)) |entry| {
-                if (entry.kind == .file) {
-                    if (std.mem.endsWith(u8, entry.basename, "_test.ei")) {
-                        const full_rel_path = try std.fs.path.join(allocator, &[_][]const u8{ search_path, entry.path });
-                        defer allocator.free(full_rel_path);
-                        var rel_path: []const u8 = full_rel_path;
-                        if (std.mem.startsWith(u8, rel_path, "./")) {
-                            rel_path = rel_path[2..];
-                        }
-                        const dot_path = try toRootDotPath(allocator, rel_path);
-                        defer allocator.free(dot_path);
-                        try source_alloc.print("import {{}} from \"{s}\"\n", .{dot_path});
-                    }
+                if (entry.kind == .file and std.mem.endsWith(u8, entry.basename, "_test.ei")) {
+                    const full_path = try std.fs.path.join(allocator, &[_][]const u8{ search_path, entry.path });
+                    try test_files.append(full_path);
                 }
             }
+
+            if (test_files.items.len == 0) {
+                std.debug.print("No tests found in '{s}'.\n", .{search_path});
+                std.process.exit(0);
+            }
+
+            const CTimeSpec = extern struct {
+                tv_sec: i64,
+                tv_nsec: c_long,
+            };
+            const c_clock = struct {
+                extern fn clock_gettime(clk_id: c_int, tp: *CTimeSpec) c_int;
+            };
+
+            var total_passed: usize = 0;
+            var total_failed: usize = 0;
+
+            var start_ts: CTimeSpec = undefined;
+            _ = c_clock.clock_gettime(0, &start_ts);
+
+            const backend_flag: []const u8 = if (backend_kind == .llvm) "--backend=llvm" else "--backend=c";
+
+            for (test_files.items) |tfile| {
+                var child_args = ArrayList([]const u8).init(allocator);
+                defer child_args.deinit();
+                try child_args.appendSlice(&[_][]const u8{ args[0], "test", backend_flag, tfile });
+                if (is_release) try child_args.append("--release");
+
+                var child = try std.process.spawn(io, .{ .argv = child_args.items });
+                const term = try child.wait(io);
+                if (term == .exited and term.exited == 0) {
+                    total_passed += 1;
+                } else {
+                    std.debug.print("FAIL: {s}\n", .{tfile});
+                    total_failed += 1;
+                }
+            }
+
+            var end_ts: CTimeSpec = undefined;
+            _ = c_clock.clock_gettime(0, &end_ts);
+            const elapsed_sec = @as(f64, @floatFromInt(end_ts.tv_sec - start_ts.tv_sec)) +
+                @as(f64, @floatFromInt(end_ts.tv_nsec - start_ts.tv_nsec)) / 1_000_000_000.0;
+            const backend_name: []const u8 = if (backend_kind == .llvm) "LLVM" else "C";
+
+            if (total_failed > 0) {
+                std.debug.print("\n{s} Test Suite: {d} PASSED, {d} FAILED in {d:.2}s\n", .{ backend_name, total_passed, total_failed, elapsed_sec });
+                std.process.exit(1);
+            } else {
+                std.debug.print("\n{s} Test Suite: ALL {d} TESTS PASSED in {d:.2}s!\n", .{ backend_name, total_passed, elapsed_sec });
+                std.process.exit(0);
+            }
         }
-        if (source_alloc.items.len == 0) {
-            std.debug.print("No tests found.\n", .{});
-            return;
-        }
+
+        type_checker.module_root = ".";
+        const dot_path = try toRootDotPath(allocator, search_path);
+        defer allocator.free(dot_path);
+        try source_alloc.print("import {{}} from \"{s}\"\n", .{dot_path});
     } else {
         if (positionals.items.len == 0) {
             std.debug.print("Error: Missing file argument.\n", .{});
@@ -404,8 +442,8 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("Error: The Eiwa compiler was built without LLVM support or LLVM 21+ was not found on your system.\n", .{});
             std.process.exit(1);
         }
-        var emitter = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
-        defer emitter.deinit();
+        const emitter = try allocator.create(llvm_emitter.LLVMEmitter);
+        emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
         emitter.is_test_mode = is_test;
         emitter.contracts_ast = &global_contracts_ast;
 
@@ -421,7 +459,8 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
         } else {
             const exit_code = try emitter.executeJIT();
-            std.process.exit(@intCast(exit_code));
+            const code: u8 = if (exit_code < 0) 1 else @intCast(@min(exit_code, 255));
+            std.process.exit(code);
         }
         return;
     }

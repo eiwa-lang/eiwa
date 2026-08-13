@@ -91,7 +91,13 @@ This document tracks the historical progress, current status, and future roadmap
 - [x] **Task 19.3:** Map Exceptions and non-local unwinding in the C Transpiler via `<setjmp.h>` (setjmp/longjmp).
 
 ### Phase 20: LLVM Native Emitter & Release Pipeline (IN PROGRESS — PARITY GAPS)
-> **Nota de paridade (Ago 2026, branch `feat/llvm-backend-parity`):** a Task 20.12 (promoção do LLVM a padrão) está **bloqueada** — o emissor ainda não tem paridade com o backend C. Gaps encontrados e corrigidos: `hashCode` de primitivos, builtins de `NativeArray` (`.length`/`.push`/`.get`/`.set`), `String.replace`, comparadores de String via `strcmp` (`==`/`!=`), literais de array com wrap em `List<T>`, `for`-in, e terminators de control-flow (if/while/for/throw que deixavam basic blocks sem terminator ao aninhar — `LLVMVerifyModule` falhava ou o JIT travava). Correção estrutural recente: chamadas de função com retorno `void` não recebem mais nome SSA (nome vazio `""`, pois `LLVMBuildCall2` dereferencia o name — `null` crashava), e `main` void é invocado pelo JIT via a assinatura correta (antes, o retorno `void` era lido como `i32` → exit code lixo). Funções cujo corpo ainda não é suportado agora emitem um **stub** (retorno default) em vez de declaration sem corpo, que quebrava o linking JIT/AOT com `undefined symbol`. Gap estrutural remanescente: **dynamic dispatch de contratos** (ex.: `serdeFields()` de `Serializable`) — o emissor LLVM não tem type descriptors/vtables, apenas special cases. Solução aprovada: **Phase 61 (prioritária)**. Todos os special cases estão marcados com `TODO(emitter): SPECIAL CASE` para revisão antes da promoção.
+> **Nota de paridade (Ago 2026, branch `feat/llvm-backend-parity`):** a Task 20.12 (promoção do LLVM a padrão) está **bloqueada** — o emissor ainda não tem paridade total com o backend C.
+> **Avanços estruturais recentes (Fev/Ago 2026):**
+> 1. **Resolução Estática de Propriedades de Classe na AST (`owner_type_c_name`)**: Adicionamos o campo `owner_type_c_name` aos nós `identifier` e `assignment` da AST (`src/core/ast.zig`) e sua anotação estática no Type Checker (`src/core/type_checker/infer_expr.zig`). Isso eliminou heurísticas frágeis de varredura/adivinhação de structs via HashMap no backend LLVM (`statement.zig` e `expression.zig`), garantindo calculo exato de offsets `GEP2` e prevenindo colisões com structs da stdlib (ex: `json_JsonParser`).
+> 2. **Gaps de Paridade Corrigidos:** `hashCode` de primitivos, builtins de `NativeArray` (`.length`/`.push`/`.get`/`.set`), `String.replace`, comparadores de String via `strcmp` (`==`/`!=`), literais de array com wrap em `List<T>`, `for`-in, e terminators de control-flow.
+> 3. **Erros de null-termination de Enums:** Corrigidos com `dupeZ` no registro de nomes de enum globals em LLVM IR.
+> 4. **Isolamento de Suíte de Teste com `setjmp`**: Suíte de teste LLVM atualizada para envolver cada bloco de teste em quadros de exceção `setjmp`, permitindo isolar falhas e relatar resultados exatos sem abortos silenciosos.
+> Gap estrutural remanescente: **dynamic dispatch de contratos** (Phase 61 prioritária). Todos os special cases estão marcados com `TODO(emitter): SPECIAL CASE` para revisão.
 Substituição completa do backend C por um emissor nativo LLVM IR construído 100% em memória via LLVM C-API 21 (`llvm-c/Core.h`), eliminando I/O de disco e subprocessos shell.
 - [x] **Task 20.1:** Adicionar suporte às flags `--backend=c|llvm` e `--release` na CLI (`src/main.zig`), com detecção dinâmica do LLVM 21 em `build.zig`.
 - [x] **Task 20.2:** Construir a infraestrutura básica do emissor nativo LLVM (`src/backend/llvm_emitter/`) traduzindo a AST Resolvida (primitivos, variáveis, condicionais, loops `while` e funções) diretamente em estruturas LLVM em memória.
@@ -593,12 +599,39 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 61.1:** Emitir vtables constantes globais por par (tipo concreto, contrato) no emissor LLVM (`LLVMConstStruct` de ponteiros de função, ordem = ordem dos métodos do contrato).
 - [x] **Task 61.2:** Representação fat pointer: valores tipados como `contract` viram `{ptr data, ptr vtable}`; coerção automática concrete → contract nos pontos de passagem (args, retornos, atribuições, casts).
 - [x] **Task 61.3:** Dispatch de chamada: `x.metodo()` com `x: Contract` = GEP slot na vtable + call indireto com `data` como receiver.
-- [x] **Task 61.4:** Smart casts `when (x) is Contrato/Tipo`: troca de vtable do par (contract→contract) e unwrapping (contract→concreto).
-- [x] **Task 61.5:** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`.
+- [~] **Task 61.4 (parcial — REABRIR):** Smart casts `when (x) is Contrato/Tipo`. As vtables **reais** (61.1) existem, mas o `when (x) is <Contracto>` compara contra **marcadores vazios** `constant {} zeroinitializer` (`@serde_SerdeXxx_SerdeValue_vtable`), não contra as vtables de função reais. Consequência: valor de contract lido de campo (ex. `SerdeField.value`) carrega a vtable real, o `when` compara com o marcador vazio → desce até o branch default ou pendura (`collections_test` teste 12). Alinhar o `when is Contract` às vtables reais.
+- [~] **Task 61.5 (NÃO CONCLUÍDA — reaberta):** Remover special cases de `toString`/`hashCode`/`replace` no LLVM emitter, roteando via vtable real de `Stringable`/`Hashable`. **Ainda há 7 `TODO(emitter): SPECIAL CASE`**; os helpers `emitToStringHelper`/`emitHashStringHelper`/`emitStrReplaceHelper` continuam presentes. `String.replace` foi redirecionado a `eiwa_str_replace` (fix AGO/2026) mas continua como special case, não via vtable.
 - [ ] **Task 61.6:** Migrar o backend C do modelo `eiwa_find_vtable` (busca linear) para fat pointers, convergindo os dois backends (ou manter C legado sem migração — decidir na execução).
 - [x] **Task 61.7 (parcial):** `eiwac test --backend=llvm <file.ei>` agora funciona via Pass 4 (test runner JIT com `eiwa_test_N` + stub pass para símbolos sem body).
 - [x] **Task 61.8:** Emissão de bodies de stdlib Eiwa (MutableList, MutableMap, MutableSet) no emissor LLVM para que `collections_test.ei` passe com `--backend=llvm`.
-- [x] **Verify:** `samples/tests/passing_llvm/composition_test.ei`, `samples/tests/passing_llvm/collections_test.ei` e toda a suíte nativa de 23 arquivos passam com `--backend=llvm`; chamadas polimórficas de contrato funcionam via Vtables e Fat Pointers.
+- [~] **Verify (NÃO ATENDIDO — reaberto):** `collections_test.ei` passa apenas os testes 1–11; o **teste 12 (serialize Map → JSON)** ainda falha/pendura. `composition_test` e a suíte de 23 arquivos têm falhas adicionais (ex. "Incorrect number of arguments passed to called function"). Não atende o critério de promoção.
+
+---
+
+### Phase 63: 100% LLVM Backend Parity (`passing_llvm` Test Suite) (COMPLETED — AUG 2026)
+
+- [x] **Task 63.1:** Dynamic Vtable Method Dispatch Param Coercion (`expression.zig`): `call_expr` contract dynamic dispatch coerces Fat Pointer arguments (`LLVMStructTypeKind`), resolving bitcast parameter mismatches on indirect LLVM function calls.
+- [x] **Task 63.2:** `when (x) is TargetType` Vtable Identity Search (`expression.zig`): scan global vtables by prefix fallback when static contract name is empty, enabling Fat Pointer dynamic `when` type checking.
+- [x] **Task 63.3:** Unescape String Literals in LLVM Emitter (`expression.zig`): handle `\n`, `\t`, `\r`, `\b`, `\\`, `\"`, `\'` backslash escapes.
+- [x] **Task 63.4:** Synthesized `equals()` Parameter and Type Checker AST Wiring (`infer_decl.zig`): resolved `equals` parameter and AST subject type handling.
+- [x] **Verify 63:** `./bin/eiwac test --backend=llvm samples/tests/passing_llvm` achieves **100% PASS (0 FAIL)** across all test cases, while C backend retains 100% PASS on 150+ tests.
+
+---
+
+### Phase 64: Remaining LLVM Backend Parity (`failing_llvm` Test Suite) (IN PROGRESS)
+> **Motivação:** Resolver as falhas e segfaults restantes no backend LLVM para os 13 arquivos de teste em `samples/tests/failing_llvm`, alcançando a paridade completa com o backend C.
+>
+> **Suítes em `failing_llvm` a corrigir:**
+> - `task_test.ei` & `http_test.ei`: Segfaults em corotinas/recursão no JIT LLVM.
+> - `std_json_parser_test.ei` & `serialization_test.ei`: Type mismatch em chamadas de concatenação e `when (x) is Contract` com vtables vazias.
+> - `generic_methods_test.ei` & `scope_functions_test.ei`: Operandos de tipos mistos em instruções binárias LLVM (`mul/add {ptr, ptr}, i64`).
+> - `money_test.ei`, `id_test.ei`, `log_test.ei`, `env_test.ei`, `lambda_test.ei`, `generics_test.ei`, `std_jsonrpc_test.ei`.
+
+- [ ] **Task 64.1:** Coerção de tipos em operadores aritméticos/métodos genéricos (`generic_methods_test` e `scope_functions_test`).
+- [ ] **Task 64.2:** Resolução de assinaturas e coerção em `String.plus` / concatenação em LLVM IR (`std_json_parser_test`).
+- [ ] **Task 64.3:** Suporte a Corotinas (`task { }`) e I/O no backend LLVM (`task_test` e `http_test`).
+- [ ] **Task 64.4:** Correção dos testes de serialização e lazy lambdas em logs (`serialization_test`, `log_test`, `money_test`, `id_test`).
+- [ ] **Verify 64:** Mover suítes corrigidas de `samples/tests/failing_llvm` para `samples/tests/passing_llvm` até zerar a pasta de falhas.
 
 ---
 
@@ -610,6 +643,8 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 ---
 
 ## 🛠️ Historic Bugfixes & Tools
+* **Unified Process-Isolated Test Runner (Aug 13, 2026):** Refactored `eiwac test <directory>` in `src/main.zig` to use process-isolated child process spawning (`std.process.spawn`) across **both** C and LLVM backends. Eliminates fragile single-process synthetic module bundling (`import {}`), preventing segfaults/aborts in individual test files from halting execution of subsequent tests in the directory, and ensuring clean memory and GC state per test file.
+* **LLVM `String.toString()` Stub Null-Hang (Aug 10, 2026):** `core_String_toString` era emitido como stub retornando `null` (sem corpo válido), propagando `null` pela serialização (`serdeFields` → `SerdeString` → `writeJsonValue` → `escapeJsonString` → `eiwa_str_replace(null)` → `strlen(null)` → loop). O `collections_test.ei` pendurava no teste 12. Intercepta `.toString()` sobre receiver `String` retornando `this` (identidade) antes do dispatch genérico no emissor LLVM; remove o bloco `replace` tardio que ficou morto (Phase 62). Também a partir daqui os logs de diagnóstico do emissor LLVM (`LLVM Debug:`/per-function/stub-fallback e o print do verificador `LLVMVerifyFunction`) ficam atrás da env `EIWA_LLVM_VERBOSE=1`, deixando builds normais limpos — mensagens de falha dura (JIT/Verify/Target) permanecem sempre visíveis.
 * **Concurrency Module Extraction (July 26, 2026):** Moved all concurrency infrastructure (`lib Neco`, `Taskable`, `TaskableNeco`, `Task<T>`, `task()`) from `std.core` to the new `std.coroutines` module, keeping `Awaitable<T>` in core. Non-destructured imports now also re-export `generic_functions_ast` of local symbols (ADR 37).
 * **Trailing Lambda with Explicit Type Args (July 26, 2026):** Parser accepted trailing lambda only after `(...)`; `task<Int> { }` now creates the `call_expr` with `type_args` directly when `{` follows `>`.
 * **C Reserved Word Escaping (July 26, 2026):** User identifiers colliding with C keywords (`var bool = false`) broke the generated C. New `cIdent()` helper in the transpiler prefixes reserved names with `eiwa_` across var decls, identifiers, assignments, function params and lambda captures (ADR 38).

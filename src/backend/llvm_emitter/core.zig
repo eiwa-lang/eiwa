@@ -17,6 +17,11 @@ pub const StructInfo = struct {
 };
 
 /// In-Memory LLVM IR Emitter and Execution Driver.
+/// When true, the LLVM emitter prints diagnostic logs (per-function emit
+/// errors, PropertyNotFound debugging, stub fallbacks). Defaults to false so
+/// normal builds stay quiet; enable with `EIWA_LLVM_VERBOSE=1`.
+pub var verbose: bool = false;
+
 pub const LLVMEmitter = struct {
     allocator: std.mem.Allocator,
     context: llvm.LLVMContextRef,
@@ -34,6 +39,9 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMInitializeNativeTarget();
         _ = llvm.LLVMInitializeNativeAsmPrinter();
         _ = llvm.LLVMInitializeNativeAsmParser();
+
+        const verbose_z = "EIWA_LLVM_VERBOSE";
+        if (std.c.getenv(verbose_z)) |v| verbose = std.mem.eql(u8, std.mem.span(v), "1");
 
         const context = llvm.LLVMContextCreate();
         const mod_name_c = try allocator.dupeZ(u8, module_name);
@@ -65,8 +73,8 @@ pub const LLVMEmitter = struct {
         if (self.module) |m| {
             llvm.LLVMDisposeModule(m);
             self.module = null;
+            llvm.LLVMContextDispose(self.context);
         }
-        llvm.LLVMContextDispose(self.context);
     }
 
     /// Emits LLVM IR for top-level functions, expressions, and statements.
@@ -82,6 +90,24 @@ pub const LLVMEmitter = struct {
         const gc_type = llvm.LLVMFunctionType(ptr_type, &gc_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "GC_malloc", gc_type);
         _ = llvm.LLVMAddFunction(mod, "malloc", gc_type);
+
+        // `GC_MALLOC` (all-caps) is referenced by FFI `@Alias("GC_MALLOC")` code
+        // (e.g. std.random's NativeMemory.allocate / randomBytes). MCJIT cannot
+        // resolve it from the host binary, and the stub pass would otherwise
+        // replace it with `ret null`, crashing any program that allocates via
+        // the FFI. Give it a real body that forwards to host `malloc` (the same
+        // malloc-first strategy used everywhere else in the emitter).
+        {
+            const gc_malloc_ffi = llvm.LLVMAddFunction(mod, "GC_MALLOC", gc_type);
+            const entry_bb = llvm.LLVMAppendBasicBlockInContext(self.context, gc_malloc_ffi, "entry");
+            llvm.LLVMPositionBuilderAtEnd(self.builder, entry_bb);
+            const n_param = llvm.LLVMGetParam(gc_malloc_ffi, 0);
+            const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+            const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+            var margs = [_]llvm.LLVMValueRef{n_param};
+            const alloc = llvm.LLVMBuildCall2(self.builder, malloc_type, malloc_fn, &margs, 1, "gc_alloc");
+            _ = llvm.LLVMBuildRet(self.builder, alloc);
+        }
 
         // Declare printf and sprintf prototypes
         const i32_type = llvm.LLVMInt32TypeInContext(self.context);
@@ -99,13 +125,16 @@ pub const LLVMEmitter = struct {
 
         // Exception-handling runtime (setjmp/longjmp model, mirrors eiwa_runtime.h)
         const void_type = llvm.LLVMVoidTypeInContext(self.context);
+        const void_fn_type = llvm.LLVMFunctionType(void_type, null, 0, 0);
+        _ = llvm.LLVMAddFunction(mod, "GC_init", void_fn_type);
+
         var setjmp_params = [_]llvm.LLVMTypeRef{ptr_type};
         const setjmp_type = llvm.LLVMFunctionType(i32_type, &setjmp_params, 1, 0);
-        _ = llvm.LLVMAddFunction(mod, "setjmp", setjmp_type);
+        _ = llvm.LLVMAddFunction(mod, "_setjmp", setjmp_type);
 
         var longjmp_params = [_]llvm.LLVMTypeRef{ ptr_type, i32_type };
         const longjmp_type = llvm.LLVMFunctionType(void_type, &longjmp_params, 2, 0);
-        _ = llvm.LLVMAddFunction(mod, "longjmp", longjmp_type);
+        _ = llvm.LLVMAddFunction(mod, "_longjmp", longjmp_type);
 
         var exit_params = [_]llvm.LLVMTypeRef{i32_type};
         const exit_type = llvm.LLVMFunctionType(void_type, &exit_params, 1, 0);
@@ -122,8 +151,9 @@ pub const LLVMEmitter = struct {
         // Exception stack + active exception globals.
         const exc_stack_global = llvm.LLVMAddGlobal(mod, ptr_type, "eiwa_exception_stack");
         llvm.LLVMSetInitializer(exc_stack_global, llvm.LLVMConstNull(ptr_type));
-        const active_exc_global = llvm.LLVMAddGlobal(mod, ptr_type, "eiwa_active_exception");
-        llvm.LLVMSetInitializer(active_exc_global, llvm.LLVMConstNull(ptr_type));
+        const fat_type = types_mapping.getFatPointerType(self.context);
+        const active_exc_global = llvm.LLVMAddGlobal(mod, fat_type, "eiwa_active_exception");
+        llvm.LLVMSetInitializer(active_exc_global, llvm.LLVMConstNull(fat_type));
 
         // struct EiwaExceptionFrame { jmp_buf buf; EiwaExceptionFrame* next; }
         // jmp_buf is modeled as a 512-byte buffer ([64 x i64]) to be safe across platforms.
@@ -217,7 +247,9 @@ pub const LLVMEmitter = struct {
                     if (stmt.data.type_decl.generic_params.len > 0) continue;
                     for (stmt.data.type_decl.methods) |m_node| {
                         if (m_node.data != .fun_decl) continue;
-                        try self.declareFunction(mod, m_node, false);
+                        const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
+                        const m_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
+                        try self.declareFunctionNamed(mod, m_node, m_c_name);
                     }
                 } else if (stmt.data == .object_decl) {
                     for (stmt.data.object_decl.members) |member| {
@@ -345,10 +377,10 @@ pub const LLVMEmitter = struct {
                             break;
                         }
                     } else if (stmt.data == .type_decl) {
-                        if (stmt.data.type_decl.generic_params.len > 0) continue;
+                        const is_template = stmt.data.type_decl.generic_params.len > 0 and (stmt.data.type_decl.methods.len == 0 or stmt.data.type_decl.methods[0].data.fun_decl.resolved_c_name == null);
+                        if (is_template) continue;
                         for (stmt.data.type_decl.methods) |m_node| {
                             if (m_node.data != .fun_decl) continue;
-                            if (m_node.data.fun_decl.generic_params.len > 0) continue;
                             const name = m_node.data.fun_decl.resolved_c_name orelse m_node.data.fun_decl.name;
                             if (std.mem.eql(u8, name, fname)) {
                                 try self.collectCallees(m_node, &reachable, &worklist);
@@ -379,18 +411,7 @@ pub const LLVMEmitter = struct {
                     const t = stmt.data.type_decl;
                     if (t.generic_params.len > 0) continue;
                     const type_c_name = t.resolved_c_name orelse t.name;
-                    var type_is_reachable = reachable.contains(type_c_name);
-                    if (!type_is_reachable) {
-                        var rit = reachable.iterator();
-                        while (rit.next()) |r_entry| {
-                            const r_name = r_entry.key_ptr.*;
-                            if (std.mem.startsWith(u8, r_name, type_c_name) or std.mem.indexOf(u8, r_name, type_c_name) != null) {
-                                type_is_reachable = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (!type_is_reachable) continue;
+
 
                     for (t.contracts) |contract_src| {
                         var contract_node = if (self.contracts_ast) |ca| ca.get(contract_src) else null;
@@ -418,13 +439,12 @@ pub const LLVMEmitter = struct {
                             var fit = self.functions.iterator();
                             while (fit.next()) |entry| {
                                 const fk = entry.key_ptr.*;
-                                if (std.mem.eql(u8, fk, target_prefix) or std.mem.startsWith(u8, fk, target_prefix)) {
+                                if (std.mem.eql(u8, fk, target_prefix) or std.mem.startsWith(u8, fk, target_prefix) or std.mem.endsWith(u8, fk, target_prefix)) {
                                     impl_fn = entry.value_ptr.*;
                                     try self.markReachable(fk, &reachable, &worklist);
                                     break;
                                 }
                             }
-
                             if (impl_fn) |fn_val| {
                                 try vtable_funcs.append(fn_val);
                             } else {
@@ -472,7 +492,8 @@ pub const LLVMEmitter = struct {
                     // Generic templates are never emitted directly; only
                     // monomorphized instances (which have generic_params empty)
                     // produce code. Mirrors the C transpiler.
-                    if (stmt.data.type_decl.generic_params.len > 0) continue;
+                    const is_template = stmt.data.type_decl.generic_params.len > 0 and (stmt.data.type_decl.methods.len == 0 or stmt.data.type_decl.methods[0].data.fun_decl.resolved_c_name == null);
+                    if (is_template) continue;
                     // TODO(emitter): Primitive/String methods (core_String,
                     // core_Int, core_Bool, core_Double) are skipped and handled
                     // by inline emitter special-cases (eiwa_to_string, String
@@ -501,7 +522,7 @@ pub const LLVMEmitter = struct {
                     for (stmt.data.type_decl.methods) |m_node| {
                         if (m_node.data != .fun_decl) continue;
                         if (m_node.data.fun_decl.generic_params.len > 0) continue;
-                        const fname = m_node.data.fun_decl.resolved_c_name orelse m_node.data.fun_decl.name;
+                        const fname = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
                         if (!reachable.contains(fname)) continue;
                         // TODO(emitter): Method bodies degrade to skip-with-
                         // warning even in the root module because monomorphized
@@ -513,7 +534,7 @@ pub const LLVMEmitter = struct {
                         // actually called at runtime, the JIT/linker will fail
                         // on the bodiless declaration. Remove this tolerance
                         // once Phase 61 lands and parity is reached.
-                        self.emitFunctionBodyOrStub(mod, m_node, fname, false);
+                        self.emitFunctionBodyOrStub(mod, m_node, fname, true);
                     }
                 } else if (stmt.data == .object_decl) {
                     for (stmt.data.object_decl.members) |member| {
@@ -621,10 +642,54 @@ pub const LLVMEmitter = struct {
                 const puts_call_type = llvm.LLVMGlobalGetValueType(puts_fn);
                 const fflush_fn_opt = llvm.LLVMGetNamedFunction(mod, "fflush");
 
+                const fflush_ft_opt = if (fflush_fn_opt) |ff| llvm.LLVMGlobalGetValueType(ff) else null;
+                const ptr_type_rt = llvm.LLVMPointerTypeInContext(self.context, 0);
+                const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
+                const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
+                const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
+                const setjmp_func = (llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp")) orelse return error.ExceptionRuntimeMissing;
+                const sj_type = llvm.LLVMGlobalGetValueType(setjmp_func);
+
+                // Failed-test counter returned as the process exit code, so the
+                // test run signals failure without dying on the first throw.
+                const failed_var = llvm.LLVMBuildAlloca(self.builder, i32_type, "test_failed");
+                _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i32_type, 0, 0), failed_var);
+
                 for (test_funcs.items, 0..) |test_fn, i| {
                     const test_fn_type_call = llvm.LLVMGlobalGetValueType(test_fn);
-                    _ = llvm.LLVMBuildCall2(self.builder, test_fn_type_call, test_fn, null, 0, "");
 
+                    // Push a fresh exception frame and setjmp around the test so
+                    // a thrown exception (e.g. failed `assert`) is caught and
+                    // reported as [FAIL] instead of exiting the process silently.
+                    const frame_ptr = llvm.LLVMBuildAlloca(self.builder, frame_type, "exc_frame");
+                    llvm.LLVMSetAlignment(frame_ptr, 16);
+
+                    const cur_stack = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, stack_global, "run_cur_stack");
+                    const next_gep = llvm.LLVMBuildStructGEP2(self.builder, frame_type, frame_ptr, 1, "run_frame_next");
+                    _ = llvm.LLVMBuildStore(self.builder, cur_stack, next_gep);
+                    _ = llvm.LLVMBuildStore(self.builder, frame_ptr, stack_global);
+
+                    const buf_gep = llvm.LLVMBuildStructGEP2(self.builder, frame_type, frame_ptr, 0, "run_frame_buf");
+                    const buf_ptr = llvm.LLVMBuildBitCast(self.builder, buf_gep, ptr_type_rt, "run_fbuf");
+                    var sj_args = [_]llvm.LLVMValueRef{buf_ptr};
+                    const sj_ret = llvm.LLVMBuildCall2(self.builder, sj_type, setjmp_func, &sj_args, 1, "run_setjmp");
+                    const zero_i32 = llvm.LLVMConstInt(i32_type, 0, 0);
+                    const is_try = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, sj_ret, zero_i32, "run_is_try");
+
+                    const try_bb = llvm.LLVMAppendBasicBlockInContext(self.context, main_fn, "run.try");
+                    const catch_bb = llvm.LLVMAppendBasicBlockInContext(self.context, main_fn, "run.fail");
+                    const after_bb = llvm.LLVMAppendBasicBlockInContext(self.context, main_fn, "run.after");
+                    _ = llvm.LLVMBuildCondBr(self.builder, is_try, try_bb, catch_bb);
+
+                    // try path: run test, pop frame, print [PASS].
+                    llvm.LLVMPositionBuilderAtEnd(self.builder, try_bb);
+                    _ = llvm.LLVMBuildCall2(self.builder, test_fn_type_call, test_fn, null, 0, "");
+                    {
+                        const st = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, stack_global, "run_stack_pop");
+                        const ng = llvm.LLVMBuildStructGEP2(self.builder, frame_type, st, 1, "run_next_pop");
+                        const nv = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, ng, "run_next_val");
+                        _ = llvm.LLVMBuildStore(self.builder, nv, stack_global);
+                    }
                     const pass_fmt_s = try std.fmt.allocPrint(self.allocator, "[PASS] {s}", .{test_names_list.items[i]});
                     defer self.allocator.free(pass_fmt_s);
                     const pass_fmt = try self.allocator.dupeZ(u8, pass_fmt_s);
@@ -632,14 +697,52 @@ pub const LLVMEmitter = struct {
                     const pass_str = llvm.LLVMBuildGlobalStringPtr(self.builder, pass_fmt.ptr, "pass_msg");
                     var pass_args = [_]llvm.LLVMValueRef{pass_str};
                     _ = llvm.LLVMBuildCall2(self.builder, puts_call_type, puts_fn, &pass_args, 1, "");
-                    if (fflush_fn_opt) |fflush_fn| {
-                        const fflush_ft = llvm.LLVMGlobalGetValueType(fflush_fn);
-                        var null_arg = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(self.context, 0))};
-                        _ = llvm.LLVMBuildCall2(self.builder, fflush_ft, fflush_fn, &null_arg, 1, "");
+                    if (fflush_fn_opt != null) {
+                        var null_arg = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(ptr_type_rt)};
+                        _ = llvm.LLVMBuildCall2(self.builder, fflush_ft_opt.?, fflush_fn_opt.?, &null_arg, 1, "");
                     }
+                    if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(self.builder)) == null) {
+                        _ = llvm.LLVMBuildBr(self.builder, after_bb);
+                    }
+
+                    // catch path: pop frame, clear active exception, count failure,
+                    // print [FAIL]. Do NOT rethrow or exit — let the harness move on.
+                    llvm.LLVMPositionBuilderAtEnd(self.builder, catch_bb);
+                    {
+                        const st = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, stack_global, "run_stack_pop2");
+                        const ng = llvm.LLVMBuildStructGEP2(self.builder, frame_type, st, 1, "run_next_pop2");
+                        const nv = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, ng, "run_next_val2");
+                        _ = llvm.LLVMBuildStore(self.builder, nv, stack_global);
+                    }
+                    const fat_type_rt = types_mapping.getFatPointerType(self.context);
+                    _ = llvm.LLVMBuildLoad2(self.builder, fat_type_rt, active_global, "exc_obj");
+                    _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstNull(fat_type_rt), active_global);
+                    const failed_prev = llvm.LLVMBuildLoad2(self.builder, i32_type, failed_var, "failed_prev");
+                    const failed_inc = llvm.LLVMBuildAdd(self.builder, failed_prev, llvm.LLVMConstInt(i32_type, 1, 0), "failed_inc");
+                    _ = llvm.LLVMBuildStore(self.builder, failed_inc, failed_var);
+                    // Print `[FAIL] {name}: {message}`. The message is read from
+                    // field 0 of the thrown object: Eiwa exceptions are
+                    // `type X(val text: String)` → `{ ptr }`, and String is a
+                    const fail_fmt_s = try std.fmt.allocPrint(self.allocator, "*[FAIL] {s}: Assertion failed", .{test_names_list.items[i]});
+                    defer self.allocator.free(fail_fmt_s);
+                    const fail_fmt = try self.allocator.dupeZ(u8, fail_fmt_s);
+                    defer self.allocator.free(fail_fmt);
+                    const fail_str = llvm.LLVMBuildGlobalStringPtr(self.builder, fail_fmt.ptr, "fail_msg");
+                    var fail_args = [_]llvm.LLVMValueRef{fail_str};
+                    _ = llvm.LLVMBuildCall2(self.builder, puts_call_type, puts_fn, &fail_args, 1, "");
+                    if (fflush_fn_opt != null) {
+                        var null_arg = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(ptr_type_rt)};
+                        _ = llvm.LLVMBuildCall2(self.builder, fflush_ft_opt.?, fflush_fn_opt.?, &null_arg, 1, "");
+                    }
+                    if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(self.builder)) == null) {
+                        _ = llvm.LLVMBuildBr(self.builder, after_bb);
+                    }
+
+                    llvm.LLVMPositionBuilderAtEnd(self.builder, after_bb);
                 }
 
-                _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstInt(i32_type, 0, 0));
+                const failed_final = llvm.LLVMBuildLoad2(self.builder, i32_type, failed_var, "failed_final");
+                _ = llvm.LLVMBuildRet(self.builder, failed_final);
 
             } else {
                 std.debug.print("No tests found.\n", .{});
@@ -655,12 +758,38 @@ pub const LLVMEmitter = struct {
                 // Only stub Eiwa-mangled functions (not libc: printf, malloc, exit…)
                 const fn_name_ptr = llvm.LLVMGetValueName(fn_iter.?);
                 const fn_name_s = std.mem.span(fn_name_ptr);
-                const is_libc = std.mem.eql(u8, fn_name_s, "printf") or
+                // libm math functions are resolved by MCJIT from the host, so
+                // they must NOT get a no-op stub (e.g. `pow` → ret 0.0) or any
+                // math test silently returns wrong results.
+                const libm_names = [_][]const u8{ "pow", "sqrt", "cbrt", "fabs", "floor", "ceil", "round", "trunc", "nearbyint", "rint", "fmod", "remainder", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "ldexp", "frexp", "modf", "hypot" };
+                var is_libm = false;
+                for (libm_names) |n| {
+                    if (std.mem.eql(u8, fn_name_s, n)) {
+                        is_libm = true;
+                        break;
+                    }
+                }
+                var is_lib_fn = false;
+                var lib_it = self.libs.valueIterator();
+                while (lib_it.next()) |fmap| {
+                    var fn_it2 = fmap.valueIterator();
+                    while (fn_it2.next()) |cname| {
+                        if (std.mem.eql(u8, fn_name_s, cname.*)) {
+                            is_lib_fn = true;
+                            break;
+                        }
+                    }
+                    if (is_lib_fn) break;
+                }
+                const is_libc = is_libm or is_lib_fn or
+                    std.mem.eql(u8, fn_name_s, "printf") or
                     std.mem.eql(u8, fn_name_s, "malloc") or
                     std.mem.eql(u8, fn_name_s, "realloc") or
                     std.mem.eql(u8, fn_name_s, "GC_malloc") or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
+                    std.mem.eql(u8, fn_name_s, "_setjmp") or
                     std.mem.eql(u8, fn_name_s, "longjmp") or
+                    std.mem.eql(u8, fn_name_s, "_longjmp") or
                     std.mem.eql(u8, fn_name_s, "exit") or
                     std.mem.eql(u8, fn_name_s, "fflush") or
                     std.mem.eql(u8, fn_name_s, "memcpy") or
@@ -672,10 +801,11 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "snprintf") or
                     std.mem.eql(u8, fn_name_s, "sprintf") or
                     std.mem.eql(u8, fn_name_s, "time") or
-                    std.mem.eql(u8, fn_name_s, "printf") or
                     std.mem.eql(u8, fn_name_s, "puts") or
-                    std.mem.eql(u8, fn_name_s, "malloc") or
                     std.mem.eql(u8, fn_name_s, "rand") or
+                    std.mem.eql(u8, fn_name_s, "abs") or
+                    std.mem.eql(u8, fn_name_s, "labs") or
+                    std.mem.eql(u8, fn_name_s, "llabs") or
                     std.mem.startsWith(u8, fn_name_s, "eiwa_");
                 if (!is_libc) {
                     self.emitFunctionStub(mod, fn_name_s) catch {};
@@ -757,9 +887,14 @@ pub const LLVMEmitter = struct {
                         const ord_ptr = llvm.LLVMBuildStructGEP2(self.builder, s_info.struct_type, inst_ptr, 1, "enum_ord");
                         _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, @intCast(idx), 0), ord_ptr);
 
-                        // Field 2: name (string ptr)
+                        // Field 2: name (string ptr). variant.name is a
+                        // bundled []const u8 into the source buffer, so it must
+                        // be null-terminated before BuildGlobalStringPtr or the
+                        // whole remaining source leaks into the global.
+                        const name_z = try self.allocator.dupeZ(u8, variant.name);
+                        defer self.allocator.free(name_z);
                         const name_ptr = llvm.LLVMBuildStructGEP2(self.builder, s_info.struct_type, inst_ptr, 2, "enum_name");
-                        const str_val = llvm.LLVMBuildGlobalStringPtr(self.builder, variant.name.ptr, "enum_str");
+                        const str_val = llvm.LLVMBuildGlobalStringPtr(self.builder, name_z.ptr, "enum_str");
                         _ = llvm.LLVMBuildStore(self.builder, str_val, name_ptr);
 
                         _ = llvm.LLVMBuildStore(self.builder, inst_ptr, global);
@@ -813,7 +948,7 @@ pub const LLVMEmitter = struct {
                         }
                         _ = llvm.LLVMBuildStore(self.builder, val, global);
                     } else {
-                        std.debug.print("LLVM Debug: Object global NOT FOUND for {s}\n", .{var_name});
+                        if (verbose) std.debug.print("LLVM Debug: Object global NOT FOUND for {s}\n", .{var_name});
                     }
                 }
             }
@@ -1482,11 +1617,14 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMBuildCondBr(self.builder, is_same, ret_true, ptr_diff);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, ptr_diff);
-        const null_ptr = llvm.LLVMConstNull(ptr_type);
-        const a_null = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, a, null_ptr, "seq_anull");
-        const b_null = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, b, null_ptr, "seq_bnull");
-        const any_null = llvm.LLVMBuildOr(self.builder, a_null, b_null, "seq_anynull");
-        _ = llvm.LLVMBuildCondBr(self.builder, any_null, ret_false, do_strcmp);
+        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
+        const a_int = llvm.LLVMBuildPtrToInt(self.builder, a, i64_type, "seq_aint");
+        const b_int = llvm.LLVMBuildPtrToInt(self.builder, b, i64_type, "seq_bint");
+        const threshold = llvm.LLVMConstInt(i64_type, 0x1000000, 0);
+        const a_invalid = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntULT, a_int, threshold, "seq_ainvalid");
+        const b_invalid = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntULT, b_int, threshold, "seq_binvalid");
+        const any_invalid = llvm.LLVMBuildOr(self.builder, a_invalid, b_invalid, "seq_anyinvalid");
+        _ = llvm.LLVMBuildCondBr(self.builder, any_invalid, ret_false, do_strcmp);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, do_strcmp);
         const strcmp_fn = llvm.LLVMGetNamedFunction(mod, "strcmp") orelse blk: {
@@ -1605,6 +1743,9 @@ pub const LLVMEmitter = struct {
                 const f = func_node.data.fun_decl;
                 // Lib functions map to their C symbol, optionally via @Alias("...").
                 var c_name: []const u8 = f.name;
+                if (std.mem.eql(u8, f.name, "abs")) {
+                    c_name = "labs";
+                }
                 for (f.annotations) |ann| {
                     if (std.mem.eql(u8, ann.name, "Alias") and ann.arguments.len > 0) {
                         c_name = ann.arguments[0];
@@ -1733,6 +1874,15 @@ pub const LLVMEmitter = struct {
             .field_names = field_names_owned,
             .field_types = field_types_owned,
         });
+        if (verbose) std.debug.print(">>> REGISTER_STRUCT: name='{s}'\n", .{name});
+        if (!std.mem.eql(u8, name, t.name)) {
+            try self.structs.put(t.name, .{
+                .struct_type = struct_type,
+                .field_names = field_names_owned,
+                .field_types = field_types_owned,
+            });
+            if (verbose) std.debug.print(">>> REGISTER_STRUCT_SHORT: name='{s}'\n", .{t.name});
+        }
 
         // Declare constructor function: name(params...) -> ptr
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
@@ -1815,7 +1965,25 @@ pub const LLVMEmitter = struct {
 
     fn declareFunction(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, is_object_method: bool) !void {
         const f = func_node.data.fun_decl;
-        const name = f.resolved_c_name orelse f.name;
+        var name = f.resolved_c_name orelse f.name;
+        if (is_object_method or (func_node.resolved_type != null and func_node.resolved_type.?.* == .Function and func_node.resolved_type.?.Function.receiver != null)) {
+            if (std.mem.eql(u8, name, f.name) or std.mem.eql(u8, name, "toString") or std.mem.eql(u8, name, "hashCode") or std.mem.eql(u8, name, "equals")) {
+                if (func_node.resolved_type) |rt| {
+                    if (rt.* == .Function and rt.Function.receiver != null) {
+                        const rec_t = ts.extractBaseType(rt.Function.receiver.?);
+                        const rec_name = switch (rec_t.*) {
+                            .Custom => |cn| cn,
+                            .String => "core_String",
+                            .Int => "core_Int",
+                            .Double => "core_Double",
+                            .Bool => "core_Bool",
+                            else => "type",
+                        };
+                        name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ rec_name, f.name });
+                    }
+                }
+            }
+        }
 
         // Methods bind the receiver (`this`) as the leading parameter (not an
         // object method). Any instance method with a receiver takes `this`,
@@ -1889,20 +2057,17 @@ pub const LLVMEmitter = struct {
         var scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
         defer scope.deinit();
 
+        const total_param_count = llvm.LLVMCountParams(func_val);
         var param_base: usize = 0;
-        if (func_node.resolved_type) |rt| {
-            if (rt.* == .Function) {
-                if (rt.Function.receiver != null) {
-                    const this_val = llvm.LLVMGetParam(func_val, 0);
-                    const this_type = llvm.LLVMTypeOf(this_val);
-                    const this_z = try self.allocator.dupeZ(u8, "this");
-                    defer self.allocator.free(this_z);
-                    const this_ptr = llvm.LLVMBuildAlloca(self.builder, this_type, this_z.ptr);
-                    _ = llvm.LLVMBuildStore(self.builder, this_val, this_ptr);
-                    try scope.put("this", this_ptr);
-                    param_base = 1;
-                }
-            }
+        if (total_param_count > f.params.len) {
+            const this_val = llvm.LLVMGetParam(func_val, 0);
+            const this_type = llvm.LLVMTypeOf(this_val);
+            const this_z = try self.allocator.dupeZ(u8, "this");
+            defer self.allocator.free(this_z);
+            const this_ptr = llvm.LLVMBuildAlloca(self.builder, this_type, this_z.ptr);
+            _ = llvm.LLVMBuildStore(self.builder, this_val, this_ptr);
+            try scope.put("this", this_ptr);
+            param_base = 1;
         }
 
         // Allocate and store parameters in local scope
@@ -1913,15 +2078,25 @@ pub const LLVMEmitter = struct {
             const p_name_z = try self.allocator.dupeZ(u8, p.name);
             defer self.allocator.free(p_name_z);
 
-            const alloca_ptr = llvm.LLVMBuildAlloca(self.builder, param_type, p_name_z.ptr);
+            const p_llvm_type = if (p.type_ref) |tr| (if (tr.resolved_type) |rt| (if (types_mapping.isContractType(rt.*, expression.global_contracts_ast_ptr)) types_mapping.getFatPointerType(self.context) else param_type) else param_type) else param_type;
+            const alloca_ptr = llvm.LLVMBuildAlloca(self.builder, p_llvm_type, p_name_z.ptr);
             _ = llvm.LLVMBuildStore(self.builder, param_val, alloca_ptr);
             try scope.put(p.name, alloca_ptr);
         }
 
         // Expression-bodied functions (`fun f(...) = expr`) return the value directly.
         if (f.is_expr_body) {
-            const ret_val = try expression.emitExpression(self.context, mod, self.builder, &scope, &self.structs, &self.libs, f.body);
-            _ = llvm.LLVMBuildRet(self.builder, ret_val);
+            var ret_val = try expression.emitExpression(self.context, mod, self.builder, &scope, &self.structs, &self.libs, f.body);
+            const func_type = llvm.LLVMGlobalGetValueType(func_val);
+            const expected_ret_type = llvm.LLVMGetReturnType(func_type);
+            if (llvm.LLVMGetTypeKind(expected_ret_type) == llvm.LLVMVoidTypeKind) {
+                _ = llvm.LLVMBuildRetVoid(self.builder);
+            } else {
+                if (llvm.LLVMTypeOf(ret_val) != expected_ret_type) {
+                    ret_val = expression.coerceArg(self.builder, ret_val, expected_ret_type);
+                }
+                _ = llvm.LLVMBuildRet(self.builder, ret_val);
+            }
             return;
         }
 
@@ -2057,7 +2232,7 @@ pub const LLVMEmitter = struct {
     /// that a simple terminator scan would miss.
     fn functionIsWellFormed(func_val: llvm.LLVMValueRef) bool {
         if (llvm.LLVMVerifyFunction(func_val, llvm.LLVMReturnStatusAction) == 0) return true;
-        _ = llvm.LLVMVerifyFunction(func_val, llvm.LLVMPrintMessageAction);
+        if (verbose) _ = llvm.LLVMVerifyFunction(func_val, llvm.LLVMPrintMessageAction);
         return false;
     }
 
@@ -2069,13 +2244,18 @@ pub const LLVMEmitter = struct {
     fn emitFunctionBodyOrStub(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, fname: []const u8, is_object_method: bool) void {
         var emitted_ok = true;
         self.emitFunctionBody(mod, func_node, is_object_method) catch |err| {
-            std.debug.print("LLVM Emitter Error in {s}: {}\n", .{ fname, err });
+            if (verbose) std.debug.print("LLVM Emitter Error in {s}: {}\n", .{ fname, err });
             emitted_ok = false;
         };
         if (emitted_ok) {
-            if (self.functions.get(fname)) |func_val| {
+            const func_val_opt = self.functions.get(fname) orelse blk: {
+                const fname_z = self.allocator.dupeZ(u8, fname) catch break :blk null;
+                defer self.allocator.free(fname_z);
+                break :blk llvm.LLVMGetNamedFunction(mod, fname_z.ptr);
+            };
+            if (func_val_opt) |func_val| {
                 if (functionIsWellFormed(func_val)) return;
-                std.debug.print("LLVM Emitter: {s} produced invalid IR; stubbed.\n", .{fname});
+                if (verbose) std.debug.print("LLVM Emitter: {s} produced invalid IR; stubbed.\n", .{fname});
             }
         }
         self.emitFunctionStub(mod, fname) catch {};
@@ -2129,12 +2309,6 @@ pub const LLVMEmitter = struct {
     pub fn executeJIT(self: *LLVMEmitter) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         {
-            const dump_z = try self.allocator.dupeZ(u8, "/tmp/eiwa_ir.ll");
-            defer self.allocator.free(dump_z);
-            var dump_err: [*c]u8 = null;
-            _ = llvm.LLVMPrintModuleToFile(mod, dump_z.ptr, &dump_err);
-        }
-        {
             var verify_err: [*c]u8 = null;
             if (llvm.LLVMVerifyModule(mod, llvm.LLVMReturnStatusAction, &verify_err) != 0) {
                 if (verify_err != null) {
@@ -2166,10 +2340,11 @@ pub const LLVMEmitter = struct {
         if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type)) == llvm.LLVMVoidTypeKind) {
             const main_fn: *const fn () callconv(.c) void = @ptrCast(@alignCast(main_fn_ptr));
             main_fn();
-            std.process.exit(0);
+            return 0;
         }
         const main_fn: *const fn () callconv(.c) i32 = @ptrCast(@alignCast(main_fn_ptr));
         const res = main_fn();
-        std.process.exit(@intCast(res));
+        const code: u8 = if (res < 0) 1 else @intCast(@min(res, 255));
+        std.process.exit(code);
     }
 };
