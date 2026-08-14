@@ -4,6 +4,16 @@ const ts = @import("../../core/type_system.zig");
 const compat = @import("../../core/compat.zig");
 const types_mapping = @import("types.zig");
 const statement = @import("statement.zig");
+
+/// Hex digit value (0-15) or null for non-hex characters.
+fn hexDigit(c: u8) ?u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => null,
+    };
+}
 const core = @import("core.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
@@ -232,6 +242,22 @@ pub fn emitExpression(
                         '\\' => try unescaped.append('\\'),
                         '"' => try unescaped.append('"'),
                         '\'' => try unescaped.append('\''),
+                        'x' => {
+                            // Hex escape `\xHH` — mirrors what the C compiler does
+                            // for the C backend (which emits the raw `\x1b` literal).
+                            if (i + 3 < str.len) {
+                                const hi = hexDigit(str[i + 2]);
+                                const lo = hexDigit(str[i + 3]);
+                                if (hi) |h| {
+                                    if (lo) |l| {
+                                        try unescaped.append((h << 4) | l);
+                                        i += 3;
+                                        continue;
+                                    }
+                                }
+                            }
+                            try unescaped.append('x');
+                        },
                         else => try unescaped.append(str[i + 1]),
                     }
                     i += 1;

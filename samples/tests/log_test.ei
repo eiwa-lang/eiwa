@@ -71,3 +71,34 @@ test "should create contextual loggers using with" {
     assert(child.fields.containsKey("module") == true)
     assert(child.fields.get("module") == "http")
 }
+
+test "should emit ANSI color escapes in TextFormatter output" {
+    val formatter = StandardLogFormatter()
+    val formatted = formatter.format(LogLevel.INFO, "colored", null, Map<String, String>())
+    // TextFormatter wraps level names in ANSI codes (`\x1b[36m[INFO]\x1b[0m`);
+    // a missing ESC byte (e.g. a `\x1b` literal not decoded) makes this fail.
+    assert(formatted.indexOf("\x1b[") != -1)
+    assert(formatted.contains("[INFO]"))
+    assert(formatted.contains("colored"))
+}
+
+test "should log a throwable through the global Log facade" {
+    // Exercises the full path `Log.error(ex) { ... }`: object static method →
+    // rootLogger.error → format with a Throwable argument (coerced to the
+    // Throwable contract vtable — a wrong vtable here segfaults on dispatch).
+    val ex = TestException("facade failure")
+    Log.setLevel(LogLevel.ERROR)
+    Log.error(ex) { "facade error log" }
+    assert(Log.rootLogger.isEnabled(LogLevel.ERROR) == true)
+}
+
+test "should log through the global Log facade (text formatter)" {
+    // Exercises the run-mode crash path: object Log.debug/info → rootLogger →
+    // TextFormatter skill format → getAnsiColor (must not degrade to a stub).
+    Log.setFormatter(StandardLogFormatter())
+    Log.setLevel(LogLevel.DEBUG)
+    Log.debug { "facade debug" }
+    Log.info { "facade info" }
+    Log.warn { "facade warn" }
+    assert(true)
+}

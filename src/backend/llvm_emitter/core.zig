@@ -387,44 +387,7 @@ pub const LLVMEmitter = struct {
         // function and lets the C linker dead-strip; the LLVM emitter adds this
         // pass only to keep JIT compile time/IR size down (the stdlib would
         // otherwise be pulled in wholesale). It has no C-side counterpart.
-        var wi: usize = 0;
-        while (wi < worklist.items.len) : (wi += 1) {
-            const fname = worklist.items[wi];
-            for (modules.items) |m| {
-                if (m.data != .program) continue;
-                for (m.data.program.statements) |stmt| {
-                    if (stmt.data == .fun_decl) {
-                        if (stmt.data.fun_decl.generic_params.len > 0) continue;
-                        const name = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
-                        if (std.mem.eql(u8, name, fname)) {
-                            try self.collectCallees(stmt, &reachable, &worklist);
-                            break;
-                        }
-                    } else if (stmt.data == .type_decl) {
-                        const is_template = stmt.data.type_decl.generic_params.len > 0 and (stmt.data.type_decl.methods.len == 0 or stmt.data.type_decl.methods[0].data.fun_decl.resolved_c_name == null);
-                        if (is_template) continue;
-                        for (stmt.data.type_decl.methods) |m_node| {
-                            if (m_node.data != .fun_decl) continue;
-                            const name = m_node.data.fun_decl.resolved_c_name orelse m_node.data.fun_decl.name;
-                            if (std.mem.eql(u8, name, fname)) {
-                                try self.collectCallees(m_node, &reachable, &worklist);
-                                break;
-                            }
-                        }
-                    } else if (stmt.data == .object_decl) {
-                        for (stmt.data.object_decl.members) |member| {
-                            if (member.data != .fun_decl) continue;
-                            if (member.data.fun_decl.generic_params.len > 0) continue;
-                            const name = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
-                            if (std.mem.eql(u8, name, fname)) {
-                                try self.collectCallees(member, &reachable, &worklist);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        try self.drainReachableWorklist(&modules, &reachable, &worklist);
 
         // Pass 1e: Emit static vtables for implemented contracts of reachable types (Task 61.1)
         // Named `{type_c_name}_{contract_c_name}_vtable`
@@ -499,6 +462,13 @@ pub const LLVMEmitter = struct {
                 }
             }
         }
+
+        // The vtable pass above marks each contract implementation reachable
+        // (so its body is emitted), but that happens after the fixpoint walk —
+        // drain the worklist again so the callees of those implementations
+        // (e.g. getAnsiColor called from within the TextFormatter.format
+        // skill) are also collected and don't degrade to stubs.
+        try self.drainReachableWorklist(&modules, &reachable, &worklist);
 
         for (modules.items) |m| {
             if (m.data != .program) continue;
@@ -860,7 +830,7 @@ pub const LLVMEmitter = struct {
 
         // Phase 65 (@MainWrapper): wrap the program entry point.
         if (self.main_wrapper_c_names.len > 0) {
-            try self.emitMainWrapperEntry(mod);
+            try self.emitMainWrapperEntry(mod, &modules);
         }
     }
 
@@ -868,7 +838,7 @@ pub const LLVMEmitter = struct {
     /// outermost-first: `main = W0(W1(...Wn-1(real_main)...))`. Each wrapper
     /// receives a shim `i32(i32, ptr)`; Eiwa wrappers get it as a closure
     /// `{fn_ptr, env}`, lib wrappers as a raw C function pointer.
-    fn emitMainWrapperEntry(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
+    fn emitMainWrapperEntry(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, modules: *ArrayList(*ast.ASTNode)) !void {
         const n = self.main_wrapper_c_names.len;
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i32_type = llvm.LLVMInt32TypeInContext(self.context);
@@ -900,6 +870,16 @@ pub const LLVMEmitter = struct {
             const s = llvm.LLVMAddFunction(mod, s_name_z.ptr, shim_type);
             const entry = llvm.LLVMAppendBasicBlockInContext(self.context, s, "entry");
             llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
+            // Run mode has no test runner to initialize static object/enum
+            // globals (Log.rootLogger, enum instances, ...), so the innermost
+            // shim does it before the real main runs (test mode already does
+            // this inside eiwa_test_main).
+            if (!self.is_test_mode) {
+                try self.emitEnumInitializers(mod, modules);
+                var obj_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
+                defer obj_scope.deinit();
+                try self.emitObjectInitializers(mod, modules, &obj_scope);
+            }
             const real_ret = llvm.LLVMGetReturnType(real_main_type);
             if (llvm.LLVMGetTypeKind(real_ret) == llvm.LLVMVoidTypeKind) {
                 _ = llvm.LLVMBuildCall2(self.builder, real_main_type, real_main, null, 0, "");
@@ -1179,6 +1159,56 @@ pub const LLVMEmitter = struct {
         }
     }
 
+    /// Processes the reachability worklist until fixpoint: for each function
+    /// symbol, finds its AST node and walks its body to collect callees.
+    /// Idempotent — safe to call again after more symbols are marked reachable
+    /// (e.g. by the vtable pass).
+    fn drainReachableWorklist(
+        self: *LLVMEmitter,
+        modules: *ArrayList(*ast.ASTNode),
+        reachable: *std.StringHashMap(void),
+        worklist: *ArrayList([]const u8),
+    ) !void {
+        var wi: usize = 0;
+        while (wi < worklist.items.len) : (wi += 1) {
+            const fname = worklist.items[wi];
+            for (modules.items) |m| {
+                if (m.data != .program) continue;
+                for (m.data.program.statements) |stmt| {
+                    if (stmt.data == .fun_decl) {
+                        if (stmt.data.fun_decl.generic_params.len > 0) continue;
+                        const name = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
+                        if (std.mem.eql(u8, name, fname)) {
+                            try self.collectCallees(stmt, reachable, worklist);
+                            break;
+                        }
+                    } else if (stmt.data == .type_decl) {
+                        const is_template = stmt.data.type_decl.generic_params.len > 0 and (stmt.data.type_decl.methods.len == 0 or stmt.data.type_decl.methods[0].data.fun_decl.resolved_c_name == null);
+                        if (is_template) continue;
+                        for (stmt.data.type_decl.methods) |m_node| {
+                            if (m_node.data != .fun_decl) continue;
+                            const name = m_node.data.fun_decl.resolved_c_name orelse m_node.data.fun_decl.name;
+                            if (std.mem.eql(u8, name, fname)) {
+                                try self.collectCallees(m_node, reachable, worklist);
+                                break;
+                            }
+                        }
+                    } else if (stmt.data == .object_decl) {
+                        for (stmt.data.object_decl.members) |member| {
+                            if (member.data != .fun_decl) continue;
+                            if (member.data.fun_decl.generic_params.len > 0) continue;
+                            const name = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
+                            if (std.mem.eql(u8, name, fname)) {
+                                try self.collectCallees(member, reachable, worklist);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Walks an AST subtree, adding every function symbol it may reference to
     /// the reachable set. This mirrors the callee-resolution in expression.zig
     /// (direct identifier calls, object/static methods via resolved Function
@@ -1290,9 +1320,9 @@ pub const LLVMEmitter = struct {
                     } else if (obj_rt.* == .Pointer and obj_rt.Pointer.* == .Custom) {
                         type_name = obj_rt.Pointer.Custom;
                     }
-                    if (type_name.len > 0 and self.structs.get(type_name) != null) {
-                        const buf = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_name, g.name });
-                        try self.markReachable(buf, reachable, worklist);
+                        if (type_name.len > 0 and self.structs.get(type_name) != null) {
+                            const buf = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_name, g.name });
+                            try self.markReachable(buf, reachable, worklist);
                         self.allocator.free(buf);
                     }
                 }

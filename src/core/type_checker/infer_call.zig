@@ -1438,6 +1438,10 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 const arg_type = try self.inferNode(arg, scope);
                 if (i < f.params.len and f.params[i].type_ref != null) {
                     const expected_type = try self.resolveTypeRef(f.params[i].type_ref.?);
+                    // Propagate the declared param type so the backend coerces
+                    // contract args to the exact contract vtable (not a
+                    // random one from the fallback loop).
+                    arg.expected_type = expected_type;
                     if (!self.isCompatible(expected_type, arg_type)) {
                         self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ expected_type.*, arg_type.*, i + 1 });
                         return error.TypeError;
