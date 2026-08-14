@@ -50,6 +50,7 @@ pub fn emitStatement(
     structs: *std.StringHashMap(core.StructInfo),
     libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
     node: *ast.ASTNode,
+    declared_ret: ?*const eiwa_types.EiwaType,
 ) anyerror!void {
     switch (node.data) {
         .var_decl => |v| {
@@ -226,7 +227,7 @@ pub fn emitStatement(
 
             // Emit then branch
             llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
-            try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, if_node.then_branch);
+            try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, if_node.then_branch, declared_ret);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
             }
@@ -235,7 +236,7 @@ pub fn emitStatement(
             if (if_node.else_branch) |else_branch| {
                 if (else_bb) |eb| {
                     llvm.LLVMPositionBuilderAtEnd(builder, eb);
-                    try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, else_branch);
+                    try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, else_branch, declared_ret);
                     if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                         _ = llvm.LLVMBuildBr(builder, merge_bb);
                     }
@@ -258,7 +259,7 @@ pub fn emitStatement(
 
             // Body block
             llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
-            try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, w.body);
+            try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, w.body, declared_ret);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 _ = llvm.LLVMBuildBr(builder, cond_bb);
             }
@@ -328,7 +329,7 @@ pub fn emitStatement(
             _ = llvm.LLVMBuildStore(builder, item_val, item_alloca);
             try loop_scope.put(f.item_name, item_alloca);
 
-            try emitStatement(ctx, mod, builder, func_val, &loop_scope, structs, libs, f.body);
+            try emitStatement(ctx, mod, builder, func_val, &loop_scope, structs, libs, f.body, declared_ret);
 
             const i_next = llvm.LLVMBuildAdd(builder, i_body, llvm.LLVMConstInt(i64_type, 1, 0), "for_i_next");
             _ = llvm.LLVMBuildStore(builder, i_next, i_ptr);
@@ -346,6 +347,20 @@ pub fn emitStatement(
 
                 const fat_type = types_mapping.getFatPointerType(ctx);
                 if (expected_ret_type == fat_type and llvm.LLVMTypeOf(ret_val) != fat_type) {
+                    // The target contract is the function's declared return
+                    // type (deterministic vtable lookup); an empty name would
+                    // make findVtableGlobal scan every vtable and attach a
+                    // random one (e.g. `return this` in start(): Awaitable<T>
+                    // picked `collections_MutableList_Int_Serializable_vtable`
+                    // because the short-name derivation ended in `Int`).
+                    var contract_c_name: []const u8 = "";
+                    if (declared_ret) |drt| {
+                        contract_c_name = switch (eiwa_types.extractBaseType(drt).*) {
+                            .Custom => |n| n,
+                            .GenericInstance => |gi| gi.base_name,
+                            else => "",
+                        };
+                    }
                     if (val_node.resolved_type) |val_rt| {
                         const val_c_name = switch (eiwa_types.extractBaseType(val_rt).*) {
                             .Custom => |n| n,
@@ -353,7 +368,7 @@ pub fn emitStatement(
                             else => "",
                         };
                         if (val_c_name.len > 0) {
-                            ret_val = expression.coerceToContract(ctx, mod, builder, ret_val, val_c_name, "") catch ret_val;
+                            ret_val = expression.coerceToContract(ctx, mod, builder, ret_val, val_c_name, contract_c_name) catch ret_val;
                         }
                     }
                 }
@@ -469,7 +484,7 @@ pub fn emitStatement(
             _ = llvm.LLVMBuildCondBr(builder, is_try, try_bb, catch_bb);
 
             llvm.LLVMPositionBuilderAtEnd(builder, try_bb);
-            try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, ts.body);
+            try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, ts.body, declared_ret);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 const stack2 = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "stack2");
                 const next_gep2 = llvm.LLVMBuildStructGEP2(builder, frame_type, stack2, 1, "next2");
@@ -526,7 +541,7 @@ pub fn emitStatement(
                     _ = llvm.LLVMBuildStore(builder, exc_val, var_alloca);
                     try scope.put(var_name, var_alloca);
                 }
-                try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, c.body);
+                try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, c.body, declared_ret);
                 if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                     _ = llvm.LLVMBuildBr(builder, after_bb);
                 }
@@ -573,12 +588,12 @@ pub fn emitStatement(
         },
         .block => |blk| {
             for (blk.statements) |stmt| {
-                try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, stmt);
+                try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, stmt, declared_ret);
             }
         },
         .program => |prog| {
             for (prog.statements) |stmt| {
-                try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, stmt);
+                try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, stmt, declared_ret);
             }
         },
         .fun_decl, .import_stmt, .test_decl, .type_decl, .contract_decl, .skill_decl, .object_decl, .enum_decl, .lib_decl => {},

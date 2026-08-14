@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const ast = @import("../../core/ast.zig");
 const ts = @import("../../core/type_system.zig");
 const compat = @import("../../core/compat.zig");
@@ -16,6 +17,15 @@ pub const StructInfo = struct {
     field_types: []llvm.LLVMTypeRef,
 };
 
+/// Resolves a repo-relative `src/...` path against the eiwa source tree
+/// (mirrors the C transpiler). Non-`src/` paths are returned unchanged.
+fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (!std.mem.startsWith(u8, path, "src/")) return path;
+    const src_dir = build_options.eiwa_home;
+    const repo_root = std.fs.path.dirname(src_dir) orelse return path;
+    return try std.fs.path.join(allocator, &.{ repo_root, path });
+}
+
 /// In-Memory LLVM IR Emitter and Execution Driver.
 /// When true, the LLVM emitter prints diagnostic logs (per-function emit
 /// errors, PropertyNotFound debugging, stub fallbacks). Defaults to false so
@@ -29,11 +39,18 @@ pub const LLVMEmitter = struct {
     builder: llvm.LLVMBuilderRef,
     is_release: bool,
     is_test_mode: bool = false,
+    source_file: []const u8 = "",
     functions: std.StringHashMap(llvm.LLVMValueRef),
     structs: std.StringHashMap(StructInfo),
     /// Maps lib-block names (e.g. "Console") to their set of functions.
     libs: std.StringHashMap(std.StringHashMap([]const u8)),
     contracts_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
+    /// Build requirements declared by `lib` annotations (@Source/@Include/@Define/@Link),
+    /// mirroring the C transpiler (Phase 65 — LLVM backend compiles the C sources too).
+    c_sources: std.StringHashMap(void),
+    c_includes: std.StringHashMap(void),
+    c_defines: std.StringHashMap(void),
+    link_libraries: std.StringHashMap(void),
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         _ = llvm.LLVMInitializeNativeTarget();
@@ -55,9 +72,14 @@ pub const LLVMEmitter = struct {
             .module = module,
             .builder = builder,
             .is_release = is_release,
+            .source_file = module_name,
             .functions = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .structs = std.StringHashMap(StructInfo).init(allocator),
             .libs = std.StringHashMap(std.StringHashMap([]const u8)).init(allocator),
+            .c_sources = std.StringHashMap(void).init(allocator),
+            .c_includes = std.StringHashMap(void).init(allocator),
+            .c_defines = std.StringHashMap(void).init(allocator),
+            .link_libraries = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -69,6 +91,10 @@ pub const LLVMEmitter = struct {
             v.*.deinit();
         }
         self.libs.deinit();
+        self.c_sources.deinit();
+        self.c_includes.deinit();
+        self.c_defines.deinit();
+        self.link_libraries.deinit();
         llvm.LLVMDisposeBuilder(self.builder);
         if (self.module) |m| {
             llvm.LLVMDisposeModule(m);
@@ -571,7 +597,7 @@ pub const LLVMEmitter = struct {
 
                 for (top_level_stmts.items, 0..) |stmt, stmt_idx| {
                     _ = stmt_idx;
-                    try statement.emitStatement(self.context, mod, self.builder, main_func.?, &scope, &self.structs, &self.libs, stmt);
+                    try statement.emitStatement(self.context, mod, self.builder, main_func.?, &scope, &self.structs, &self.libs, stmt, null);
                 }
 
                 const cur_bb = llvm.LLVMGetInsertBlock(self.builder);
@@ -613,7 +639,7 @@ pub const LLVMEmitter = struct {
                     switch (decl.body.data) {
                         .block => |b| {
                             for (b.statements) |s| {
-                                try statement.emitStatement(self.context, mod, self.builder, test_fn, &test_scope, &self.structs, &self.libs, s);
+                                try statement.emitStatement(self.context, mod, self.builder, test_fn, &test_scope, &self.structs, &self.libs, s, null);
                             }
                         },
                         else => {},
@@ -1743,6 +1769,30 @@ pub const LLVMEmitter = struct {
 
     fn declareLib(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, lib_node: *ast.ASTNode) !void {
         const lib = lib_node.data.lib_decl;
+
+        // Collect build requirements from lib annotations so the backend can
+        // compile and link the vendored C sources (mirrors the C transpiler,
+        // Phase 65). `@Header` only matters for the C transpiler's generated
+        // code; the LLVM module has no C to inject includes into.
+        for (lib.annotations) |ann| {
+            if (std.mem.eql(u8, ann.name, "Link")) {
+                for (ann.arguments) |arg| try self.link_libraries.put(arg, {});
+            } else if (std.mem.eql(u8, ann.name, "Source")) {
+                for (ann.arguments) |arg| try self.c_sources.put(try resolveRepoPath(self.allocator, arg), {});
+            } else if (std.mem.eql(u8, ann.name, "Include")) {
+                for (ann.arguments) |arg| {
+                    if ((std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../")) and self.source_file.len > 0) {
+                        const dir = std.fs.path.dirname(self.source_file) orelse ".";
+                        try self.c_includes.put(try std.fs.path.join(self.allocator, &.{ dir, arg }), {});
+                    } else {
+                        try self.c_includes.put(try resolveRepoPath(self.allocator, arg), {});
+                    }
+                }
+            } else if (std.mem.eql(u8, ann.name, "Define")) {
+                for (ann.arguments) |arg| try self.c_defines.put(arg, {});
+            }
+        }
+
         var func_names = std.StringHashMap([]const u8).init(self.allocator);
         for (lib.functions) |func_node| {
             if (func_node.data == .fun_decl) {
@@ -2132,7 +2182,8 @@ pub const LLVMEmitter = struct {
             return;
         }
 
-        try statement.emitStatement(self.context, mod, self.builder, func_val, &scope, &self.structs, &self.libs, f.body);
+        const declared_ret: ?*const ts.EiwaType = if (f.type_ref) |tr| tr.resolved_type else null;
+        try statement.emitStatement(self.context, mod, self.builder, func_val, &scope, &self.structs, &self.libs, f.body, declared_ret);
 
         const cur_bb = llvm.LLVMGetInsertBlock(self.builder);
         if (llvm.LLVMGetBasicBlockTerminator(cur_bb) == null) {
@@ -2247,6 +2298,10 @@ pub const LLVMEmitter = struct {
             "-lgc",
         });
 
+        // Build requirements declared by `lib` annotations (@Include/@Define/@Source/@Link),
+        // so vendored C sources compile and link into the native binary.
+        try self.appendLibRequirements(&cc_argv);
+
         var child = try std.process.spawn(io, .{
             .argv = cc_argv.items,
         });
@@ -2256,6 +2311,71 @@ pub const LLVMEmitter = struct {
             std.debug.print("Linking LLVM object failed.\n", .{});
             return error.LinkingFailed;
         }
+    }
+
+    /// Appends the compiler/linker flags declared by `lib` annotations
+    /// (@Include/@Define/@Source/@Link) plus the vendored runtime include dirs.
+    /// Used by the native-binary link and by the JIT shared-lib build.
+    fn appendLibRequirements(self: *LLVMEmitter, argv: *ArrayList([]const u8)) !void {
+        const src_dir = build_options.eiwa_home;
+        const repo_root = std.fs.path.dirname(src_dir) orelse ".";
+        const inc_transpiler = try std.fs.path.join(self.allocator, &.{ repo_root, "src/backend/c_transpiler" });
+        const inc_third_party = try std.fs.path.join(self.allocator, &.{ repo_root, "src/runtime/third_party" });
+        try argv.appendSlice(&[_][]const u8{ "-I", inc_transpiler, "-I", inc_third_party });
+
+        var inc_it = self.c_includes.keyIterator();
+        while (inc_it.next()) |dir| {
+            try argv.append(try std.fmt.allocPrint(self.allocator, "-I{s}", .{dir.*}));
+        }
+        var def_it = self.c_defines.keyIterator();
+        while (def_it.next()) |def| {
+            try argv.append(try std.fmt.allocPrint(self.allocator, "-D{s}", .{def.*}));
+        }
+        var src_it = self.c_sources.keyIterator();
+        while (src_it.next()) |src| {
+            try argv.append(src.*);
+        }
+        var lib_it = self.link_libraries.keyIterator();
+        while (lib_it.next()) |lib_name| {
+            try argv.append(try std.fmt.allocPrint(self.allocator, "-l{s}", .{lib_name.*}));
+            const macro = try std.fmt.allocPrint(self.allocator, "-DEIWA_USE_{s}", .{lib_name.*});
+            for (macro) |*c| c.* = std.ascii.toUpper(c.*);
+            try argv.append(macro);
+        }
+    }
+
+    /// Compiles the lib-declared C sources into a shared library and loads it
+    /// into the JIT process so MCJIT can resolve the FFI externs (Phase 65).
+    fn loadLibSourcesIntoJIT(self: *LLVMEmitter, io: std.Io) !void {
+        if (self.c_sources.count() == 0 and self.c_includes.count() == 0 and self.c_defines.count() == 0 and self.link_libraries.count() == 0) return;
+
+        const lib_filename = "temp_llvm_libs.dylib";
+        var cc_argv = ArrayList([]const u8).init(self.allocator);
+        defer cc_argv.deinit();
+
+        try cc_argv.appendSlice(&[_][]const u8{ "zig", "cc", "-shared", "-O0", "-fwrapv" });
+        if (builtin.target.os.tag == .macos) {
+            try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
+        }
+        try cc_argv.appendSlice(&[_][]const u8{ "-o", lib_filename, "-lgc" });
+        try self.appendLibRequirements(&cc_argv);
+
+        var child = try std.process.spawn(io, .{ .argv = cc_argv.items });
+        const term = try child.wait(io);
+        if (term != .exited or term.exited != 0) {
+            std.debug.print("Compiling lib C sources for JIT failed.\n", .{});
+            return error.LibSourceCompileFailed;
+        }
+
+        // dlopen with RTLD_GLOBAL so the MCJIT symbol resolver (dlsym
+        // RTLD_DEFAULT) finds the externs. LLVM 21 dropped the
+        // LLVMLoadLibraryPermanently C API, so use the std loader directly.
+        const dynlib = std.DynLib.open(lib_filename) catch {
+            std.debug.print("Could not load lib C sources into JIT.\n", .{});
+            return error.LibSourceLoadFailed;
+        };
+        _ = dynlib;
+        std.Io.Dir.cwd().deleteFile(io, lib_filename) catch {};
     }
 
     /// Returns true if the emitted function body is well-formed LLVM IR
@@ -2338,7 +2458,7 @@ pub const LLVMEmitter = struct {
     }
 
     /// Executes the in-memory LLVM module via JIT (for `eiwa run --backend=llvm`).
-    pub fn executeJIT(self: *LLVMEmitter) !i32 {
+    pub fn executeJIT(self: *LLVMEmitter, io: std.Io) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         {
             var verify_err: [*c]u8 = null;
@@ -2349,6 +2469,9 @@ pub const LLVMEmitter = struct {
                 }
             }
         }
+        // Compile and load lib-declared C sources (@Source) so MCJIT can resolve
+        // the FFI externs (e.g. neco/curl). Phase 65.
+        try self.loadLibSourcesIntoJIT(io);
         var engine: llvm.LLVMExecutionEngineRef = undefined;
         var err_msg: [*c]u8 = null;
 

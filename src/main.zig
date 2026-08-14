@@ -458,7 +458,7 @@ pub fn main(init: std.process.Init) !void {
             try emitter.emitNativeBinary(final_bin, io);
             std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
         } else {
-            const exit_code = try emitter.executeJIT();
+            const exit_code = try emitter.executeJIT(io);
             const code: u8 = if (exit_code < 0) 1 else @intCast(@min(exit_code, 255));
             std.process.exit(code);
         }

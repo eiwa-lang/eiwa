@@ -1509,12 +1509,12 @@ pub fn emitExpression(
                 const last_idx = lam.body.len - 1;
                 // Emit all but the last statement normally
                 for (lam.body[0..last_idx]) |stmt| {
-                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, stmt);
+                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, stmt, null);
                 }
                 const last = lam.body[last_idx];
                 if (last.data == .return_stmt) {
                     // Already a return — emit normally, terminator will be set
-                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, last);
+                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, last, null);
                 } else {
                     // Implicit return: evaluate the expression and return its value
                     const ret_val = try emitExpression(ctx, mod, builder, &lam_scope, structs, libs, last);
@@ -1527,7 +1527,7 @@ pub fn emitExpression(
                 }
             } else {
                 for (lam.body) |stmt| {
-                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, stmt);
+                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, stmt, null);
                 }
             }
 
@@ -1670,7 +1670,7 @@ pub fn emitExpression(
                             if (stmt.data == .return_stmt and stmt.data.return_stmt.value != null) {
                                 last_val = try emitExpression(ctx, mod, builder, &lam_scope, structs, libs, stmt.data.return_stmt.value.?);
                             } else {
-                                try statement.emitStatement(ctx, mod, builder, llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder)), &lam_scope, structs, libs, stmt);
+                                try statement.emitStatement(ctx, mod, builder, llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder)), &lam_scope, structs, libs, stmt, null);
                             }
                         }
                         return last_val;
@@ -2404,7 +2404,15 @@ pub fn emitExpression(
                                 const i64_type = llvm.LLVMInt64TypeInContext(ctx);
 
                                 const fun_data = target_fun_decl.?.data.fun_decl;
-                                const ret_t = if (target_fun_decl.?.resolved_type) |rt|
+                                // Prefer the CALL's resolved return type: the
+                                // contract method may declare a generic return
+                                // (`Awaitable.await(): T`) that would map to a
+                                // raw `ptr` here, but the concrete call returns
+                                // e.g. `Int` (i64). Fall back to the declared
+                                // method type only when the call isn't resolved.
+                                const ret_t = if (node.resolved_type) |crt|
+                                    types_mapping.getLLVMTypeWithContracts(ctx, crt.*, global_contracts_ast_ptr)
+                                else if (target_fun_decl.?.resolved_type) |rt|
                                     types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.return_type.*, global_contracts_ast_ptr)
                                 else if (fun_data.type_ref) |tr|
                                     (if (tr.resolved_type) |rrt| types_mapping.getLLVMTypeWithContracts(ctx, rrt.*, global_contracts_ast_ptr) else i64_type)
@@ -3721,15 +3729,18 @@ pub fn emitExpression(
             }
             return llvm.LLVMConstNull(ptr_type);
         },
-        .assignment => {
+        .assignment => |a| {
             const func_val = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
-            try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, node);
+            try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, node, null);
             const ret_t = llvm.LLVMGetReturnType(llvm.LLVMGlobalGetValueType(func_val));
             if (llvm.LLVMGetTypeKind(ret_t) == llvm.LLVMVoidTypeKind) {
                 const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                 return llvm.LLVMConstNull(ptr_type);
             }
-            return llvm.LLVMConstNull(ret_t);
+            // An assignment in expression position yields the assigned value
+            // (mirrors the C backend; `{ x = 5 }` as a lambda body returns 5).
+            const val = try emitExpression(ctx, mod, builder, scope, structs, libs, a.value);
+            return coerceArg(builder, val, ret_t);
         },
         .as_expr => |as_e| {
             const val = try emitExpression(ctx, mod, builder, scope, structs, libs, as_e.value);
@@ -4423,12 +4434,12 @@ fn emitBlockOrExpr(
         const stmts = node.data.block.statements;
         if (stmts.len > 0) {
             for (stmts[0 .. stmts.len - 1]) |s| {
-                try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, s);
+                try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, s, null);
             }
             const last_stmt = stmts[stmts.len - 1];
             switch (last_stmt.data) {
                 .var_decl, .return_stmt, .while_stmt, .try_stmt, .throw_stmt, .block => {
-                    try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, last_stmt);
+                    try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, last_stmt, null);
                 },
                 else => {
                     const val = try emitExpression(ctx, mod, builder, scope, structs, libs, last_stmt);

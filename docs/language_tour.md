@@ -1134,6 +1134,66 @@ fun main() {
 
 **Module search paths.** With `--module-path <dir>`, bare imports that do not resolve relative to the importing file are looked up in each module path (in order). Root-relative imports (`.x`) and `std.*` packages are never affected. This is how the `eiwa` CLI wires external dependencies (Section 30) without the compiler knowing about `~/.eiwa`.
 
+### 16.4 Custom Main Wrappers (`@MainWrapper`)
+
+Some runtimes need to control how the program's entry point executes — initializing a coroutine scheduler, an embedded GC, a windowing/game loop *before* user `main` runs, and tearing state down afterwards. Eiwa lets you wrap the real `main` with any function annotated `@MainWrapper`.
+
+**Contract signature:**
+
+```kotlin
+@MainWrapper
+fun myWrapper(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int
+```
+
+- `mainFn` — a callable reference to the program's real entry point.
+- `argc` / `argv` — the command-line arguments forwarded from the OS.
+- Return value — becomes the process exit code.
+
+**Where the annotation is valid:**
+- a top-level function,
+- a method of an `object` (static),
+- a method of a `lib` block (C implementation provided via `@Source`).
+
+It is **invalid** on instance methods of a `type` (they require a receiver). At most **one** `@MainWrapper` is allowed per program — a second one is a compile error.
+
+**Pure-Eiwa wrapper** (setup/teardown around main, no C involved):
+
+```kotlin
+import { println } from "std.io"
+
+@MainWrapper
+fun initApp(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int {
+    println("starting app")
+    val code = mainFn(argc, argv)
+    println("exiting with code " + code.toString())
+    return code
+}
+
+fun main() {
+    println("hello from main")
+}
+```
+
+**C lib wrapper** (implementation in the lib's `@Source` files):
+
+```kotlin
+@Source("neco.c")
+@Source("neco_wrapper.c")
+lib Neco {
+    @MainWrapper
+    @Alias("Neco_main_wrapper")
+    fun mainWrapper(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int
+}
+```
+
+**ABI adaptation:** an Eiwa wrapper receives `mainFn` as a closure value and calls it with normal function-call syntax (`mainFn(argc, argv)`); a `lib` wrapper receives the raw C function pointer `int (*)(int, char**)` (the name comes from `@Alias`).
+
+**Compiler behavior:** the real `main` is renamed and the annotated wrapper becomes the entry point:
+
+```
+main(argc, argv) { return <wrapper>(real_main, argc, argv) }
+```
+
 ---
 
 ## 17. Standard Library Packages & Time API

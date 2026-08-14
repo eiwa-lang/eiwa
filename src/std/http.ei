@@ -3,6 +3,7 @@ import { Map, MutableMap } from "std.collections"
 
 @Link("curl")
 @Header("<curl/curl.h>", "runtime/curl_helpers.h")
+@Source("src/runtime/third_party/curl/curl_helpers.c")
 lib NativeHttp {
     @Alias("curl_easy_init")
     fun curlEasyInit(): Pointer

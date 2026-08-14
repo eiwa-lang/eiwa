@@ -1,0 +1,22 @@
+import { println } from "std.io"
+
+// @MainWrapper (Phase 65): esta função vira o entry point do programa quando
+// a Phase 65 estiver implementada. Hoje a anotação é ignorada e `main` roda
+// normalmente — o sample documenta o contrato.
+//
+// Contrato: (mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer) -> Int
+//   - mainFn: referência ao `main` real do programa (closure no backend Eiwa,
+//     ponteiro C cru `int (*)(int, char**)` em lib)
+//   - argc / argv: argumentos de linha de comando do SO
+//   - retorno: exit code do processo
+@MainWrapper
+fun initApp(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int {
+    println("> before main")
+    val code = mainFn(argc, argv)
+    println("< after main (exit " + code.toString() + ")")
+    return code
+}
+
+fun main() {
+    println("hello from wrapped main")
+}
