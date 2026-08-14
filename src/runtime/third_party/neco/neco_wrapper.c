@@ -144,3 +144,32 @@ int eiwa_neco_wait_writable(int fd) {
     eiwa_gc_fix_stackbottom();
     return ret;
 }
+
+// ---------------------------------------------------------------------------
+// @MainWrapper entry (Phase 65): the backend emits `main(...)` that calls
+// `Neco_main_wrapper` with a pointer to the real program entry. The wrapper
+// runs the real main inside the neco runtime (GC init on the OS thread, then
+// the program main becomes the first coroutine). `int64_t` argc/return match
+// Eiwa's `Int`; the real main is invoked as `int(int, char**)`.
+// ---------------------------------------------------------------------------
+static void* eiwa_wrapped_main_fn;
+static int eiwa_wrapped_main_ret;
+
+static void eiwa_main_wrapper_co(int co_argc, void* co_argv[]) {
+    (void)co_argc;
+    eiwa_gc_fix_stackbottom();
+    int (*main_fn)(int, char**) = (int (*)(int, char**))eiwa_wrapped_main_fn;
+    eiwa_wrapped_main_ret = main_fn(*(int*)co_argv[0], *(char***)co_argv[1]);
+}
+
+int64_t Neco_main_wrapper(void* main_fn, int64_t argc, char** argv) {
+    GC_init();
+    eiwa_neco_runtime_init();
+    eiwa_wrapped_main_fn = main_fn;
+    int ret = neco_start(eiwa_main_wrapper_co, 2, &argc, &argv);
+    if (ret != NECO_OK) {
+        fprintf(stderr, "neco_start: %s (code %d)\n", neco_strerror(ret), ret);
+        return 1;
+    }
+    return (int64_t)eiwa_wrapped_main_ret;
+}

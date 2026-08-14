@@ -349,13 +349,20 @@ pub fn emitFunDecl(self: *CTranspiler, node: *ASTNode) !void {
     try self.writer.appendSlice("}\n\n");
 
     if (is_main) {
-        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    eiwa_argc = argc;\n    eiwa_argv = argv;\n");
+        if (self.main_wrapper_c_names.len > 0) {
+            try self.writer.appendSlice("int __eiwa_main(int argc, char** argv) {\n    GC_init();\n    eiwa_argc = argc;\n    eiwa_argv = argv;\n");
+        } else {
+            try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    eiwa_argc = argc;\n    eiwa_argv = argv;\n");
+        }
         for (self.static_initializers.items) |si| {
             try self.writer.writer().print("    {s} = ", .{si.name});
             try self.emitExpression(si.init);
             try self.writer.appendSlice(";\n");
         }
         try self.writer.appendSlice("    return eiwa_main();\n}\n\n");
+        if (self.main_wrapper_c_names.len > 0) {
+            try self.emitMainWrapperEntry();
+        }
     }
 }
 

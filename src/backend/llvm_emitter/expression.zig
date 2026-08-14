@@ -2456,11 +2456,17 @@ pub fn emitExpression(
                                         const c_i64_type = llvm.LLVMInt64TypeInContext(c_ctx);
                                         const parent_func = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(c_builder));
                                         const vt_ok_bb = llvm.LLVMAppendBasicBlockInContext(c_ctx, parent_func, "vt_ok");
+                                        const vt_call_bb = llvm.LLVMAppendBasicBlockInContext(c_ctx, parent_func, "vt_call");
                                         const vt_null_bb = llvm.LLVMAppendBasicBlockInContext(c_ctx, parent_func, "vt_null");
                                         const vt_merge_bb = llvm.LLVMAppendBasicBlockInContext(c_ctx, parent_func, "vt_merge");
 
+                                        // Branch on a null vtable BEFORE touching it — a primitives'
+                                        // fat pointer has a null vtable (handled by vt_null), and a
+                                        // speculative GEP/load on null would segfault instead.
                                         const is_vt_null = llvm.LLVMBuildIsNull(c_builder, c_vtable_ptr, "is_vt_null");
+                                        _ = llvm.LLVMBuildCondBr(c_builder, is_vt_null, vt_null_bb, vt_ok_bb);
 
+                                        llvm.LLVMPositionBuilderAtEnd(c_builder, vt_ok_bb);
                                         const vtable_val_t = llvm.LLVMGlobalGetValueType(c_vtable_ptr);
                                         const fn_slot_ptr = if (llvm.LLVMGetTypeKind(vtable_val_t) == llvm.LLVMStructTypeKind) blk: {
                                             var gep2_indices = [_]llvm.LLVMValueRef{
@@ -2475,10 +2481,9 @@ pub fn emitExpression(
                                         const fn_ptr = llvm.LLVMBuildLoad2(c_builder, c_ptr_type, fn_slot_ptr, "vtable_fn_ptr");
 
                                         const is_fn_null = llvm.LLVMBuildIsNull(c_builder, fn_ptr, "is_fn_null");
-                                        const is_bad_call = llvm.LLVMBuildOr(c_builder, is_vt_null, is_fn_null, "is_bad_call");
-                                        _ = llvm.LLVMBuildCondBr(c_builder, is_bad_call, vt_null_bb, vt_ok_bb);
+                                        _ = llvm.LLVMBuildCondBr(c_builder, is_fn_null, vt_null_bb, vt_call_bb);
 
-                                        llvm.LLVMPositionBuilderAtEnd(c_builder, vt_ok_bb);
+                                        llvm.LLVMPositionBuilderAtEnd(c_builder, vt_call_bb);
 
                                         var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, 1 + c_call.arguments.len);
                                         defer std.heap.page_allocator.free(param_types);

@@ -50,6 +50,14 @@ pub const ModuleRegistry = struct {
     }
 };
 
+/// A `@MainWrapper` function: the C symbol that wraps the program entry point
+/// (Phase 65). `is_lib` is true for lib-block methods (raw C function pointer);
+/// false for Eiwa functions (closure value `{fn_ptr, env}`).
+pub const MainWrapperInfo = struct {
+    c_name: []const u8,
+    is_lib: bool,
+};
+
 pub const TypeChecker = struct {
     allocator: std.mem.Allocator,
     io: std.Io = undefined,
@@ -73,6 +81,9 @@ pub const TypeChecker = struct {
     current_class_name: ?[]const u8 = null,
     current_class_methods: ?[]const *ASTNode = null,
     current_type_c_name: ?[]const u8 = null,
+    /// `@MainWrapper` functions in declaration order; the first is the
+    /// outermost wrapper (Phase 65). Chained: main = W0(W1(...Wn(real_main))).
+    main_wrappers: ArrayList(MainWrapperInfo),
     registry: ?*ModuleRegistry = null,
     pass: enum { declaration, validation } = .validation,
     status: enum { unvisited, declaring_types, declared_types, declaring_signatures, declared_signatures, resolving_imports, resolved_imports, validating, validated } = .unvisited,
@@ -117,6 +128,7 @@ pub const TypeChecker = struct {
             .local_symbols = std.StringHashMap(void).init(allocator),
             .lib_symbols = std.StringHashMap(void).init(allocator),
             .monomorphized_nodes = ArrayList(*ASTNode).init(allocator),
+            .main_wrappers = ArrayList(MainWrapperInfo).init(allocator),
             .current_class_name = null,
             .registry = null,
             .pass = .validation,
@@ -137,6 +149,7 @@ pub const TypeChecker = struct {
         self.functions_ast.deinit();
         self.generic_functions_ast.deinit();
         self.local_symbols.deinit();
+        self.main_wrappers.deinit();
         self.lib_symbols.deinit();
         self.monomorphized_nodes.deinit();
     }

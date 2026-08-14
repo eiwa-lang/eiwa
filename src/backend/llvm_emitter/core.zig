@@ -40,6 +40,15 @@ pub const LLVMEmitter = struct {
     is_release: bool,
     is_test_mode: bool = false,
     source_file: []const u8 = "",
+    /// `@MainWrapper` functions (Phase 65), in declaration order (first =
+    /// outermost wrapper). Chained: main = W0(W1(...Wn(real_main))).
+    /// `main_wrapper_is_lib[i]` selects the ABI for wrapper i (raw C fn pointer
+    /// for lib methods vs. closure `{fn_ptr, env}` for Eiwa functions).
+    main_wrapper_c_names: []const []const u8 = &.{},
+    main_wrapper_is_lib: []const bool = &.{},
+    /// Program arguments forwarded to the JIT entry (run mode), mirroring the
+    /// C backend's child argv.
+    program_argv: []const []const u8 = &.{},
     functions: std.StringHashMap(llvm.LLVMValueRef),
     structs: std.StringHashMap(StructInfo),
     /// Maps lib-block names (e.g. "Console") to their set of functions.
@@ -844,6 +853,133 @@ pub const LLVMEmitter = struct {
                 }
             }
         }
+
+        // Phase 65 (@MainWrapper): wrap the program entry point.
+        if (self.main_wrapper_c_names.len > 0) {
+            try self.emitMainWrapperEntry(mod);
+        }
+    }
+
+    /// Emits the `@MainWrapper` chain (Phase 65). Wrappers W[0..n) are chained
+    /// outermost-first: `main = W0(W1(...Wn-1(real_main)...))`. Each wrapper
+    /// receives a shim `i32(i32, ptr)`; Eiwa wrappers get it as a closure
+    /// `{fn_ptr, env}`, lib wrappers as a raw C function pointer.
+    fn emitMainWrapperEntry(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
+        const n = self.main_wrapper_c_names.len;
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+        const i32_type = llvm.LLVMInt32TypeInContext(self.context);
+        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
+
+        // The real program main (user main / synthetic top-level main).
+        var real_main: llvm.LLVMValueRef = undefined;
+        if (self.is_test_mode) {
+            real_main = llvm.LLVMGetNamedFunction(mod, "eiwa_test_main") orelse return error.MainNotFound;
+        } else {
+            real_main = llvm.LLVMGetNamedFunction(mod, "main") orelse return error.MainNotFound;
+            const new_name_z = try self.allocator.dupeZ(u8, "__eiwa_main");
+            defer self.allocator.free(new_name_z);
+            _ = llvm.LLVMSetValueName2(real_main, new_name_z.ptr, "__eiwa_main".len);
+        }
+        const real_main_type = llvm.LLVMGlobalGetValueType(real_main);
+
+        var shim_params = [_]llvm.LLVMTypeRef{ i32_type, ptr_type };
+        const shim_type = llvm.LLVMFunctionType(i32_type, &shim_params, 2, 0);
+
+        // Innermost shim S[n-1]: calls the real main.
+        var shims = try self.allocator.alloc(llvm.LLVMValueRef, n);
+        defer self.allocator.free(shims);
+        {
+            const s_name = try std.fmt.allocPrint(self.allocator, "__eiwa_main_shim_{d}", .{n - 1});
+            defer self.allocator.free(s_name);
+            const s_name_z = try self.allocator.dupeZ(u8, s_name);
+            defer self.allocator.free(s_name_z);
+            const s = llvm.LLVMAddFunction(mod, s_name_z.ptr, shim_type);
+            const entry = llvm.LLVMAppendBasicBlockInContext(self.context, s, "entry");
+            llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
+            const real_ret = llvm.LLVMGetReturnType(real_main_type);
+            if (llvm.LLVMGetTypeKind(real_ret) == llvm.LLVMVoidTypeKind) {
+                _ = llvm.LLVMBuildCall2(self.builder, real_main_type, real_main, null, 0, "");
+                _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstInt(i32_type, 0, 0));
+            } else {
+                const r = llvm.LLVMBuildCall2(self.builder, real_main_type, real_main, null, 0, "real_ret");
+                _ = llvm.LLVMBuildRet(self.builder, r);
+            }
+            shims[n - 1] = s;
+        }
+
+        // Shim S[i] (i < n-1): calls W[i+1] with S[i+1].
+        var i: usize = n - 1;
+        while (i > 0) {
+            i -= 1;
+            const s_name = try std.fmt.allocPrint(self.allocator, "__eiwa_main_shim_{d}", .{i});
+            defer self.allocator.free(s_name);
+            const s_name_z = try self.allocator.dupeZ(u8, s_name);
+            defer self.allocator.free(s_name_z);
+            const s = llvm.LLVMAddFunction(mod, s_name_z.ptr, shim_type);
+            const entry = llvm.LLVMAppendBasicBlockInContext(self.context, s, "entry");
+            llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
+            const argc = llvm.LLVMGetParam(s, 0);
+            const argv = llvm.LLVMGetParam(s, 1);
+            const ret = self.emitWrapperCall(mod, i + 1, shims[i + 1], argc, argv, i64_type, i32_type, ptr_type);
+            _ = llvm.LLVMBuildRet(self.builder, ret);
+            shims[i] = s;
+        }
+
+        // Entry: i32 main(i32, ptr) -> W[0](S[0], argc, argv).
+        const main_type = llvm.LLVMFunctionType(i32_type, &shim_params, 2, 0);
+        const main_fn = llvm.LLVMAddFunction(mod, "main", main_type);
+        const main_entry = llvm.LLVMAppendBasicBlockInContext(self.context, main_fn, "entry");
+        llvm.LLVMPositionBuilderAtEnd(self.builder, main_entry);
+        const argc_val = llvm.LLVMGetParam(main_fn, 0);
+        const argv_val = llvm.LLVMGetParam(main_fn, 1);
+        const result = self.emitWrapperCall(mod, 0, shims[0], argc_val, argv_val, i64_type, i32_type, ptr_type);
+        _ = llvm.LLVMBuildRet(self.builder, result);
+    }
+
+    /// Emits the call to wrapper `idx` (from main_wrapper_c_names) passing
+    /// `target` (the shim / raw fn) as the mainFn argument, argc and argv.
+    fn emitWrapperCall(
+        self: *LLVMEmitter,
+        mod: llvm.LLVMModuleRef,
+        idx: usize,
+        target: llvm.LLVMValueRef,
+        argc_val: llvm.LLVMValueRef,
+        argv_val: llvm.LLVMValueRef,
+        i64_type: llvm.LLVMTypeRef,
+        i32_type: llvm.LLVMTypeRef,
+        ptr_type: llvm.LLVMTypeRef,
+    ) llvm.LLVMValueRef {
+        const wrapper_c = self.main_wrapper_c_names[idx];
+        const wrapper_z = self.allocator.dupeZ(u8, wrapper_c) catch return llvm.LLVMConstInt(i32_type, 1, 0);
+        defer self.allocator.free(wrapper_z);
+        const wrapper_fn = llvm.LLVMGetNamedFunction(mod, wrapper_z.ptr) orelse return llvm.LLVMConstInt(i32_type, 1, 0);
+        const actual_type = llvm.LLVMGlobalGetValueType(wrapper_fn);
+
+        var call_args: [3]llvm.LLVMValueRef = undefined;
+        if (self.main_wrapper_is_lib[idx]) {
+            // Lib method: the wrapper receives the real main as a raw C
+            // function pointer (the shim).
+            call_args[0] = target;
+        } else {
+            // Eiwa function: mainFn is a function-type param → a closure
+            // POINTER (ptr to `{ fn_ptr, env }`).
+            var closure_fields = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
+            const closure_type = llvm.LLVMStructTypeInContext(self.context, &closure_fields, 2, 0);
+            const closure_mem = llvm.LLVMBuildAlloca(self.builder, closure_type, "mw_closure");
+            const zero_i32 = llvm.LLVMConstInt(i32_type, 0, 0);
+            var fn_idx = [_]llvm.LLVMValueRef{ zero_i32, zero_i32 };
+            const fn_slot = llvm.LLVMBuildGEP2(self.builder, closure_type, closure_mem, &fn_idx, 2, "mw_fn_slot");
+            _ = llvm.LLVMBuildStore(self.builder, target, fn_slot);
+            var env_idx = [_]llvm.LLVMValueRef{ zero_i32, llvm.LLVMConstInt(i32_type, 1, 0) };
+            const env_slot = llvm.LLVMBuildGEP2(self.builder, closure_type, closure_mem, &env_idx, 2, "mw_env_slot");
+            _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstNull(ptr_type), env_slot);
+            call_args[0] = closure_mem;
+        }
+        call_args[1] = llvm.LLVMBuildSExt(self.builder, argc_val, i64_type, "mw_argc");
+        call_args[2] = argv_val;
+
+        const result = llvm.LLVMBuildCall2(self.builder, actual_type, wrapper_fn, &call_args, 3, "mw_ret");
+        return llvm.LLVMBuildTrunc(self.builder, result, i32_type, "mw_trunc");
     }
 
     fn declareEnum(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, node: *ast.ASTNode) !void {
@@ -2488,11 +2624,33 @@ pub const LLVMEmitter = struct {
         // unmaps JIT'd memory pages while host unwinder runs, causing segfaults.
         // defer llvm.LLVMDisposeExecutionEngine(engine);
 
-        const entry_name: [*:0]const u8 = if (self.is_test_mode) "eiwa_test_main" else "main";
+        // When a @MainWrapper exists, the ultimate entry is `main(i32, ptr)`
+        // (run and test mode); otherwise test mode uses eiwa_test_main.
+        const wrapped = self.main_wrapper_c_names.len > 0;
+        const entry_name: [*:0]const u8 = if (!wrapped and self.is_test_mode) "eiwa_test_main" else "main";
         const main_func = llvm.LLVMGetNamedFunction(mod, entry_name) orelse return error.MainNotFound;
         const main_fn_ptr = llvm.LLVMGetPointerToGlobal(engine, main_func);
         const main_type = llvm.LLVMGlobalGetValueType(main_func);
-        if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type)) == llvm.LLVMVoidTypeKind) {
+        const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type));
+        const param_count: usize = @intCast(llvm.LLVMCountParamTypes(main_type));
+
+        if (param_count == 2 and ret_kind == llvm.LLVMIntegerTypeKind) {
+            // main(i32 argc, ptr argv) — the @MainWrapper entry.
+            const args_vec = self.program_argv;
+            var argv = try self.allocator.alloc(?*anyopaque, args_vec.len + 1);
+            defer self.allocator.free(argv);
+            for (args_vec, 0..) |arg, i| {
+                const z = try self.allocator.dupeZ(u8, arg);
+                argv[i] = @ptrCast(z.ptr);
+            }
+            argv[args_vec.len] = null;
+            const main_fn: *const fn (c_int, [*]?*anyopaque) callconv(.c) i32 = @ptrCast(@alignCast(main_fn_ptr));
+            const res = main_fn(@intCast(args_vec.len), argv.ptr);
+            const code: u8 = if (res < 0) 1 else @intCast(@min(res, 255));
+            std.process.exit(code);
+        }
+
+        if (ret_kind == llvm.LLVMVoidTypeKind) {
             const main_fn: *const fn () callconv(.c) void = @ptrCast(@alignCast(main_fn_ptr));
             main_fn();
             return 0;

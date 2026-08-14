@@ -1020,6 +1020,20 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         }
     }
 
+    // @MainWrapper: valid on top-level functions and object methods; rejected
+    // on instance methods of a type and on the entry `main` itself.
+    if (hasAnnotation(f.annotations, "MainWrapper")) {
+        if (is_method) {
+            self.reportError(node.line, node.column, "TypeError: @MainWrapper cannot be used on an instance method of a type. Use a top-level function, an object method, or a lib method.", .{});
+            return error.TypeError;
+        }
+        if (std.mem.eql(u8, f.name, "main")) {
+            self.reportError(node.line, node.column, "TypeError: @MainWrapper cannot be applied to the entry function 'main' itself.", .{});
+            return error.TypeError;
+        }
+        try registerMainWrapper(self, node, f.resolved_c_name.?, false);
+    }
+
     var return_type: *const EiwaType = undefined;
     var body_inferred = false;
 
@@ -1124,6 +1138,57 @@ pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     t.* = .Void;
 }
 
+fn hasAnnotation(annotations: []const ast.Annotation, name: []const u8) bool {
+    for (annotations) |ann| {
+        if (std.mem.eql(u8, ann.name, name)) return true;
+    }
+    return false;
+}
+
+/// Validates and records a `@MainWrapper` function (Phase 65). Contract
+/// signature: `(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer) -> Int`.
+/// Multiple wrappers are chained in declaration order (first = outermost).
+fn registerMainWrapper(self: *TypeChecker, node: *ASTNode, c_name: []const u8, is_lib: bool) anyerror!void {
+    const f = &node.data.fun_decl;
+
+    const isNamed = struct {
+        fn check(tr: ?*const ast.ASTTypeRef, name: []const u8) bool {
+            if (tr == null) return false;
+            return std.mem.eql(u8, tr.?.name, name);
+        }
+    }.check;
+
+    if (f.params.len != 3) {
+        self.reportError(node.line, node.column, "TypeError: @MainWrapper requires signature (mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer) -> Int.", .{});
+        return error.TypeError;
+    }
+    const fn_tr = f.params[0].type_ref orelse {
+        self.reportError(node.line, node.column, "TypeError: @MainWrapper parameter 0 must be a function type (Int, Pointer) -> Int.", .{});
+        return error.TypeError;
+    };
+    if (!fn_tr.is_function or fn_tr.generic_args.len != 2 or fn_tr.return_type == null or
+        !isNamed(fn_tr.generic_args[0], "Int") or !isNamed(fn_tr.generic_args[1], "Pointer") or !isNamed(fn_tr.return_type.?, "Int"))
+    {
+        self.reportError(node.line, node.column, "TypeError: @MainWrapper parameter 0 must be a function type (Int, Pointer) -> Int.", .{});
+        return error.TypeError;
+    }
+    if (!isNamed(f.params[1].type_ref, "Int") or !isNamed(f.params[2].type_ref, "Pointer")) {
+        self.reportError(node.line, node.column, "TypeError: @MainWrapper requires signature (mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer) -> Int.", .{});
+        return error.TypeError;
+    }
+    if (!isNamed(f.type_ref, "Int")) {
+        self.reportError(node.line, node.column, "TypeError: @MainWrapper must return Int (the process exit code).", .{});
+        return error.TypeError;
+    }
+
+    // The function may be inferred in both the declaration and validation
+    // passes — register each wrapper symbol only once.
+    for (self.main_wrappers.items) |existing| {
+        if (std.mem.eql(u8, existing.c_name, c_name)) return;
+    }
+    try self.main_wrappers.append(.{ .c_name = c_name, .is_lib = is_lib });
+}
+
 pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const l = node.data.lib_decl;
     const lib_type = try self.allocator.create(EiwaType);
@@ -1150,6 +1215,11 @@ pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                     c_name = ann.arguments[0];
                 }
             }
+        }
+        // @MainWrapper on a lib method: the wrapper is the C function named by
+        // @Alias (raw C function pointer ABI).
+        if (hasAnnotation(f.annotations, "MainWrapper")) {
+            try registerMainWrapper(self, func, c_name, true);
         }
         var param_types = ArrayList(*const EiwaType).init(self.allocator);
         for (f.params) |p| {

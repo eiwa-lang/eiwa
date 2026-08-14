@@ -110,6 +110,12 @@ pub const CTranspiler = struct {
     contracts_ast: ?*std.StringHashMap(*ASTNode) = null,
     alias_map: ?*std.StringHashMap([]const u8) = null,
     source_file: []const u8 = "<unknown>", // path to the .ei source file being transpiled
+    /// `@MainWrapper` functions (Phase 65), in declaration order (first =
+    /// outermost wrapper). Chained: main = W0(W1(...Wn(real_main))).
+    /// `main_wrapper_is_lib[i]` selects the ABI (raw C fn pointer for lib
+    /// methods vs. closure `{fn_ptr, env}` for Eiwa functions).
+    main_wrapper_c_names: []const []const u8 = &.{},
+    main_wrapper_is_lib: []const bool = &.{},
     static_initializers: ArrayList(StaticInitializer),
     // Stack of outer scope variables for lambda capture
     outer_scope_vars: ArrayList(std.StringHashMap(void)),
@@ -388,7 +394,11 @@ pub const CTranspiler = struct {
                     }
 
                     if (self.is_test_mode) {
-                        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    eiwa_argc = argc;\n    eiwa_argv = argv;\n");
+                        if (self.main_wrapper_c_names.len > 0) {
+                            try self.writer.appendSlice("int __eiwa_main(int argc, char** argv) {\n    GC_init();\n    eiwa_argc = argc;\n    eiwa_argv = argv;\n");
+                        } else {
+                            try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n    eiwa_argc = argc;\n    eiwa_argv = argv;\n");
+                        }
                         for (self.static_initializers.items) |si| {
                             try self.writer.writer().print("    {s} = ", .{si.name});
                             try self.emitExpression(si.init);
@@ -424,8 +434,15 @@ pub const CTranspiler = struct {
                             try self.writer.appendSlice("    }\n");
                         }
                         try self.writer.appendSlice("    return __failed;\n}\n");
+                        if (self.main_wrapper_c_names.len > 0) {
+                            try self.emitMainWrapperEntry();
+                        }
                     } else if (!has_main) {
-                        try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n");
+                        if (self.main_wrapper_c_names.len > 0) {
+                            try self.writer.appendSlice("int __eiwa_main(int argc, char** argv) {\n    GC_init();\n");
+                        } else {
+                            try self.writer.appendSlice("int main(int argc, char** argv) {\n    GC_init();\n");
+                        }
                         try self.writer.appendSlice("    eiwa_argc = argc;\n");
                         try self.writer.appendSlice("    eiwa_argv = argv;\n");
                         for (self.static_initializers.items) |si| {
@@ -438,6 +455,9 @@ pub const CTranspiler = struct {
                             try self.emitStatement(stmt);
                         }
                         try self.writer.appendSlice("    return 0;\n}\n");
+                        if (self.main_wrapper_c_names.len > 0) {
+                            try self.emitMainWrapperEntry();
+                        }
                     }
                 } else {
                     if (top_level_stmts.items.len > 0) {
@@ -447,6 +467,25 @@ pub const CTranspiler = struct {
                 }
             },
             else => return error.InvalidProgramNode,
+        }
+    }
+
+    /// Emits the `@MainWrapper` chain (Phase 65): `__eiwa_main` is the real
+    /// entry and a new `main` runs the wrappers outermost-first. Lib methods
+    /// receive the shim as a raw C function pointer; Eiwa functions receive a
+    /// closure. The chain produces `int __eiwa_main_shim_{i}` functions.
+    pub fn emitMainWrapperEntry(self: *CTranspiler) !void {
+        const n = self.main_wrapper_c_names.len;
+        for (0..n) |i| {
+            const wrapper = self.main_wrapper_c_names[n - 1 - i];
+            const inner = if (i == 0) "__eiwa_main" else try std.fmt.allocPrint(self.allocator, "__eiwa_main_shim_{d}", .{n - i});
+            const s_name = if (i == n - 1) "main" else try std.fmt.allocPrint(self.allocator, "__eiwa_main_shim_{d}", .{n - 1 - i});
+            const lib = self.main_wrapper_is_lib[n - 1 - i];
+            if (lib) {
+                try self.writer.writer().print("int {s}(int argc, char** argv) {{\n    return {s}({s}, argc, argv);\n}}\n", .{ s_name, wrapper, inner });
+            } else {
+                try self.writer.writer().print("int {s}(int argc, char** argv) {{\n    return {s}((EiwaClosure){{ (void*){s}, 0, 0 }}, argc, argv);\n}}\n", .{ s_name, wrapper, inner });
+            }
         }
     }
 };

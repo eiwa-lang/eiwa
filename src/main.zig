@@ -402,7 +402,25 @@ pub fn main(init: std.process.Init) !void {
     var global_enums_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_contracts_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_alias_map = std.StringHashMap([]const u8).init(arena.allocator());
-
+    // @MainWrapper functions: lib wrappers (C runtime inits, e.g. neco) are
+    // outermost so they initialize runtimes (GC, scheduler) before user code
+    // runs; Eiwa wrappers follow in declaration order.
+    var global_main_wrappers = ArrayList(type_checker.MainWrapperInfo).init(arena.allocator());
+    // Lib wrappers (C runtime inits, e.g. neco) are outermost so they
+    // initialize runtimes (GC, scheduler) before any user code runs; Eiwa
+    // wrappers follow, both in declaration order.
+    for (registry.ordered_modules.items) |path| {
+        const mod = registry.modules.get(path).?;
+        for (mod.checker.main_wrappers.items) |wrapper| {
+            if (wrapper.is_lib) try global_main_wrappers.append(wrapper);
+        }
+    }
+    for (registry.ordered_modules.items) |path| {
+        const mod = registry.modules.get(path).?;
+        for (mod.checker.main_wrappers.items) |wrapper| {
+            if (!wrapper.is_lib) try global_main_wrappers.append(wrapper);
+        }
+    }
     for (registry.ordered_modules.items) |path| {
         const mod = registry.modules.get(path).?;
         var class_it = mod.checker.classes_ast.iterator();
@@ -446,6 +464,17 @@ pub fn main(init: std.process.Init) !void {
         emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
         emitter.is_test_mode = is_test;
         emitter.contracts_ast = &global_contracts_ast;
+        emitter.program_argv = if (positionals.items.len > 1) positionals.items[1..] else &.{};
+        {
+            var names = ArrayList([]const u8).init(arena.allocator());
+            var libs = ArrayList(bool).init(arena.allocator());
+            for (global_main_wrappers.items) |w| {
+                try names.append(w.c_name);
+                try libs.append(w.is_lib);
+            }
+            emitter.main_wrapper_c_names = names.items;
+            emitter.main_wrapper_is_lib = libs.items;
+        }
 
         try emitter.emitModule(ast_root);
 
@@ -473,6 +502,16 @@ pub fn main(init: std.process.Init) !void {
     transpiler.contracts_ast = &global_contracts_ast;
     transpiler.alias_map = &global_alias_map;
     transpiler.source_file = filename; // used for #line directives in C output
+    {
+        var names = ArrayList([]const u8).init(arena.allocator());
+        var libs = ArrayList(bool).init(arena.allocator());
+        for (global_main_wrappers.items) |w| {
+            try names.append(w.c_name);
+            try libs.append(w.is_lib);
+        }
+        transpiler.main_wrapper_c_names = names.items;
+        transpiler.main_wrapper_is_lib = libs.items;
+    }
     defer transpiler.deinit();
 
     const c_code = try transpiler.transpile(ast_root);

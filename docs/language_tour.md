@@ -1154,7 +1154,7 @@ fun myWrapper(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int
 - a method of an `object` (static),
 - a method of a `lib` block (C implementation provided via `@Source`).
 
-It is **invalid** on instance methods of a `type` (they require a receiver). At most **one** `@MainWrapper` is allowed per program — a second one is a compile error.
+It is **invalid** on instance methods of a `type` (they require a receiver). Multiple `@MainWrapper` functions are **chained** outermost-first: `main = W0(W1(...Wn(real_main)))`. Lib wrappers (C runtime initializers, e.g. neco) are placed outermost so they set up runtimes (GC, scheduler) before any user code runs; Eiwa wrappers follow in declaration order.
 
 **Pure-Eiwa wrapper** (setup/teardown around main, no C involved):
 

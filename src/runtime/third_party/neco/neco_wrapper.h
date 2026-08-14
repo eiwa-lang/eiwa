@@ -37,30 +37,23 @@ int eiwa_neco_wait_writable(int fd);
 // Wraps neco_sleep + eiwa_gc_fix_stackbottom (same pattern as yield/join).
 int eiwa_neco_sleep(int64_t nanosecs);
 
+// @MainWrapper entry (Phase 65): runs the real program main inside the neco
+// runtime. Implemented in neco_wrapper.c. `int64_t` argc/return match Eiwa's
+// `Int`; main_fn is invoked as `int(int, char**)`.
+int64_t Neco_main_wrapper(void* main_fn, int64_t argc, char** argv);
+
 // Run the whole program inside the neco runtime: the generated `main`
 // becomes the first coroutine. Without this, the first `neco_start` call
 // would block until that coroutine and all of its children finish, making
 // top-level tasks sequential. GC_init() must run on the real OS thread
 // *before* entering the neco runtime (Boehm GC crashes if initialized on a
 // coroutine stack).
-#define main \
-__eiwa_main(int argc, char *argv[]); \
-static int __eiwa_main_ret; \
-static void _eiwa_main_co(int _co_argc, void *_co_argv[]) { \
-    (void)_co_argc; \
-    eiwa_gc_fix_stackbottom(); \
-    __eiwa_main_ret = __eiwa_main(*(int *)_co_argv[0], *(char ***)_co_argv[1]); \
-} \
-int main(int argc, char *argv[]) { \
-    GC_init(); \
-    eiwa_neco_runtime_init(); \
-    int _neco_ret = neco_start(_eiwa_main_co, 2, &argc, &argv); \
-    if (_neco_ret != NECO_OK) { \
-        fprintf(stderr, "neco_start: %s (code %d)\n", neco_strerror(_neco_ret), _neco_ret); \
-        return 1; \
-    } \
-    return __eiwa_main_ret; \
-} \
-int __eiwa_main
+//
+// Phase 65: the entry wrapping is now driven by the Eiwa `@MainWrapper`
+// annotation on the `lib Neco` block, which makes the backend emit a `main`
+// that calls `Neco_main_wrapper` (implemented in neco_wrapper.c). The
+// `#define main` preprocessor hack was removed — it only worked on the C
+// backend (which runs the C preprocessor) and is replaced by the portable
+// annotation.
 
 #endif

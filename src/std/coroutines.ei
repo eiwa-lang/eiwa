@@ -7,6 +7,10 @@
 @Source("src/runtime/third_party/neco/neco_wrapper.c")
 @Include("src/runtime/third_party/neco")
 lib Neco {
+    @MainWrapper
+    @Alias("Neco_main_wrapper")
+    fun mainWrapper(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int
+
     @Alias("eiwa_neco_start_closure")
     fun start(closure: () -> Void): Int
 
