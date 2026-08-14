@@ -2516,25 +2516,48 @@ pub const LLVMEmitter = struct {
 
     /// Compiles the lib-declared C sources into a shared library and loads it
     /// into the JIT process so MCJIT can resolve the FFI externs (Phase 65).
+    /// The shared library is keyed by the compile inputs, so an identical lib
+    /// (e.g. the neco runtime, present in every test file) is compiled once and
+    /// reused across processes instead of recompiled per file.
     fn loadLibSourcesIntoJIT(self: *LLVMEmitter, io: std.Io) !void {
         if (self.c_sources.count() == 0 and self.c_includes.count() == 0 and self.c_defines.count() == 0 and self.link_libraries.count() == 0) return;
 
-        const lib_filename = "temp_llvm_libs.dylib";
-        var cc_argv = ArrayList([]const u8).init(self.allocator);
-        defer cc_argv.deinit();
+        var h = std.hash.Wyhash.init(0);
+        var src_it = self.c_sources.keyIterator();
+        while (src_it.next()) |s| h.update(s.*);
+        var def_it = self.c_defines.keyIterator();
+        while (def_it.next()) |d| h.update(d.*);
+        var inc_it = self.c_includes.keyIterator();
+        while (inc_it.next()) |i| h.update(i.*);
+        var link_it = self.link_libraries.keyIterator();
+        while (link_it.next()) |l| h.update(l.*);
+        const key = h.final();
 
-        try cc_argv.appendSlice(&[_][]const u8{ "zig", "cc", "-shared", "-O0", "-fwrapv" });
-        if (builtin.target.os.tag == .macos) {
-            try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
-        }
-        try cc_argv.appendSlice(&[_][]const u8{ "-o", lib_filename, "-lgc" });
-        try self.appendLibRequirements(&cc_argv);
+        const lib_filename = try std.fmt.allocPrint(self.allocator, "/tmp/eiwa_llvm_libs_{x}.dylib", .{key});
+        defer self.allocator.free(lib_filename);
 
-        var child = try std.process.spawn(io, .{ .argv = cc_argv.items });
-        const term = try child.wait(io);
-        if (term != .exited or term.exited != 0) {
-            std.debug.print("Compiling lib C sources for JIT failed.\n", .{});
-            return error.LibSourceCompileFailed;
+        const cached = blk: {
+            var f = std.Io.Dir.cwd().openFile(io, lib_filename, .{}) catch break :blk false;
+            f.close(io);
+            break :blk true;
+        };
+        if (!cached) {
+            var cc_argv = ArrayList([]const u8).init(self.allocator);
+            defer cc_argv.deinit();
+
+            try cc_argv.appendSlice(&[_][]const u8{ "zig", "cc", "-shared", "-O0", "-fwrapv" });
+            if (builtin.target.os.tag == .macos) {
+                try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
+            }
+            try cc_argv.appendSlice(&[_][]const u8{ "-o", lib_filename, "-lgc" });
+            try self.appendLibRequirements(&cc_argv);
+
+            var child = try std.process.spawn(io, .{ .argv = cc_argv.items });
+            const term = try child.wait(io);
+            if (term != .exited or term.exited != 0) {
+                std.debug.print("Compiling lib C sources for JIT failed.\n", .{});
+                return error.LibSourceCompileFailed;
+            }
         }
 
         // dlopen with RTLD_GLOBAL so the MCJIT symbol resolver (dlsym
@@ -2545,7 +2568,6 @@ pub const LLVMEmitter = struct {
             return error.LibSourceLoadFailed;
         };
         _ = dynlib;
-        std.Io.Dir.cwd().deleteFile(io, lib_filename) catch {};
     }
 
     /// Returns true if the emitted function body is well-formed LLVM IR
