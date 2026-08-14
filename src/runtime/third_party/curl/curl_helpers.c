@@ -41,15 +41,3 @@ int eiwa_curl_get_status(CURL* curl) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     return (int)response_code;
 }
-
-int eiwa_curl_setopt_string(CURL* curl, CURLoption option, const void* value) {
-    return curl_easy_setopt(curl, option, value);
-}
-
-int eiwa_curl_setopt_ptr(CURL* curl, CURLoption option, void* value) {
-    return curl_easy_setopt(curl, option, value);
-}
-
-int eiwa_curl_setopt_int(CURL* curl, CURLoption option, int value) {
-    return curl_easy_setopt(curl, option, (long)value);
-}

@@ -26,14 +26,8 @@ lib NativeHttp {
     @Alias("eiwa_curl_get_status")
     fun curlGetStatus(curl: Pointer): Int
     
-    @Alias("eiwa_curl_setopt_string")
-    fun curlSetoptString(curl: Pointer, option: Int, value: Pointer): Int
-    
-    @Alias("eiwa_curl_setopt_ptr")
-    fun curlSetoptPtr(curl: Pointer, option: Int, value: Pointer): Int
-    
-    @Alias("eiwa_curl_setopt_int")
-    fun curlSetoptInt(curl: Pointer, option: Int, value: Int): Int
+    @Alias("curl_easy_setopt")
+    fun curlEasySetopt(curl: Pointer, option: Int, value: Pointer...): Int
 }
 
 type Response(val status: Int, val body: String)
@@ -52,10 +46,10 @@ type Client() {
         val CURLOPT_WRITEDATA = 10001
         val CURLOPT_FOLLOWLOCATION = 52
         
-        NativeHttp.curlSetoptString(curl, CURLOPT_URL, url.ptr)
-        NativeHttp.curlSetoptPtr(curl, CURLOPT_WRITEFUNCTION, NativeHttp.getWriteCallbackPtr())
-        NativeHttp.curlSetoptPtr(curl, CURLOPT_WRITEDATA, buffer)
-        NativeHttp.curlSetoptInt(curl, CURLOPT_FOLLOWLOCATION, 1)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, NativeHttp.getWriteCallbackPtr())
+        NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEDATA, buffer)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_FOLLOWLOCATION, 1)
         
         val res = NativeHttp.curlEasyPerform(curl)
         
@@ -89,14 +83,14 @@ type Client() {
         val CURLOPT_POSTFIELDSIZE = 60
         val CURLOPT_FOLLOWLOCATION = 52
         
-        NativeHttp.curlSetoptString(curl, CURLOPT_URL, url.ptr)
-        NativeHttp.curlSetoptPtr(curl, CURLOPT_WRITEFUNCTION, NativeHttp.getWriteCallbackPtr())
-        NativeHttp.curlSetoptPtr(curl, CURLOPT_WRITEDATA, buffer)
-        NativeHttp.curlSetoptInt(curl, CURLOPT_FOLLOWLOCATION, 1)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, NativeHttp.getWriteCallbackPtr())
+        NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEDATA, buffer)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_FOLLOWLOCATION, 1)
         
-        NativeHttp.curlSetoptInt(curl, CURLOPT_POST, 1)
-        NativeHttp.curlSetoptString(curl, CURLOPT_POSTFIELDS, body.ptr)
-        NativeHttp.curlSetoptInt(curl, CURLOPT_POSTFIELDSIZE, body.length)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_POST, 1)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_POSTFIELDS, body.ptr)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_POSTFIELDSIZE, body.length)
         
         val res = NativeHttp.curlEasyPerform(curl)
         

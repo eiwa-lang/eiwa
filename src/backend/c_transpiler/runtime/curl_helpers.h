@@ -40,16 +40,4 @@ static inline int eiwa_curl_get_status(CURL* curl) {
     return (int)response_code;
 }
 
-static inline int eiwa_curl_setopt_string(CURL* curl, CURLoption option, const void* value) {
-    return curl_easy_setopt(curl, option, value);
-}
-
-static inline int eiwa_curl_setopt_ptr(CURL* curl, CURLoption option, void* value) {
-    return curl_easy_setopt(curl, option, value);
-}
-
-static inline int eiwa_curl_setopt_int(CURL* curl, CURLoption option, int value) {
-    return curl_easy_setopt(curl, option, (long)value);
-}
-
 #endif // EIWA_CURL_HELPERS_H

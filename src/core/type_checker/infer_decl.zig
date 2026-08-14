@@ -1228,6 +1228,9 @@ pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         }
         var param_types = ArrayList(*const EiwaType).init(self.allocator);
         for (f.params) |p| {
+            // A varargs parameter (`T...`) maps to the C `...` tail: it is NOT a
+            // fixed parameter of the function signature (Phase 66).
+            if (p.is_varargs) continue;
             const p_t = if (p.type_ref) |tr| try self.resolveTypeRef(tr) else blk: {
                 const v = try self.allocator.create(EiwaType);
                 v.* = .Void;

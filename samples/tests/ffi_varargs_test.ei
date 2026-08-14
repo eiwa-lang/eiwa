@@ -1,0 +1,22 @@
+@Header("src/runtime/third_party/eiwa_varargs_test/varargs_helpers.h")
+@Source("src/runtime/third_party/eiwa_varargs_test/varargs_helpers.c")
+lib NativeVarargsTest {
+    @Alias("eiwa_va_sum")
+    fun vaSum(count: Int, values: Int...): Int
+    
+    @Alias("eiwa_va_count")
+    fun vaCount(count: Int, values: Int...): Int
+}
+
+test "ffi varargs: fixed param plus variadic tail" {
+    assert(NativeVarargsTest.vaSum(3, 10, 20, 30) == 60)
+    assert(NativeVarargsTest.vaSum(1, 5) == 5)
+}
+
+test "ffi varargs: zero variadic args" {
+    assert(NativeVarargsTest.vaSum(0) == 0)
+}
+
+test "ffi varargs: variadic args reach the C call" {
+    assert(NativeVarargsTest.vaCount(0, 1, 2, 3, -1) == 3)
+}

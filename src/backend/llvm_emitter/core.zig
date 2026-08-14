@@ -1991,8 +1991,13 @@ pub const LLVMEmitter = struct {
         const f = func_node.data.fun_decl;
         if (f.generic_params.len > 0) return;
 
+        // A varargs parameter (`T...`) maps to the C `...` tail: it is not a
+        // fixed parameter, but makes the declared function variadic (Phase 66).
+        const has_vararg = f.params.len > 0 and f.params[f.params.len - 1].is_varargs;
+        const fixed_count = if (has_vararg) f.params.len - 1 else f.params.len;
+
         const ptr_type_def = llvm.LLVMPointerTypeInContext(self.context, 0);
-        var param_types = try self.allocator.alloc(llvm.LLVMTypeRef, f.params.len);
+        var param_types = try self.allocator.alloc(llvm.LLVMTypeRef, fixed_count);
         defer self.allocator.free(param_types);
 
         var ret_type: llvm.LLVMTypeRef = ptr_type_def;
@@ -2000,7 +2005,7 @@ pub const LLVMEmitter = struct {
         if (func_node.resolved_type) |rt| {
             if (rt.* == .Function) {
                 ret_type = types_mapping.getLLVMTypeWithContracts(self.context, rt.Function.return_type.*, self.contracts_ast);
-                for (f.params, 0..) |_, i| {
+                for (0..fixed_count) |i| {
                     if (i < rt.Function.params.len) {
                         param_types[i] = types_mapping.getLLVMTypeWithContracts(self.context, rt.Function.params[i].*, self.contracts_ast);
                     } else {
@@ -2014,7 +2019,8 @@ pub const LLVMEmitter = struct {
             if (tr.resolved_type) |rrt| {
                 ret_type = types_mapping.getLLVMType(self.context, rrt.*);
             }
-            for (f.params, 0..) |p, i| {
+            for (0..fixed_count) |i| {
+                const p = f.params[i];
                 if (p.type_ref) |ptr| {
                     if (ptr.resolved_type) |prt| {
                         param_types[i] = types_mapping.getLLVMType(self.context, prt.*);
@@ -2026,7 +2032,8 @@ pub const LLVMEmitter = struct {
                 param_types[i] = ptr_type_def;
             }
         } else {
-            for (f.params, 0..) |p, i| {
+            for (0..fixed_count) |i| {
+                const p = f.params[i];
                 if (p.type_ref) |ptr| {
                     if (ptr.resolved_type) |prt| {
                         param_types[i] = types_mapping.getLLVMType(self.context, prt.*);
@@ -2039,7 +2046,7 @@ pub const LLVMEmitter = struct {
             }
         }
 
-        const func_type = llvm.LLVMFunctionType(ret_type, if (param_types.len > 0) param_types.ptr else null, @intCast(param_types.len), 0);
+        const func_type = llvm.LLVMFunctionType(ret_type, if (param_types.len > 0) param_types.ptr else null, @intCast(param_types.len), if (has_vararg) 1 else 0);
 
         const name_z = try self.allocator.dupeZ(u8, c_name);
         defer self.allocator.free(name_z);
