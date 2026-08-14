@@ -1,0 +1,44 @@
+import { println } from "std.io"
+
+fun sum(numbers: Int...): Int {
+    var total = 0
+    for (n in numbers) total = total + n
+    return total
+}
+
+fun join(separator: String, parts: String...): String {
+    var out = ""
+    var i = 0
+    while (i < parts.size()) {
+        if (i > 0) out = out + separator
+        out = out + parts[i]
+        i = i + 1
+    }
+    return out
+}
+
+type Stats(val label: String) {
+    fun describe(values: Double...): String {
+        var res = this.label + "(" + values.size().toString() + "): "
+        var i = 0
+        while (i < values.size()) {
+            if (i > 0) res = res + ", "
+            res = res + values[i].toString()
+            i = i + 1
+        }
+        return res
+    }
+}
+
+fun main() {
+    println("sum() = " + sum().toString())
+    println("sum(1,2,3) = " + sum(1, 2, 3).toString())
+    println("sum(10,20,30,40) = " + sum(10, 20, 30, 40).toString())
+
+    println(join(", ", "Eiwa", "Zig", "LLVM"))
+    println(join(" - ", "a", "b"))
+
+    val stats = Stats("samples")
+    println(stats.describe(1.5, 2.5, 3.0))
+    println(stats.describe())
+}

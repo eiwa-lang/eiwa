@@ -1,0 +1,96 @@
+import { assert } from "std.core"
+import { List, MutableList } from "std.collections"
+
+fun sum(numbers: Int...): Int {
+    var total = 0
+    for (n in numbers) total = total + n
+    return total
+}
+
+fun join(separator: String, parts: String...): String {
+    var out = ""
+    var i = 0
+    while (i < parts.size()) {
+        if (i > 0) out = out + separator
+        out = out + parts[i]
+        i = i + 1
+    }
+    return out
+}
+
+fun count(...items: Bool): Int {
+    return items.size()
+}
+
+type Stats(val label: String) {
+    fun describe(values: Double...): String {
+        var res = this.label + "(" + values.size().toString() + "): "
+        var i = 0
+        while (i < values.size()) {
+            if (i > 0) res = res + ", "
+            res = res + values[i].toString()
+            i = i + 1
+        }
+        return res
+    }
+}
+
+object Formatter {
+    fun format(pattern: String, values: Int...): String {
+        var res = ""
+        var i = 0
+        while (i < values.size()) {
+            res = res + pattern + values[i].toString()
+            i = i + 1
+        }
+        return res
+    }
+}
+
+test "varargs: zero arguments yields an empty list" {
+    assert(sum() == 0)
+    assert(count() == 0)
+}
+
+test "varargs: single and multiple arguments" {
+    assert(sum(5) == 5)
+    assert(sum(1, 2, 3) == 6)
+    assert(sum(10, 20, 30, 40) == 100)
+}
+
+test "varargs: fixed params before the variadic tail" {
+    assert(join(", ", "a", "b", "c") == "a, b, c")
+    assert(join(" - ", "x") == "x")
+    assert(join("+") == "")
+}
+
+test "varargs: body treats the parameter as a List" {
+    val total = sum(1, 2, 3, 4)
+    assert(total == 10)
+    // The List is iterable, indexable and has size()
+    fun firstItem(items: Int...): Int {
+        return items[0]
+    }
+    assert(firstItem(7, 8, 9) == 7)
+    assert(firstItem(42) == 42)
+}
+
+test "varargs: in a type method" {
+    val stats = Stats("s")
+    assert(stats.describe(1.5, 2.5) == "s(2): 1.5, 2.5")
+    assert(stats.describe() == "s(0): ")
+    assert(stats.describe(3.0, 4.0, 5.0, 6.0) == "s(4): 3, 4, 5, 6")
+}
+
+test "varargs: in an object method" {
+    assert(Formatter.format("n=", 1, 2) == "n=1n=2")
+    assert(Formatter.format("v=", 9) == "v=9")
+}
+
+test "varargs: a call without trailing args passes an empty List" {
+    fun makeList(items: Int...): List<Int> {
+        return items
+    }
+    assert(makeList().size() == 0)
+    assert(makeList(1, 2, 3).size() == 3)
+}

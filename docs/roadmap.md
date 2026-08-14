@@ -682,6 +682,35 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Verify 65:** `zig build test` + guardrail `passing_llvm` 53/53 (LLVM e C); `eiwac build` de programa com corrotinas linka neco e roda dentro do runtime (`Neco_main_wrapper`); `samples/main_wrapper_sample.ei` imprime `> before main` / `< after main` nos dois backends e no build nativo. **Gap conhecido:** `Process.args()` no backend LLVM depende de `eiwa_args_count`/`eiwa_argv` (globals C que só o C backend seta) — tarefa futura separada.
 - [ ] **Task 65.9 (Futuro — remover TODO o glue C do `std.http`):** Eliminar `curl_helpers.h`/`curl_helpers.c` e fazer o `lib NativeHttp` chamar o **curl diretamente**. Hoje os 7 helpers existem por limitações de FFI do Eiwa: (a) `curl_easy_setopt`/`curl_easy_getinfo` são **varargs** (Eiwa não tem assinatura variádica); (b) o write callback exige ponteiro de função C que lambda Eiwa não fornece; (c) leitura dos campos de `struct EiwaCurlBuffer` alocado no lado C. **Dívida imediata:** o `curl_helpers.c` duplica as funções `static inline` do header (duas fontes de verdade) — dedupe pendente (header → declarações apenas; `.c` → única implementação). **Objetivo:** suporte de FFI variádico (ou API de alto nível própria) + passagem de callbacks, permitindo chamar `curl_easy_setopt`/`getinfo` direto do lib block e remover todo o `@Source` do http.
 
+### Phase 66: Typed Varargs (`T...`) (IN PROGRESS)
+> **Motivação:** Eliminar o glue C do `std.http` (Task 65.9) e chamar libs C varargs (`curl_easy_setopt`, `printf`, `PQexec`) diretamente. Primeiro como feature de linguagem em **métodos/funções Eiwa normais**; depois aplicada a **lib blocks** (FFI C `...`).
+>
+> **Design:** o **último** parâmetro tipado com sufixo `...` vira um varargs. No **corpo** da função é um `List<T>` (iterável, indexável, `.size()`); no **call site**, os args posicionais além dos fixos são coletados numa `List<T>`.
+>
+> ```kotlin
+> fun sum(numbers: Int...): Int {
+>     var total = 0
+>     for (n in numbers) total = total + n   // numbers: List<Int>
+>     return total
+> }
+>
+> sum(1, 2, 3)    // List<Int> = [1, 2, 3]
+> sum()           // List<Int> vazia
+> ```
+>
+> **Regras:** `...`/`T...` só no último param; o tipo define o elemento da `List<T>`; args extras no call devem ser compatíveis com `T`; funciona em funções top-level, métodos de `type`/`object`/`skill` e construtores. **Escopo futuro:** lib blocks mapeiam `T...` para o `...` C do FFI (os args vão direto pra função C, sem List).
+
+- [ ] **Task 66.1:** Lexer/Parser — token `...` e parse de param varargs tipado (`name: T...`) como último param em declarações de função/método/construtor. Erro se não for o último ou se não tiver tipo. Verify: `zig build test` (unit do parser); sample varargs parseia.
+- [ ] **Task 66.2:** AST — marcar o param como varargs (campo no `Param`/`fun_decl`); resolver `T...` como tipo `List<T>` no escopo do corpo. Verify: `sum(numbers: Int...)` faz `numbers` ser `List<Int>` no corpo.
+- [ ] **Task 66.3:** Type checker (`inferFunDecl`, `infer_call`) — param varargs vira `List<T>`; o call aceita N args extras além dos fixos, cada um compatível com `T`; valida fixos normalmente; chama sem args extras = lista vazia. Verify: chamadas com 0, 1, N args; erro de tipo em arg incompatível.
+- [ ] **Task 66.4:** C transpiler — no call site, construir a `List<T>` (array literal / `MutableList<T>` + `add`) com os args extras e passar como param normal. Verify: C gerado constrói a lista e chama a função.
+- [ ] **Task 66.5:** LLVM emitter — mesmo: construir a `List<T>` no call site e passar. Verify: IR constrói o array e chama.
+- [ ] **Task 66.6:** Overloads — varargs participa da resolução de overload (ex: `fun foo(x: Int, y: Int...)` vs `fun foo(x: Int)`). Verify: chamadas escolhem o overload certo.
+- [ ] **Task 66.7 (Futuro):** Lib blocks — mapear `T...` para o `...` C (FFI): args extras vão direto pra função C (sem List); usar no `std.http` (curl) e remover o glue.
+- [ ] **Verify 66:** `zig build test` + guardrail `samples/tests` 54/54 (novo `varargs_test.ei`) nos backends LLVM e C; `samples/varargs_sample.ei` roda.
+
+---
+
 ## ✅ Definition of Done (Per Phase)
 * [x] **Security/Lint:** No memory leaks in tests (utilizing `std.testing.allocator` across internal Zig modules).
 * [x] **Build:** `zig build test` and `zig build run` execute successfully.

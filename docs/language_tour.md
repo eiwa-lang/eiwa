@@ -952,6 +952,51 @@ body(class = "bg-slate-900 text-white p-8") {
 
 Statically typed defaults and named arguments are validated during type checking. If a caller omits an argument that has a default value, the type checker automatically clones and injects the default expression into the target parameter slot before transpilation.
 
+### 14.2 Varargs (`T...`)
+
+A function or method can accept a variable number of trailing arguments by marking its **last** parameter with a `...` suffix on the type. Inside the body, the parameter is a `List<T>`; at the call site, every positional argument beyond the fixed ones is collected into that list.
+
+```kotlin
+fun sum(numbers: Int...): Int {
+    var total = 0
+    for (n in numbers) total = total + n   // numbers: List<Int>
+    return total
+}
+
+fun greet(greeting: String, names: String...): String {
+    var out = greeting
+    for (name in names) out = out + ", " + name
+    return out + "!"
+}
+```
+
+**Call site** — pass any number of trailing values:
+
+```kotlin
+assert(sum() == 0)          // empty list
+assert(sum(1, 2, 3) == 6)   // List<Int> = [1, 2, 3]
+
+assert(greet("Hi", "Ana") == "Hi, Ana!")
+assert(greet("Yo", "Leo", "Bob") == "Yo, Leo, Bob!")
+```
+
+**Rules:**
+- `...` may only be on the **last** parameter, and the parameter must have a type.
+- The element type `T` is what the compiler requires at each trailing call argument.
+- Inside the body, the varargs parameter is an immutable `List<T>` — iterate, index, or call `.size()`.
+- Calling with zero trailing arguments yields an empty list.
+- Works on top-level functions, `type`/`object`/`skill` methods, and constructors.
+
+```kotlin
+// ❌ Invalid — `...` must be the last parameter
+fun bad(a: Int..., b: Int) { }
+
+// ❌ Invalid — each trailing argument must be compatible with T
+sum("not a number") // TypeError
+```
+
+*(Future phase: `T...` in `lib` blocks maps to C variadic functions, forwarding the trailing arguments directly to the C `...`.)*
+
 ---
 
 ## 15. Lambda Expressions & Higher-Order Functions
