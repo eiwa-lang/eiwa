@@ -1328,6 +1328,15 @@ pub fn emitExpression(
             const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
 
+            // Receiver lambdas (`HTMLBuilder.() -> Void`) receive the receiver
+            // as an explicit leading parameter (arg 1 after env), mirroring the
+            // C backend `_lambda_...(void* __env, T* this)`. `this` is therefore
+            // NOT a capture — it is re-stacked from that parameter.
+            const recv_type: ?*const ts.EiwaType = if (node.resolved_type) |rt| blk: {
+                if (rt.* == .Function) break :blk rt.Function.receiver;
+                break :blk null;
+            } else null;
+
             // --- Step 1: Collect captures ------------------------------------------
             var locals = std.StringHashMap(void).init(std.heap.page_allocator);
             defer locals.deinit();
@@ -1342,6 +1351,8 @@ pub fn emitExpression(
                     }
                 }
             }
+            // Receiver is a parameter, never an env capture
+            if (recv_type != null) try locals.put("this", {});
             // Add vars declared inside the body
             for (lam.body) |stmt| try collectDeclaredLocalsLLVM(stmt, &locals);
 
@@ -1361,18 +1372,22 @@ pub fn emitExpression(
                 }
                 param_types[i] = i64_type;
             }
-            // Handle implicit `it` param
+            // Handle implicit `it` param. `it` exists only when the expected
+            // Function type has exactly one parameter; a `() -> Void` lambda has
+            // no user params at all (no fat-pointer fallback).
             var it_param_type: ?llvm.LLVMTypeRef = null;
-            if (lam.params.len == 0) {
-                it_param_type = blk: {
-                    if (node.resolved_type) |rt| {
-                        if (rt.* == .Function and rt.Function.params.len == 1) {
-                            break :blk types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.params[0].*, global_contracts_ast_ptr);
-                        }
+            if (recv_type == null and lam.params.len == 0) {
+                if (node.resolved_type) |rt| {
+                    if (rt.* == .Function and rt.Function.params.len == 1) {
+                        it_param_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.params[0].*, global_contracts_ast_ptr);
                     }
-                    break :blk types_mapping.getFatPointerType(ctx);
-                };
+                }
             }
+            // Receiver lambda: leading param carries the receiver object pointer
+            const recv_param_type: ?llvm.LLVMTypeRef = if (recv_type) |rt|
+                types_mapping.getLLVMTypeWithContracts(ctx, rt.*, global_contracts_ast_ptr)
+            else
+                null;
 
             var ret_type: llvm.LLVMTypeRef = llvm.LLVMVoidTypeInContext(ctx);
             if (node.resolved_type) |rt| {
@@ -1395,14 +1410,19 @@ pub fn emitExpression(
             const env_struct_type = llvm.LLVMStructTypeInContext(ctx, cap_type_arr.ptr, @intCast(captures.items.len), 0);
 
             // --- Step 4: Build LLVM function signature (ptr_env, params...) → ret ---
-            const n_user_params = if (it_param_type != null) @as(usize, 1) else lam.params.len;
+            const n_user_params = @as(usize, if (recv_param_type != null) 1 else 0) + (if (it_param_type != null) @as(usize, 1) else lam.params.len);
             var full_param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, 1 + n_user_params);
             defer std.heap.page_allocator.free(full_param_types);
             full_param_types[0] = ptr_type; // env
+            var user_param_offset: usize = 1;
+            if (recv_param_type) |rpt| {
+                full_param_types[user_param_offset] = rpt;
+                user_param_offset += 1;
+            }
             if (it_param_type) |ipt| {
-                full_param_types[1] = ipt;
+                full_param_types[user_param_offset] = ipt;
             } else {
-                for (param_types, 0..) |pt, idx| full_param_types[1 + idx] = pt;
+                for (param_types, 0..) |pt, idx| full_param_types[user_param_offset + idx] = pt;
             }
 
             const func_type = llvm.LLVMFunctionType(ret_type, full_param_types.ptr, @intCast(1 + n_user_params), 0);
@@ -1426,15 +1446,23 @@ pub fn emitExpression(
             defer lam_scope.deinit();
 
             // Re-stack user params (indices 1..)
+            var user_param_index: usize = 1;
+            if (recv_param_type) |rpt| {
+                const recv_val = llvm.LLVMGetParam(func_val, 1);
+                const this_alloca = llvm.LLVMBuildAlloca(builder, rpt, "this");
+                _ = llvm.LLVMBuildStore(builder, recv_val, this_alloca);
+                try lam_scope.put("this", this_alloca);
+                user_param_index += 1;
+            }
             if (it_param_type != null) {
-                const param_val = llvm.LLVMGetParam(func_val, 1);
+                const param_val = llvm.LLVMGetParam(func_val, @intCast(user_param_index));
                 const p_type = llvm.LLVMTypeOf(param_val);
                 const alloca_ptr = llvm.LLVMBuildAlloca(builder, p_type, "it");
                 _ = llvm.LLVMBuildStore(builder, param_val, alloca_ptr);
                 try lam_scope.put("it", alloca_ptr);
             } else {
                 for (lam.params, 0..) |p, i| {
-                    const param_val = llvm.LLVMGetParam(func_val, @intCast(1 + i));
+                    const param_val = llvm.LLVMGetParam(func_val, @intCast(user_param_index + i));
                     const p_type = llvm.LLVMTypeOf(param_val);
                     const p_name_z = try std.heap.page_allocator.dupeZ(u8, p.name);
                     defer std.heap.page_allocator.free(p_name_z);
@@ -1649,7 +1677,17 @@ pub fn emitExpression(
                     }
                 }
 
-                const target_func_init = if (std.mem.indexOf(u8, callee_name, "randomBytes") != null)
+                // A callee that names a local variable (or parameter) holds a
+                // closure value `{ fn_ptr, env }` at runtime, never a function
+                // symbol. Skip the named-function lookup below so the dynamic
+                // closure invocation path handles it (otherwise a stub declared
+                // under the same name — e.g. collections `add` — is called with
+                // the wrong signature).
+                const callee_is_var = scope.get(callee_name) != null;
+
+                const target_func_init = if (callee_is_var)
+                    null
+                else if (std.mem.indexOf(u8, callee_name, "randomBytes") != null)
                     llvm.LLVMGetNamedFunction(mod, "eiwa_random_bytes")
                 else if (std.mem.indexOf(u8, callee_name, "readByte") != null)
                     llvm.LLVMGetNamedFunction(mod, "eiwa_read_byte")
@@ -2913,9 +2951,22 @@ pub fn emitExpression(
 
                 if (call.callee.resolved_type) |rt| {
                     ret_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.return_type.*, global_contracts_ast_ptr);
+                    // Receiver lambdas (`T.() -> R`) bind the receiver as the
+                    // leading argument, supplied by the caller as args[0].
+                    const recv_param: ?llvm.LLVMTypeRef = if (rt.Function.receiver) |rec|
+                        types_mapping.getLLVMTypeWithContracts(ctx, rec.*, global_contracts_ast_ptr)
+                    else
+                        null;
                     for (call.arguments, 0..) |_, idx| {
-                        if (idx < rt.Function.params.len) {
-                            param_types[idx] = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.params[idx].*, global_contracts_ast_ptr);
+                        const p_idx: usize = if (recv_param != null) blk: {
+                            if (idx == 0) {
+                                param_types[idx] = recv_param.?;
+                                continue;
+                            }
+                            break :blk idx - 1;
+                        } else idx;
+                        if (p_idx < rt.Function.params.len) {
+                            param_types[idx] = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.params[p_idx].*, global_contracts_ast_ptr);
                         } else {
                             param_types[idx] = llvm.LLVMInt64TypeInContext(ctx);
                         }
@@ -3434,6 +3485,19 @@ pub fn emitExpression(
         },
         .is_expr => |i| {
             const target_type = if (i.type_ref.resolved_type) |rt| rt.* else .Unknown;
+
+            // `x is Void` (or a value whose static type is Void) is a constant:
+            // a Void-typed variable has no storage and its value is nothing, so
+            // the check is trivially true (mirrors C emitting assert(1, ...)).
+            if (target_type == .Void) {
+                return llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), if (i.is_not) 0 else 1, 0);
+            }
+            if (i.value.resolved_type) |vr| {
+                if (vr.* == .Void) {
+                    return llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), if (i.is_not) 0 else 1, 0);
+                }
+            }
+
             const target_c_name = if (i.type_ref.resolved_type) |rt| switch (rt.*) {
                 .Custom => |cn| cn,
                 .GenericInstance => |gi| gi.base_name,

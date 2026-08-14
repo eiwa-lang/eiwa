@@ -2323,7 +2323,7 @@ pub const LLVMEmitter = struct {
                 }
             }
         }
-            var engine: llvm.LLVMExecutionEngineRef = undefined;
+        var engine: llvm.LLVMExecutionEngineRef = undefined;
         var err_msg: [*c]u8 = null;
 
         if (llvm.LLVMCreateExecutionEngineForModule(&engine, mod, &err_msg) != 0) {

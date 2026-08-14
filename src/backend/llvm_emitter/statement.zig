@@ -55,6 +55,19 @@ pub fn emitStatement(
         .var_decl => |v| {
             const name = v.resolved_c_name orelse v.name;
             const res_type = node.resolved_type orelse return error.MissingTypeForVarDecl;
+
+            // A `val`/`var` of type Void has no storage — its initializer is
+            // evaluated purely for side effects (mirrors the C backend, which
+            // emits `foo();` with no `result` variable). Reads of such a
+            // variable (e.g. `result is Void`) are handled by the identifier /
+            // `is` paths (constant VoidTypeKind checks).
+            if (res_type.* == .Void) {
+                if (v.initializer) |init_node| {
+                    _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, init_node);
+                }
+                return;
+            }
+
             const is_contract = types_mapping.isContractType(res_type.*, expression.global_contracts_ast_ptr);
             const llvm_type = if (is_contract) types_mapping.getFatPointerType(ctx) else types_mapping.getLLVMType(ctx, res_type.*);
 
