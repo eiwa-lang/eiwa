@@ -2036,7 +2036,8 @@ pub fn emitExpression(
                     std.mem.eql(u8, g.name, "plus") or
                     std.mem.eql(u8, g.name, "charAt") or
                     std.mem.eql(u8, g.name, "toLowerCase") or
-                    std.mem.eql(u8, g.name, "toUpperCase");
+                    std.mem.eql(u8, g.name, "toUpperCase") or
+                    std.mem.eql(u8, g.name, "toDouble");
 
                 if (obj_rt_opt == null and is_known_string_method) {
                     obj_rt_opt = &static_string_type.t;
@@ -2205,6 +2206,35 @@ pub fn emitExpression(
                             const i64_t = llvm.LLVMInt64TypeInContext(ctx);
                             const is_not_null = llvm.LLVMBuildIsNotNull(builder, match_ptr, "has_match");
                             return llvm.LLVMBuildZExt(builder, is_not_null, i64_t, "contains_bool");
+                        }
+                    }
+                }
+
+                if (std.mem.eql(u8, g.name, "toDouble") and call.arguments.len == 0) {
+                    if (obj_rt_opt) |obj_rt| {
+                        const obj_base = ts.extractBaseType(obj_rt).*;
+                        const is_string = switch (obj_base) {
+                            .String => true,
+                            .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String"),
+                            .Pointer => |p| switch (p.*) {
+                                .String => true,
+                                .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String"),
+                                else => false,
+                            },
+                            else => false,
+                        };
+                        if (is_string) {
+                            const str_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            const atof_fn = llvm.LLVMGetNamedFunction(mod, "atof") orelse blk: {
+                                const p = llvm.LLVMPointerTypeInContext(ctx, 0);
+                                const d = llvm.LLVMDoubleTypeInContext(ctx);
+                                var ps = [_]llvm.LLVMTypeRef{p};
+                                const ft = llvm.LLVMFunctionType(d, &ps, 1, 0);
+                                break :blk llvm.LLVMAddFunction(mod, "atof", ft);
+                            };
+                            const ft = llvm.LLVMGlobalGetValueType(atof_fn);
+                            var args = [_]llvm.LLVMValueRef{str_ptr};
+                            return llvm.LLVMBuildCall2(builder, ft, atof_fn, &args, 1, "atof_res");
                         }
                     }
                 }
