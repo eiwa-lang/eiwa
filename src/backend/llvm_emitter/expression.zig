@@ -3869,7 +3869,10 @@ fn isRealVtable(g: llvm.LLVMValueRef) bool {
     if (llvm.LLVMIsGlobalConstant(g) == 0) return false;
     const t = llvm.LLVMGlobalGetValueType(g);
     if (llvm.LLVMGetTypeKind(t) != llvm.LLVMStructTypeKind) return false;
-    if (llvm.LLVMCountStructElementTypes(t) == 0) return false;
+    // Empty-struct vtables are legitimate: contracts with no methods (e.g.
+    // `contract SerdeValue`) produce `constant {}`. Stubs created on the fly by
+    // coerceToContract are `global {}` (not constant), so the constant check
+    // above already excludes them.
     return true;
 }
 

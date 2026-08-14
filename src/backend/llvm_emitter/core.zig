@@ -2098,6 +2098,32 @@ pub const LLVMEmitter = struct {
             if (llvm.LLVMGetTypeKind(expected_ret_type) == llvm.LLVMVoidTypeKind) {
                 _ = llvm.LLVMBuildRetVoid(self.builder);
             } else {
+                // A contract return type is a Fat Pointer — coerce the concrete
+                // value with its real vtable, otherwise coerceArg would attach a
+                // null vtable. The declared return type pins the exact contract
+                // (deterministic vtable lookup).
+                const fat_type = types_mapping.getFatPointerType(self.context);
+                if (expected_ret_type == fat_type and llvm.LLVMTypeOf(ret_val) != fat_type) {
+                    var ret_contract: []const u8 = "";
+                    if (f.type_ref) |tr| {
+                        if (tr.resolved_type) |rt| {
+                            ret_contract = switch (ts.extractBaseType(rt).*) {
+                                .Custom => |n| n,
+                                else => "",
+                            };
+                        }
+                    }
+                    if (f.body.resolved_type) |val_rt| {
+                        const val_c_name = switch (ts.extractBaseType(val_rt).*) {
+                            .Custom => |n| n,
+                            .GenericInstance => |gi| gi.base_name,
+                            else => "",
+                        };
+                        if (val_c_name.len > 0) {
+                            ret_val = expression.coerceToContract(self.context, mod, self.builder, ret_val, val_c_name, ret_contract) catch ret_val;
+                        }
+                    }
+                }
                 if (llvm.LLVMTypeOf(ret_val) != expected_ret_type) {
                     ret_val = expression.coerceArg(self.builder, ret_val, expected_ret_type);
                 }

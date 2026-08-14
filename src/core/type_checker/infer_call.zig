@@ -1165,6 +1165,17 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for constructor of '{s}', got {}.", .{ type_decl.primary_constructor.len, name, c.arguments.len });
                             return error.TypeError;
                         }
+
+                        // Propagate the declared parameter types to the provided
+                        // args so the backend can coerce to the exact contract
+                        // (fat-pointer vtable) instead of guessing.
+                        for (c.arguments, 0..) |arg, arg_i| {
+                            if (arg_i < type_decl.primary_constructor.len) {
+                                if (type_decl.primary_constructor[arg_i].resolved_type orelse self.resolveTypeRef(type_decl.primary_constructor[arg_i].type_ref) catch null) |pt| {
+                                    arg.expected_type = pt;
+                                }
+                            }
+                        }
                     }
                 }
                 
@@ -1207,6 +1218,14 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         } else if (c.arguments.len > type_decl.primary_constructor.len) {
                             self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for constructor of '{s}', got {}.", .{ type_decl.primary_constructor.len, name, c.arguments.len });
                             return error.TypeError;
+                        }
+
+                        for (c.arguments, 0..) |arg, arg_i| {
+                            if (arg_i < type_decl.primary_constructor.len) {
+                                if (type_decl.primary_constructor[arg_i].resolved_type orelse self.resolveTypeRef(type_decl.primary_constructor[arg_i].type_ref) catch null) |pt| {
+                                    arg.expected_type = pt;
+                                }
+                            }
                         }
                     }
                     t.* = variable.*;
