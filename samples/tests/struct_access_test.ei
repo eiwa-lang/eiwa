@@ -1,0 +1,41 @@
+type CString(var ptr: Pointer, var length: Int)
+
+fun callback(contents: Pointer, size: Int, nmemb: Int, userp: Pointer): Int {
+    val v = userp as CString
+    val n = size * nmemb
+    val newData = Standard.gcRealloc(v.ptr, v.length + n + 1)
+    Standard.memcpy(newData + v.length, contents, n)
+    v.ptr = newData
+    v.length = v.length + n
+    return n
+}
+
+test "struct access: Pointer as Type reinterprets a memory view" {
+    val buffer = Standard.gcMalloc(24)
+    val v = buffer as CString
+    v.length = 5
+    assert(v.length == 5)
+}
+
+test "struct access: var fields are writable through the view" {
+    val buffer = Standard.gcMalloc(24)
+    val v = buffer as CString
+    v.ptr = Standard.gcMalloc(8)
+    v.length = 42
+    assert(v.ptr != null)
+    assert(v.length == 42)
+}
+
+test "struct access: Pointer as Type accepts a built-in type" {
+    val s = String("ABCDE", 5)
+    val w = s.ptr as String
+    assert(w != null)
+}
+
+test "struct access: write callback pattern (funPointer + as + memcpy)" {
+    val buffer = Standard.gcMalloc(24)
+    assert(callback("hi".ptr, 2, 1, buffer) == 2)
+    val body = buffer as CString
+    assert(body.length == 2)
+    assert(String(body.ptr, body.length) == "hi")
+}

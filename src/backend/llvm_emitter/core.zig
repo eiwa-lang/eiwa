@@ -144,6 +144,28 @@ pub const LLVMEmitter = struct {
             _ = llvm.LLVMBuildRet(self.builder, alloc);
         }
 
+        // Same for `GC_REALLOC` (FFI @Alias("GC_REALLOC"), e.g. Standard.gcRealloc):
+        // a macro in gc.h, so MCJIT can't resolve it. Forward to libc `realloc`
+        // (which accepts NULL and behaves like malloc).
+        {
+            var r_params = [_]llvm.LLVMTypeRef{ ptr_type, size_t_type };
+            const r_type = llvm.LLVMFunctionType(ptr_type, &r_params, 2, 0);
+            const gc_realloc_ffi = llvm.LLVMAddFunction(mod, "GC_REALLOC", r_type);
+            const entry_bb = llvm.LLVMAppendBasicBlockInContext(self.context, gc_realloc_ffi, "entry");
+            llvm.LLVMPositionBuilderAtEnd(self.builder, entry_bb);
+            const old_p = llvm.LLVMGetParam(gc_realloc_ffi, 0);
+            const new_s = llvm.LLVMGetParam(gc_realloc_ffi, 1);
+            const realloc_fn = llvm.LLVMGetNamedFunction(mod, "realloc") orelse blk: {
+                var rp = [_]llvm.LLVMTypeRef{ ptr_type, size_t_type };
+                const rt = llvm.LLVMFunctionType(ptr_type, &rp, 2, 0);
+                break :blk llvm.LLVMAddFunction(mod, "realloc", rt);
+            };
+            const realloc_type = llvm.LLVMGlobalGetValueType(realloc_fn);
+            var rargs = [_]llvm.LLVMValueRef{ old_p, new_s };
+            const ralloc = llvm.LLVMBuildCall2(self.builder, realloc_type, realloc_fn, &rargs, 2, "gc_realloc");
+            _ = llvm.LLVMBuildRet(self.builder, ralloc);
+        }
+
         // Declare printf and sprintf prototypes
         const i32_type = llvm.LLVMInt32TypeInContext(self.context);
         var printf_params = [_]llvm.LLVMTypeRef{ptr_type};

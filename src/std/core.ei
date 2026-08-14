@@ -20,6 +20,9 @@ lib Standard {
     @Alias("eiwa_store_int64")
     fun storeInt64(ptr: Pointer, value: Int): Void
 
+    @Alias("memcpy")
+    fun memcpy(dest: Pointer, src: Pointer, n: Int): Pointer
+
     fun exit(code: Int): Void
 }
 

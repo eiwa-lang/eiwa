@@ -1159,6 +1159,16 @@ pub fn emitExpression(
             if (!is_double) {
                 const l_type = llvm.LLVMTypeOf(left_val);
                 const r_type = llvm.LLVMTypeOf(right_val);
+                // Pointer + Int → byte pointer arithmetic (e.g. buf + n).
+                if (llvm.LLVMGetTypeKind(l_type) == llvm.LLVMPointerTypeKind and bin.op == .plus and bin.right.resolved_type != null) {
+                    const r_base = ts.extractBaseType(bin.right.resolved_type.?);
+                    if (r_base.* == .Int) {
+                        const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+                        const l_int = llvm.LLVMBuildPtrToInt(builder, left_val, i64_t, "ptr_int");
+                        const sum = llvm.LLVMBuildAdd(builder, l_int, right_val, "ptr_add");
+                        return llvm.LLVMBuildIntToPtr(builder, sum, l_type, "ptr_res");
+                    }
+                }
                 if (llvm.LLVMGetTypeKind(l_type) == llvm.LLVMPointerTypeKind and !isStringOperand(bin.left)) {
                     const m_name: ?[]const u8 = switch (bin.op) {
                         .plus => "plus",
@@ -3811,6 +3821,23 @@ pub fn emitExpression(
         },
         .as_expr => |as_e| {
             const val = try emitExpression(ctx, mod, builder, scope, structs, libs, as_e.value);
+            // `Pointer as Type` is a memory view. The LLVM value model lays out
+            // type structs WITHOUT the leading `_desc` header (the C backend
+            // includes it), so a memory view must skip the 8-byte header: the
+            // field offsets then line up with the real C layout.
+            if (as_e.value.resolved_type) |v_rt| {
+                if (ts.extractBaseType(v_rt).* == .Pointer) {
+                    if (node.resolved_type) |nrt| {
+                        if (ts.extractBaseType(nrt).* == .Custom) {
+                            const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+                            const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+                            const as_int = llvm.LLVMBuildPtrToInt(builder, val, i64_t, "as_int");
+                            const shifted = llvm.LLVMBuildAdd(builder, as_int, llvm.LLVMConstInt(i64_t, 8, 0), "as_shifted");
+                            return llvm.LLVMBuildIntToPtr(builder, shifted, ptr_t, "as_ptr");
+                        }
+                    }
+                }
+            }
             const target_rt_opt = node.resolved_type orelse as_e.type_ref.resolved_type;
             if (as_e.value.resolved_type) |v_rt| {
                 if (target_rt_opt) |target_rt| {

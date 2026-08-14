@@ -335,6 +335,10 @@ pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
             self.reportError(node.line, node.column, "TypeError: Incompatible types for cast: cannot cast {s} to {s}.", .{ base_val.Custom, base_target.Custom });
             return error.TypeError;
         }
+    } else if (base_val.* == .Pointer and (base_target.* == .Custom or base_target.* == .String)) {
+        // Reinterpret a raw pointer as a `type` (memory view): the value stays a
+        // pointer, but field access reads/writes at the type's C layout offsets.
+        // No runtime conversion.
     } else {
         const is_zero_to_ptr = base_val.* == .Int and base_target.* == .Pointer;
         const is_compat = is_zero_to_ptr or self.isCompatible(target_type, val_type) or (base_val.* == .Union and self.isCompatible(base_val, base_target));
@@ -353,9 +357,10 @@ pub fn inferIsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
     const target_type = try self.resolveTypeRef(i.type_ref);
 
     const is_compat = self.isCompatible(target_type, val_type) or self.isCompatible(val_type, target_type);
-    if (!is_compat) {
-        const base_val = extractBaseType(val_type);
-        const base_target = extractBaseType(target_type);
+    const base_val = extractBaseType(val_type);
+    const base_target = extractBaseType(target_type);
+    const is_ptr_to_type_check = base_val.* == .Pointer and (base_target.* == .Custom or base_target.* == .String);
+    if (!is_compat and !is_ptr_to_type_check) {
         const val_name = if (base_val.* == .Custom) base_val.Custom else @tagName(base_val.*);
         const target_name = if (base_target.* == .Custom) base_target.Custom else @tagName(base_target.*);
         self.reportError(node.line, node.column, "TypeError: Incompatible types for type check: {s} does not conform to {s}.", .{ val_name, target_name });

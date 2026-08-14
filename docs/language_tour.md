@@ -1302,6 +1302,29 @@ status = Memory.alloc<IntVar> {
 
 The slot is allocated through the Boehm GC, so no manual `free` is required.
 
+### 16.7 Struct Access (`Pointer as Type` & `Pointer is Type`)
+
+C APIs often pass a pointer to a struct whose fields you must read or write — e.g. libcurl's write callback hands you a `user data` pointer to a buffer. Eiwa reinterprets a raw `Pointer` as a `type` with `as`; the value becomes a **memory view** and field access reads/writes at the type's C layout offsets (every Eiwa `type` carries an 8-byte `_desc` header before its fields).
+
+```kotlin
+// Layout matches the C struct: { _desc, ptr, length }
+type CString(var ptr: Pointer, var length: Int)
+
+fun writeCallback(contents: Pointer, size: Int, nmemb: Int, userp: Pointer): Int {
+    val s = userp as CString          // reinterpret the pointer as the type
+    val n = size * nmemb
+    val newData = Standard.gcRealloc(s.ptr, s.length + n + 1)
+    Standard.memcpy(newData + s.length, contents, n)
+    s.ptr = newData                   // var fields are writable through the view
+    s.length = s.length + n
+    return n
+}
+```
+
+- `Pointer as Type` reinterprets **without checking** (the pointer must already point to that layout) — useful when the C API guarantees the type (e.g. a `user data` you configured yourself).
+- `Pointer is Type` **checks the runtime descriptor** at the address and smart-casts, so `when (ptr) { is SomeType -> ptr.field }` works.
+- Combined with `funPointer { ... }` (§16.5) and `Memory.alloc` (§16.6), this lets you bind C libraries that use callbacks, structs and out-parameters with **zero glue C** — `std.http` now calls libcurl directly.
+
 ---
 
 ## 17. Standard Library Packages & Time API

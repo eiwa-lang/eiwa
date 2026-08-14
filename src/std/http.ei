@@ -2,8 +2,7 @@ import { Socket, TCPServer } from "std.net"
 import { Map, MutableMap } from "std.collections"
 
 @Link("curl")
-@Header("<curl/curl.h>", "runtime/curl_helpers.h")
-@Source("src/runtime/third_party/curl/curl_helpers.c")
+@Header("<curl/curl.h>")
 lib NativeHttp {
     @Alias("curl_easy_init")
     fun curlEasyInit(): Pointer
@@ -14,20 +13,25 @@ lib NativeHttp {
     @Alias("curl_easy_cleanup")
     fun curlEasyCleanup(curl: Pointer): Void
     
-    @Alias("eiwa_get_write_callback_ptr")
-    fun getWriteCallbackPtr(): Pointer
-    
-    @Alias("eiwa_curl_buf_data")
-    fun curlBufData(buf: Pointer): Pointer
-    
-    @Alias("eiwa_curl_buf_size")
-    fun curlBufSize(buf: Pointer): Int
-    
     @Alias("curl_easy_setopt")
     fun curlEasySetopt(curl: Pointer, option: Int, value: Pointer...): Int
     
     @Alias("curl_easy_getinfo")
     fun curlEasyGetInfo(curl: Pointer, info: Int, value: Pointer...): Int
+}
+
+/// Memory view of the write-buffer slot: the curl write callback accumulates
+/// the response body into a `core_String` (layout `{ _desc, ptr, length }`).
+type CString(var ptr: Pointer, var length: Int)
+
+fun writeCallback(contents: Pointer, size: Int, nmemb: Int, userp: Pointer): Int {
+    val s = userp as CString
+    val n = size * nmemb
+    val newData = Standard.gcRealloc(s.ptr, s.length + n + 1)
+    Standard.memcpy(newData + s.length, contents, n)
+    s.ptr = newData
+    s.length = s.length + n
+    return n
 }
 
 type Response(val status: Int, val body: String)
@@ -39,7 +43,7 @@ type Client() {
             return Response(0, "")
         }
         
-        val buffer = Standard.gcMalloc(16)
+        val buffer = Standard.gcMalloc(24)
         
         val CURLOPT_URL = 10002
         val CURLOPT_WRITEFUNCTION = 20011
@@ -48,7 +52,7 @@ type Client() {
         val CURLINFO_RESPONSE_CODE = 2097154
         
         NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)
-        NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, NativeHttp.getWriteCallbackPtr())
+        NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, funPointer { contents: Pointer, size: Int, nmemb: Int, userp: Pointer -> writeCallback(contents, size, nmemb, userp) })
         NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEDATA, buffer)
         NativeHttp.curlEasySetopt(curl, CURLOPT_FOLLOWLOCATION, 1)
         
@@ -63,10 +67,8 @@ type Client() {
         
         NativeHttp.curlEasyCleanup(curl)
         
-        val bodyData = NativeHttp.curlBufData(buffer)
-        val bodyLen = NativeHttp.curlBufSize(buffer)
-        
-        val bodyStr = if (bodyData == null) "" else String(bodyData, bodyLen)
+        val bodyBuf = buffer as CString
+        val bodyStr = if (bodyBuf.ptr == null) "" else String(bodyBuf.ptr, bodyBuf.length)
         return Response(status, bodyStr)
     }
 
@@ -76,7 +78,7 @@ type Client() {
             return Response(0, "")
         }
         
-        val buffer = Standard.gcMalloc(16)
+        val buffer = Standard.gcMalloc(24)
         
         val CURLOPT_URL = 10002
         val CURLOPT_WRITEFUNCTION = 20011
@@ -88,7 +90,7 @@ type Client() {
         val CURLINFO_RESPONSE_CODE = 2097154
         
         NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)
-        NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, NativeHttp.getWriteCallbackPtr())
+        NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, funPointer { contents: Pointer, size: Int, nmemb: Int, userp: Pointer -> writeCallback(contents, size, nmemb, userp) })
         NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEDATA, buffer)
         NativeHttp.curlEasySetopt(curl, CURLOPT_FOLLOWLOCATION, 1)
         
@@ -107,10 +109,8 @@ type Client() {
         
         NativeHttp.curlEasyCleanup(curl)
         
-        val bodyData = NativeHttp.curlBufData(buffer)
-        val bodyLen = NativeHttp.curlBufSize(buffer)
-        
-        val bodyStr = if (bodyData == null) "" else String(bodyData, bodyLen)
+        val bodyBuf = buffer as CString
+        val bodyStr = if (bodyBuf.ptr == null) "" else String(bodyBuf.ptr, bodyBuf.length)
         return Response(status, bodyStr)
     }
 }
