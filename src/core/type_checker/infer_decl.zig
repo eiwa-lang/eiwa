@@ -649,6 +649,7 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
                 if (std.mem.eql(u8, other_skill, s.name)) {
                     // Same skill overloading a method name — allowed!
                     const cloned = try self.cloneNode(m);
+                    @constCast(&cloned.data.fun_decl).from_skill = true;
                     try bindSkillGenericParams(self, cloned, m, s.generic_params, c);
                     try final_methods.append(cloned);
                 } else if (other_skill.len == 0) {
@@ -656,6 +657,7 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
                     const renamed = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ s.name, fname });
                     const cloned = try self.cloneNode(m);
                     @constCast(&cloned.data.fun_decl).name = renamed;
+                    @constCast(&cloned.data.fun_decl).from_skill = true;
                     try bindSkillGenericParams(self, cloned, m, s.generic_params, c);
                     try final_methods.append(cloned);
                 } else {
@@ -667,6 +669,7 @@ fn composeSkills(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
             } else {
                 try provided.put(fname, s.name);
                 const cloned = try self.cloneNode(m);
+                @constCast(&cloned.data.fun_decl).from_skill = true;
                 try bindSkillGenericParams(self, cloned, m, s.generic_params, c);
                 try final_methods.append(cloned);
             }

@@ -507,7 +507,24 @@ pub const LLVMEmitter = struct {
                         std.mem.eql(u8, t_name, "core_Int") or
                         std.mem.eql(u8, t_name, "core_Bool") or
                         std.mem.eql(u8, t_name, "core_Double");
-                    if (is_inline) continue;
+                    if (is_inline) {
+                        // Primitives are skipped wholesale because their intrinsic
+                        // method bodies reference struct fields (this.ptr,
+                        // this.length) the LLVM value model never materializes
+                        // (String == char pointer here). Skill-injected methods
+                        // (flagged `from_skill` by the type checker) only touch
+                        // `this` and their block parameter, so their real bodies
+                        // ARE emitted.
+                        for (stmt.data.type_decl.methods) |m_node| {
+                            if (m_node.data != .fun_decl) continue;
+                            if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                            if (!m_node.data.fun_decl.from_skill) continue;
+                            const fname = m_node.data.fun_decl.resolved_c_name orelse try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
+                            if (!reachable.contains(fname)) continue;
+                            self.emitFunctionBodyOrStub(mod, m_node, fname, true);
+                        }
+                        continue;
+                    }
                     for (stmt.data.type_decl.methods) |m_node| {
                         if (m_node.data != .fun_decl) continue;
                         if (m_node.data.fun_decl.generic_params.len > 0) continue;
@@ -1956,7 +1973,7 @@ pub const LLVMEmitter = struct {
         const f = func_node.data.fun_decl;
         var name = f.resolved_c_name orelse f.name;
         if (is_object_method or (func_node.resolved_type != null and func_node.resolved_type.?.* == .Function and func_node.resolved_type.?.Function.receiver != null)) {
-            if (std.mem.eql(u8, name, f.name) or std.mem.eql(u8, name, "toString") or std.mem.eql(u8, name, "hashCode") or std.mem.eql(u8, name, "equals")) {
+            if (f.resolved_c_name == null or std.mem.eql(u8, name, "toString") or std.mem.eql(u8, name, "hashCode") or std.mem.eql(u8, name, "equals")) {
                 if (func_node.resolved_type) |rt| {
                     if (rt.* == .Function and rt.Function.receiver != null) {
                         const rec_t = ts.extractBaseType(rt.Function.receiver.?);

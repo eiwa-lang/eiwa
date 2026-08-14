@@ -1364,7 +1364,14 @@ pub fn emitExpression(
             // Handle implicit `it` param
             var it_param_type: ?llvm.LLVMTypeRef = null;
             if (lam.params.len == 0) {
-                it_param_type = types_mapping.getFatPointerType(ctx);
+                it_param_type = blk: {
+                    if (node.resolved_type) |rt| {
+                        if (rt.* == .Function and rt.Function.params.len == 1) {
+                            break :blk types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.params[0].*, global_contracts_ast_ptr);
+                        }
+                    }
+                    break :blk types_mapping.getFatPointerType(ctx);
+                };
             }
 
             var ret_type: llvm.LLVMTypeRef = llvm.LLVMVoidTypeInContext(ctx);

@@ -172,6 +172,7 @@ pub const ASTNodeType = union(enum) {
         body: *ASTNode,
         is_expr_body: bool, // true for `= a + b`, false for `{ ... }`
         resolved_c_name: ?[]const u8,
+        from_skill: bool = false, // true when the method was cloned from a skill into a type
     },
     type_decl: struct {
         annotations: []const Annotation,
