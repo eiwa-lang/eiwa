@@ -1,0 +1,37 @@
+object Runner {
+    fun twice(block: (Int) -> Int): Int {
+        return block(21) * 2
+    }
+}
+
+object Box {
+    fun wrap<T>(value: T, block: (T) -> Void): T {
+        block(value)
+        return value
+    }
+}
+
+test "memory alloc: implicit `it` in object method lambdas" {
+    assert(Runner.twice { it * 2 } == 84)
+}
+
+test "memory alloc: alloc<IntVar> writes and reads a GC int slot" {
+    val v = Memory.alloc<IntVar> {
+        it.set(4242)
+    }.get()
+    assert(v == 4242)
+}
+
+test "memory alloc: generic object method call with trailing lambda" {
+    val r = Box.wrap<Int>(7) {
+        assert(it == 7)
+    }
+    assert(r == 7)
+}
+
+test "memory alloc: alloc<IntVar> exposes ptr for C-style out params" {
+    val out = Memory.alloc<IntVar> {
+        Standard.storeInt64(it.ptr, 99)
+    }.get()
+    assert(out == 99)
+}

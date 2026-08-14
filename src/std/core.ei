@@ -14,6 +14,12 @@ lib Standard {
     @Alias("GC_REALLOC")
     fun gcRealloc(ptr: Pointer, newSize: Int): Pointer
 
+    @Alias("eiwa_load_int64")
+    fun loadInt64(ptr: Pointer): Int
+
+    @Alias("eiwa_store_int64")
+    fun storeInt64(ptr: Pointer, value: Int): Void
+
     fun exit(code: Int): Void
 }
 
@@ -132,6 +138,28 @@ type Pointer {
 
     fun writeByte(index: Int, value: Int): Void {
         NativeMemory.writeByte(this, index, value)
+    }
+}
+
+/// Typed view of an 8-byte GC slot, mirroring Kotlin/Native `LongVar`/`IntVar`:
+/// pass `.ptr` to a C function that writes the value, then read it with `.get()`.
+type IntVar(val ptr: Pointer) {
+    fun get(): Int = Standard.loadInt64(this.ptr)
+
+    fun set(value: Int): Void {
+        Standard.storeInt64(this.ptr, value)
+    }
+}
+
+/// Allocates an 8-byte GC slot for `T` and runs `block` with a typed view of it
+/// (pass `.ptr` to a C out-param, then read with `.get()`). Mirrors
+/// Kotlin/Native `memScoped { alloc<IntVar>() }`: `T` is the slot type, so
+/// `alloc<DoubleVar>`/`alloc<PointerVar>` will work once those slots exist.
+object Memory {
+    fun alloc<T>(block: (T) -> Void): T {
+        val v = T(Standard.gcMalloc(8))
+        block(v)
+        return v
     }
 }
 

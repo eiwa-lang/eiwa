@@ -1464,6 +1464,40 @@ pub const LLVMEmitter = struct {
             }
         }
 
+        // eiwa_load_int64(ptr) -> i64
+        // TODO(emitter): same review bucket as the other reimplemented runtime
+        // helpers above — inline IR duplicates eiwa_runtime.h; the proper fix is
+        // to link the actual runtime C helper instead of re-emitting it.
+        {
+            var params = [_]llvm.LLVMTypeRef{ ptr_t };
+            const fn_t = llvm.LLVMFunctionType(i64_t, &params, 1, 0);
+            const func = llvm.LLVMGetNamedFunction(mod, "eiwa_load_int64") orelse llvm.LLVMAddFunction(mod, "eiwa_load_int64", fn_t);
+            if (llvm.LLVMCountBasicBlocks(func) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const p = llvm.LLVMGetParam(func, 0);
+                const val = llvm.LLVMBuildLoad2(self.builder, i64_t, p, "val");
+                _ = llvm.LLVMBuildRet(self.builder, val);
+            }
+        }
+
+        // eiwa_store_int64(ptr, val) -> void
+        // TODO(emitter): same review bucket as above — inline IR duplicates
+        // eiwa_runtime.h; link the runtime helper instead of re-emitting it.
+        {
+            var params = [_]llvm.LLVMTypeRef{ ptr_t, i64_t };
+            const fn_t = llvm.LLVMFunctionType(void_t, &params, 2, 0);
+            const func = llvm.LLVMGetNamedFunction(mod, "eiwa_store_int64") orelse llvm.LLVMAddFunction(mod, "eiwa_store_int64", fn_t);
+            if (llvm.LLVMCountBasicBlocks(func) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const p = llvm.LLVMGetParam(func, 0);
+                const val = llvm.LLVMGetParam(func, 1);
+                _ = llvm.LLVMBuildStore(self.builder, val, p);
+                _ = llvm.LLVMBuildRetVoid(self.builder);
+            }
+        }
+
         // eiwa_random_bytes(ptr, len) -> void
         {
             var params = [_]llvm.LLVMTypeRef{ ptr_t, i64_t };

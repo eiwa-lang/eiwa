@@ -396,11 +396,14 @@ pub fn emitLibDecl(self: *CTranspiler, node: *ASTNode) !void {
 
     for (l.annotations) |ann| {
         if (std.mem.eql(u8, ann.name, "Header")) {
+            // Emitted into forward_writer so C headers (and their prototypes,
+            // e.g. variadic FFI like curl_easy_getinfo) are visible before any
+            // emitted struct/function/lambda that uses them.
             for (ann.arguments) |arg| {
                 if (arg.len > 0 and arg[0] == '<' and arg[arg.len - 1] == '>') {
-                    try self.writer.writer().print("#include {s}\n", .{arg});
+                    try self.forward_writer.writer().print("#include {s}\n", .{arg});
                 } else {
-                    try self.writer.writer().print("#include \"{s}\"\n", .{arg});
+                    try self.forward_writer.writer().print("#include \"{s}\"\n", .{arg});
                 }
             }
         } else if (std.mem.eql(u8, ann.name, "Link")) {

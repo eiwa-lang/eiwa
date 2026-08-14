@@ -23,11 +23,11 @@ lib NativeHttp {
     @Alias("eiwa_curl_buf_size")
     fun curlBufSize(buf: Pointer): Int
     
-    @Alias("eiwa_curl_get_status")
-    fun curlGetStatus(curl: Pointer): Int
-    
     @Alias("curl_easy_setopt")
     fun curlEasySetopt(curl: Pointer, option: Int, value: Pointer...): Int
+    
+    @Alias("curl_easy_getinfo")
+    fun curlEasyGetInfo(curl: Pointer, info: Int, value: Pointer...): Int
 }
 
 type Response(val status: Int, val body: String)
@@ -45,6 +45,7 @@ type Client() {
         val CURLOPT_WRITEFUNCTION = 20011
         val CURLOPT_WRITEDATA = 10001
         val CURLOPT_FOLLOWLOCATION = 52
+        val CURLINFO_RESPONSE_CODE = 2097154
         
         NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)
         NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, NativeHttp.getWriteCallbackPtr())
@@ -55,7 +56,9 @@ type Client() {
         
         var status = 0
         if (res == 0) {
-            status = NativeHttp.curlGetStatus(curl)
+            status = Memory.alloc<IntVar> {
+                NativeHttp.curlEasyGetInfo(curl, CURLINFO_RESPONSE_CODE, it.ptr)
+            }.get()
         }
         
         NativeHttp.curlEasyCleanup(curl)
@@ -82,6 +85,7 @@ type Client() {
         val CURLOPT_POSTFIELDS = 10015
         val CURLOPT_POSTFIELDSIZE = 60
         val CURLOPT_FOLLOWLOCATION = 52
+        val CURLINFO_RESPONSE_CODE = 2097154
         
         NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)
         NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, NativeHttp.getWriteCallbackPtr())
@@ -96,7 +100,9 @@ type Client() {
         
         var status = 0
         if (res == 0) {
-            status = NativeHttp.curlGetStatus(curl)
+            status = Memory.alloc<IntVar> {
+                NativeHttp.curlEasyGetInfo(curl, CURLINFO_RESPONSE_CODE, it.ptr)
+            }.get()
         }
         
         NativeHttp.curlEasyCleanup(curl)

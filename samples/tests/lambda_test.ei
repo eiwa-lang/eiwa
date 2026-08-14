@@ -2,6 +2,16 @@ fun makeAdder(x: Int): (Int) -> Int {
     return { y: Int -> x + y }
 }
 
+object LambdaRunner {
+    fun twice(block: (Int) -> Int): Int {
+        return block(21) * 2
+    }
+}
+
+test "lambdas: implicit 'it' as direct argument to an object method call" {
+    assert(LambdaRunner.twice { it * 2 } == 84)
+}
+
 test "lambdas: should execute basic function types" {
     val add: (Int, Int) -> Int = { x: Int, y: Int -> x + y }
     assert(add(1, 2) == 3)

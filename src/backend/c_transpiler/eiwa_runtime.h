@@ -17,6 +17,16 @@ static inline void eiwa_write_byte(void* str, int index, int value) {
     ((uint8_t*)str)[index] = (uint8_t)value;
 }
 
+static inline int64_t eiwa_load_int64(const void* ptr) {
+    int64_t v;
+    memcpy(&v, ptr, sizeof(v));
+    return v;
+}
+
+static inline void eiwa_store_int64(void* ptr, int64_t value) {
+    memcpy(ptr, &value, sizeof(value));
+}
+
 static inline void eiwa_random_bytes(void* buf, int len) {
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
     arc4random_buf(buf, len);

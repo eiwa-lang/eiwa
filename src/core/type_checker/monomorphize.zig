@@ -191,7 +191,7 @@ pub fn lookupGenericFunction(self: *TypeChecker, name: []const u8) ?*ASTNode {
 
 pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8, receiver: ?*const EiwaType) !void {    if (self.functions_ast.get(mangled_name) != null) return;
 
-    const base_node = self.generic_functions_ast.get(base_name) orelse {
+    const base_node = self.lookupGenericFunction(base_name) orelse {
         self.reportError(0, 0, "TypeError: Generic function '{s}' not found.", .{base_name});
         return error.TypeError;
     };

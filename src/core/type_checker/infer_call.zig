@@ -403,7 +403,9 @@ fn inferExplicitGenericMethodCall(self: *TypeChecker, node: *ASTNode, scope: *Sc
                             try type_arg.formatSafe(mangled.writer());
                         }
                         const final_mangled = try mangled.toOwnedSlice();
-                        try self.monomorphizeFunction(g.name, type_args, final_mangled, base_type);
+                        // Object methods are static: no receiver (unlike type methods).
+                        const is_object = self.objects_ast.get(actual_class_name) != null;
+                        try self.monomorphizeFunction(g.name, type_args, final_mangled, if (is_object) null else base_type);
 
                         const func_node = self.functions_ast.get(final_mangled) orelse {
                             self.reportError(node.line, node.column, "TypeError: Monomorphized function '{s}' not found (expected key: '{s}').", .{g.name, final_mangled});
@@ -432,6 +434,14 @@ fn inferExplicitGenericMethodCall(self: *TypeChecker, node: *ASTNode, scope: *Sc
                         }
 
                         t.* = ret_type.*;
+                        if (is_object) {
+                            // Object methods are static: call without a receiver.
+                            c.callee.data = .{ .identifier = .{
+                                .name = g.name,
+                                .resolved_c_name = actual_c_name,
+                            } };
+                            return true;
+                        }
                         var call_args = try self.allocator.alloc(*ASTNode, c.arguments.len + 1);
                         call_args[0] = g.object;
                         for (c.arguments, 0..) |a, ai| {
@@ -1368,10 +1378,19 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         
                         var all_match = true;
                         for (c.arguments, 0..) |arg, arg_i| {
+                            // Propagate the declared param type so lambdas infer
+                            // `it` (skip raw generic params, which would mislead).
+                            var expected_type: ?*EiwaType = null;
+                            if (arg_i < f.params.len and f.params[arg_i].type_ref != null) {
+                                const et = try self.resolveTypeRef(f.params[arg_i].type_ref.?);
+                                if (et.* != .GenericParam) {
+                                    expected_type = et;
+                                    arg.expected_type = expected_type;
+                                }
+                            }
                             const arg_type = try self.inferNode(arg, scope);
-                            if (f.generic_params.len == 0) {
-                                const expected_type = try self.resolveTypeRef(f.params[arg_i].type_ref.?);
-                                if (!self.isCompatible(expected_type, arg_type)) {
+                            if (expected_type) |et| {
+                                if (f.generic_params.len == 0 and !self.isCompatible(et, arg_type)) {
                                     all_match = false;
                                     break;
                                 }
@@ -1478,7 +1497,13 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 } };
                 c.callee.resolved_type = null;
 
-                for (c.arguments) |arg| {
+                for (c.arguments, 0..) |arg, ai| {
+                    // Propagate the declared param type so lambdas infer `it`.
+                    if (ai < f.params.len) {
+                        if (f.params[ai].type_ref) |tr| {
+                            arg.expected_type = self.resolveTypeRef(tr) catch null;
+                        }
+                    }
                     _ = try self.inferNode(arg, scope);
                 }
 

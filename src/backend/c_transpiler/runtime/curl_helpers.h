@@ -34,10 +34,4 @@ static inline int eiwa_curl_buf_size(void* buf) {
     return (int)((struct EiwaCurlBuffer*)buf)->size;
 }
 
-static inline int eiwa_curl_get_status(CURL* curl) {
-    long response_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-    return (int)response_code;
-}
-
 #endif // EIWA_CURL_HELPERS_H
