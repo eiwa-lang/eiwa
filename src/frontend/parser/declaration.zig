@@ -223,18 +223,33 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
             try self.consume(.identifier, "Expected parameter name.");
             const param_name = self.previous.lexeme;
             const parsed_type = try self.parseTypeAnnotation();
-            
+
+            // Varargs (`name: T...`) — the last parameter accepts N trailing
+            // arguments, exposed as `List<T>` inside the body.
+            const is_varargs = self.match(.ellipsis);
+            if (is_varargs) {
+                if (self.check(.comma)) {
+                    self.reportLexerError(self.previous.line, self.previous.column, "Syntax Error: varargs parameter ('...') must be the last parameter.", .{});
+                    return error.ParseError;
+                }
+                if (!self.check(.r_paren)) {
+                    self.reportLexerError(self.current.line, self.current.column, "Syntax Error: varargs parameter ('...') must be the last parameter.", .{});
+                    return error.ParseError;
+                }
+            }
+
             var initializer: ?*ASTNode = null;
             if (self.match(.eq)) {
                 initializer = try self.expression();
             }
 
-            try params.append(.{ 
-                .name = param_name, 
+            try params.append(.{
+                .name = param_name,
                 .type_ref = parsed_type,
                 .initializer = initializer,
+                .is_varargs = is_varargs,
             });
-            
+
             if (!self.match(.comma)) break;
         }
     }

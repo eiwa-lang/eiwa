@@ -124,12 +124,19 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
         }
     }
 
-    if (!has_named and c.arguments.len == params.len) return;
+    const has_varargs = params.len > 0 and params[params.len - 1].is_varargs;
+    const varargs_idx: ?usize = if (has_varargs) params.len - 1 else null;
+
+    if (!has_named and c.arguments.len == params.len and !has_varargs) return;
 
     var new_args = try self.allocator.alloc(?*ASTNode, params.len);
     for (new_args) |*slot| {
         slot.* = null;
     }
+
+    // Positional args that land on the variadic parameter are collected here and
+    // re-emitted as an array literal (`List<T>`) when the call is resolved.
+    var varargs_buf = ArrayList(*ASTNode).init(self.allocator);
 
     var pos_i: usize = 0;
     for (c.arguments) |arg| {
@@ -159,6 +166,7 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
                 var search_i: usize = pos_i;
                 while (search_i < params.len) : (search_i += 1) {
                     if (new_args[search_i] == null) {
+                        if (params[search_i].is_varargs) break;
                         if (params[search_i].type_ref) |tr| {
                             if (tr.is_function) {
                                 target_slot = search_i;
@@ -172,16 +180,66 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
             if (target_slot == null) {
                 while (pos_i < params.len and new_args[pos_i] != null) : (pos_i += 1) {}
                 if (pos_i >= params.len) {
+                    // Varargs overflow: the extra positional arg is collected into the List.
+                    if (varargs_idx != null) {
+                        try varargs_buf.append(arg);
+                        continue;
+                    }
                     self.reportError(arg.line, arg.column, "TypeError: Too many positional arguments in call.", .{});
                     return error.TypeError;
                 }
                 target_slot = pos_i;
             }
 
-            new_args[target_slot.?] = arg;
-            if (target_slot.? == pos_i) {
-                pos_i += 1;
+            // A positional arg landing directly on the variadic parameter is collected
+            // into its List rather than passed as a scalar.
+            if (varargs_idx) |vi| {
+                if (target_slot.? == vi) {
+                    try varargs_buf.append(arg);
+                    if (target_slot.? == pos_i) pos_i += 1;
+                    continue;
+                }
             }
+
+            new_args[target_slot.?] = arg;
+            if (target_slot.? == pos_i) pos_i += 1;
+        }
+    }
+
+    if (varargs_idx) |vi| {
+        var elements = try self.allocator.alloc(*ASTNode, varargs_buf.items.len);
+        for (varargs_buf.items, 0..) |item, i| {
+            elements[i] = item;
+        }
+
+        // A named argument may have already provided the variadic List; merge it in.
+        if (new_args[vi] != null and elements.len > 0) {
+            const existing = new_args[vi].?;
+            if (existing.data != .array_literal) {
+                self.reportError(node.line, node.column, "TypeError: Cannot combine a named varargs argument with positional varargs arguments.", .{});
+                return error.TypeError;
+            }
+            const merged = try self.allocator.alloc(*ASTNode, existing.data.array_literal.elements.len + elements.len);
+            var mi: usize = 0;
+            for (existing.data.array_literal.elements) |el| {
+                merged[mi] = el;
+                mi += 1;
+            }
+            for (elements) |el| {
+                merged[mi] = el;
+                mi += 1;
+            }
+            elements = merged;
+        }
+
+        if (new_args[vi] == null or elements.len > 0) {
+            const list_node = try self.allocator.create(ASTNode);
+            list_node.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .array_literal = .{ .elements = elements } } };
+            // Give the empty-list case a target type so `[]` infers as List<T>.
+            const elem_t = try self.resolveTypeRef(params[vi].type_ref.?);
+            list_node.expected_type = try self.makeListType(elem_t, node.line, node.column);
+            _ = try self.inferNode(list_node, scope);
+            new_args[vi] = list_node;
         }
     }
 
@@ -211,9 +269,22 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
     c.arguments = final_args;
 }
 
+/// Resolves the element type `T` of a variadic parameter declared as `T...`.
+/// Returns null when the callee has no variadic parameter.
+fn varargsElemType(self: *TypeChecker, fun_decl: anytype) ?*EiwaType {
+    if (fun_decl.params.len == 0 or !fun_decl.params[fun_decl.params.len - 1].is_varargs) return null;
+    const p = fun_decl.params[fun_decl.params.len - 1];
+    if (p.type_ref) |tr| {
+        return self.resolveTypeRef(tr) catch null;
+    }
+    return null;
+}
+
 pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anytype, f: anytype, scope: *Scope) bool {
     const c = &node.data.call_expr;
-    if (c.arguments.len > f.params.len) return false;
+    const has_varargs = fun_decl.params.len > 0 and fun_decl.params[fun_decl.params.len - 1].is_varargs;
+    // Varargs: any number of arguments beyond the fixed params is collected into the last List.
+    if (c.arguments.len > f.params.len and !has_varargs) return false;
 
     var pos_i: usize = 0;
     var provided = ArrayList(bool).init(self.allocator);
@@ -260,20 +331,37 @@ pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anyt
             }
         } else {
             while (pos_i < f.params.len and provided.items[pos_i]) : (pos_i += 1) {}
-            if (pos_i >= f.params.len) return false;
+            if (pos_i >= f.params.len) {
+                // Varargs overflow: the extra arg is collected into the last param's List<T>.
+                if (!has_varargs) return false;
+                if (arg.resolved_type == null) {
+                    _ = self.inferNode(arg, scope) catch return false;
+                }
+                if (arg.resolved_type) |at| {
+                    const elem_t = varargsElemType(self, fun_decl) orelse return false;
+                    if (!self.isCompatible(elem_t, at)) return false;
+                }
+                continue;
+            }
             provided.items[pos_i] = true;
             if (arg.resolved_type == null) {
                 _ = self.inferNode(arg, scope) catch return false;
             }
             if (arg.resolved_type) |at| {
-                if (!self.isCompatible(f.params[pos_i], at)) return false;
+                // A positional arg for the variadic parameter is checked against its
+                // element type `T`; the args are collected into the List at the call site.
+                const expected = if (fun_decl.params[pos_i].is_varargs)
+                    (varargsElemType(self, fun_decl) orelse return false)
+                else
+                    f.params[pos_i];
+                if (!self.isCompatible(expected, at)) return false;
             }
             pos_i += 1;
         }
     }
 
     for (fun_decl.params, 0..) |p, pi| {
-        if (!provided.items[pi] and p.initializer == null) {
+        if (!provided.items[pi] and p.initializer == null and !p.is_varargs) {
             return false;
         }
     }
@@ -577,15 +665,16 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     if (overload.* != .Function) continue;
                     const f = overload.Function;
                     if (f.receiver != null) continue;
-                    if (c.arguments.len > f.params.len) continue;
 
                     const func_node = self.functions_ast.get(f.c_name) orelse continue;
                     const fun_decl = func_node.data.fun_decl;
+                    const has_varargs = fun_decl.params.len > 0 and fun_decl.params[fun_decl.params.len - 1].is_varargs;
+                    if (c.arguments.len > f.params.len and !has_varargs) continue;
 
                     var has_defaults = true;
                     var i = c.arguments.len;
                     while (i < f.params.len) : (i += 1) {
-                        if (fun_decl.params[i].initializer == null) {
+                        if (fun_decl.params[i].initializer == null and !fun_decl.params[i].is_varargs) {
                             has_defaults = false;
                             break;
                         }
@@ -595,12 +684,22 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     var all_match = true;
                     for (c.arguments, 0..) |arg, arg_i| {
                         if (arg.data == .lambda_expr) {
-                            if (f.params[arg_i].* != .Function) {
+                            if (arg_i >= f.params.len or f.params[arg_i].* != .Function) {
+                                all_match = false;
+                                break;
+                            }
+                        } else if (arg_i < f.params.len and !fun_decl.params[arg_i].is_varargs) {
+                            if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
                                 all_match = false;
                                 break;
                             }
                         } else {
-                            if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
+                            // The arg maps to the variadic parameter: check the element type `T`.
+                            const elem_t = varargsElemType(self, fun_decl) orelse {
+                                all_match = false;
+                                break;
+                            };
+                            if (!self.isCompatible(elem_t, arg.resolved_type.?)) {
                                 all_match = false;
                                 break;
                             }
@@ -1398,7 +1497,12 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             const ret_type = matched_method.resolved_type.?.Function.return_type;
             const f = &matched_method.data.fun_decl;
             
-            if (c.arguments.len < f.params.len) {
+            if (f.params.len > 0 and f.params[f.params.len - 1].is_varargs) {
+                // Varargs method: always run arg resolution so positional args landing
+                // on the variadic slot are collected into a List (even when the call's
+                // arg count happens to equal the fixed param count).
+                try resolveCallArguments(self, node, f.params, scope);
+            } else if (c.arguments.len < f.params.len) {
                 var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
                 for (c.arguments, 0..) |arg, arg_i| {
                     new_args[arg_i] = arg;
@@ -1435,17 +1539,28 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
 
             for (c.arguments, 0..) |arg, i| {
-                const arg_type = try self.inferNode(arg, scope);
-                if (i < f.params.len and f.params[i].type_ref != null) {
+                if (i < f.params.len and f.params[i].is_varargs) {
+                    // Variadic slot: the arg is the synthetic List<T>; give it the
+                    // monomorphized List type. Element compatibility was already checked.
+                    if (f.params[i].type_ref) |tr| {
+                        if (self.resolveTypeRef(tr) catch null) |et| {
+                            arg.expected_type = self.makeListType(et, node.line, node.column) catch null;
+                        }
+                    }
+                    _ = try self.inferNode(arg, scope);
+                } else if (i < f.params.len and f.params[i].type_ref != null) {
                     const expected_type = try self.resolveTypeRef(f.params[i].type_ref.?);
                     // Propagate the declared param type so the backend coerces
                     // contract args to the exact contract vtable (not a
                     // random one from the fallback loop).
                     arg.expected_type = expected_type;
+                    const arg_type = try self.inferNode(arg, scope);
                     if (!self.isCompatible(expected_type, arg_type)) {
                         self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ expected_type.*, arg_type.*, i + 1 });
                         return error.TypeError;
                     }
+                } else {
+                    _ = try self.inferNode(arg, scope);
                 }
             }
             
@@ -1649,7 +1764,11 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
 
 
-                        if (c.arguments.len < f.params.len) {
+                        if (f.params.len > 0 and f.params[f.params.len - 1].is_varargs) {
+                            // Varargs method: always run arg resolution so positional args
+                            // landing on the variadic slot are collected into a List.
+                            try resolveCallArguments(self, node, f.params, scope);
+                        } else if (c.arguments.len < f.params.len) {
 
                             var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
                             for (c.arguments, 0..) |arg, arg_i| {
@@ -1678,7 +1797,14 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
                         for (c.arguments, 0..) |arg, arg_i| {
                             if (arg_i < f.params.len) {
-                                if (f.params[arg_i].type_ref) |tr| {
+                                if (f.params[arg_i].is_varargs) {
+                                    // The variadic List<T> gets the monomorphized List type.
+                                    if (f.params[arg_i].type_ref) |tr| {
+                                        if (self.resolveTypeRef(tr) catch null) |et| {
+                                            arg.expected_type = self.makeListType(et, node.line, node.column) catch null;
+                                        }
+                                    }
+                                } else if (f.params[arg_i].type_ref) |tr| {
                                     arg.expected_type = self.resolveTypeRef(tr) catch null;
                                 }
                             }

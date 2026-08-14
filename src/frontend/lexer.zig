@@ -47,7 +47,11 @@ pub const Lexer = struct {
             ']' => self.makeToken(.r_bracket),
             '@' => self.makeToken(.at),
             ',' => self.makeToken(.comma),
-            '.' => self.makeToken(.dot),
+            '.' => if (self.peek() == '.' and self.peekNext() == '.') blk: {
+                _ = self.advance();
+                _ = self.advance();
+                break :blk self.makeToken(.ellipsis);
+            } else self.makeToken(.dot),
             ':' => self.makeToken(.colon),
             '+' => self.makeToken(.plus),
             '-' => self.makeToken(if (self.match('>')) .arrow else .minus),

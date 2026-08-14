@@ -975,6 +975,11 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 break :blk gen_t;
             };
 
+            // Varargs (`T...`): the body sees a `List<T>`.
+            if (p.is_varargs) {
+                param_type = try self.makeListType(param_type, node.line, node.column);
+            }
+
             if (!is_method or is_overloaded) {
                 try mangled_name.appendSlice("_");
                 try param_type.formatSafe(mangled_name.writer());

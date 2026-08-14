@@ -48,6 +48,7 @@ pub const TokenType = enum {
     colon,      // :
     comma,      // ,
     dot,        // .
+    ellipsis,   // ...
     question,   // ?
     question_dot, // ?.
     elvis,      // ?:
@@ -108,6 +109,9 @@ pub const Param = struct {
     name: []const u8,
     type_ref: ?*const ASTTypeRef,
     initializer: ?*ASTNode = null,
+    /// Varargs parameter (`name: T...`): accepts N trailing call arguments,
+    /// exposed as `List<T>` inside the body (Phase 66).
+    is_varargs: bool = false,
 };
 
 pub const ClassProp = struct {

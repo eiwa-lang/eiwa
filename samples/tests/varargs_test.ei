@@ -18,8 +18,16 @@ fun join(separator: String, parts: String...): String {
     return out
 }
 
-fun count(...items: Bool): Int {
+fun count(items: Bool...): Int {
     return items.size()
+}
+
+fun firstItem(items: Int...): Int {
+    return items[0]
+}
+
+fun makeList(items: Int...): List<Int> {
+    return items
 }
 
 type Stats(val label: String) {
@@ -68,9 +76,6 @@ test "varargs: body treats the parameter as a List" {
     val total = sum(1, 2, 3, 4)
     assert(total == 10)
     // The List is iterable, indexable and has size()
-    fun firstItem(items: Int...): Int {
-        return items[0]
-    }
     assert(firstItem(7, 8, 9) == 7)
     assert(firstItem(42) == 42)
 }
@@ -88,9 +93,21 @@ test "varargs: in an object method" {
 }
 
 test "varargs: a call without trailing args passes an empty List" {
-    fun makeList(items: Int...): List<Int> {
-        return items
-    }
     assert(makeList().size() == 0)
     assert(makeList(1, 2, 3).size() == 3)
+}
+
+fun single(x: Int): String {
+    return "single"
+}
+
+fun single(x: Int, y: Int...): String {
+    return "varargs" + y.size().toString()
+}
+
+test "varargs: overload resolution picks the right arity" {
+    assert(single(5) == "single")
+    assert(single(1) == "single")
+    assert(single(1, 2) == "varargs1")
+    assert(single(1, 2, 3) == "varargs2")
 }

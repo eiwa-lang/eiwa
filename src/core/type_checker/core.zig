@@ -96,6 +96,7 @@ pub const TypeChecker = struct {
     pub const monomorphizeClass = @import("monomorphize.zig").monomorphizeClass;
     pub const monomorphizeFunction = @import("monomorphize.zig").monomorphizeFunction;
     pub const lookupGenericFunction = @import("monomorphize.zig").lookupGenericFunction;
+    pub const makeListType = core_makeListType;
     pub const cloneNode = @import("clone.zig").cloneNode;
     pub const validate = core_validate;
     pub const declareTypes = core_declareTypes;
@@ -255,6 +256,28 @@ pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, act
         }
     }
     return relative;
+}
+
+/// Builds the monomorphized `List<T>` type used for a varargs parameter (`T...`)
+/// and for synthetic varargs array literals at call sites. Mirrors the array-literal path.
+fn core_makeListType(self: *TypeChecker, elem: *const EiwaType, line: usize, col: usize) !*EiwaType {
+    const list_c_name = self.alias_map.get("List") orelse "List";
+    const class_node = self.classes_ast.get(list_c_name) orelse {
+        self.reportError(line, col, "TypeError: Class 'List' not found for varargs parameter.", .{});
+        return error.TypeError;
+    };
+    const type_decl = class_node.data.type_decl;
+    var type_args = try self.allocator.alloc(*const EiwaType, 1);
+    type_args[0] = elem;
+    var mangled = ArrayList(u8).init(self.allocator);
+    try mangled.appendSlice(list_c_name);
+    try mangled.appendSlice("_");
+    try elem.formatSafe(mangled.writer());
+    const mangled_name = try mangled.toOwnedSlice();
+    try self.monomorphizeClass(type_decl.name, type_args, mangled_name);
+    const t = try self.allocator.create(EiwaType);
+    t.* = .{ .Custom = self.alias_map.get(mangled_name) orelse mangled_name };
+    return t;
 }
 
 fn core_reportError(self: *TypeChecker, line: usize, column: usize, comptime message: []const u8, args: anytype) void {

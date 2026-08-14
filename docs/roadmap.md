@@ -682,7 +682,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Verify 65:** `zig build test` + guardrail `passing_llvm` 53/53 (LLVM e C); `eiwac build` de programa com corrotinas linka neco e roda dentro do runtime (`Neco_main_wrapper`); `samples/main_wrapper_sample.ei` imprime `> before main` / `< after main` nos dois backends e no build nativo. **Gap conhecido:** `Process.args()` no backend LLVM depende de `eiwa_args_count`/`eiwa_argv` (globals C que só o C backend seta) — tarefa futura separada.
 - [ ] **Task 65.9 (Futuro — remover TODO o glue C do `std.http`):** Eliminar `curl_helpers.h`/`curl_helpers.c` e fazer o `lib NativeHttp` chamar o **curl diretamente**. Hoje os 7 helpers existem por limitações de FFI do Eiwa: (a) `curl_easy_setopt`/`curl_easy_getinfo` são **varargs** (Eiwa não tem assinatura variádica); (b) o write callback exige ponteiro de função C que lambda Eiwa não fornece; (c) leitura dos campos de `struct EiwaCurlBuffer` alocado no lado C. **Dívida imediata:** o `curl_helpers.c` duplica as funções `static inline` do header (duas fontes de verdade) — dedupe pendente (header → declarações apenas; `.c` → única implementação). **Objetivo:** suporte de FFI variádico (ou API de alto nível própria) + passagem de callbacks, permitindo chamar `curl_easy_setopt`/`getinfo` direto do lib block e remover todo o `@Source` do http.
 
-### Phase 66: Typed Varargs (`T...`) (IN PROGRESS)
+### Phase 66: Typed Varargs (`T...`) (COMPLETED)
 > **Motivação:** Eliminar o glue C do `std.http` (Task 65.9) e chamar libs C varargs (`curl_easy_setopt`, `printf`, `PQexec`) diretamente. Primeiro como feature de linguagem em **métodos/funções Eiwa normais**; depois aplicada a **lib blocks** (FFI C `...`).
 >
 > **Design:** o **último** parâmetro tipado com sufixo `...` vira um varargs. No **corpo** da função é um `List<T>` (iterável, indexável, `.size()`); no **call site**, os args posicionais além dos fixos são coletados numa `List<T>`.
@@ -699,15 +699,27 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 > ```
 >
 > **Regras:** `...`/`T...` só no último param; o tipo define o elemento da `List<T>`; args extras no call devem ser compatíveis com `T`; funciona em funções top-level, métodos de `type`/`object`/`skill` e construtores. **Escopo futuro:** lib blocks mapeiam `T...` para o `...` C do FFI (os args vão direto pra função C, sem List).
+>
+> **Abordagem implementada (Ago 2026):** o call site é **reescrito** no type checker — os args posicionais que caem no slot variádico são coletados num **array literal sintético** (`sum(1, 2, 3)` vira `sum([1, 2, 3])`) que reutiliza o caminho array literal → `List<T>` já existente nos dois backends. Isso evitou **qualquer mudança** no C transpiler / LLVM emitter para o call site. O param vira `List<T>` no escopo do corpo via `core_makeListType` (monomorfização do `List<T>`).
 
-- [ ] **Task 66.1:** Lexer/Parser — token `...` e parse de param varargs tipado (`name: T...`) como último param em declarações de função/método/construtor. Erro se não for o último ou se não tiver tipo. Verify: `zig build test` (unit do parser); sample varargs parseia.
-- [ ] **Task 66.2:** AST — marcar o param como varargs (campo no `Param`/`fun_decl`); resolver `T...` como tipo `List<T>` no escopo do corpo. Verify: `sum(numbers: Int...)` faz `numbers` ser `List<Int>` no corpo.
-- [ ] **Task 66.3:** Type checker (`inferFunDecl`, `infer_call`) — param varargs vira `List<T>`; o call aceita N args extras além dos fixos, cada um compatível com `T`; valida fixos normalmente; chama sem args extras = lista vazia. Verify: chamadas com 0, 1, N args; erro de tipo em arg incompatível.
-- [ ] **Task 66.4:** C transpiler — no call site, construir a `List<T>` (array literal / `MutableList<T>` + `add`) com os args extras e passar como param normal. Verify: C gerado constrói a lista e chama a função.
-- [ ] **Task 66.5:** LLVM emitter — mesmo: construir a `List<T>` no call site e passar. Verify: IR constrói o array e chama.
-- [ ] **Task 66.6:** Overloads — varargs participa da resolução de overload (ex: `fun foo(x: Int, y: Int...)` vs `fun foo(x: Int)`). Verify: chamadas escolhem o overload certo.
+- [x] **Task 66.1:** Lexer/Parser — token `...` e parse de param varargs tipado (`name: T...`) como último param em declarações de função/método/construtor. Erro se não for o último ou se não tiver tipo. Verify: `zig build test` (unit do parser); sample varargs parseia.
+- [x] **Task 66.2:** AST — marcar o param como varargs (campo `is_varargs` no `Param`); resolver `T...` como tipo `List<T>` no escopo do corpo. Verify: `sum(numbers: Int...)` faz `numbers` ser `List<Int>` no corpo.
+- [x] **Task 66.3:** Type checker (`inferFunDecl`, `infer_call`) — param varargs vira `List<T>`; o call aceita N args extras além dos fixos, cada um compatível com `T`; valida fixos normalmente; chama sem args extras = lista vazia. `canMatchOverload` e o Phase 2.5 (funções locais / object companion) checam args extras contra o elemento `T`; paths de method/static chamam `resolveCallArguments` **sempre** que o callee é varargs (para coletar mesmo quando arg count == fixed count, ex: `format("v=", 9)`). Verify: chamadas com 0, 1, N args; erro de tipo em arg incompatível.
+- [x] **Task 66.4:** C transpiler — nenhuma mudança necessária: o array literal sintético já é emitido como `List<T>`. Verify: C gerado constrói a lista e chama a função.
+- [x] **Task 66.5:** LLVM emitter — nenhuma mudança necessária (mesma razão). Verify: IR constrói o array e chama.
+- [x] **Task 66.6:** Overloads — varargs participa da resolução de overload (ex: `fun foo(x: Int, y: Int...)` vs `fun foo(x: Int)`). Verify: `foo(1)` → `single`; `foo(1, 2)` / `foo(1, 2, 3)` → varargs com `List<T>` dos extras.
 - [ ] **Task 66.7 (Futuro):** Lib blocks — mapear `T...` para o `...` C (FFI): args extras vão direto pra função C (sem List); usar no `std.http` (curl) e remover o glue.
-- [ ] **Verify 66:** `zig build test` + guardrail `samples/tests` 54/54 (novo `varargs_test.ei`) nos backends LLVM e C; `samples/varargs_sample.ei` roda.
+- [x] **Verify 66:** `zig build test` + guardrail `samples/tests` 54/54 (novo `varargs_test.ei`) nos backends LLVM e C; `samples/varargs_sample.ei` roda.
+
+### Phase 67: Funções Locais (nested functions) (PENDING)
+> **Motivação:** descoberto durante a Phase 66 — declarações `fun` aninhadas em blocos (corpos de `fun`/`test {}`) **não são suportadas** por nenhum backend hoje. O type checker já as resolve (definidas no `Scope` local), mas os emitters falham: LLVM → `VariableNotFound` (expression.zig:3082/381), C → `UnsupportedExpression` (expression.zig:1295). O `varargs_test.ei` foi escrito com funções locais e precisou movê-las para top-level.
+>
+> **Design:** suporte a `fun name(...)` declarada dentro de um bloco, com mangling por escopo e alcance restrito ao bloco onde é declarada (e filhos). Capturas de variáveis do escopo externo seguem o mesmo modelo de boxed captures das lambdas (Phase 52) quando aplicável.
+>
+> - [ ] **Task 67.1:** C transpiler — emitir a função local como função C estática com nome mangled pelo escopo (ex: `{bloco}_{name}`); chamadas no mesmo escopo resolvem o símbolo. Verify: `fun double(x: Int)` dentro de `test {}` compila e executa.
+> - [ ] **Task 67.2:** LLVM emitter — registrar a função local no escopo de emissão para que chamadas resolvam; emitir como função LLVM privada. Verify: mesmo teste roda no backend LLVM.
+> - [ ] **Task 67.3:** Capturas — variáveis `var` externas atribuídas dentro da função local devem ser boxed (como lambdas). Verify: função local que acumula num contador externo propaga a mutação.
+> - [ ] **Verify 67:** guardrail `samples/tests` verde nos dois backends; um teste dedicado `local_functions_test.ei` cobre declaração, chamada, recursão e captura.
 
 ---
 
