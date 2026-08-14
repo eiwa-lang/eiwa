@@ -369,6 +369,84 @@ pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anyt
     return true;
 }
 
+/// `funPointer { lambda }` lifts an inline lambda (typed params, no outer
+/// capture — a C function pointer has no context) into a synthetic top-level
+/// function and marks the call so the backend emits `&eiwa_cb_<mangled>` — the
+/// address of a generated C trampoline that forwards to the Eiwa lambda
+/// (Kotlin/Native `staticCFunction`). The expression's type is `Pointer`.
+fn inferFunPointer(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) !bool {
+    var c = &node.data.call_expr;
+    if (c.arguments.len != 1) return false;
+
+    const arg = c.arguments[0];
+    if (arg.data != .lambda_expr) {
+        self.reportError(node.line, node.column, "TypeError: functionPtr requires a lambda without captures.", .{});
+        return error.TypeError;
+    }
+
+    // Lift the lambda into a synthetic top-level function so the existing
+    // trampoline machinery handles it. It runs in the global scope, so any
+    // capture of an outer variable surfaces as an unresolved-identifier error.
+    const l = &arg.data.lambda_expr;
+    const fn_name = try std.fmt.allocPrint(self.allocator, "__cblambda_{d}_{d}", .{ arg.line, arg.column });
+
+    const lambda_params = try self.allocator.alloc(ast.Param, l.params.len);
+    @memcpy(lambda_params, l.params);
+
+    var body_stmts = try self.allocator.alloc(*ASTNode, l.body.len);
+    for (l.body, 0..) |stmt, i| {
+        if (i == l.body.len - 1 and l.body.len > 0) {
+            const ret = try self.allocator.create(ASTNode);
+            ret.* = .{ .line = stmt.line, .column = stmt.column, .resolved_type = null, .data = .{ .return_stmt = .{ .value = stmt } } };
+            body_stmts[i] = ret;
+        } else {
+            body_stmts[i] = stmt;
+        }
+    }
+    const block = try self.allocator.create(ASTNode);
+    block.* = .{ .line = arg.line, .column = arg.column, .resolved_type = null, .data = .{ .block = .{ .statements = body_stmts } } };
+
+    const fn_node = try self.allocator.create(ASTNode);
+    fn_node.* = .{ .line = arg.line, .column = arg.column, .resolved_type = null, .data = .{ .fun_decl = .{
+        .annotations = &.{},
+        .modifiers = &.{},
+        .name = fn_name,
+        .generic_params = &.{},
+        .params = lambda_params,
+        .type_ref = null,
+        .body = block,
+        .is_expr_body = false,
+        .resolved_c_name = fn_name,
+    } } };
+
+    try self.monomorphized_nodes.append(fn_node);
+    _ = try self.inferNode(arg, scope);
+    _ = try self.inferNode(fn_node, &self.global_scope);
+
+    // The synthetic fun_decl infers `Void` from a block body; adopt the
+    // lambda's actual return type so the emitted C signature matches.
+    if (arg.resolved_type) |lambda_rt| {
+        const lr = extractBaseType(lambda_rt);
+        if (lr.* == .Function) {
+            if (fn_node.resolved_type) |frt| {
+                if (frt.* == .Function) {
+                    @constCast(frt).Function.return_type = lr.Function.return_type;
+                }
+            }
+        }
+    }
+
+    const fn_decl = &fn_node.data.fun_decl;
+    const tramp_name = try std.fmt.allocPrint(self.allocator, "eiwa_cb_{s}", .{fn_decl.resolved_c_name orelse fn_decl.name});
+    c.c_fn_ptr = tramp_name;
+    try self.trampolines.put(tramp_name, fn_node);
+    const inner_t = try self.allocator.create(EiwaType);
+    inner_t.* = .Void;
+    t.* = .{ .Pointer = inner_t };
+    node.resolved_type = t;
+    return true;
+}
+
 fn inferExplicitGenericMethodCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) !bool {
     var c = &node.data.call_expr;
     if (c.callee.data != .get_expr or c.type_args.len == 0) return false;
@@ -615,6 +693,13 @@ fn inferImplicitThisOrObjectCall(self: *TypeChecker, node: *ASTNode, scope: *Sco
 
 pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var c = &node.data.call_expr;
+
+    // `funPointer { lambda }` — build a C function pointer (trampoline) for an
+    // inline lambda without captures.
+    if (c.callee.data == .identifier and std.mem.eql(u8, c.callee.data.identifier.name, "funPointer")) {
+        if (try inferFunPointer(self, node, scope, t)) return;
+    }
+
     // 1. Infer all arguments that are NOT lambdas
     for (c.arguments) |arg| {
         if (arg.data != .lambda_expr) {

@@ -398,6 +398,7 @@ pub fn main(init: std.process.Init) !void {
     // Consolidate classes, objects, contracts, and aliases for the CTranspiler
     var global_classes_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_objects_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
+    var global_trampolines = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_enums_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_contracts_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_alias_map = std.StringHashMap([]const u8).init(arena.allocator());
@@ -429,6 +430,10 @@ pub fn main(init: std.process.Init) !void {
         var object_it = mod.checker.objects_ast.iterator();
         while (object_it.next()) |entry| {
             try global_objects_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var tramp_it = mod.checker.trampolines.iterator();
+        while (tramp_it.next()) |entry| {
+            try global_trampolines.put(entry.key_ptr.*, entry.value_ptr.*);
         }
         var enum_it = mod.checker.enums_ast.iterator();
         while (enum_it.next()) |entry| {
@@ -497,6 +502,7 @@ pub fn main(init: std.process.Init) !void {
     transpiler.is_test_mode = is_test;
     transpiler.classes_ast = &global_classes_ast;
     transpiler.objects_ast = &global_objects_ast;
+    transpiler.trampolines = &global_trampolines;
     transpiler.enums_ast = &global_enums_ast;
     transpiler.contracts_ast = &global_contracts_ast;
     transpiler.alias_map = &global_alias_map;

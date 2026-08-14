@@ -265,6 +265,9 @@ pub const ASTNodeType = union(enum) {
         callee: *ASTNode,
         arguments: []const *ASTNode,
         type_args: []const *const ASTTypeRef = &.{},
+        /// When `cFunctionPtr(fn)` is used, the C name of the generated
+        /// trampoline for `fn`; the backend emits `&trampoline` instead of a call.
+        c_fn_ptr: ?[]const u8 = null,
     },
     named_arg: struct {
         name: []const u8,

@@ -1329,6 +1329,11 @@ pub const LLVMEmitter = struct {
                 try self.collectCallees(g.object, reachable, worklist);
             },
             .call_expr => |c| {
+                // `cFunctionPtr(fn)`: the trampoline forwards to `fn`, so keep it
+                // reachable (otherwise the stub pass reduces it to a no-op `ret`).
+                if (c.c_fn_ptr) |tramp_name| {
+                    try self.markReachable(tramp_name["eiwa_cb_".len..], reachable, worklist);
+                }
                 if (c.callee.data == .identifier) {
                     const ident = c.callee.data.identifier;
                     const name = ident.resolved_c_name orelse ident.name;

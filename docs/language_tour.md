@@ -995,7 +995,21 @@ fun bad(a: Int..., b: Int) { }
 sum("not a number") // TypeError
 ```
 
-*(Future phase: `T...` in `lib` blocks maps to C variadic functions, forwarding the trailing arguments directly to the C `...`.)*
+**Variadic FFI in `lib` blocks.** The same `T...` syntax on a `lib` declaration maps to a C **variadic function**: the trailing arguments are forwarded directly to the C `...` (no `List` wrapping), letting you call `curl_easy_setopt`, `printf` and friends natively:
+
+```kotlin
+@Link("curl")
+@Header("<curl/curl.h>")
+lib NativeHttp {
+    @Alias("curl_easy_setopt")
+    fun curlEasySetopt(curl: Pointer, option: Int, value: Pointer...): Int
+}
+
+NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)          // char* tail
+NativeHttp.curlEasySetopt(curl, CURLOPT_FOLLOWLOCATION, 1)     // long tail
+```
+
+The compiler excludes the varargs parameter from the fixed C signature and declares the function as variadic; the C backend uses the `...` prototype from the included header.
 
 ---
 
@@ -1238,6 +1252,55 @@ lib Neco {
 ```
 main(argc, argv) { return <wrapper>(real_main, argc, argv) }
 ```
+
+### 16.5 C Function Pointers (`funPointer { lambda }`)
+
+Some C APIs take a callback as a function pointer (e.g. libcurl's write callback, `signal`, `qsort`). Eiwa builds a C function pointer from an inline lambda with `funPointer { ... }` — the Kotlin/Native `staticCFunction` equivalent. The lambda must:
+
+- declare its parameter types explicitly (they become the C signature),
+- **not capture** outer variables — a C function pointer has no context; keep state in the `user data` argument the C API provides.
+
+```kotlin
+fun writeCallback(contents: Pointer, size: Int, nmemb: Int, userp: Pointer): Int {
+    // delegate a large body to a named top-level function
+}
+
+NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION,
+    funPointer { contents: Pointer, size: Int, nmemb: Int, userp: Pointer ->
+        writeCallback(contents, size, nmemb, userp)
+    })
+```
+
+The compiler lifts the lambda into a synthetic function, generates a C trampoline (`eiwa_cb_<name>`) that forwards to it, and the expression evaluates to the trampoline's address (`Pointer`). Large bodies can delegate to a named function from inside the lambda.
+
+### 16.6 Native Memory Slots (`Memory.alloc<T>` & `IntVar`)
+
+To call a C function that **writes through a pointer** (an out-parameter — e.g. `curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code)`), Eiwa allocates a small GC slot and passes its address. This is the Kotlin/Native `memScoped { alloc<IntVar>() }` pattern.
+
+```kotlin
+type IntVar(val ptr: Pointer) {
+    fun get(): Int = Standard.loadInt64(this.ptr)
+    fun set(value: Int): Void = Standard.storeInt64(this.ptr, value)
+}
+
+object Memory {
+    fun alloc<T>(block: (T) -> Void): T {
+        val v = T(Standard.gcMalloc(8))   // monomorphized to IntVar(ptr)
+        block(v)
+        return v
+    }
+}
+```
+
+`Memory.alloc<T>` runs `block` with a typed view of a fresh 8-byte slot and returns the slot; `T` is the **slot type**, so `alloc<DoubleVar>` will work once that slot exists. Usage with a C out-parameter:
+
+```kotlin
+status = Memory.alloc<IntVar> {
+    NativeHttp.curlEasyGetInfo(curl, CURLINFO_RESPONSE_CODE, it.ptr)   // C writes through it.ptr
+}.get()                                                                 // read the value back
+```
+
+The slot is allocated through the Boehm GC, so no manual `free` is required.
 
 ---
 

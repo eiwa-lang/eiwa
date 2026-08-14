@@ -1,0 +1,29 @@
+@Header("src/runtime/third_party/eiwa_cb_test/cb_helpers.h")
+@Source("src/runtime/third_party/eiwa_cb_test/cb_helpers.c")
+lib NativeCbTest {
+    @Alias("eiwa_apply_cb")
+    fun applyCb(cb: Pointer, x: Int): Int
+}
+
+fun triple(x: Int): Int {
+    return x * 3
+}
+
+test "funPointer: pointer is non-null" {
+    assert(funPointer { x: Int -> x * 2 } != null)
+}
+
+test "funPointer: C invokes the trampoline which forwards to the lambda" {
+    assert(NativeCbTest.applyCb(funPointer { x: Int -> x * 2 }, 21) == 42)
+}
+
+test "funPointer: inline lambda with a multi-statement body" {
+    assert(NativeCbTest.applyCb(funPointer { x: Int ->
+        val doubled = x * 2
+        doubled + 1
+    }, 20) == 41)
+}
+
+test "funPointer: a large callback can delegate to a named function" {
+    assert(NativeCbTest.applyCb(funPointer { x: Int -> triple(x) }, 14) == 42)
+}

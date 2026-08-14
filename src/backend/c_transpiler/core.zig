@@ -106,6 +106,8 @@ pub const CTranspiler = struct {
     test_count: usize = 0,
     classes_ast: ?*std.StringHashMap(*ASTNode) = null,
     objects_ast: ?*std.StringHashMap(*ASTNode) = null,
+    /// `cFunctionPtr(fn)` trampolines: C name -> the fun_decl node it forwards to.
+    trampolines: ?*std.StringHashMap(*ASTNode) = null,
     enums_ast: ?*std.StringHashMap(*ASTNode) = null,
     contracts_ast: ?*std.StringHashMap(*ASTNode) = null,
     alias_map: ?*std.StringHashMap([]const u8) = null,
@@ -366,6 +368,12 @@ pub const CTranspiler = struct {
                     }
                 }
 
+                // Pass 1.5: cFunctionPtr trampolines (once, before any function
+                // that references their address).
+                if (is_root) {
+                    try self.emitTrampolines();
+                }
+
                 // Pass 2: Function Declarations
                 for (p.statements) |stmt| {
                     if (stmt.data == .fun_decl) {
@@ -486,6 +494,60 @@ pub const CTranspiler = struct {
             } else {
                 try self.writer.writer().print("int {s}(int argc, char** argv) {{\n    return {s}((EiwaClosure){{ (void*){s}, 0, 0 }}, argc, argv);\n}}\n", .{ s_name, wrapper, inner });
             }
+        }
+    }
+
+    /// Emits `cFunctionPtr(fn)` trampolines into the header writer (before any
+    /// function body): `static inline <ret> eiwa_cb_<c_name>(...)` forwarding to
+    /// the Eiwa function, so call sites can take its address. The forward
+    /// prototype of the target is emitted first so the trampoline compiles even
+    /// when it precedes the target's own definition.
+    pub fn emitTrampolines(self: *CTranspiler) !void {
+        const trs = self.trampolines orelse return;
+        var it = trs.iterator();
+        while (it.next()) |entry| {
+            const tramp_name = entry.key_ptr.*;
+            const func_node = entry.value_ptr.*;
+            const f = &func_node.data.fun_decl;
+            const c_name = f.resolved_c_name orelse f.name;
+
+            var ret_type_str: []const u8 = "void";
+            var params: []const *const type_system.EiwaType = &.{};
+            if (func_node.resolved_type) |rt| {
+                if (rt.* == .Function) {
+                    ret_type_str = try self.cType(rt.Function.return_type);
+                    params = rt.Function.params;
+                }
+            }
+
+            const hw = self.header_writer.writer();
+            try hw.print("{s} {s}(", .{ ret_type_str, c_name });
+            if (params.len == 0) {
+                try hw.appendSlice("void");
+            } else {
+                for (params, 0..) |p, i| {
+                    if (i > 0) try hw.appendSlice(", ");
+                    try hw.writer().print("{s} p{d}", .{ try self.cType(p), i });
+                }
+            }
+            try hw.appendSlice(");\n");
+
+            try hw.print("static inline {s} {s}(", .{ ret_type_str, tramp_name });
+            if (params.len == 0) {
+                try hw.appendSlice("void");
+            } else {
+                for (params, 0..) |p, i| {
+                    if (i > 0) try hw.appendSlice(", ");
+                    try hw.writer().print("{s} a{d}", .{ try self.cType(p), i });
+                }
+            }
+            try hw.appendSlice(") {\n");
+            try hw.writer().print("    return {s}(", .{c_name});
+            for (params, 0..) |_, i| {
+                if (i > 0) try hw.appendSlice(", ");
+                try hw.writer().print("a{d}", .{i});
+            }
+            try hw.appendSlice(");\n}\n");
         }
     }
 };

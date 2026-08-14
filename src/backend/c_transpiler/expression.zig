@@ -342,6 +342,10 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
             }
         },
         .call_expr => |c| {
+            if (c.c_fn_ptr) |tramp| {
+                try self.writer.writer().print("(void*)&{s}", .{tramp});
+                return;
+            }
             var is_closure = (c.callee.data == .identifier and c.callee.data.identifier.resolved_c_name == null and c.callee.resolved_type != null and ts.extractBaseType(c.callee.resolved_type.?).* == .Function);
             if (!is_closure and c.callee.data == .get_expr and c.callee.resolved_type != null and ts.extractBaseType(c.callee.resolved_type.?).* == .Function) {
                 const g = c.callee.data.get_expr;

@@ -1652,6 +1652,42 @@ pub fn emitExpression(
             return closure_mem;
         },
         .call_expr => |call| {
+            // `cFunctionPtr(fn)`: emit `&eiwa_cb_<c_name>` — a generated
+            // trampoline that forwards to the Eiwa function.
+            if (call.c_fn_ptr) |tramp_name| {
+                const c_name = tramp_name["eiwa_cb_".len..];
+                const target = llvm.LLVMGetNamedFunction(mod, c_name.ptr) orelse return error.CFunctionPtrTargetNotFound;
+                const func_type = llvm.LLVMGlobalGetValueType(target);
+
+                const saved_block = llvm.LLVMGetInsertBlock(builder);
+
+                const tramp_z = try std.heap.page_allocator.dupeZ(u8, tramp_name);
+                defer std.heap.page_allocator.free(tramp_z);
+                const tramp = llvm.LLVMGetNamedFunction(mod, tramp_z.ptr) orelse llvm.LLVMAddFunction(mod, tramp_z.ptr, func_type);
+                if (llvm.LLVMCountBasicBlocks(tramp) == 0) {
+                    const bb = llvm.LLVMAppendBasicBlockInContext(ctx, tramp, "entry");
+                    llvm.LLVMPositionBuilderAtEnd(builder, bb);
+                    const param_count: usize = @intCast(llvm.LLVMCountParamTypes(func_type));
+                    var arg_vals = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, param_count);
+                    defer std.heap.page_allocator.free(arg_vals);
+                    for (0..param_count) |i| {
+                        arg_vals[i] = llvm.LLVMGetParam(tramp, @intCast(i));
+                    }
+                    const ret_val = llvm.LLVMBuildCall2(builder, func_type, target, if (param_count > 0) arg_vals.ptr else null, @intCast(param_count), "cb_ret");
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) {
+                        _ = llvm.LLVMBuildRetVoid(builder);
+                    } else {
+                        _ = llvm.LLVMBuildRet(builder, ret_val);
+                    }
+                }
+
+                // Restore the builder to the enclosing function's insertion point.
+                llvm.LLVMPositionBuilderAtEnd(builder, saved_block);
+
+                const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+                return llvm.LLVMBuildBitCast(builder, tramp, ptr_t, "cb_ptr");
+            }
+
             if (call.callee.data == .identifier) {
                 const callee_name = call.callee.data.identifier.resolved_c_name orelse call.callee.data.identifier.name;
 
