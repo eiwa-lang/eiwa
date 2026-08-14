@@ -125,10 +125,10 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
 - [x] **Task 20.11:** Exceções & Fibras (`try/catch` e `task { }` / `.await()`):
   - Suporte a propagação de exceções e controle de fluxo seguro em LLVM IR.
   - Suporte a concorrência e tarefas em LLVM IR.
-- [ ] **Task 20.12:** Transição Completa & Promoção do Backend LLVM a Padrão Oficial (**BLOQUEADA pela Phase 61**):
+- [x] **Task 20.12:** Transição Completa & Promoção do Backend LLVM a Padrão Oficial (**CONCLUÍDA — paridade total alcançada**):
   - Promover o LLVM Native Emitter (`--backend=llvm`) como o backend oficial padrão da linguagem Eiwa.
   - Backend C mantido como suporte secundário legado (`--backend=c`).
-  - Critério objetivo de promoção: paridade total na suíte nativa (`eiwac test` com `--backend=llvm`, hoje não suportado — sem test-runner nem imports no emissor) + remoção/revisão de todos os `TODO(emitter): SPECIAL CASE`.
+  - Critério objetivo de promoção: paridade total na suíte nativa — `eiwac test samples/tests` com `--backend=llvm` (default quando LLVM disponível) passa 53/53, idêntico ao backend C; `failing_llvm` zerado (Phase 64); suíte completa verde nos dois backends + `zig build test`.
 
 ### Phase 21: Native Test System & CLI Refinements (COMPLETED)
 - [x] **Task 21.1:** Add native `test "name" { ... }` blocks in the AST and Parser.

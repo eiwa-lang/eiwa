@@ -586,7 +586,11 @@ pub const LLVMEmitter = struct {
                         self.emitFunctionBodyOrStub(mod, member, fname, true);
                     }
                 }
-                if (m == ast_root and stmt.data != .type_decl and stmt.data != .lib_decl and stmt.data != .test_decl) {
+                if (m == ast_root and
+                    stmt.data != .fun_decl and stmt.data != .type_decl and stmt.data != .enum_decl and
+                    stmt.data != .contract_decl and stmt.data != .skill_decl and stmt.data != .object_decl and
+                    stmt.data != .lib_decl and stmt.data != .import_stmt and stmt.data != .test_decl)
+                {
                     try top_level_stmts.append(stmt);
                 }
             }

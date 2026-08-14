@@ -69,8 +69,8 @@ pub fn main(init: std.process.Init) !void {
             \\  test       Run test blocks ("test \"name\" {{ ... }}")
             \\
             \\Options:
-            \\  --backend=c      Use the C backend (stable)
-            \\  --backend=llvm   Use the LLVM backend (if available)
+            \\  --backend=c      Use the C backend (legacy)
+            \\  --backend=llvm   Use the LLVM backend (default, when available)
             \\  --release        Optimized build (LLVM backend)
             \\  -o <name>        Output binary name (build command)
             \\  -I, -L, -l, -D   Extra flags forwarded to the C compiler
@@ -215,7 +215,7 @@ pub fn main(init: std.process.Init) !void {
                 if (term == .exited and term.exited == 0) {
                     total_passed += 1;
                 } else {
-                    std.debug.print("FAIL: {s}\n", .{tfile});
+                    std.debug.print("*[FAIL] {s}\n", .{tfile});
                     total_failed += 1;
                 }
             }
@@ -257,7 +257,6 @@ pub fn main(init: std.process.Init) !void {
         try source_alloc.appendSlice(file_content);
     }
     const source = source_alloc.items;
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = "synthetic_test.ei", .data = source });
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
