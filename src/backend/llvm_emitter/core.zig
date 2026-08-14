@@ -240,17 +240,6 @@ pub const LLVMEmitter = struct {
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .fun_decl) {
                     try self.declareFunction(mod, stmt, false);
-                } else if (stmt.data == .type_decl) {
-                    // Generic templates are never emitted directly; only
-                    // monomorphized instances (which have generic_params empty)
-                    // produce code. Mirrors the C transpiler.
-                    if (stmt.data.type_decl.generic_params.len > 0) continue;
-                    for (stmt.data.type_decl.methods) |m_node| {
-                        if (m_node.data != .fun_decl) continue;
-                        const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
-                        const m_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
-                        try self.declareFunctionNamed(mod, m_node, m_c_name);
-                    }
                 } else if (stmt.data == .object_decl) {
                     for (stmt.data.object_decl.members) |member| {
                         if (member.data != .fun_decl) continue;
@@ -2317,7 +2306,7 @@ pub const LLVMEmitter = struct {
                 }
             }
         }
-        var engine: llvm.LLVMExecutionEngineRef = undefined;
+            var engine: llvm.LLVMExecutionEngineRef = undefined;
         var err_msg: [*c]u8 = null;
 
         if (llvm.LLVMCreateExecutionEngineForModule(&engine, mod, &err_msg) != 0) {

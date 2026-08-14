@@ -1722,12 +1722,18 @@ pub fn emitExpression(
                                     };
                                     // Target contract name (from callee AST parameter if available)
                                     var contract_c_name: []const u8 = "";
-                                    if (call.callee.resolved_type) |crt| {
-                                        if (crt.* == .Function and idx < crt.Function.params.len) {
-                                            switch (crt.Function.params[idx].*) {
-                                                .Custom => |n| contract_c_name = n,
-                                                .GenericInstance => |gi| contract_c_name = gi.base_name,
-                                                else => {},
+                                    if (arg_node.expected_type) |et| {
+                                        const ebase = ts.extractBaseType(et);
+                                        if (ebase.* == .Custom) contract_c_name = ebase.Custom;
+                                    }
+                                    if (contract_c_name.len == 0) {
+                                        if (call.callee.resolved_type) |crt| {
+                                            if (crt.* == .Function and idx < crt.Function.params.len) {
+                                                switch (crt.Function.params[idx].*) {
+                                                    .Custom => |n| contract_c_name = n,
+                                                    .GenericInstance => |gi| contract_c_name = gi.base_name,
+                                                    else => {},
+                                                }
                                             }
                                         }
                                     }
@@ -1737,7 +1743,7 @@ pub fn emitExpression(
                                                 var it = ca.iterator();
                                                 while (it.next()) |entry| {
                                                     const c_name = entry.key_ptr.*;
-                                                    const test_fat = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, c_name) catch arg_val;
+                                                    const test_fat = coerceToContractChecked(ctx, mod, builder, arg_val, arg_c_name, c_name) catch continue;
                                                     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(test_fat)) == llvm.LLVMStructTypeKind) {
                                                          arg_val = test_fat;
                                                          break;
@@ -2545,6 +2551,21 @@ pub fn emitExpression(
                                 }
                             }
 
+                            // The type checker records the exact (overload-disambiguated)
+                            // symbol on the callee get_expr. Prefer it over the plain
+                            // `{type}_{method}` guess so overloaded methods (e.g.
+                            // Logger.error with 1 and 2 args) resolve to the right
+                            // signature instead of a receiver-less stub.
+                            if (target_func == null) {
+                                if (g.resolved_c_name) |rcn| {
+                                    if (rcn.len > 0) {
+                                        const rcn_z = try std.heap.page_allocator.dupeZ(u8, rcn);
+                                        defer std.heap.page_allocator.free(rcn_z);
+                                        target_func = llvm.LLVMGetNamedFunction(mod, rcn_z.ptr);
+                                    }
+                                }
+                            }
+
                             if (target_func) |tf| {
                                 if (llvm.LLVMIsAFunction(tf) != null) {
                                     const ft = llvm.LLVMGlobalGetValueType(tf);
@@ -2675,7 +2696,7 @@ pub fn emitExpression(
                                                         var it = ca.iterator();
                                                         while (it.next()) |entry| {
                                                             const c_name = entry.key_ptr.*;
-                                                            const test_fat = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, c_name) catch arg_val;
+                                                            const test_fat = coerceToContractChecked(ctx, mod, builder, arg_val, arg_c_name, c_name) catch continue;
                                                             if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(test_fat)) == llvm.LLVMStructTypeKind) {
                                                                 arg_val = test_fat;
                                                                 break;
@@ -2897,7 +2918,7 @@ pub fn emitExpression(
                                     var it = ca.iterator();
                                     while (it.next()) |entry| {
                                         const c_name = entry.key_ptr.*;
-                                        const test_fat = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, c_name) catch arg_val;
+                                        const test_fat = coerceToContractChecked(ctx, mod, builder, arg_val, arg_c_name, c_name) catch continue;
                                         if (llvm.LLVMTypeOf(test_fat) == ptype) {
                                             arg_val = test_fat;
                                             break;
@@ -2952,12 +2973,18 @@ pub fn emitExpression(
                         if (llvm.LLVMGetTypeKind(expected_type) == llvm.LLVMStructTypeKind) {
                             var arg_c_name: []const u8 = "";
                             var contract_c_name: []const u8 = "";
-                            if (call.callee.resolved_type) |crt| {
-                                if (crt.* == .Function and idx < crt.Function.params.len) {
-                                    switch (ts.extractBaseType(crt.Function.params[idx]).*) {
-                                        .Custom => |n| contract_c_name = n,
-                                        .GenericInstance => |gi| contract_c_name = gi.base_name,
-                                        else => {},
+                            if (arg_node.expected_type) |et| {
+                                const ebase = ts.extractBaseType(et);
+                                if (ebase.* == .Custom) contract_c_name = ebase.Custom;
+                            }
+                            if (contract_c_name.len == 0) {
+                                if (call.callee.resolved_type) |crt| {
+                                    if (crt.* == .Function and idx < crt.Function.params.len) {
+                                        switch (ts.extractBaseType(crt.Function.params[idx]).*) {
+                                            .Custom => |n| contract_c_name = n,
+                                            .GenericInstance => |gi| contract_c_name = gi.base_name,
+                                            else => {},
+                                        }
                                     }
                                 }
                             }
@@ -3737,7 +3764,11 @@ pub fn coerceArg(
 /// module. Used by `when (x) is SomeType` on contract subjects to type-check by
 /// vtable identity.
 fn isRealVtable(g: llvm.LLVMValueRef) bool {
-    _ = llvm.LLVMGetInitializer(g) orelse return false;
+    if (llvm.LLVMGetInitializer(g) == null) return false;
+    if (llvm.LLVMIsGlobalConstant(g) == 0) return false;
+    const t = llvm.LLVMGlobalGetValueType(g);
+    if (llvm.LLVMGetTypeKind(t) != llvm.LLVMStructTypeKind) return false;
+    if (llvm.LLVMCountStructElementTypes(t) == 0) return false;
     return true;
 }
 
@@ -3829,6 +3860,33 @@ pub fn coerceToContract(
     fat_val = llvm.LLVMBuildInsertValue(builder, fat_val, data_ptr, 0, "fat_data");
     fat_val = llvm.LLVMBuildInsertValue(builder, fat_val, vtable_ptr, 1, "fat_vtable");
 
+    return fat_val;
+}
+
+/// Like `coerceToContract`, but fails when no real (non-stub) vtable exists for
+/// the (concrete, contract) pair. Used by fallback scans that must not attach a
+/// stub vtable to a fat pointer.
+pub fn coerceToContractChecked(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    data_val: llvm.LLVMValueRef,
+    concrete_c_name: []const u8,
+    contract_c_name: []const u8,
+) !llvm.LLVMValueRef {
+    const fat_type = types_mapping.getFatPointerType(ctx);
+    if (llvm.LLVMTypeOf(data_val) == fat_type) {
+        return data_val;
+    }
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    var data_ptr = data_val;
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(data_val)) == llvm.LLVMIntegerTypeKind) {
+        data_ptr = llvm.LLVMBuildIntToPtr(builder, data_val, ptr_type, "fat_data_box");
+    }
+    const vtable_global = try findVtableGlobal(ctx, mod, concrete_c_name, contract_c_name) orelse return error.ContractVtableNotFound;
+    var fat_val = llvm.LLVMGetUndef(fat_type);
+    fat_val = llvm.LLVMBuildInsertValue(builder, fat_val, data_ptr, 0, "fat_data");
+    fat_val = llvm.LLVMBuildInsertValue(builder, fat_val, vtable_global, 1, "fat_vtable");
     return fat_val;
 }
 
