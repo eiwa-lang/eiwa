@@ -271,21 +271,6 @@ pub fn emitExpression(
         },
         .identifier => |ident| {
             const name = ident.resolved_c_name orelse ident.name;
-            // TODO(emitter): This "is this a class property?" test relies on a
-            // heuristic fallback: `scope.get(name) == null` with `this` in scope
-            // is taken to mean `name` is a receiver field. That masks a gap in
-            // the type checker (src/core/type_checker/) which sometimes fails to
-            // flag identifiers as `is_class_property`. The heuristic is order-
-            // sensitive (a shadowed local with the same name as a field would
-            // mis-resolve) and scans *every* struct's layout to find the field.
-            // Proper fix: make the type checker set `is_class_property` reliably,
-            // then delete the `scope.get(name) == null` fallback below.
-            // LLVM-SPECIFIC (NOT inherited from C): the C transpiler resolves
-            // field access through the type checker's is_class_property flag and
-            // emits `this->field` directly; it never guesses from scope. This
-            // fallback exists only because the LLVM path hits identifiers the C
-            // path doesn't (emitted bodies bypass the C field codegen). Fix the
-            // type checker and delete the heuristic — no C-side change needed.
             const is_prop = ident.is_class_property;
             if (is_prop) {
                 const this_ptr = scope.get("this") orelse {
@@ -430,7 +415,7 @@ pub fn emitExpression(
                     const is_stringable = switch (obj_base) {
                         .Int, .Bool, .Double, .String, .Union => true,
                         .Custom => |n| std.mem.eql(u8, n, "Stringable") or std.mem.eql(u8, n, "core_Stringable"),
-                        .Pointer => |p| p.* == .Custom and (std.mem.eql(u8, p.Custom, "Stringable") or std.mem.eql(u8, p.Custom, "core_Stringable")),
+                        .Pointer => true,
                         else => false,
                     };
                     if (is_stringable) {
@@ -2744,57 +2729,6 @@ pub fn emitExpression(
                                         target_func = ef;
                                     }
                                 }
-
-                                if (target_func == null) {
-                                    target_func = blk: {
-                                        // TODO(llvm-backend): Replace iterative function scanning & string prefix matching
-                                        // with exact AST resolved method symbol lookup from type_checker.
-                                        const raw_sub = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}", .{ type_name, g.name });
-                                        defer std.heap.page_allocator.free(raw_sub);
-
-                                        var func_it = llvm.LLVMGetFirstFunction(mod);
-                                        while (func_it) |f| : (func_it = llvm.LLVMGetNextFunction(f)) {
-                                            const name_ptr = llvm.LLVMGetValueName(f);
-                                            const f_name = std.mem.span(name_ptr);
-                                            const matches = std.mem.startsWith(u8, f_name, raw_sub) or
-                                                std.mem.eql(u8, f_name, raw_sub) or
-                                                (f_name.len > 0 and f_name[0] == '_' and std.mem.startsWith(u8, f_name[1..], raw_sub)) or
-                                                std.mem.indexOf(u8, f_name, raw_sub) != null;
-                                            if (matches) {
-                                                const mft = llvm.LLVMGlobalGetValueType(f);
-                                                const pc = llvm.LLVMCountParamTypes(mft);
-                                                if (pc >= call.arguments.len) {
-                                                    break :blk f;
-                                                }
-                                            }
-                                        }
-
-                                        var base_type_name = type_name;
-                                        if (std.mem.indexOf(u8, type_name, "_core_")) |idx| {
-                                            if (idx > 0) base_type_name = type_name[0..idx];
-                                        } else if (std.mem.indexOf(u8, type_name, "_collections_")) |idx| {
-                                            if (idx > 0) base_type_name = type_name[0..idx];
-                                        }
-
-                                        const base_raw_sub = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}", .{ base_type_name, g.name });
-                                        defer std.heap.page_allocator.free(base_raw_sub);
-
-                                        func_it = llvm.LLVMGetFirstFunction(mod);
-                                        while (func_it) |f| : (func_it = llvm.LLVMGetNextFunction(f)) {
-                                            const name_ptr = llvm.LLVMGetValueName(f);
-                                            const f_name = std.mem.span(name_ptr);
-                                            if (std.mem.startsWith(u8, f_name, base_raw_sub) or std.mem.eql(u8, f_name, base_raw_sub)) {
-                                                const mft = llvm.LLVMGlobalGetValueType(f);
-                                                const pc = llvm.LLVMCountParamTypes(mft);
-                                                if (pc >= call.arguments.len) {
-                                                    break :blk f;
-                                                }
-                                            }
-                                        }
-
-                                        break :blk null;
-                                    };
-                                }
                             }
 
                             if (target_func) |func_val| {
@@ -2979,6 +2913,19 @@ pub fn emitExpression(
                         if (obj_rt.* == .Double or obj_rt.* == .Int) {
                             return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
                         }
+                    }
+                }
+                if (std.mem.eql(u8, g.name, "hashCode") and call.arguments.len == 0) {
+                    const obj_base_rt: ?*const ts.EiwaType = if (g.object.resolved_type) |ort| ort else null;
+                    if (obj_base_rt) |obr| {
+                        const base = obr.*;
+                        const obj_is_string = base == .String or
+                            (base == .Custom and (std.mem.eql(u8, base.Custom, "String") or std.mem.eql(u8, base.Custom, "core_String")));
+                        if (obj_is_string or base == .Pointer or base == .Int or base == .Bool or base == .Double) {
+                            return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
+                        }
+                    } else if (g.object.data == .string_literal) {
+                        return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
                     }
                 }
             }
@@ -3744,9 +3691,7 @@ pub fn emitExpression(
             // `MutableMap` over that list -> `MutableMap_put(k, v)` for each
             // pair -> finally a `Map` wrapping the same list. The `get`/`put`
             // logic then hashes keys and chains nodes (Phase-61 hash equality).
-            // TODO(emitter): PREVIOUSLY returned `LLVMConstNull(ptr)` (a null
-            // receiver) — any map literal crashed on the first `map[k]`. The
-            // bucket size (16) mirrors std/collections.ei and the C backend.
+            // Bucket size (16) mirrors std/collections.ei and the C backend.
             const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
             if (node.resolved_type) |rt| {
                 if (rt.* == .Custom and m.elements.len > 0) {

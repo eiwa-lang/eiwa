@@ -397,19 +397,14 @@ pub const LLVMEmitter = struct {
         }
 
         // Fixpoint: walk every reachable function's body to find more callees.
-        // TODO(emitter): The reachability pass below is O(functions^2) and the
-        // fun_decl/type_decl/object_decl branches are copy-pasted three times
-        // (seeding, fixpoint walk, emission), so they drift easily. Proper fix:
-        // build a `StringHashMap(name -> *ASTNode)` index of all functions once
-        // (covering top-level fun_decls, type_decl.methods and object members),
-        // then seed/walk/emit against that map. Also consider matching on a
-        // `resolved_type.Function.c_name` when available instead of stringly
-        // name comparison, which is fragile across monomorphization.
-        // LLVM-SPECIFIC (NOT inherited from C): the C transpiler emits every
-        // function and lets the C linker dead-strip; the LLVM emitter adds this
-        // pass only to keep JIT compile time/IR size down (the stdlib would
-        // otherwise be pulled in wholesale). It has no C-side counterpart.
-        try self.drainReachableWorklist(&modules, &reachable, &worklist);
+        // A name -> *ASTNode index makes each worklist lookup O(1) instead of
+        // rescanning every statement of every module per function (O(F*S)).
+        // The C transpiler emits every function and lets the linker dead-strip;
+        // this pass exists only to keep JIT compile time/IR size down (the
+        // stdlib would otherwise be pulled in wholesale). LLVM-SPECIFIC.
+        var func_index = try self.buildFuncIndex(&modules);
+        defer func_index.deinit();
+        try self.drainReachableWorklist(&func_index, &reachable, &worklist);
 
         // Pass 1e: Emit static vtables for implemented contracts of reachable types (Task 61.1)
         // Named `{type_c_name}_{contract_c_name}_vtable`
@@ -490,7 +485,7 @@ pub const LLVMEmitter = struct {
         // drain the worklist again so the callees of those implementations
         // (e.g. getAnsiColor called from within the TextFormatter.format
         // skill) are also collected and don't degrade to stubs.
-        try self.drainReachableWorklist(&modules, &reachable, &worklist);
+        try self.drainReachableWorklist(&func_index, &reachable, &worklist);
 
         for (modules.items) |m| {
             if (m.data != .program) continue;
@@ -558,15 +553,23 @@ pub const LLVMEmitter = struct {
                         const fname = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
                         if (!reachable.contains(fname)) continue;
                         // TODO(emitter): Method bodies degrade to skip-with-
-                        // warning even in the root module because monomorphized
-                        // std types (List<T>, Serializable derivations, etc.)
-                        // are injected into the root program by the type
-                        // checker (type_checker/core.zig validate()) and may
-                        // contain constructs the emitter doesn't support yet
-                        // (e.g. contract dispatch — Phase 61). If the body is
-                        // actually called at runtime, the JIT/linker will fail
-                        // on the bodiless declaration. Remove this tolerance
-                        // once Phase 61 lands and parity is reached.
+                        // warning (stub returning the type's default) even in the
+                        // root module because auto-generated stdlib methods
+                        // (default toString/hashCode/equals for every type +
+                        // monomorphized List/Map/Serializable derivations) may
+                        // still reference constructs the emitter can't emit
+                        // cleanly. Verified Aug 2026 (Phase 61-64 "parity" did NOT
+                        // remove the need): a strict no-stub build fails on
+                        // `IntVar.toString` (get_expr `.toString()` on a bare
+                        // Pointer), `IntVar.hashCode` (call_expr re-called the
+                        // get_expr result as a function pointer) and
+                        // `JsonValue.toString` (`.toString()` on enum/custom
+                        // types dispatches through the closure path). Two of
+                        // those were fixed as real emitter bugs, but custom/enum
+                        // `.toString()` still needs the structural String
+                        // representation work (Task 64.11) before this tolerance
+                        // can be removed. Keeping it avoids hard compile errors
+                        // for reachable-but-uninvoked methods.
                         self.emitFunctionBodyOrStub(mod, m_node, fname, true);
                     }
                 } else if (stmt.data == .object_decl) {
@@ -1226,52 +1229,63 @@ pub const LLVMEmitter = struct {
         }
     }
 
-    /// Processes the reachability worklist until fixpoint: for each function
-    /// symbol, finds its AST node and walks its body to collect callees.
-    /// Idempotent — safe to call again after more symbols are marked reachable
-    /// (e.g. by the vtable pass).
-    fn drainReachableWorklist(
+    /// Builds a single index of every non-generic function's resolved name
+    /// (`resolved_c_name orelse name`) -> its AST node, covering top-level
+    /// `fun_decl`s, `type_decl.methods` and `object` members. Keys are
+    /// borrowed from the AST, so the map owns nothing. First declaration wins,
+    /// mirroring the old module-scan lookup.
+    fn buildFuncIndex(
         self: *LLVMEmitter,
         modules: *ArrayList(*ast.ASTNode),
+    ) !std.StringHashMap(*ast.ASTNode) {
+        var index = std.StringHashMap(*ast.ASTNode).init(self.allocator);
+        errdefer index.deinit();
+        for (modules.items) |m| {
+            if (m.data != .program) continue;
+            for (m.data.program.statements) |stmt| {
+                if (stmt.data == .fun_decl) {
+                    const f = stmt.data.fun_decl;
+                    if (f.generic_params.len > 0) continue;
+                    const name = f.resolved_c_name orelse f.name;
+                    if (!index.contains(name)) try index.put(name, stmt);
+                } else if (stmt.data == .type_decl) {
+                    const t = stmt.data.type_decl;
+                    const is_template = t.generic_params.len > 0 and (t.methods.len == 0 or t.methods[0].data.fun_decl.resolved_c_name == null);
+                    if (is_template) continue;
+                    for (t.methods) |m_node| {
+                        if (m_node.data != .fun_decl) continue;
+                        if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                        const name = m_node.data.fun_decl.resolved_c_name orelse m_node.data.fun_decl.name;
+                        if (!index.contains(name)) try index.put(name, m_node);
+                    }
+                } else if (stmt.data == .object_decl) {
+                    for (stmt.data.object_decl.members) |member| {
+                        if (member.data != .fun_decl) continue;
+                        if (member.data.fun_decl.generic_params.len > 0) continue;
+                        const name = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
+                        if (!index.contains(name)) try index.put(name, member);
+                    }
+                }
+            }
+        }
+        return index;
+    }
+
+    /// Processes the reachability worklist until fixpoint: for each function
+    /// symbol, looks up its AST node in the name index and walks its body to
+    /// collect callees. Idempotent — safe to call again after more symbols are
+    /// marked reachable (e.g. by the vtable pass).
+    fn drainReachableWorklist(
+        self: *LLVMEmitter,
+        func_index: *std.StringHashMap(*ast.ASTNode),
         reachable: *std.StringHashMap(void),
         worklist: *ArrayList([]const u8),
     ) !void {
         var wi: usize = 0;
         while (wi < worklist.items.len) : (wi += 1) {
             const fname = worklist.items[wi];
-            for (modules.items) |m| {
-                if (m.data != .program) continue;
-                for (m.data.program.statements) |stmt| {
-                    if (stmt.data == .fun_decl) {
-                        if (stmt.data.fun_decl.generic_params.len > 0) continue;
-                        const name = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
-                        if (std.mem.eql(u8, name, fname)) {
-                            try self.collectCallees(stmt, reachable, worklist);
-                            break;
-                        }
-                    } else if (stmt.data == .type_decl) {
-                        const is_template = stmt.data.type_decl.generic_params.len > 0 and (stmt.data.type_decl.methods.len == 0 or stmt.data.type_decl.methods[0].data.fun_decl.resolved_c_name == null);
-                        if (is_template) continue;
-                        for (stmt.data.type_decl.methods) |m_node| {
-                            if (m_node.data != .fun_decl) continue;
-                            const name = m_node.data.fun_decl.resolved_c_name orelse m_node.data.fun_decl.name;
-                            if (std.mem.eql(u8, name, fname)) {
-                                try self.collectCallees(m_node, reachable, worklist);
-                                break;
-                            }
-                        }
-                    } else if (stmt.data == .object_decl) {
-                        for (stmt.data.object_decl.members) |member| {
-                            if (member.data != .fun_decl) continue;
-                            if (member.data.fun_decl.generic_params.len > 0) continue;
-                            const name = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
-                            if (std.mem.eql(u8, name, fname)) {
-                                try self.collectCallees(member, reachable, worklist);
-                                break;
-                            }
-                        }
-                    }
-                }
+            if (func_index.get(fname)) |node| {
+                try self.collectCallees(node, reachable, worklist);
             }
         }
     }
