@@ -148,7 +148,7 @@ eiwac test                # run test "name" {} blocks
 
 ## 🛠️ Contributing to the Compiler (For Contributors)
 
-If you want to hack on the Eiwa compiler itself, you will need to prepare your machine. The compiler is written in **Zig** and uses **Boehm GC** for the generated C code.
+If you want to hack on the Eiwa compiler itself, you will need to prepare your machine. The compiler is written in **Zig** and compiles through **LLVM**, with **Boehm GC** providing memory safety.
 
 ### 1. Install Dependencies
 You need **Zig (0.16.0+)**, **Boehm GC**, and **LLVM 21+** (for the native in-memory LLVM backend).
@@ -182,7 +182,7 @@ This generates the `eiwac` compiler binary in `./bin/`. To also build the `eiwa`
 
 Eiwa's compiler is fully documented. If you are curious about how we process ASTs or why we chose certain architectural paths, check out the `docs/` folder:
 
-- 🏛️ **[Architecture Overview](docs/architecture.md)**: How the Lexer, Parser, TypeChecker, and C Transpiler pipeline work.
+- 🏛️ **[Architecture Overview](docs/architecture.md)**: How the Lexer, Parser, TypeChecker, and native LLVM backend pipeline work.
 - 🤖 **[AI Agent Guide](agents.md)**: Standard build commands, codebase mappings, and rules for LLM agents.
 - ⚖️ **[Architectural Decisions (ADRs)](docs/decisions.md)**: Why we enforce operator modifiers and how we handle Null Safety.
 - 📈 **[Roadmap & Progress](docs/roadmap.md)**: The historic evolution of the compiler, completed phases, and future checklists.
@@ -194,11 +194,10 @@ Eiwa's compiler is fully documented. If you are curious about how we process AST
 
 The **package manager** (`eiwa` CLI) just landed: projects with `eiwa.yaml`, git dependencies cloned into a shared local repository, and `build`/`run` commands. Next steps for it: `init`/`add`/`update`/`freeze` commands, registry dependencies and transitive resolution (MVS) — see [docs/plan_package_manager.md](docs/plan_package_manager.md).
 
-The **composition type system** (Phase 41) also landed recently: `type`, `contract`, `skill` and `implement` replaced classes and inheritance entirely. Other next steps include:
+The **composition type system** (Phase 41) also landed recently: `type`, `contract`, `skill` and `implement` replaced classes and inheritance entirely. The **native LLVM backend** (Phase 20) is now the default — Eiwa compiles directly to LLVM IR, using a JIT for instant development loops and `-O3` optimization for production binaries. Other next steps include:
 - **Phase 42:** Null safety on contract receivers (`?.` dispatch on nullable contracts).
 - **Phase 43:** Heterogeneous contract collections (`List<Drawable>` with dynamic dispatch per element).
 - **Phase 44:** Composition test coverage hardening (cross-module skills, negative fixtures).
 - **Phase 36:** Fiber-based concurrency & event loop runtime.
-- **Phase 20:** LLVM IR Native Release Backend for maximum optimization (Production build transition).
 
 *(See [docs/roadmap.md](docs/roadmap.md) for the full granular roadmap and historic evolution).*

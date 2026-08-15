@@ -5,8 +5,8 @@ Welcome, AI Agent! This guide outlines the project context, technical stack, arc
 ## 🌌 Project Overview
 Eiwa is a pragmatic, statically typed, natively compiled systems language with a Kotlin-inspired syntax. 
 * **The Compiler** is built from scratch in **Zig (0.16.0)**.
-* **The Backend** compiles Eiwa code (`.ei`) into intermediate **C code**, which is then compiled into a native binary via `zig cc -O0` (Development mode) or direct C optimization.
-* **Memory Management:** Driven by a conservative Garbage Collector (**Boehm GC**) in the generated C runtime.
+* **The Backend** compiles Eiwa code (`.ei`) into **LLVM IR** via the LLVM C API — executed through a JIT for development loops and optimized with `-O3` for production binaries. A C-transpilation backend remains for compatibility and is not the primary path.
+* **Memory Management:** Driven by a conservative Garbage Collector (**Boehm GC**).
 
 ---
 

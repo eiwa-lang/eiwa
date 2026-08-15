@@ -2,7 +2,7 @@
 
 Eiwa was born from a desire to write low-level systems code with the ergonomics of modern high-level languages like Kotlin. 
 
-While Eiwa shares an almost identical baseline syntax with Kotlin, it operates in a fundamentally different environment: **there is no JVM, no massive standard library, and no runtime interpreter.** Everything is compiled directly to native code with a highly optimized embedded Garbage Collector.
+While Eiwa shares an almost identical baseline syntax with Kotlin, it operates in a fundamentally different environment: **there is no JVM, no massive standard library, and no runtime interpreter.** Everything is compiled directly to native code via LLVM (with a JIT for instant development loops and `-O3` optimization for production), backed by a highly optimized embedded Garbage Collector.
 
 Because of this, some architectural decisions differ from Kotlin to provide extreme performance and absolute safety.
 
@@ -45,7 +45,7 @@ fun main() {
 **The Implicit Standard Library**
 Eiwa comes with a core module named `system.ei` which contains fundamental types, C-bindings, and intrinsic functions (like `print`). The compiler automatically injects an `import {} from "system"` at the top of every file, making all standard functions globally available without explicitly requiring an import statement.
 
-*(Note: In the C backend, the compiler automatically performs Name Mangling to prevent collisions across files, meaning `add` inside `math.ei` becomes `math_add` in the final native binary, ensuring absolute safety).*
+*(Note: the compiler automatically performs Name Mangling to prevent collisions across files, meaning `add` inside `math.ei` becomes `math_add` in the final native binary, ensuring absolute safety).*
 
 ---
 
@@ -776,7 +776,7 @@ type Counter(var count: Int = 0) {
 
 ### 11.9 First-Class Enum Types (`enum`)
 
-`enum` declarations define strongly typed, closed sets of constant variants with zero-overhead C transpilation:
+`enum` declarations define strongly typed, closed sets of constant variants with zero-overhead native compilation:
 
 ```kotlin
 enum Direction { NORTH, EAST, SOUTH, WEST }
@@ -950,7 +950,7 @@ body(class = "bg-slate-900 text-white p-8") {
 }
 ```
 
-Statically typed defaults and named arguments are validated during type checking. If a caller omits an argument that has a default value, the type checker automatically clones and injects the default expression into the target parameter slot before transpilation.
+Statically typed defaults and named arguments are validated during type checking. If a caller omits an argument that has a default value, the type checker automatically clones and injects the default expression into the target parameter slot before code generation.
 
 ### 14.2 Varargs (`T...`)
 
@@ -1009,7 +1009,7 @@ NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)          // char* tail
 NativeHttp.curlEasySetopt(curl, CURLOPT_FOLLOWLOCATION, 1)     // long tail
 ```
 
-The compiler excludes the varargs parameter from the fixed C signature and declares the function as variadic; the C backend uses the `...` prototype from the included header.
+The compiler excludes the varargs parameter from the fixed signature and declares the function as variadic, matching the `...` prototype from the included header.
 
 ---
 
@@ -1093,10 +1093,10 @@ fun main() {
 
 ## 16. C Interoperability & Annotations
 
-Because Eiwa transpiles to C, integrating with native C libraries is seamless. You can declare a `lib` block to map C functions into Eiwa without writing any wrapper code.
+Eiwa compiles to native code through LLVM, so integrating with native C libraries is seamless. You can declare a `lib` block to map C functions into Eiwa without writing any wrapper code.
 
 Annotated `lib` blocks instruct the compiler and linker on how to process native C libraries:
-- **`@Header` (Compile-Time Includes)**: Instructs the C Transpiler to inject the corresponding `#include` directives at the top of the generated C file so that the C compiler knows about function signatures, structs, and constants.
+- **`@Header` (Compile-Time Includes)**: Instructs the compiler to inject the corresponding `#include` directives so the C toolchain knows about function signatures, structs, and constants.
 - **`@Link` (Smart Linker Resolution via `pkg-config`)**: Instructs the Eiwa compiler to dynamically resolve library paths and flags using system `pkg-config` (e.g. `@Link("pq")` or `@Link("curl")`). The compiler automatically queries `pkg-config --cflags --libs` (searching standard OS and Homebrew `PKG_CONFIG_PATH` paths on macOS and Linux) and injects the appropriate `-I`, `-L`, and `-l` flags alongside preprocessor macros (`-DEIWA_USE_<NAME>`). If `pkg-config` is not available or doesn't find the package, it gracefully falls back to `-l<name>`.
 - **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag to the C compiler. Relative paths starting with `./` or `../` (e.g. `@Include("./native")`) are automatically resolved relative to the directory containing the `.ei` file.
 - **`@Source` (Vendored C Sources)**: Appends a C source file to the compilation, e.g. `@Source("src/runtime/third_party/neco/neco.c")`. Use for vendored C libraries compiled together with the program.
@@ -1168,9 +1168,8 @@ The compiler backend binary is **`eiwac`** (the `eiwa` command is the developer 
 eiwac <run|build|test> [options] [file.ei] [program args...]
 
 Options:
-  --backend=c        Use the C backend (stable)
-  --backend=llvm     Use the LLVM backend (if available)
-  --release          Optimized build (LLVM backend)
+  --backend=llvm     Use the LLVM backend (default)
+  --release          Optimized build (-O3)
   -o <name>          Output binary name/path (build command)
   --module-path <d>  Extra directory to resolve imports (repeatable)
   -h, --help         Show help
@@ -1193,7 +1192,7 @@ fun main() {
 eiwac run app.ei -x 1 --verbose   # Process.args() -> ["-x", "1", "--verbose"]
 ```
 
-`Process.args()` returns the extra arguments after the file. **Backend note:** in the C backend the program runs as its own subprocess, so `args[0]` is the compiled executable and the file's arguments follow; in the LLVM JIT the program runs in-process, so the list starts at the first argument after the file.
+`Process.args()` returns the extra arguments after the file. `run` executes the program through the LLVM JIT (in-process), so the list starts at the first argument after the file.
 
 **Module search paths.** With `--module-path <dir>`, bare imports that do not resolve relative to the importing file are looked up in each module path (in order). Root-relative imports (`.x`) and `std.*` packages are never affected. This is how the `eiwa` CLI wires external dependencies (Section 30) without the compiler knowing about `~/.eiwa`.
 
@@ -2117,7 +2116,7 @@ Eiwa provides two core primitive numerical types for high-performance systems pr
 
 ### 28.1 The `Int` Type (64-bit Signed Integer)
 
-`Int` represents a 64-bit signed integer (mapped directly to C `int64_t`).
+`Int` represents a 64-bit signed integer (mapped directly to LLVM `i64`).
 
 * **Literals**: `42`, `-10`, `0`.
 * **Conversions**:
@@ -2134,7 +2133,7 @@ val s: String = a.toString() // "42"
 
 ### 28.2 The `Double` Type (64-bit IEEE 754 Floating Point)
 
-`Double` represents a 64-bit IEEE 754 double precision floating point number (mapped directly to C `double`).
+`Double` represents a 64-bit IEEE 754 double precision floating point number (mapped directly to LLVM `double`).
 
 * **Literals**: Decimal numbers such as `3.14159`, `0.0`, `-15.5`, `123.456`.
 * **Arithmetic & Comparisons**: Supports `+`, `-`, `*`, `/`, `<`, `>`, `<=`, `>=`, `==`, `!=`.
@@ -2160,7 +2159,7 @@ val parsedDouble: Double = "12.34".toDouble() // 12.34
 
 ### 28.3 Standard Math Library (`std.math`)
 
-The `std.math` package provides mathematical functions and utilities. Floating point math functions are bound directly to C `<math.h>` double precision routines via the `Math` object.
+The `std.math` package provides mathematical functions and utilities. Floating point math functions are bound natively to `<math.h>` double precision routines via the `Math` object.
 
 ```kotlin
 import { Math, mod } from "std.math"

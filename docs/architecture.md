@@ -1,13 +1,13 @@
 # Eiwa Compiler Architecture
 
-Eiwa is a statically typed, pragmatic programming language that uses Kotlin-inspired syntax. It is written in Zig and transpiles to C, combining high-level developer ergonomics with low-level portability and speed.
+Eiwa is a statically typed, pragmatic programming language that uses Kotlin-inspired syntax. It is written in Zig and compiles directly to **LLVM IR**, combining high-level developer ergonomics with low-level portability and speed.
 
 ## High-Level Pipeline
 
 The Eiwa compiler (`eiwa`) follows a classic multi-pass architecture:
 1. **Frontend**: Source Code (`.ei`) -> Tokens -> Abstract Syntax Tree (AST).
 2. **Core (Semantic Engine)**: AST -> Scope Resolution -> Type Checking -> Resolved AST.
-3. **Backend**: Resolved AST -> Intermediate C Code -> Native Binary.
+3. **Backend**: Resolved AST -> LLVM IR -> Native Binary (optimized by LLVM).
 
 ---
 
@@ -48,24 +48,17 @@ The most critical part of the compiler. It ensures mathematical and logical corr
 
 ---
 
-## 3. Backend (Dual-Strategy)
+## 3. Backend (Native LLVM)
 
-Eiwa emprega uma arquitetura de "Dual-Backend" para entregar o melhor dos dois mundos: ciclos de feedback instantâneos durante o desenvolvimento e performance extrema em produção.
+Eiwa compiles directly to **LLVM IR** via the LLVM C API, delivering instant feedback loops during development and extreme performance in production.
 
-### 3.1. C Transpiler (Modo Desenvolvimento / `run`)
-Localizado em `src/backend/c_transpiler/`.
-- Foco absoluto em **velocidade de compilação**.
-- Pega a AST resolvida e emite código C intermediário puro.
-- Em seguida, o CLI aciona internamente o `zig cc -O0` para gerar o binário de debug em tempo recorde (geralmente sub-segundo).
-- Útil para testar a aplicação localmente e iterar rápido.
+### 3.1. LLVM IR Emitter (`src/backend/llvm_emitter/`)
+The primary backend, wired to the LLVM C API from Zig (LLVM 21).
+- **Development (`run`/`test`)**: the resolved AST is lowered to LLVM IR in memory and executed through a JIT engine (OrcJIT) — no intermediate files on disk, sub-second feedback loops.
+- **Production (`build --release`)**: the same IR goes through LLVM's aggressive optimization pipeline (`-O3`), producing a standalone native binary with a remarkably low footprint.
+- Native FFI to system libraries (Boehm GC, libcurl, libpq, POSIX) via LLVM extern declarations.
 
 **Runtime representation of the composition model:** every `type` instance starts with an `EiwaTypeDescriptor*` header. The descriptor points to an impl table with one `{contract, vtable}` entry per implemented contract. Contract-typed values are plain `void*`; method calls on them dispatch dynamically via `eiwa_find_vtable(desc, &Contract_contract)[index]`. Concrete receivers always use direct static calls — dynamic dispatch is only paid where contracts are actually used. The same machinery powers `is` checks, smart casts, and `catch` matching against the `Throwable` contract.
 
-### 3.2. LLVM IR Emitter (Modo Produção / `build --release`)
-*Fase Futura (Pipeline de Release)*
-- Foco absoluto em **performance de execução**.
-- Em vez de gerar C, o compilador consumirá os *bindings* nativos do LLVM direto no Zig para emitir **LLVM IR** (Intermediate Representation).
-- Aciona o pipeline de otimização agressiva do LLVM (O3), gerando um binário nativo estático, enxuto e livre das abstrações do C.
-
 ### Build System (`main.zig`)
-Orquestra o fluxo inteiro. Ele decide qual pipeline do Backend acionar dependendo dos argumentos passados via CLI (`run` invoca o C Transpiler, `build --release` invocará o LLVM Emitter).
+Orchestrates the whole flow, choosing the backend pipeline from CLI arguments (`run`/`test` use the JIT, `build --release` emits an optimized native binary).
