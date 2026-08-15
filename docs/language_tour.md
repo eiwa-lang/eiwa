@@ -1176,20 +1176,24 @@ Options:
   -h, --help         Show help
 ```
 
-**Program arguments.** Extra positional arguments after the file are forwarded to the program by `eiwac run`. Programs read them through `std.process` (Section 17.1):
+**Program arguments.** Extra positional arguments after the file are forwarded to the program by `eiwac run`. Programs read them through `std.process` (Section 17.1) — this works whether the program defines `fun main()` or uses top-level statements:
 
 ```kotlin
 import { Process } from "std.process"
 
 fun main() {
-    val args = Process.args() // List<String>, args[0] is the executable
-    var i = 0
-    while (i < args.size()) {
-        println(args[i])
-        i = i + 1
+    val args = Process.args() // List<String>
+    for (arg in args) {
+        println(arg)
     }
 }
 ```
+
+```bash
+eiwac run app.ei -x 1 --verbose   # Process.args() -> ["-x", "1", "--verbose"]
+```
+
+`Process.args()` returns the extra arguments after the file. **Backend note:** in the C backend the program runs as its own subprocess, so `args[0]` is the compiled executable and the file's arguments follow; in the LLVM JIT the program runs in-process, so the list starts at the first argument after the file.
 
 **Module search paths.** With `--module-path <dir>`, bare imports that do not resolve relative to the importing file are looked up in each module path (in order). Root-relative imports (`.x`) and `std.*` packages are never affected. This is how the `eiwa` CLI wires external dependencies (Section 30) without the compiler knowing about `~/.eiwa`.
 

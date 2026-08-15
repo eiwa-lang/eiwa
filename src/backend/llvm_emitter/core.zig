@@ -938,6 +938,51 @@ pub const LLVMEmitter = struct {
         llvm.LLVMPositionBuilderAtEnd(self.builder, main_entry);
         const argc_val = llvm.LLVMGetParam(main_fn, 0);
         const argv_val = llvm.LLVMGetParam(main_fn, 1);
+
+        // Expose argv to Process.args() (eiwa_args_count/eiwa_args_get),
+        // mirroring the C backend's `main` which stores these globals. The
+        // entry is always emitted (with or without a user `fun main()`).
+        const argc_global = llvm.LLVMAddGlobal(mod, i32_type, "eiwa_argc");
+        llvm.LLVMSetInitializer(argc_global, llvm.LLVMConstInt(i32_type, 0, 0));
+        _ = llvm.LLVMBuildStore(self.builder, argc_val, argc_global);
+        const argv_global = llvm.LLVMAddGlobal(mod, ptr_type, "eiwa_argv");
+        llvm.LLVMSetInitializer(argv_global, llvm.LLVMConstNull(ptr_type));
+        _ = llvm.LLVMBuildStore(self.builder, argv_val, argv_global);
+
+        // eiwa_args_count() -> Int — these are `static inline` in the C runtime
+        // header, so they have no JIT symbol; emit real bodies reading the globals.
+        {
+            var p = [_]llvm.LLVMTypeRef{};
+            const fty = llvm.LLVMFunctionType(i64_type, &p, 0, 0);
+            const f = llvm.LLVMGetNamedFunction(mod, "eiwa_args_count") orelse llvm.LLVMAddFunction(mod, "eiwa_args_count", fty);
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const v = llvm.LLVMBuildLoad2(self.builder, i32_type, argc_global, "argc");
+                const ext = llvm.LLVMBuildZExt(self.builder, v, i64_type, "argc_ext");
+                _ = llvm.LLVMBuildRet(self.builder, ext);
+            }
+        }
+        {
+            var p = [_]llvm.LLVMTypeRef{ i64_type };
+            const fty = llvm.LLVMFunctionType(ptr_type, &p, 1, 0);
+            const f = llvm.LLVMGetNamedFunction(mod, "eiwa_args_get") orelse llvm.LLVMAddFunction(mod, "eiwa_args_get", fty);
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const argv_ptr = llvm.LLVMBuildLoad2(self.builder, ptr_type, argv_global, "argv");
+                const idx = llvm.LLVMGetParam(f, 0);
+                var idxs = [_]llvm.LLVMValueRef{ idx };
+                const slot = llvm.LLVMBuildGEP2(self.builder, ptr_type, argv_ptr, &idxs, 1, "slot");
+                const val = llvm.LLVMBuildLoad2(self.builder, ptr_type, slot, "arg");
+                _ = llvm.LLVMBuildRet(self.builder, val);
+            }
+        }
+
+        // Restore the builder to the entry block (the helper functions above
+        // moved it while emitting their own bodies).
+        llvm.LLVMPositionBuilderAtEnd(self.builder, main_entry);
+
         const result = self.emitWrapperCall(mod, 0, shims[0], argc_val, argv_val, i64_type, i32_type, ptr_type);
         _ = llvm.LLVMBuildRet(self.builder, result);
     }
