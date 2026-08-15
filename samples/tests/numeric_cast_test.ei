@@ -1,0 +1,21 @@
+test "numeric cast: Double as Int truncates" {
+    assert((3.7 as Int) == 3)
+    assert((3.0 as Int) == 3)
+    assert((-2.9 as Int) == -2)
+}
+
+test "numeric cast: Int as Double" {
+    assert((5 as Double) == 5.0)
+    assert((0 as Double) == 0.0)
+}
+
+test "numeric cast: mixed arithmetic" {
+    assert(((5 as Double) / 2.0) == 2.5)
+}
+
+test "numeric cast: toDouble and toInt helpers still work" {
+    val i = 7
+    assert(i.toDouble() == 7.0)
+    val d = 9.8
+    assert(d.toInt() == 9)
+}

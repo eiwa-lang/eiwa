@@ -955,7 +955,34 @@ pub fn emitExpression(self: *CTranspiler, node: *ASTNode) !void {
         .as_expr => |a| {
             const dest_t = a.type_ref.resolved_type.?;
             const t_str = try self.cType(dest_t);
-            if (dest_t.* == .Int or dest_t.* == .Bool) {
+            const is_num = struct {
+                fn f(t: ts.EiwaType) bool {
+                    return switch (t) {
+                        .Int, .Double => true,
+                        .Custom => |n| std.mem.eql(u8, n, "core_Int") or std.mem.eql(u8, n, "core_Double") or std.mem.eql(u8, n, "Int") or std.mem.eql(u8, n, "Double"),
+                        else => false,
+                    };
+                }
+            }.f;
+            const src_t = if (a.value.resolved_type) |rt| ts.extractBaseType(rt).* else .Void;
+            const src_is_num = is_num(src_t);
+            const dest_is_num = is_num(dest_t.*);
+            const src_is_double = src_t == .Double or (src_t == .Custom and std.mem.eql(u8, src_t.Custom, "core_Double"));
+            const dest_is_double = dest_t.* == .Double or (dest_t.* == .Custom and std.mem.eql(u8, dest_t.Custom, "core_Double"));
+            if (src_is_num and dest_is_num) {
+                if (src_is_double and dest_is_double) {
+                    // Double -> Double (e.g. smart-cast from a contract): the value
+                    // is boxed, so reinterpret its bytes rather than convert.
+                    try self.writer.appendSlice("(*(double*)&(");
+                    try self.emitExpression(a.value);
+                    try self.writer.appendSlice("))");
+                } else {
+                    // Real numeric conversion (Int <-> Double).
+                    try self.writer.writer().print("(({s})(", .{t_str});
+                    try self.emitExpression(a.value);
+                    try self.writer.appendSlice("))");
+                }
+            } else if (dest_t.* == .Int or dest_t.* == .Bool) {
                 try self.writer.writer().print("(({s})(intptr_t)(", .{t_str});
                 try self.emitExpression(a.value);
                 try self.writer.appendSlice("))");

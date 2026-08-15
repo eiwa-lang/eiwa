@@ -1323,6 +1323,7 @@ fun writeCallback(contents: Pointer, size: Int, nmemb: Int, userp: Pointer): Int
 
 - `Pointer as Type` reinterprets **without checking** (the pointer must already point to that layout) — useful when the C API guarantees the type (e.g. a `user data` you configured yourself).
 - `Pointer is Type` **checks the runtime descriptor** at the address and smart-casts, so `when (ptr) { is SomeType -> ptr.field }` works.
+- `as` also performs **numeric casts** between `Int` and `Double` (`d as Int` truncates, `i as Double` converts) — no separate `.toInt()`/`.toDouble()` helper needed.
 - Combined with `funPointer { ... }` (§16.5) and `Memory.alloc` (§16.6), this lets you bind C libraries that use callbacks, structs and out-parameters with **zero glue C** — `std.http` now calls libcurl directly.
 
 ---

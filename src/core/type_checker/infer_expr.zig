@@ -320,6 +320,20 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     }
 }
 
+/// True when `val as target` is a numeric conversion (Int <-> Double).
+fn isNumericCast(val: EiwaType, target: EiwaType) bool {
+    const is_num = struct {
+        fn f(t: EiwaType) bool {
+            return switch (t) {
+                .Int, .Double => true,
+                .Custom => |n| std.mem.eql(u8, n, "core_Int") or std.mem.eql(u8, n, "core_Double") or std.mem.eql(u8, n, "Int") or std.mem.eql(u8, n, "Double"),
+                else => false,
+            };
+        }
+    }.f;
+    return is_num(val) and is_num(target);
+}
+
 pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const a = node.data.as_expr;
     const val_type = try self.inferNode(a.value, scope);
@@ -339,6 +353,8 @@ pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
         // Reinterpret a raw pointer as a `type` (memory view): the value stays a
         // pointer, but field access reads/writes at the type's C layout offsets.
         // No runtime conversion.
+    } else if (isNumericCast(base_val.*, base_target.*)) {
+        // Numeric cast (Int <-> Double, etc.): a real runtime conversion.
     } else {
         const is_zero_to_ptr = base_val.* == .Int and base_target.* == .Pointer;
         const is_compat = is_zero_to_ptr or self.isCompatible(target_type, val_type) or (base_val.* == .Union and self.isCompatible(base_val, base_target));

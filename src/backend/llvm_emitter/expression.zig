@@ -3838,6 +3838,30 @@ pub fn emitExpression(
                     }
                 }
             }
+            // Numeric cast (Int <-> Double): a real runtime conversion.
+            if (as_e.value.resolved_type) |v_rt| {
+                const v_base = ts.extractBaseType(v_rt).*;
+                if (node.resolved_type) |nrt| {
+                    const n_base = ts.extractBaseType(nrt).*;
+                    const is_num = struct {
+                        fn f(t: ts.EiwaType) bool {
+                            return switch (t) {
+                                .Int, .Double => true,
+                                .Custom => |n| std.mem.eql(u8, n, "core_Int") or std.mem.eql(u8, n, "core_Double") or std.mem.eql(u8, n, "Int") or std.mem.eql(u8, n, "Double"),
+                                else => false,
+                            };
+                        }
+                    }.f;
+                    if (is_num(v_base) and is_num(n_base) and (v_base == .Int or (v_base == .Custom and std.mem.eql(u8, v_base.Custom, "core_Int"))) and (n_base == .Double or (n_base == .Custom and std.mem.eql(u8, n_base.Custom, "core_Double")))) {
+                        const dbl_t = llvm.LLVMDoubleTypeInContext(ctx);
+                        return llvm.LLVMBuildSIToFP(builder, val, dbl_t, "itod");
+                    }
+                    if (is_num(v_base) and is_num(n_base) and (v_base == .Double or (v_base == .Custom and std.mem.eql(u8, v_base.Custom, "core_Double"))) and (n_base == .Int or (n_base == .Custom and std.mem.eql(u8, n_base.Custom, "core_Int")))) {
+                        const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+                        return llvm.LLVMBuildFPToSI(builder, val, i64_t, "dtoi");
+                    }
+                }
+            }
             const target_rt_opt = node.resolved_type orelse as_e.type_ref.resolved_type;
             if (as_e.value.resolved_type) |v_rt| {
                 if (target_rt_opt) |target_rt| {

@@ -51,12 +51,6 @@ lib NativeMemory {
 
     @Alias("eiwa_now_millis")
     fun nowMillis(): Int
-
-    @Alias("eiwa_double_to_int")
-    fun doubleToInt(value: Double): Int
-
-    @Alias("eiwa_int_to_double")
-    fun intToDouble(value: Int): Double
 }
 
 contract Stringable {
@@ -315,7 +309,7 @@ type Int : Stringable, Equatable, Hashable {
     }
 
     fun toDouble(): Double {
-        return NativeMemory.intToDouble(this)
+        return this as Double
     }
 
     fun toInt(): Int = this
@@ -330,7 +324,7 @@ type Double : Stringable, Equatable, Hashable {
     }
 
     implement fun hashCode(): Int {
-        return NativeMemory.doubleToInt(this)
+        return this as Int
     }
 
     implement operator fun equals(other: Stringable): Bool {
@@ -341,7 +335,7 @@ type Double : Stringable, Equatable, Hashable {
     }
 
     fun toInt(): Int {
-        return NativeMemory.doubleToInt(this)
+        return this as Int
     }
 
     fun toDouble(): Double = this
