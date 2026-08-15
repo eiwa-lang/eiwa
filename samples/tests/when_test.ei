@@ -57,3 +57,17 @@ test "when with negated type checking" {
     }
     assert(isNotDog == true)
 }
+
+test "when with a String subject compares by content" {
+    val cmd = if (true) "run" else "other"
+    val matched = when (cmd) {
+        "build", "run" -> true
+        else -> false
+    }
+    assert(matched == true)
+    val fallback = when (cmd) {
+        "nope" -> 1
+        else -> 0
+    }
+    assert(fallback == 0)
+}

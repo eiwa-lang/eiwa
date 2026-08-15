@@ -3457,12 +3457,26 @@ pub fn emitExpression(
                                 var subj_load = llvm.LLVMBuildLoad2(builder, llvm.LLVMTypeOf(subj_ptr.?), subj_ptr.?, "when_subj_load");
                                 const s_type = llvm.LLVMTypeOf(subj_load);
                                 const c_type = llvm.LLVMTypeOf(cond_val);
-                                if (llvm.LLVMGetTypeKind(s_type) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(c_type) == llvm.LLVMIntegerTypeKind) {
+                                var already_eq = false;
+                                const subj_is_string = w.subject != null and w.subject.?.resolved_type != null and isStringOperandType(w.subject.?.resolved_type.?);
+                                if (subj_is_string and llvm.LLVMGetTypeKind(s_type) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(c_type) == llvm.LLVMPointerTypeKind) {
+                                    // String == String: compare content via the
+                                    // runtime helper (pointer identity would fail
+                                    // for a heap String vs a string literal).
+                                    const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals") orelse return error.StringEqualsNotFound;
+                                    const seq_type = llvm.LLVMGlobalGetValueType(seq_fn);
+                                    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+                                    var sargs = [_]llvm.LLVMValueRef{ coerceArg(builder, subj_load, ptr_t), coerceArg(builder, cond_val, ptr_t) };
+                                    cond_val = llvm.LLVMBuildCall2(builder, seq_type, seq_fn, &sargs, 2, "when_streq");
+                                    already_eq = true;
+                                } else if (llvm.LLVMGetTypeKind(s_type) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(c_type) == llvm.LLVMIntegerTypeKind) {
                                     subj_load = llvm.LLVMBuildPtrToInt(builder, subj_load, c_type, "subj_ptr2int");
                                 } else if (llvm.LLVMGetTypeKind(s_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(c_type) == llvm.LLVMPointerTypeKind) {
                                     cond_val = llvm.LLVMBuildPtrToInt(builder, cond_val, s_type, "cond_ptr2int");
                                 }
-                                cond_val = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_load, cond_val, "when_val_eq");
+                                if (!already_eq) {
+                                    cond_val = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_load, cond_val, "when_val_eq");
+                                }
                             }
                             if (cond_vals_count < 16) {
                                 cond_vals_buf[cond_vals_count] = cond_val;
