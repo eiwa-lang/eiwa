@@ -38,24 +38,36 @@ vcpkg install bdw-gc
 
 ---
 
-## 2. Compilando o CLI do Eiwa
-Com as dependências instaladas, acesse a raiz do projeto e construa o CLI usando o *build system* nativo do Zig:
+## 2. Compilando o Compilador (`eiwac`) e o CLI (`eiwa`)
+
+Com as dependências instaladas, acesse a raiz do projeto e construa o backend do compilador usando o *build system* nativo do Zig:
 
 ```bash
 zig build
 ```
-Esse comando vai compilar toda a engine (Lexer, Parser, TypeChecker e o backend LLVM) e colocar o binário executável na pasta `zig-out/bin/eiwa`.
+Esse comando compila toda a engine (Lexer, Parser, TypeChecker e o backend LLVM) e instala o binário do compilador em `bin/eiwac`.
+
+Para também gerar o CLI de desenvolvimento `eiwa` (escrito na própria Eiwa), compile-o com o backend recém-construído:
+
+```bash
+./bin/eiwac build -o bin/eiwa cli/src/main.ei
+```
+
+> **`eiwac` × `eiwa`:** `eiwac` é o backend do compilador (Zig) que compila arquivos `.ei`. `eiwa` é o CLI de desenvolvimento (Eiwa) que gerencia projetos, dependências e delega compilação/execução para o `eiwac`. Para scripts avulsos e a suíte de testes, use o `eiwac` diretamente; para projetos, use o `eiwa`.
 
 ---
 
-## 3. Comandos Úteis do Eiwa
+## 3. Comandos Úteis
 
-Após gerar o executável do Eiwa, você pode rodar os seguintes comandos:
+### Backend Compilador (`eiwac`)
 
-### `eiwa run <arquivo.ei>`
+### `eiwac run <arquivo.ei>`
 *Foco: Desenvolvimento Rápido.*
 Lê o código Eiwa, compila para LLVM IR em memória e executa imediatamente via JIT — sem arquivos intermediários no disco. O tempo de resposta é quase instantâneo.
 
-### `eiwa build <arquivo.ei>`
+### `eiwac build <arquivo.ei>`
 *Foco: Geração de Artefato Estático.*
 Lê o código, emite LLVM IR, passa pelo pipeline de otimização do LLVM (`-O3`) e gera um binário nativo estático pronto para distribuição.
+
+### CLI de Desenvolvimento (`eiwa`)
+Gerencia projetos (`eiwa.yaml`, `src/main.ei`), dependências git e delega `run`/`build`/`test` para o backend. Ver a [Language Tour, Seção 30](language_tour.md#30-developer-cli-eiwa).

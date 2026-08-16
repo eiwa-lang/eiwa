@@ -4,7 +4,7 @@ Eiwa is a statically typed, pragmatic programming language that uses Kotlin-insp
 
 ## High-Level Pipeline
 
-The Eiwa compiler (`eiwa`) follows a classic multi-pass architecture:
+The Eiwa compiler backend (`eiwac`) follows a classic multi-pass architecture:
 1. **Frontend**: Source Code (`.ei`) -> Tokens -> Abstract Syntax Tree (AST).
 2. **Core (Semantic Engine)**: AST -> Scope Resolution -> Type Checking -> Resolved AST.
 3. **Backend**: Resolved AST -> LLVM IR -> Native Binary (optimized by LLVM).

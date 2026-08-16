@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+          - os: macos-15
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: ziglang/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgc-dev
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo chmod +x llvm.sh
+          sudo ./llvm.sh 21
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bdw-gc llvm@21
+
+      - name: Build eiwac
+        run: zig build
+
+      - name: Build eiwa CLI
+        run: ./bin/eiwac build -o bin/eiwa cli/src/main.ei
+
+      - name: Package tarball
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="eiwa-$VERSION-${{ matrix.target }}"
+          STAGE="dist/$PKG"
+          mkdir -p "$STAGE/bin"
+          cp bin/eiwac bin/eiwa "$STAGE/bin/"
+          cp -R src "$STAGE/src"
+          cp README.md "$STAGE/"
+          tar -czf "$PKG.tar.gz" -C dist "$PKG"
+          sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eiwa-${{ matrix.target }}
+          path: |
+            eiwa-*.tar.gz
+            eiwa-*.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          find dist-assets -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} . \;
+          cat eiwa-*.tar.gz.sha256 > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Eiwa $VERSION" \
+            --generate-notes \
+            eiwa-*.tar.gz eiwa-*.tar.gz.sha256 SHA256SUMS

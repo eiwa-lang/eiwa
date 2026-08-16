@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
+const eiwa_home = @import("../../core/eiwa_home.zig");
 const ast = @import("../../core/ast.zig");
 const ts = @import("../../core/type_system.zig");
 const compat = @import("../../core/compat.zig");
@@ -21,7 +22,7 @@ pub const StructInfo = struct {
 /// (mirrors the C transpiler). Non-`src/` paths are returned unchanged.
 fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (!std.mem.startsWith(u8, path, "src/")) return path;
-    const src_dir = build_options.eiwa_home;
+    const src_dir = eiwa_home.resolve(allocator);
     const repo_root = std.fs.path.dirname(src_dir) orelse return path;
     return try std.fs.path.join(allocator, &.{ repo_root, path });
 }
@@ -2614,7 +2615,7 @@ pub const LLVMEmitter = struct {
     /// (@Include/@Define/@Source/@Link) plus the vendored runtime include dirs.
     /// Used by the native-binary link and by the JIT shared-lib build.
     fn appendLibRequirements(self: *LLVMEmitter, argv: *ArrayList([]const u8)) !void {
-        const src_dir = build_options.eiwa_home;
+        const src_dir = eiwa_home.resolve(self.allocator);
         const repo_root = std.fs.path.dirname(src_dir) orelse ".";
         const inc_transpiler = try std.fs.path.join(self.allocator, &.{ repo_root, "src/backend/c_transpiler" });
         const inc_third_party = try std.fs.path.join(self.allocator, &.{ repo_root, "src/runtime/third_party" });

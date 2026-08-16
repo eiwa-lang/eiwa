@@ -2268,7 +2268,7 @@ assert(allocated[1].cents == 300)
 `eiwa` is the official developer CLI (project and dependency management). It is written in Eiwa itself (`cli/`) and drives the `eiwac` compiler backend. See `docs/plan_package_manager.md` for the full specification.
 
 ```bash
-eiwa <command> [project-dir]
+eiwa <command> [project-dir|file.ei] [options]
 
 Commands (implemented):
   init         Create a new project (eiwa init [dir])
@@ -2283,12 +2283,31 @@ Commands (implemented):
 
 Arguments:
   project-dir  Project directory (default: current directory)
+  file.ei      Standalone Eiwa source file (delegated to eiwac)
 
 Options:
-  --frozen     Fail if eiwa.freeze does not exist (for CI)
+  -o <name>       Output binary name/path (build)
+  --backend=<b>   Backend for delegated files (c | llvm)
+  --release       Optimized build (delegated files)
+  --frozen        Fail if eiwa.freeze does not exist (for CI)
 ```
 
-### 30.1 Project Layout & Manifest
+### 30.1 Standalone Files (Delegation to `eiwac`)
+
+`eiwa run`, `eiwa build` and `eiwa test` also accept a standalone `.ei` file. When any argument after the command ends with `.ei`, the CLI skips project mode entirely and forwards the full command line to the `eiwac` backend (no `eiwa.yaml` required):
+
+```bash
+eiwa run app.ei                  # compile + execute via JIT
+eiwa build app.ei -o my_tool     # native binary
+eiwa test app_test.ei            # run test "name" {} blocks in the file
+eiwa run app.ei -- arg1 arg2     # forward args to the program after `--`
+```
+
+Flags (`--release`, `--backend=llvm`, ...) and key-value options (`-o`, `--module-path`, ...) can appear before or after the file — they are forwarded verbatim. Project commands (`init`, `add`, `remove`, `freeze`, `update`) and `run`/`build`/`test` on a directory still use the project flow.
+
+The same flags work in **project mode**: `eiwa build --release`, `eiwa run --backend=llvm`, extra `--module-path` entries and program args after `--` (`eiwa run -- arg1 arg2`) are forwarded to the `eiwac` invocation. `-o` overrides the `output:` manifest field on `build`.
+
+### 30.2 Project Layout & Manifest
 
 A project is a directory with an `eiwa.yaml` manifest and a fixed `src/main.ei` entry point. `eiwa init [dir]` scaffolds it (manifest, `src/main.ei` hello world and `test/`):
 
@@ -2311,7 +2330,7 @@ dependencies:
     branch: main
 ```
 
-### 30.2 Git Dependencies
+### 30.3 Git Dependencies
 
 Dependencies come exclusively from git hosts — there is no central registry. Sources: `github:` and `gitlab:` (`org/repo` shorthand) or `git:` (any git URL), each with optional `branch`, `tag`, or `commit` (default: HEAD of the default branch).
 
@@ -2329,7 +2348,7 @@ eiwa remove orm
 import { html } from "html"
 ```
 
-### 30.3 Freeze & Reproducible Builds
+### 30.4 Freeze & Reproducible Builds
 
 The first resolution is recorded in `~/.eiwa/resolutions/<manifest-hash>.yaml` and reused without network access. `eiwa freeze` writes `eiwa.freeze` with every dependency pinned to its exact resolved commit (`branch`/`tag` are replaced by `commit`). If `eiwa.freeze` exists, it overrides the local resolution; commit it for reproducible builds. `eiwa build --frozen` fails when no freeze file exists (intended for CI). `eiwa update [name]` re-resolves from `eiwa.yaml` and refreshes both the resolution cache and the freeze file.
 
@@ -2341,7 +2360,7 @@ dependencies:
     commit: 84d2ab3
 ```
 
-### 30.4 Compiler Location
+### 30.5 Compiler Location
 
 The CLI locates `eiwac` in this order:
 
@@ -2349,6 +2368,6 @@ The CLI locates `eiwac` in this order:
 2. An `eiwac` binary next to the `eiwa` executable
 3. `eiwac` on `PATH`
 
-### 30.5 Not Yet Implemented
+### 30.6 Not Yet Implemented
 
 Transitive dependency resolution (MVS). The manifest parser is currently a minimal indentation parser (marked with a TODO in the code) to be replaced by a typed DTO.

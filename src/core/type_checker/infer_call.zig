@@ -114,6 +114,16 @@ pub fn substituteParam(self: *TypeChecker, target_node: *ASTNode, param_name: []
     }
 }
 
+/// True when any call argument is a named argument (`name = value`). Such
+/// calls must be reordered by `resolveCallArguments` before reaching a backend,
+/// otherwise named_arg nodes leak into the emitters.
+fn hasNamedArgs(arguments: []const *ASTNode) bool {
+    for (arguments) |arg| {
+        if (arg.data == .named_arg) return true;
+    }
+    return false;
+}
+
 pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const ast.Param, scope: *Scope) anyerror!void {
     var c = &node.data.call_expr;
     var has_named = false;
@@ -1612,6 +1622,11 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 // on the variadic slot are collected into a List (even when the call's
                 // arg count happens to equal the fixed param count).
                 try resolveCallArguments(self, node, f.params, scope);
+            } else if (hasNamedArgs(c.arguments)) {
+                // Named arguments (`name = value`) must be reordered positionally;
+                // the default-fill branch below would otherwise leave named_arg
+                // nodes in place, which the emitters cannot lower.
+                try resolveCallArguments(self, node, f.params, scope);
             } else if (c.arguments.len < f.params.len) {
                 var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
                 for (c.arguments, 0..) |arg, arg_i| {
@@ -1878,6 +1893,10 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             // Varargs method: always run arg resolution so positional args
                             // landing on the variadic slot are collected into a List.
                             try resolveCallArguments(self, node, f.params, scope);
+                        } else if (hasNamedArgs(c.arguments)) {
+                            // Named arguments (`name = value`) must be reordered
+                            // positionally; see the type-method dispatch above.
+                            try resolveCallArguments(self, node, f.params, scope);
                         } else if (c.arguments.len < f.params.len) {
 
                             var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
@@ -1927,7 +1946,11 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     for (cd.methods) |method| {
                         if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
                             const f = &method.data.fun_decl;
-                            if (c.arguments.len < f.params.len) {
+                            if (hasNamedArgs(c.arguments)) {
+                                // Named arguments (`name = value`) must be reordered
+                                // positionally; see the type-method dispatch above.
+                                try resolveCallArguments(self, node, f.params, scope);
+                            } else if (c.arguments.len < f.params.len) {
                                 var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
                                 for (c.arguments, 0..) |arg, arg_i| {
                                     new_args[arg_i] = arg;

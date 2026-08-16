@@ -17,6 +17,99 @@ type ProjectContext(
     val hasFreeze: Bool
 )
 
+// Structured CLI arguments:
+// - positionals: commands, files and directories (non-dash args)
+// - flags:       boolean switches (e.g. --frozen, --release)
+// - keys/values: key-value options (e.g. --branch main, -o out, --backend=llvm)
+// - programArgs: arguments after `--` (forwarded to the program on run)
+type CliArgs(
+    val positionals: MutableList<String>,
+    val flags: MutableList<String>,
+    val keys: MutableList<String>,
+    val values: MutableList<String>,
+    val programArgs: MutableList<String>
+)
+
+// Options that consume the next argument as their value.
+fun isValueOption(arg: String): Bool {
+    return arg == "-o" || arg == "--branch" || arg == "--tag" || arg == "--commit" ||
+        arg == "--module-path" || arg == "--backend"
+}
+
+fun optionValue(args: CliArgs, key: String): String? {
+    var i = 0
+    while (i < args.keys.size()) {
+        if (args.keys[i] == key) {
+            return args.values[i]
+        }
+        i = i + 1
+    }
+    return null
+}
+
+fun hasFlag(args: CliArgs, flag: String): Bool {
+    var i = 0
+    while (i < args.flags.size()) {
+        if (args.flags[i] == flag) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fun positional(args: CliArgs, index: Int): String? {
+    if (index < args.positionals.size()) {
+        return args.positionals[index]
+    }
+    return null
+}
+
+// Parses all arguments after the command (index 2 onwards) into CliArgs.
+// `--key=value` and `--key value` both map to a key/value pair; `--` makes
+// every following argument a program argument (forwarded on run).
+fun parseArgs(): CliArgs {
+    val args = CliArgs(MutableList<String>(), MutableList<String>(), MutableList<String>(), MutableList<String>(), MutableList<String>())
+    var afterDoubleDash = false
+    var i = 2
+    while (i < Process.argsCount()) {
+        val argOpt = Process.argAt(i)
+        var consumedValue = false
+        if (argOpt != null) {
+            val arg = argOpt!!
+            if (afterDoubleDash) {
+                args.programArgs.add(arg)
+            } else if (arg == "--") {
+                afterDoubleDash = true
+            } else if (startsWith(arg, "-")) {
+                val eq = arg.indexOf("=")
+                if (eq != -1) {
+                    args.keys.add(arg.substring(0, eq))
+                    args.values.add(arg.substring(eq + 1, arg.length))
+                } else if (isValueOption(arg)) {
+                    val nextOpt = Process.argAt(i + 1)
+                    if (nextOpt != null) {
+                        args.keys.add(arg)
+                        args.values.add(nextOpt!!)
+                        consumedValue = true
+                    } else {
+                        args.flags.add(arg)
+                    }
+                } else {
+                    args.flags.add(arg)
+                }
+            } else {
+                args.positionals.add(arg)
+            }
+        }
+        i = i + 1
+        if (consumedValue) {
+            i = i + 1
+        }
+    }
+    return args
+}
+
 fun eiwacPath(): String {
     val fromEnv = Env.get("EIWAC")
     if (fromEnv != null) {
@@ -259,7 +352,7 @@ fun serializeFreeze(deps: MutableList<Dependency>): String {
 fun printHelp() {
     println("eiwa - Eiwa developer CLI")
     println("")
-    println("Usage: eiwa <command> [project-dir]")
+    println("Usage: eiwa <command> [project-dir|file.ei] [options]")
     println("")
     println("Commands:")
     println("  init       Create a new project (eiwa init [dir])")
@@ -271,19 +364,30 @@ fun printHelp() {
     println("  freeze     Pin resolved dependency commits into eiwa.freeze")
     println("  update     Re-resolve dependencies (or one: eiwa update <name>)")
     println("")
+    println("  build|run|test <file.ei>  Compile/run/test a standalone .ei file")
+    println("                            directly (delegates to the eiwac backend,")
+    println("                            no eiwa.yaml required)")
+    println("")
     println("Arguments:")
     println("  project-dir  Project directory (default: current directory)")
+    println("  file.ei      Standalone Eiwa source file (delegated to eiwac)")
     println("")
     println("Options:")
-    println("  -h, --help   Show this help")
-    println("  --frozen     Fail if eiwa.freeze does not exist (for CI)")
+    println("  -o <name>       Output binary name/path (build)")
+    println("  --backend=<b>   Backend (c | llvm), projects and files")
+    println("  --release       Optimized build (-O3), projects and files")
+    println("  --module-path <d>  Extra directory to resolve imports (repeatable)")
+    println("  -h, --help      Show this help")
+    println("  --frozen        Fail if eiwa.freeze does not exist (for CI)")
+    println("")
+    println("Use `--` to forward every following argument to the program (run).")
     println("")
     println("Environment:")
     println("  EIWAC        Path to the eiwac compiler (default: eiwac next to the eiwa binary)")
 }
 
 fun enterProjectDir(arg: String?) {
-    if (arg != null && startsWith(arg!!, "-") == false && Process.chdir(arg!!) == false) {
+    if (arg != null && Process.chdir(arg!!) == false) {
         println("Error: cannot enter directory: " + arg!!)
         exit(1)
     }
@@ -339,16 +443,7 @@ fun resolveAll(deps: MutableList<Dependency>) {
 }
 
 fun checkFrozen(ctx: ProjectContext) {
-    var frozenFlag = false
-    var argIdx = 2
-    while (argIdx < Process.argsCount()) {
-        val a = Process.argAt(argIdx)
-        if (a != null && a!! == "--frozen") {
-            frozenFlag = true
-        }
-        argIdx = argIdx + 1
-    }
-    if (frozenFlag && ctx.hasFreeze == false) {
+    if (hasFlag(parseArgs(), "--frozen") && ctx.hasFreeze == false) {
         println("Error: --frozen requires an eiwa.freeze file. Run 'eiwa freeze' first.")
         exit(1)
     }
@@ -369,11 +464,12 @@ fun freezeCommand() {
 
 fun updateCommand() {
     val eiwacResolved = eiwacPath()
+    val args = parseArgs()
     var updateTarget: String? = null
-    val dirOpt = Process.argAt(2)
-    if (dirOpt != null && startsWith(dirOpt!!, "-") == false) {
-        if (Process.chdir(dirOpt!!) == false) {
-            updateTarget = dirOpt!!
+    if (args.positionals.size() > 0) {
+        val first = args.positionals[0]
+        if (Process.chdir(first) == false) {
+            updateTarget = first
         }
     }
 
@@ -445,11 +541,12 @@ fun hasDependenciesSection(content: String): Bool {
 }
 
 fun initCommand() {
-    val dirOpt = Process.argAt(2)
-    if (dirOpt != null && startsWith(dirOpt!!, "-") == false) {
-        runOrFail("mkdir -p " + dirOpt!!)
-        if (Process.chdir(dirOpt!!) == false) {
-            println("Error: cannot enter directory: " + dirOpt!!)
+    val args = parseArgs()
+    if (args.positionals.size() > 0) {
+        val dirOpt = args.positionals[0]
+        runOrFail("mkdir -p " + dirOpt)
+        if (Process.chdir(dirOpt) == false) {
+            println("Error: cannot enter directory: " + dirOpt)
             exit(1)
         }
     }
@@ -467,8 +564,9 @@ fun initCommand() {
 }
 
 fun addCommand() {
-    val nameOpt = Process.argAt(2)
-    val srcOpt = Process.argAt(3)
+    val args = parseArgs()
+    val nameOpt = positional(args, 0)
+    val srcOpt = positional(args, 1)
     if (nameOpt == null || srcOpt == null) {
         println("Usage: eiwa add <name> <source> [--branch <b> | --tag <t> | --commit <c>]")
         println("  source: github:<org>/<repo>, gitlab:<org>/<repo> or a full git URL")
@@ -490,20 +588,17 @@ fun addCommand() {
         dep.git = src
     }
 
-    var i = 4
-    while (i + 1 < Process.argsCount()) {
-        val flag = Process.argAt(i)
-        val value = Process.argAt(i + 1)
-        if (flag != null && value != null) {
-            if (flag!! == "--branch") {
-                dep.branch = value!!
-            } else if (flag!! == "--tag") {
-                dep.tag = value!!
-            } else if (flag!! == "--commit") {
-                dep.commit = value!!
-            }
-        }
-        i = i + 2
+    val branchOpt = optionValue(args, "--branch")
+    val tagOpt = optionValue(args, "--tag")
+    val commitOpt = optionValue(args, "--commit")
+    if (branchOpt != null) {
+        dep.branch = branchOpt!!
+    }
+    if (tagOpt != null) {
+        dep.tag = tagOpt!!
+    }
+    if (commitOpt != null) {
+        dep.commit = commitOpt!!
     }
 
     val content = File.read("eiwa.yaml")
@@ -542,8 +637,8 @@ fun addCommand() {
 }
 
 fun removeCommand() {
-    val nameOpt = Process.argAt(2)
-    if (nameOpt == null) {
+    val args = parseArgs()
+    if (args.positionals.size() == 0) {
         println("Usage: eiwa remove <name>")
         exit(1)
     }
@@ -551,7 +646,7 @@ fun removeCommand() {
         println("Error: eiwa.yaml not found in current directory.")
         exit(1)
     }
-    val name = nameOpt!!
+    val name = args.positionals[0]
     val content = File.read("eiwa.yaml")
 
     var out = ""
@@ -604,9 +699,41 @@ fun removeCommand() {
     println("Removed " + name)
 }
 
-fun compilerCommand(cmd: String) {
+fun delegateToEiwac(cmd: String) {
     val eiwacResolved = eiwacPath()
-    enterProjectDir(Process.argAt(2))
+    var fullCmd = eiwacResolved + " " + cmd
+    var i = 2
+    while (i < Process.argsCount()) {
+        fullCmd = fullCmd + " " + Process.argAt(i)!!
+        i = i + 1
+    }
+    val code = Process.exec(fullCmd)
+    if (code != 0) {
+        exit(1)
+    }
+}
+
+fun hasEiwaFileArg(): Bool {
+    val args = parseArgs()
+    var i = 0
+    while (i < args.positionals.size()) {
+        if (endsWith(args.positionals[i], ".ei")) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fun compilerCommand(cmd: String) {
+    if (hasEiwaFileArg()) {
+        delegateToEiwac(cmd)
+        return
+    }
+    val eiwacResolved = eiwacPath()
+    val args = parseArgs()
+    val target: String? = positional(args, 0)
+    enterProjectDir(target)
     val ctx = loadProject(eiwacResolved)
 
     val entry = "src/main.ei"
@@ -617,18 +744,38 @@ fun compilerCommand(cmd: String) {
 
     val nameOpt = parseTopField(ctx.manifest, "name")
     val projectName = if (nameOpt == null) "app" else nameOpt!!
-    val outputOpt = parseTopField(ctx.manifest, "output")
-    val output = if (outputOpt == null) "bin/" + projectName else outputOpt!!
+    val cliOutputOpt = optionValue(args, "-o")
+    val manifestOutputOpt = parseTopField(ctx.manifest, "output")
+    val finalOutput = if (cliOutputOpt != null) cliOutputOpt!! else if (manifestOutputOpt != null) manifestOutputOpt!! else "bin/" + projectName
 
     if (cmd != "test") {
-        val slash = output.indexOf("/")
+        val slash = finalOutput.indexOf("/")
         if (slash != -1) {
-            runOrFail("mkdir -p " + output.substring(0, slash))
+            runOrFail("mkdir -p " + finalOutput.substring(0, slash))
         }
     }
 
-    var modulePaths = ""
+    // Forward eiwac flags/options supplied on the CLI: --release, --backend=...,
+    // extra --module-path entries and user program args (after `--` on run).
+    var extraFlags = ""
+    if (hasFlag(args, "--release")) {
+        extraFlags = extraFlags + " --release"
+    }
+    val backendOpt = optionValue(args, "--backend")
+    if (backendOpt != null) {
+        extraFlags = extraFlags + " --backend=" + backendOpt!!
+    }
+    var userModulePaths = ""
     var i = 0
+    while (i < args.keys.size()) {
+        if (args.keys[i] == "--module-path") {
+            userModulePaths = userModulePaths + " --module-path " + args.values[i]
+        }
+        i = i + 1
+    }
+
+    var modulePaths = ""
+    i = 0
     while (i < ctx.deps.size()) {
         val dep = ctx.deps[i]
         if (hasSource(dep)) {
@@ -638,12 +785,18 @@ fun compilerCommand(cmd: String) {
         i = i + 1
     }
 
-    val backend = "c"
     var fullCmd = ""
     if (cmd == "test") {
-        fullCmd = ctx.eiwac + " test --backend=" + backend + modulePaths
+        fullCmd = ctx.eiwac + " test" + extraFlags + userModulePaths + modulePaths
     } else {
-        fullCmd = ctx.eiwac + " " + cmd + " --backend=" + backend + modulePaths + " -o " + output + " " + entry
+        fullCmd = ctx.eiwac + " " + cmd + extraFlags + userModulePaths + modulePaths + " -o " + finalOutput + " " + entry
+    }
+    if (cmd == "run") {
+        i = 0
+        while (i < args.programArgs.size()) {
+            fullCmd = fullCmd + " " + args.programArgs[i]
+            i = i + 1
+        }
     }
     val code = Process.exec(fullCmd)
     if (code != 0) {

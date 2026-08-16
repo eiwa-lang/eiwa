@@ -7,6 +7,7 @@ const parser = @import("frontend/parser/core.zig");
 const c_transpiler = @import("backend/c_transpiler/core.zig");
 const ast = @import("core/ast.zig");
 const type_checker = @import("core/type_checker/core.zig");
+const eiwa_home = @import("core/eiwa_home.zig");
 const build_options = @import("build_options");
 const llvm_emitter = if (build_options.has_llvm) @import("backend/llvm_emitter/core.zig") else struct {};
 
@@ -96,6 +97,7 @@ pub fn main(init: std.process.Init) !void {
     var filename: []const u8 = "synthetic_test.ei";
 
     const io = init.io;
+    eiwa_home.io = io;
 
     var cli_c_flags = ArrayList([]const u8).init(allocator);
     defer cli_c_flags.deinit();
@@ -534,7 +536,7 @@ pub fn main(init: std.process.Init) !void {
 
     const actual_zig = "zig";
 
-    const self_src_dir = build_options.eiwa_home;
+    const self_src_dir = eiwa_home.resolve(allocator);
     const repo_root = std.fs.path.dirname(self_src_dir) orelse ".";
 
     const inc_transpiler = try std.fs.path.join(allocator, &.{ repo_root, "src/backend/c_transpiler" });

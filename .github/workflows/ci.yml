@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: ziglang/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgc-dev
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo chmod +x llvm.sh
+          sudo ./llvm.sh 21
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bdw-gc llvm@21
+
+      - name: Unit tests (zig build test)
+        run: zig build test
+
+      - name: Build eiwac
+        run: zig build
+
+      - name: Build eiwa CLI
+        run: ./bin/eiwac build -o bin/eiwa cli/src/main.ei
+
+      - name: Native test suite
+        run: ./bin/eiwac test
+
+      - name: Smoke test (run sample)
+        run: ./bin/eiwac run samples/main.ei

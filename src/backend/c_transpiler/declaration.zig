@@ -1,6 +1,6 @@
 const std = @import("std");
-const build_options = @import("build_options");
 const compat = @import("../../core/compat.zig");
+const eiwa_home = @import("../../core/eiwa_home.zig");
 const ArrayList = compat.ArrayList;
 const core = @import("core.zig");
 const ts = @import("../../core/type_system.zig");
@@ -10,7 +10,7 @@ const CTranspiler = core.CTranspiler;
 
 fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (!std.mem.startsWith(u8, path, "src/")) return path;
-    const src_dir = build_options.eiwa_home;
+    const src_dir = eiwa_home.resolve(allocator);
     const repo_root = std.fs.path.dirname(src_dir) orelse return path;
     return try std.fs.path.join(allocator, &.{ repo_root, path });
 }

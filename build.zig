@@ -27,6 +27,20 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             .lib_path = "/opt/homebrew/opt/llvm/lib",
         };
     }
+    // Check Intel macOS Homebrew (under /usr/local) llvm@21
+    if (fileExists(b, "/usr/local/opt/llvm@21/include/llvm-c/Core.h")) {
+        return .{
+            .include_path = "/usr/local/opt/llvm@21/include",
+            .lib_path = "/usr/local/opt/llvm@21/lib",
+        };
+    }
+    // Check Intel macOS Homebrew default llvm
+    if (fileExists(b, "/usr/local/opt/llvm/include/llvm-c/Core.h")) {
+        return .{
+            .include_path = "/usr/local/opt/llvm/include",
+            .lib_path = "/usr/local/opt/llvm/lib",
+        };
+    }
     // Check system default /usr/include/llvm-c/Core.h
     if (fileExists(b, "/usr/include/llvm-c/Core.h")) {
         return .{ .include_path = null, .lib_path = null };

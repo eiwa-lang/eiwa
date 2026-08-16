@@ -48,6 +48,42 @@ test "cli: help and unknown commands" {
     assert(Process.exec(bin) != 0)
 }
 
+test "cli: run/build/test a standalone .ei file (delegates to eiwac)" {
+    val eiwac = eiwacPathForTests()
+    val bin = cliBinary(eiwac)
+    val dir = "/tmp/eiwa_cli_itest_direct"
+    Process.exec("rm -rf " + dir)
+    assert(Process.exec("mkdir -p " + dir) == 0)
+    File.write(dir + "/app.ei", "fun main() {\n    println(\"direct-ok\")\n}\n")
+    File.write(dir + "/app_test.ei", "import { assert } from \"std.core\"\n\ntest \"direct test\" {\n    assert(1 + 1 == 2)\n}\n")
+
+    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run app.ei") == 0)
+    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release app.ei") == 0)
+    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build app.ei -o app_bin") == 0)
+    assert(File.exists(dir + "/app_bin"))
+    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " test app_test.ei") == 0)
+    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run missing.ei") != 0)
+
+    Process.exec("rm -rf " + dir)
+}
+
+test "cli: run/build a project forwarding --release and --backend" {
+    val eiwac = eiwacPathForTests()
+    val bin = cliBinary(eiwac)
+    val dir = "/tmp/eiwa_cli_itest_flags"
+    Process.exec("rm -rf " + dir)
+    assert(Process.exec("mkdir -p " + dir + "/src") == 0)
+    File.write(dir + "/eiwa.yaml", "name: flags\nversion: 0.1.0\n")
+    File.write(dir + "/src/main.ei", "fun main() {\n    println(\"flags-ok\")\n}\n")
+
+    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release") == 0)
+    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --backend=c") == 0)
+    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --release --backend=c") == 0)
+    assert(File.exists(dir + "/bin/flags"))
+
+    Process.exec("rm -rf " + dir)
+}
+
 test "cli: init creates the project skeleton" {
     val bin = cliBinary(eiwacPathForTests())
     val dir = "/tmp/eiwa_cli_itest_init"

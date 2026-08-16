@@ -44,6 +44,8 @@ zig build test
 ./bin/eiwac test
 ```
 
+> **`eiwac` × `eiwa`:** `eiwac` (Zig, `src/main.zig`) is the **compiler backend** — it compiles individual `.ei` files/scripts and runs the native test suite. `eiwa` (Eiwa, `cli/src/main.ei`) is the **developer CLI** for projects — it manages `eiwa.yaml`, git dependencies, and delegates `run`/`build`/`test` to `eiwac`. When working on the compiler itself, use `eiwac`; when working on the developer CLI, use `eiwa` (built via `./bin/eiwac build -o bin/eiwa cli/src/main.ei`).
+
 ---
 
 ## 🏛️ Codebase Map & Entry Points
