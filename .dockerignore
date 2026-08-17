@@ -1,0 +1,13 @@
+.git
+.gitignore
+.idea
+.agents
+.zig-cache
+zig-out
+bin
+dist
+*.dSYM
+temp_out.c
+test_runner
+parity_task_void
+**/.DS_Store

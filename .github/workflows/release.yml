@@ -17,6 +17,8 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
           - os: macos-15
             target: darwin-arm64
           - os: macos-13
@@ -34,7 +36,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgc-dev
+          # libunwind-dev is required on arm64 (Boehm GC links libunwind there)
+          sudo apt-get install -y libgc-dev libunwind-dev
           wget -q https://apt.llvm.org/llvm.sh
           sudo chmod +x llvm.sh
           sudo ./llvm.sh 21
