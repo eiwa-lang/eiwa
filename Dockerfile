@@ -6,9 +6,9 @@
 # install.sh): eiwa-<version>-linux-<arch>.tar.gz
 #
 # Usage:
-#   docker build -t eiwa-lang/eiwa --build-arg EIWA_VERSION=v0.1.0 .
-#   docker run --rm -v "$PWD":/work eiwa-lang/eiwa run myproject
-#   docker run --rm -v "$PWD":/work eiwa-lang/eiwa eiwac run script.ei
+#   docker build -t eiwalang/eiwa --build-arg EIWA_VERSION=v0.1.0 .
+#   docker run --rm -v "$PWD":/work eiwalang/eiwa run myproject
+#   docker run --rm -v "$PWD":/work eiwalang/eiwa eiwac run script.ei
 #
 # Runtime deps: eiwac links libLLVM.so.21.1 (libllvm21) and the eiwa CLI links
 # Boehm GC (libgc; libunwind on arm64). No build toolchain is included
