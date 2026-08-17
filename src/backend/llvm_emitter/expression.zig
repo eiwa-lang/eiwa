@@ -761,7 +761,9 @@ pub fn emitExpression(
                 }
                 if (g) |global_var| {
                     const val = try emitExpression(ctx, mod, builder, scope, structs, libs, set.value);
-                    _ = llvm.LLVMBuildStore(builder, val, global_var);
+                    if (storeValue(val, llvm.LLVMGlobalGetValueType(global_var))) |sv| {
+                        _ = llvm.LLVMBuildStore(builder, sv, global_var);
+                    }
                     return val;
                 }
             }
@@ -784,7 +786,9 @@ pub fn emitExpression(
                             defer std.heap.page_allocator.free(field_name_z);
 
                             const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, obj_val, @intCast(f_idx), field_name_z.ptr);
-                            _ = llvm.LLVMBuildStore(builder, val, field_ptr);
+                            if (storeValue(val, s_info.field_types[f_idx])) |sv| {
+                                _ = llvm.LLVMBuildStore(builder, sv, field_ptr);
+                            }
                             return val;
                         }
                     }
@@ -2957,7 +2961,9 @@ pub fn emitExpression(
                             const name_z = try std.heap.page_allocator.dupeZ(u8, "arr_set_gep");
                             defer std.heap.page_allocator.free(name_z);
                             const elem_ptr = arrayElemTypedPtr(builder, ctx, arr_ptr, i_val, elem_type, elem_stride, name_z.ptr);
-                            _ = llvm.LLVMBuildStore(builder, val, elem_ptr);
+                            if (storeValue(val, elem_type)) |sv| {
+                                _ = llvm.LLVMBuildStore(builder, sv, elem_ptr);
+                            }
                             return val;
                         }
                         if (std.mem.eql(u8, g.name, "push") and call.arguments.len == 1) {
@@ -3944,6 +3950,20 @@ pub fn coerceArg(
         }
     }
     return arg_val;
+}
+
+/// Returns a value safe to `store` into `dest_type`. A void-typed value (the
+/// result of a void-returning call, e.g. `result = block()` in
+/// `Task<Void>.run()`) is not a valid store operand — LLVM's
+/// `DataLayout::getTypeSizeInBits(void)` hits an `llvm_unreachable` that loops
+/// forever in release builds, hanging the compiler. A nullable Void (`T?`
+/// where T=Void) can only ever hold null, so a null constant of the
+/// destination type is stored instead. Returns null when the store must be
+/// skipped entirely (destination type is also void).
+pub fn storeValue(val: llvm.LLVMValueRef, dest_type: llvm.LLVMTypeRef) ?llvm.LLVMValueRef {
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) != llvm.LLVMVoidTypeKind) return val;
+    if (llvm.LLVMGetTypeKind(dest_type) == llvm.LLVMVoidTypeKind) return null;
+    return llvm.LLVMConstNull(dest_type);
 }
 
 /// Coerces a concrete type value (data_ptr) into a Fat Pointer { data, vtable } for a target contract.

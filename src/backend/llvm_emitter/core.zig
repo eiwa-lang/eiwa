@@ -1646,6 +1646,15 @@ pub const LLVMEmitter = struct {
                 _ = llvm.LLVMBuildRet(self.builder, ms_v);
             }
         }
+
+        // The net helpers (eiwa_tcp_bind/accept, eiwa_socket_read/write,
+        // eiwa_tcp_set_nonblocking, eiwa_socket_close) live as `static inline`
+        // in src/backend/c_transpiler/runtime/net_helpers.h, which the C
+        // backend #includes into its generated code. The LLVM backend has no C
+        // to inject the header into and the JIT dylib never compiles it, so the
+        // externs would resolve to null (EXC_BAD_ACCESS on the first call).
+        // Hand-emit their bodies as IR, like eiwa_to_string/eiwa_now_millis.
+        try self.emitSocketHelpers(mod);
     }
 
     fn emitToStringHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
@@ -2036,7 +2045,247 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMBuildRetVoid(self.builder);
     }
 
-    fn emitNowMillisHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
+    /// Hand-emits the POSIX socket helpers used by `std.net`
+    /// (eiwa_tcp_bind/accept, eiwa_socket_read/write, eiwa_tcp_set_nonblocking,
+    /// eiwa_socket_close). These are `static inline` in
+    /// src/backend/c_transpiler/runtime/net_helpers.h — the C backend #includes
+    /// the header into generated code, but the LLVM module has no C to inject
+    /// into and the JIT dylib never compiles the header, so the externs would
+    /// resolve to null and crash on first call. Kept in sync with the C
+    /// versions (sockaddr_in layout and fd/port are i32 at the C boundary,
+    /// sign-extended to Eiwa's i64 Int).
+    fn emitSocketHelpers(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
+        const ctx = self.context;
+        const b = self.builder;
+        const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+        const i32_t = llvm.LLVMInt32TypeInContext(ctx);
+        const i8_t = llvm.LLVMInt8TypeInContext(ctx);
+        const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+        const void_t = llvm.LLVMVoidTypeInContext(ctx);
+        const arr16_t = llvm.LLVMArrayType(i8_t, 16);
+
+        const is_macos = builtin.target.os.tag == .macos;
+        const sol_socket: i64 = if (is_macos) 65535 else 1;
+        const so_reuseaddr: i64 = if (is_macos) 4 else 2;
+        const o_nonblock: i64 = if (is_macos) 4 else 2048;
+        const fam_offset: i64 = if (is_macos) 1 else 0;
+
+        const c0_32 = llvm.LLVMConstInt(i32_t, 0, 0);
+        const c1_32 = llvm.LLVMConstInt(i32_t, 1, 0);
+        const c2_32 = llvm.LLVMConstInt(i32_t, 2, 0);
+        const c3_32 = llvm.LLVMConstInt(i32_t, 3, 0);
+        const c4_32 = llvm.LLVMConstInt(i32_t, 4, 0);
+        const c8_32 = llvm.LLVMConstInt(i32_t, 8, 0);
+        const c10_32 = llvm.LLVMConstInt(i32_t, 10, 0);
+        const c16_32 = llvm.LLVMConstInt(i32_t, 16, 0);
+        const c16_64 = llvm.LLVMConstInt(i64_t, 16, 0);
+        const neg1_64 = llvm.LLVMConstInt(i64_t, 0xffffffffffffffff, 1);
+
+        var s3 = [_]llvm.LLVMTypeRef{ i32_t, i32_t, i32_t };
+        var s5 = [_]llvm.LLVMTypeRef{ i32_t, i32_t, i32_t, ptr_t, i32_t };
+        const socket_f = llvm.LLVMGetNamedFunction(mod, "socket") orelse llvm.LLVMAddFunction(mod, "socket", llvm.LLVMFunctionType(i32_t, &s3, 3, 0));
+        const setsockopt_f = llvm.LLVMGetNamedFunction(mod, "setsockopt") orelse llvm.LLVMAddFunction(mod, "setsockopt", llvm.LLVMFunctionType(i32_t, &s5, 5, 0));
+        const bind_f = llvm.LLVMGetNamedFunction(mod, "bind") orelse blk: {
+            var ps = [_]llvm.LLVMTypeRef{ i32_t, ptr_t, i32_t };
+            break :blk llvm.LLVMAddFunction(mod, "bind", llvm.LLVMFunctionType(i32_t, &ps, 3, 0));
+        };
+        const listen_f = llvm.LLVMGetNamedFunction(mod, "listen") orelse llvm.LLVMAddFunction(mod, "listen", llvm.LLVMFunctionType(i32_t, &s3, 2, 0));
+        const accept_f = llvm.LLVMGetNamedFunction(mod, "accept") orelse blk: {
+            var ps = [_]llvm.LLVMTypeRef{ i32_t, ptr_t, ptr_t };
+            break :blk llvm.LLVMAddFunction(mod, "accept", llvm.LLVMFunctionType(i32_t, &ps, 3, 0));
+        };
+        const read_f = llvm.LLVMGetNamedFunction(mod, "read") orelse blk: {
+            var ps = [_]llvm.LLVMTypeRef{ i32_t, ptr_t, i64_t };
+            break :blk llvm.LLVMAddFunction(mod, "read", llvm.LLVMFunctionType(i64_t, &ps, 3, 0));
+        };
+        const write_f = llvm.LLVMGetNamedFunction(mod, "write") orelse blk: {
+            var ps = [_]llvm.LLVMTypeRef{ i32_t, ptr_t, i64_t };
+            break :blk llvm.LLVMAddFunction(mod, "write", llvm.LLVMFunctionType(i64_t, &ps, 3, 0));
+        };
+        const fcntl_f = llvm.LLVMGetNamedFunction(mod, "fcntl") orelse llvm.LLVMAddFunction(mod, "fcntl", llvm.LLVMFunctionType(i32_t, &s3, 3, 0));
+        const close_f = llvm.LLVMGetNamedFunction(mod, "close") orelse blk: {
+            var ps = [_]llvm.LLVMTypeRef{i32_t};
+            break :blk llvm.LLVMAddFunction(mod, "close", llvm.LLVMFunctionType(i32_t, &ps, 1, 0));
+        };
+        const memset_f = llvm.LLVMGetNamedFunction(mod, "memset") orelse blk: {
+            var ps = [_]llvm.LLVMTypeRef{ ptr_t, i32_t, i64_t };
+            break :blk llvm.LLVMAddFunction(mod, "memset", llvm.LLVMFunctionType(ptr_t, &ps, 3, 0));
+        };
+
+        const socket_ft = llvm.LLVMGlobalGetValueType(socket_f);
+        const setsockopt_ft = llvm.LLVMGlobalGetValueType(setsockopt_f);
+        const bind_ft = llvm.LLVMGlobalGetValueType(bind_f);
+        const listen_ft = llvm.LLVMGlobalGetValueType(listen_f);
+        const accept_ft = llvm.LLVMGlobalGetValueType(accept_f);
+        const read_ft = llvm.LLVMGlobalGetValueType(read_f);
+        const write_ft = llvm.LLVMGlobalGetValueType(write_f);
+        const fcntl_ft = llvm.LLVMGlobalGetValueType(fcntl_f);
+        const close_ft = llvm.LLVMGlobalGetValueType(close_f);
+        const memset_ft = llvm.LLVMGlobalGetValueType(memset_f);
+
+        // eiwa_tcp_bind(i64 port) -> i64
+        {
+            var ps = [_]llvm.LLVMTypeRef{i64_t};
+            const fn_t = llvm.LLVMFunctionType(i64_t, &ps, 1, 0);
+            const func = llvm.LLVMGetNamedFunction(mod, "eiwa_tcp_bind") orelse llvm.LLVMAddFunction(mod, "eiwa_tcp_bind", fn_t);
+            if (llvm.LLVMCountBasicBlocks(func) == 0) {
+                const entry = llvm.LLVMAppendBasicBlockInContext(ctx, func, "entry");
+                const sock_fail = llvm.LLVMAppendBasicBlockInContext(ctx, func, "sock_fail");
+                const after_sock = llvm.LLVMAppendBasicBlockInContext(ctx, func, "after_sock");
+                const bind_fail = llvm.LLVMAppendBasicBlockInContext(ctx, func, "bind_fail");
+                const after_bind = llvm.LLVMAppendBasicBlockInContext(ctx, func, "after_bind");
+                const listen_fail = llvm.LLVMAppendBasicBlockInContext(ctx, func, "listen_fail");
+                const done = llvm.LLVMAppendBasicBlockInContext(ctx, func, "done");
+                llvm.LLVMPositionBuilderAtEnd(b, entry);
+
+                const port32 = llvm.LLVMBuildTrunc(b, llvm.LLVMGetParam(func, 0), i32_t, "port32");
+                var sock_args = [_]llvm.LLVMValueRef{ c2_32, c1_32, c0_32 };
+                const fd32 = llvm.LLVMBuildCall2(b, socket_ft, socket_f, &sock_args, 3, "fd");
+                const fd_neg = llvm.LLVMBuildICmp(b, llvm.LLVMIntSLT, fd32, c0_32, "fd_neg");
+                _ = llvm.LLVMBuildCondBr(b, fd_neg, sock_fail, after_sock);
+
+                llvm.LLVMPositionBuilderAtEnd(b, sock_fail);
+                _ = llvm.LLVMBuildRet(b, neg1_64);
+
+                llvm.LLVMPositionBuilderAtEnd(b, after_sock);
+                const opt_ptr = llvm.LLVMBuildAlloca(b, i32_t, "opt");
+                _ = llvm.LLVMBuildStore(b, c1_32, opt_ptr);
+                var ss_args = [_]llvm.LLVMValueRef{ fd32, llvm.LLVMConstInt(i32_t, sol_socket, 0), llvm.LLVMConstInt(i32_t, so_reuseaddr, 0), opt_ptr, c4_32 };
+                _ = llvm.LLVMBuildCall2(b, setsockopt_ft, setsockopt_f, &ss_args, 5, "");
+
+                const addr_ptr = llvm.LLVMBuildArrayAlloca(b, i8_t, c16_64, "sockaddr");
+                var m_args = [_]llvm.LLVMValueRef{ addr_ptr, c0_32, c16_64 };
+                _ = llvm.LLVMBuildCall2(b, memset_ft, memset_f, &m_args, 3, "");
+
+                var fam_idx = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i64_t, 0, 0), llvm.LLVMConstInt(i64_t, fam_offset, 0) };
+                const fam_ptr = llvm.LLVMBuildGEP2(b, arr16_t, addr_ptr, &fam_idx, 2, "fam");
+                _ = llvm.LLVMBuildStore(b, llvm.LLVMBuildTrunc(b, c2_32, i8_t, "fam8"), fam_ptr);
+
+                const port_lo = llvm.LLVMBuildTrunc(b, port32, i8_t, "port_lo");
+                const port_hi = llvm.LLVMBuildTrunc(b, llvm.LLVMBuildLShr(b, port32, c8_32, "sh"), i8_t, "port_hi");
+                var lo_idx = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i64_t, 0, 0), llvm.LLVMConstInt(i64_t, 2, 0) };
+                var hi_idx = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i64_t, 0, 0), llvm.LLVMConstInt(i64_t, 3, 0) };
+                _ = llvm.LLVMBuildStore(b, port_lo, llvm.LLVMBuildGEP2(b, arr16_t, addr_ptr, &lo_idx, 2, "plo"));
+                _ = llvm.LLVMBuildStore(b, port_hi, llvm.LLVMBuildGEP2(b, arr16_t, addr_ptr, &hi_idx, 2, "phi"));
+
+                var b_args = [_]llvm.LLVMValueRef{ fd32, addr_ptr, c16_32 };
+                const bres = llvm.LLVMBuildCall2(b, bind_ft, bind_f, &b_args, 3, "bindres");
+                const b_neg = llvm.LLVMBuildICmp(b, llvm.LLVMIntSLT, bres, c0_32, "b_neg");
+                _ = llvm.LLVMBuildCondBr(b, b_neg, bind_fail, after_bind);
+
+                llvm.LLVMPositionBuilderAtEnd(b, bind_fail);
+                var c_args = [_]llvm.LLVMValueRef{fd32};
+                _ = llvm.LLVMBuildCall2(b, close_ft, close_f, &c_args, 1, "");
+                _ = llvm.LLVMBuildRet(b, neg1_64);
+
+                llvm.LLVMPositionBuilderAtEnd(b, after_bind);
+                var l_args = [_]llvm.LLVMValueRef{ fd32, c10_32 };
+                const lres = llvm.LLVMBuildCall2(b, listen_ft, listen_f, &l_args, 2, "listenres");
+                const l_neg = llvm.LLVMBuildICmp(b, llvm.LLVMIntSLT, lres, c0_32, "l_neg");
+                _ = llvm.LLVMBuildCondBr(b, l_neg, listen_fail, done);
+
+                llvm.LLVMPositionBuilderAtEnd(b, listen_fail);
+                var c2_args = [_]llvm.LLVMValueRef{fd32};
+                _ = llvm.LLVMBuildCall2(b, close_ft, close_f, &c2_args, 1, "");
+                _ = llvm.LLVMBuildRet(b, neg1_64);
+
+                llvm.LLVMPositionBuilderAtEnd(b, done);
+                _ = llvm.LLVMBuildRet(b, llvm.LLVMBuildSExt(b, fd32, i64_t, "fd64"));
+            }
+        }
+
+        // eiwa_tcp_accept(i64 fd) -> i64
+        {
+            var ps = [_]llvm.LLVMTypeRef{i64_t};
+            const fn_t = llvm.LLVMFunctionType(i64_t, &ps, 1, 0);
+            const func = llvm.LLVMGetNamedFunction(mod, "eiwa_tcp_accept") orelse llvm.LLVMAddFunction(mod, "eiwa_tcp_accept", fn_t);
+            if (llvm.LLVMCountBasicBlocks(func) == 0) {
+                const entry = llvm.LLVMAppendBasicBlockInContext(ctx, func, "entry");
+                llvm.LLVMPositionBuilderAtEnd(b, entry);
+                const fd32 = llvm.LLVMBuildTrunc(b, llvm.LLVMGetParam(func, 0), i32_t, "fd32");
+                const addr_ptr = llvm.LLVMBuildArrayAlloca(b, i8_t, c16_64, "addr");
+                const len_ptr = llvm.LLVMBuildAlloca(b, i32_t, "addrlen");
+                _ = llvm.LLVMBuildStore(b, c16_32, len_ptr);
+                var a_args = [_]llvm.LLVMValueRef{ fd32, addr_ptr, len_ptr };
+                const res32 = llvm.LLVMBuildCall2(b, accept_ft, accept_f, &a_args, 3, "accepted");
+                _ = llvm.LLVMBuildRet(b, llvm.LLVMBuildSExt(b, res32, i64_t, "fd64"));
+            }
+        }
+
+        // eiwa_socket_read(i64 fd, ptr buf, i64 max_len) -> i64
+        {
+            var ps = [_]llvm.LLVMTypeRef{ i64_t, ptr_t, i64_t };
+            const fn_t = llvm.LLVMFunctionType(i64_t, &ps, 3, 0);
+            const func = llvm.LLVMGetNamedFunction(mod, "eiwa_socket_read") orelse llvm.LLVMAddFunction(mod, "eiwa_socket_read", fn_t);
+            if (llvm.LLVMCountBasicBlocks(func) == 0) {
+                const entry = llvm.LLVMAppendBasicBlockInContext(ctx, func, "entry");
+                llvm.LLVMPositionBuilderAtEnd(b, entry);
+                const fd32 = llvm.LLVMBuildTrunc(b, llvm.LLVMGetParam(func, 0), i32_t, "fd32");
+                var r_args = [_]llvm.LLVMValueRef{ fd32, llvm.LLVMGetParam(func, 1), llvm.LLVMGetParam(func, 2) };
+                const res = llvm.LLVMBuildCall2(b, read_ft, read_f, &r_args, 3, "nread");
+                _ = llvm.LLVMBuildRet(b, res);
+            }
+        }
+
+        // eiwa_socket_write(i64 fd, ptr data, i64 len) -> i64
+        {
+            var ps = [_]llvm.LLVMTypeRef{ i64_t, ptr_t, i64_t };
+            const fn_t = llvm.LLVMFunctionType(i64_t, &ps, 3, 0);
+            const func = llvm.LLVMGetNamedFunction(mod, "eiwa_socket_write") orelse llvm.LLVMAddFunction(mod, "eiwa_socket_write", fn_t);
+            if (llvm.LLVMCountBasicBlocks(func) == 0) {
+                const entry = llvm.LLVMAppendBasicBlockInContext(ctx, func, "entry");
+                llvm.LLVMPositionBuilderAtEnd(b, entry);
+                const fd32 = llvm.LLVMBuildTrunc(b, llvm.LLVMGetParam(func, 0), i32_t, "fd32");
+                var w_args = [_]llvm.LLVMValueRef{ fd32, llvm.LLVMGetParam(func, 1), llvm.LLVMGetParam(func, 2) };
+                const res = llvm.LLVMBuildCall2(b, write_ft, write_f, &w_args, 3, "nwritten");
+                _ = llvm.LLVMBuildRet(b, res);
+            }
+        }
+
+        // eiwa_tcp_set_nonblocking(i64 fd) -> i64
+        {
+            var ps = [_]llvm.LLVMTypeRef{i64_t};
+            const fn_t = llvm.LLVMFunctionType(i64_t, &ps, 1, 0);
+            const func = llvm.LLVMGetNamedFunction(mod, "eiwa_tcp_set_nonblocking") orelse llvm.LLVMAddFunction(mod, "eiwa_tcp_set_nonblocking", fn_t);
+            if (llvm.LLVMCountBasicBlocks(func) == 0) {
+                const entry = llvm.LLVMAppendBasicBlockInContext(ctx, func, "entry");
+                const fail_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func, "fail");
+                const done = llvm.LLVMAppendBasicBlockInContext(ctx, func, "done");
+                llvm.LLVMPositionBuilderAtEnd(b, entry);
+                const fd32 = llvm.LLVMBuildTrunc(b, llvm.LLVMGetParam(func, 0), i32_t, "fd32");
+                var g_args = [_]llvm.LLVMValueRef{ fd32, c3_32, c0_32 };
+                const flags = llvm.LLVMBuildCall2(b, fcntl_ft, fcntl_f, &g_args, 3, "flags");
+                const fl_neg = llvm.LLVMBuildICmp(b, llvm.LLVMIntSLT, flags, c0_32, "fl_neg");
+                _ = llvm.LLVMBuildCondBr(b, fl_neg, fail_bb, done);
+
+                llvm.LLVMPositionBuilderAtEnd(b, fail_bb);
+                _ = llvm.LLVMBuildRet(b, neg1_64);
+
+                llvm.LLVMPositionBuilderAtEnd(b, done);
+                const newflags = llvm.LLVMBuildOr(b, flags, llvm.LLVMConstInt(i32_t, o_nonblock, 0), "newflags");
+                var s_args = [_]llvm.LLVMValueRef{ fd32, c4_32, newflags };
+                const res32 = llvm.LLVMBuildCall2(b, fcntl_ft, fcntl_f, &s_args, 3, "setres");
+                _ = llvm.LLVMBuildRet(b, llvm.LLVMBuildSExt(b, res32, i64_t, "res64"));
+            }
+        }
+
+        // eiwa_socket_close(i64 fd) -> void
+        {
+            var ps = [_]llvm.LLVMTypeRef{i64_t};
+            const fn_t = llvm.LLVMFunctionType(void_t, &ps, 1, 0);
+            const func = llvm.LLVMGetNamedFunction(mod, "eiwa_socket_close") orelse llvm.LLVMAddFunction(mod, "eiwa_socket_close", fn_t);
+            if (llvm.LLVMCountBasicBlocks(func) == 0) {
+                const entry = llvm.LLVMAppendBasicBlockInContext(ctx, func, "entry");
+                llvm.LLVMPositionBuilderAtEnd(b, entry);
+                const fd32 = llvm.LLVMBuildTrunc(b, llvm.LLVMGetParam(func, 0), i32_t, "fd32");
+                var c_args = [_]llvm.LLVMValueRef{fd32};
+                _ = llvm.LLVMBuildCall2(b, close_ft, close_f, &c_args, 1, "");
+                _ = llvm.LLVMBuildRetVoid(b);
+            }
+        }
+    }
+
+        fn emitNowMillisHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i64_type = llvm.LLVMInt64TypeInContext(self.context);
 

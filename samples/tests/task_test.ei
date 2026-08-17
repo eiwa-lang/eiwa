@@ -100,3 +100,13 @@ test "task lambda can update outer scope" {
     assert(t.await() == 50)
     assert(num == 12)
 }
+
+test "task explicitly typed Void should run to completion" {
+    var executed = false
+    val t = task<Void> {
+        executed = true
+    }
+    t.await()
+    assert(t.isDone())
+    assert(executed)
+}

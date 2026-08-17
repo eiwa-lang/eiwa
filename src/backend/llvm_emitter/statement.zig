@@ -93,7 +93,9 @@ pub fn emitStatement(
                 if (v.initializer) |init_node| {
                     var init_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, init_node);
                     init_val = expression.coerceArg(builder, init_val, llvm_type);
-                    _ = llvm.LLVMBuildStore(builder, init_val, box_ptr);
+                    if (expression.storeValue(init_val, llvm_type)) |sv| {
+                        _ = llvm.LLVMBuildStore(builder, sv, box_ptr);
+                    }
                 }
 
                 // Stack alloca holds the box pointer
@@ -130,7 +132,9 @@ pub fn emitStatement(
                         }
                     }
                     val = expression.coerceArg(builder, val, llvm_type);
-                    _ = llvm.LLVMBuildStore(builder, val, alloca_ptr);
+                    if (expression.storeValue(val, llvm_type)) |sv| {
+                        _ = llvm.LLVMBuildStore(builder, sv, alloca_ptr);
+                    }
                 }
             }
         },
@@ -191,7 +195,9 @@ pub fn emitStatement(
                     const field_ptr = llvm.LLVMBuildStructGEP2(
                         builder, s_info.struct_type, this_val, @intCast(selected_f_idx), "assign_field_ptr",
                     );
-                    _ = llvm.LLVMBuildStore(builder, val, field_ptr);
+                    if (expression.storeValue(val, s_info.field_types[selected_f_idx])) |sv| {
+                        _ = llvm.LLVMBuildStore(builder, sv, field_ptr);
+                    }
                     return;
                 }
                 return error.PropertyNotFound;
@@ -209,11 +215,15 @@ pub fn emitStatement(
                 const box_ptr = llvm.LLVMBuildLoad2(builder, ptr_type, alloca_ptr, "box_ptr_load");
                 const target_t = types_mapping.getFatPointerType(ctx);
                 const box_val = expression.coerceArg(builder, val, target_t);
-                _ = llvm.LLVMBuildStore(builder, box_val, box_ptr);
+                if (expression.storeValue(box_val, target_t)) |sv| {
+                    _ = llvm.LLVMBuildStore(builder, sv, box_ptr);
+                }
             } else {
                 const target_t = llvm.LLVMGetAllocatedType(alloca_ptr);
                 const coerced_val = expression.coerceArg(builder, val, target_t);
-                _ = llvm.LLVMBuildStore(builder, coerced_val, alloca_ptr);
+                if (expression.storeValue(coerced_val, target_t)) |sv| {
+                    _ = llvm.LLVMBuildStore(builder, sv, alloca_ptr);
+                }
             }
         },
         .if_expr => |if_node| {

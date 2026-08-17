@@ -71,6 +71,7 @@ os itens deste bloco.
 | C1 | `core.zig:1554` | DUP | `emitLoadInt64` emite IR inline que duplica `eiwa_load_int64` do runtime | **baixo** — linkar o helper em vez de re-emitir |
 | C2 | `core.zig:1571` | DUP | `emitStoreInt64` idem para `eiwa_store_int64` | **baixo** — idem |
 | C3 | `expression.zig:401` | DUP/HEURISTIC | Teste "Stringable-ness" duplicado (get_expr vs call_expr) e stringly-typed (`"Stringable"`/`"core_Stringable"` + lista hardcoded) | **médio** — centralizar helper `isStringable(resolved_type)` |
+| C4 | `core.zig:2057` | DUP/WORKAROUND | `emitSocketHelpers` hand-emite em IR os 6 helpers POSIX (`eiwa_tcp_bind/accept`, `eiwa_socket_read/write`, `eiwa_tcp_set_nonblocking`, `eiwa_socket_close`), duplicando `net_helpers.h` (`static inline`). O backend C `#include` o header no `.c` gerado; o LLVM não tem C pra injetar e o JIT dylib nunca compila o header, então os externs resolveriam pra null (crash). Constantes hardcoded por plataforma (macOS vs Linux). **Torna-se redundante se/bloco B** (linkar runtime no host) for feito. | **médio** — só resolve com o runtime linkado no host |
 
 ---
 
