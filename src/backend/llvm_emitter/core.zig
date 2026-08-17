@@ -847,6 +847,23 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "abs") or
                     std.mem.eql(u8, fn_name_s, "labs") or
                     std.mem.eql(u8, fn_name_s, "llabs") or
+                    // POSIX socket helpers hand-emitted by emitSocketHelpers
+                    // (src/backend/c_transpiler/runtime/net_helpers.h equivalents).
+                    // These are real libc functions; without the allowlist the
+                    // undefined-function stub pass below rewrites them to
+                    // `ret 0`, so socket() creates no socket and bind/accept
+                    // silently "succeed" with a bogus fd 0.
+                    std.mem.eql(u8, fn_name_s, "socket") or
+                    std.mem.eql(u8, fn_name_s, "setsockopt") or
+                    std.mem.eql(u8, fn_name_s, "bind") or
+                    std.mem.eql(u8, fn_name_s, "listen") or
+                    std.mem.eql(u8, fn_name_s, "accept") or
+                    std.mem.eql(u8, fn_name_s, "read") or
+                    std.mem.eql(u8, fn_name_s, "write") or
+                    std.mem.eql(u8, fn_name_s, "fcntl") or
+                    std.mem.eql(u8, fn_name_s, "close") or
+                    std.mem.eql(u8, fn_name_s, "memset") or
+                    std.mem.eql(u8, fn_name_s, "calloc") or
                     std.mem.startsWith(u8, fn_name_s, "eiwa_");
                 if (!is_libc) {
                     self.emitFunctionStub(mod, fn_name_s) catch {};
@@ -2163,10 +2180,12 @@ pub const LLVMEmitter = struct {
 
                 const port_lo = llvm.LLVMBuildTrunc(b, port32, i8_t, "port_lo");
                 const port_hi = llvm.LLVMBuildTrunc(b, llvm.LLVMBuildLShr(b, port32, c8_32, "sh"), i8_t, "port_hi");
+                // sockaddr_in.sin_port is big-endian (network order): the high
+                // byte goes at offset 2 and the low byte at offset 3.
                 var lo_idx = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i64_t, 0, 0), llvm.LLVMConstInt(i64_t, 2, 0) };
                 var hi_idx = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i64_t, 0, 0), llvm.LLVMConstInt(i64_t, 3, 0) };
-                _ = llvm.LLVMBuildStore(b, port_lo, llvm.LLVMBuildGEP2(b, arr16_t, addr_ptr, &lo_idx, 2, "plo"));
-                _ = llvm.LLVMBuildStore(b, port_hi, llvm.LLVMBuildGEP2(b, arr16_t, addr_ptr, &hi_idx, 2, "phi"));
+                _ = llvm.LLVMBuildStore(b, port_hi, llvm.LLVMBuildGEP2(b, arr16_t, addr_ptr, &lo_idx, 2, "plo"));
+                _ = llvm.LLVMBuildStore(b, port_lo, llvm.LLVMBuildGEP2(b, arr16_t, addr_ptr, &hi_idx, 2, "phi"));
 
                 var b_args = [_]llvm.LLVMValueRef{ fd32, addr_ptr, c16_32 };
                 const bres = llvm.LLVMBuildCall2(b, bind_ft, bind_f, &b_args, 3, "bindres");

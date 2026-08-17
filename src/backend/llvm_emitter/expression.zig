@@ -539,7 +539,12 @@ pub fn emitExpression(
             if (get.object.data == .identifier) {
                 const id_name = get.object.data.identifier.name;
                 const obj_c_name = get.object.data.identifier.resolved_c_name orelse id_name;
-                if (scope.get(id_name) == null and scope.get(obj_c_name) == null) {
+                // A bare class-field identifier (e.g. `this.builder` in a method)
+                // is not a local and is not a global/object: skip the global
+                // property path, otherwise the field is resolved as a bogus
+                // global and emits a load with a null operand (invalid IR).
+                const obj_is_class_prop = get.object.data.identifier.is_class_property;
+                if (!obj_is_class_prop and scope.get(id_name) == null and scope.get(obj_c_name) == null) {
                     var g: ?llvm.LLVMValueRef = null;
                     const global_name = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}\x00", .{ obj_c_name, get.name });
                     defer std.heap.page_allocator.free(global_name);
@@ -988,8 +993,11 @@ pub fn emitExpression(
                     const val_type = llvm.LLVMTypeOf(operand_val);
                     const val_kind = llvm.LLVMGetTypeKind(val_type);
                     if (val_kind == llvm.LLVMIntegerTypeKind) {
-                        const is_zero = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, operand_val, llvm.LLVMConstInt(val_type, 0, 0), "is_zero");
-                        return llvm.LLVMBuildZExt(builder, is_zero, val_type, "not_bool");
+                        // Logical NOT always yields a Bool (i1): a condition like
+                        // `!rel.contains("..")` must be an i1 branch operand. The
+                        // old code zext'd back to the operand width (i64), so an
+                        // `if (!x)` produced `br i64` — invalid IR.
+                        return llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, operand_val, llvm.LLVMConstInt(val_type, 0, 0), "is_zero");
                     }
                     return llvm.LLVMBuildNot(builder, operand_val, "nottmp");
                 },
