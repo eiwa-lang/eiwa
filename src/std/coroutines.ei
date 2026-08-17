@@ -3,6 +3,7 @@
 @Define("NECO_NOSIGNALS")
 @Define("NECO_USEHEAPSTACK")
 @Define("NECO_STACKSIZE=262144")
+@Define("LLCO_NOUNWIND")
 @Source("src/runtime/third_party/neco/neco.c")
 @Source("src/runtime/third_party/neco/neco_wrapper.c")
 @Include("src/runtime/third_party/neco")
