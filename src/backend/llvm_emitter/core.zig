@@ -2587,7 +2587,8 @@ pub const LLVMEmitter = struct {
         const opt_flag = if (self.is_release) "-O3" else "-O0";
         try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", opt_flag, "-fwrapv" });
         if (builtin.target.os.tag == .macos) {
-            try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
+            const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
+            try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
         }
         try cc_argv.appendSlice(&[_][]const u8{
             obj_filename,
@@ -2675,7 +2676,8 @@ pub const LLVMEmitter = struct {
 
             try cc_argv.appendSlice(&[_][]const u8{ "zig", "cc", "-shared", "-O0", "-fwrapv" });
             if (builtin.target.os.tag == .macos) {
-                try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
+                const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
+                try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
             }
             try cc_argv.appendSlice(&[_][]const u8{ "-o", lib_filename, "-lgc" });
             try self.appendLibRequirements(&cc_argv);

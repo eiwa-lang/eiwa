@@ -547,7 +547,8 @@ pub fn main(init: std.process.Init) !void {
     var cc_argv = ArrayList([]const u8).init(allocator);
     try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", "-O0", "-fwrapv", "-fno-sanitize=undefined" });
     if (builtin.target.os.tag == .macos) {
-        try cc_argv.appendSlice(&[_][]const u8{ "-I", "/opt/homebrew/include", "-L", "/opt/homebrew/lib" });
+        const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
+        try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
     }
     try cc_argv.appendSlice(&[_][]const u8{
         inc_transpiler_flag,
