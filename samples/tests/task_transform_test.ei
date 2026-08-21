@@ -123,3 +123,61 @@ test "P3: exception thrown after suspension inside a task is caught" {
 test "P3: awaited task completing inside try/catch yields the block result" {
     assert(tryWithAwaitNoThrow() == 42)
 }
+
+// P4: suspend inside a type method — straight-line task + await, loop with
+// suspension, and try/catch crossing suspension, all as type methods.
+type TaskCalculator {
+    fun doubleOf(n: Int): Int {
+        val t = task { n * 2 }
+        return t.await()
+    }
+
+    fun sumOfTask(n: Int): Int {
+        var total = 0
+        var i = 0
+        while (i < n) {
+            val r = task { i * 10 }.await()
+            total = total + r
+            i = i + 1
+        }
+        return total
+    }
+
+    fun tryCatchInMethod(): Int {
+        var caught = 0
+        val t = task {
+            try {
+                throw Exception("boom")
+            } catch (e: Exception) {
+                caught = 42
+            }
+            caught
+        }
+        return t.await()
+    }
+}
+
+// P4: generic type method with task/await over the type parameter.
+type TaskBoxer<T> {
+    fun identity(x: T): T {
+        val t = task { x }
+        return t.await()
+    }
+}
+
+test "P4: type method with straight-line task/await" {
+    assert(TaskCalculator().doubleOf(21) == 42)
+}
+
+test "P4: type method with loop containing suspension" {
+    assert(TaskCalculator().sumOfTask(3) == 30)
+}
+
+test "P4: type method with try/catch crossing suspension" {
+    assert(TaskCalculator().tryCatchInMethod() == 42)
+}
+
+test "P4: generic type method with task/await" {
+    assert(TaskBoxer<Int>().identity(42) == 42)
+    assert(TaskBoxer<String>().identity("hi") == "hi")
+}

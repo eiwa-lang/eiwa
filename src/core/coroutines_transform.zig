@@ -57,9 +57,40 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
     defer generated.deinit();
 
     for (module.data.program.statements) |stmt| {
-        if (stmt.data != .fun_decl) continue;
-        if (!stmt.data.fun_decl.is_suspend) continue;
-        try transformFunction(allocator, checker, stmt, &counter, &generated);
+        if (stmt.data == .fun_decl) {
+            if (!stmt.data.fun_decl.is_suspend) continue;
+            try transformFunction(allocator, checker, stmt, &counter, &generated);
+        } else if (stmt.data == .type_decl) {
+            const t = &stmt.data.type_decl;
+            var type_rewritten = false;
+            for (t.methods) |m_node| {
+                if (m_node.data != .fun_decl) continue;
+                if (!m_node.data.fun_decl.is_suspend) continue;
+                if (try rewriteFunctionBody(allocator, checker, m_node, &counter, &generated)) type_rewritten = true;
+            }
+            if (type_rewritten) {
+                // Re-infer the whole type so method bodies (with the generated
+                // machinery) get resolved types in the class scope (`this`).
+                try clearResolvedTypes(allocator, stmt);
+                var t2: EiwaType = undefined;
+                checker.pass = .validation;
+                try infer_decl.inferTypeDecl(checker, stmt, &checker.global_scope, &t2);
+            }
+        } else if (stmt.data == .object_decl) {
+            const o = &stmt.data.object_decl;
+            var obj_rewritten = false;
+            for (o.members) |member| {
+                if (member.data != .fun_decl) continue;
+                if (!member.data.fun_decl.is_suspend) continue;
+                if (try rewriteFunctionBody(allocator, checker, member, &counter, &generated)) obj_rewritten = true;
+            }
+            if (obj_rewritten) {
+                try clearResolvedTypes(allocator, stmt);
+                var t3: EiwaType = undefined;
+                checker.pass = .validation;
+                try infer_decl.inferObjectDecl(checker, stmt, &checker.global_scope, &t3);
+            }
+        }
     }
 
     // Collect continuation types produced during re-inference (monomorphized
@@ -94,7 +125,30 @@ fn containsNode(nodes: []const *ASTNode, target: *ASTNode) bool {
     return false;
 }
 
-/// Rewrites a suspend function's body and re-validates it so the generated
+/// Rewrites a suspend function's body: `task {}`/`.await()` constructs become
+/// machinery + generated continuation types. Returns true when the body was
+/// actually rewritten. Does NOT re-validate — callers decide how to re-infer
+/// (top-level functions vs type methods need different scopes).
+fn rewriteFunctionBody(
+    allocator: std.mem.Allocator,
+    checker: *TypeChecker,
+    node: *ASTNode,
+    counter: *usize,
+    generated: *ArrayList(*ASTNode),
+) !bool {
+    var f = &node.data.fun_decl;
+    if (f.body.data != .block) return false;
+    if (!hasTaskOrAwait(f.body)) return false;
+
+    var new_stmts = ArrayList(*ASTNode).init(allocator);
+    defer new_stmts.deinit();
+    try rewriteStatements(allocator, checker, f.body.data.block.statements, counter, generated, &new_stmts);
+    const rewritten = try new_stmts.toOwnedSlice();
+    f.body.data.block.statements = rewritten;
+    return true;
+}
+
+/// Rewrites a top-level suspend function and re-validates it so the generated
 /// machinery resolves. Only bodies that actually contain `task {}`/`.await()`
 /// constructs are rewritten.
 fn transformFunction(
@@ -104,14 +158,7 @@ fn transformFunction(
     counter: *usize,
     generated: *ArrayList(*ASTNode),
 ) !void {
-    var f = &node.data.fun_decl;
-    if (f.body.data != .block) return;
-    if (!hasTaskOrAwait(f.body)) return;
-
-    var new_stmts = ArrayList(*ASTNode).init(allocator);
-    defer new_stmts.deinit();
-    try rewriteStatements(allocator, checker, f.body.data.block.statements, counter, generated, &new_stmts);
-    f.body.data.block.statements = try new_stmts.toOwnedSlice();
+    if (!try rewriteFunctionBody(allocator, checker, node, counter, generated)) return;
 
     // Re-validate so every generated identifier/call gets resolved types.
     try clearResolvedTypes(allocator, node);
@@ -1483,6 +1530,19 @@ fn clearResolvedTypes(allocator: std.mem.Allocator, node: *ASTNode) !void {
     node.resolved_type = null;
     node.expected_type = null;
     switch (node.data) {
+        .type_decl => |t| {
+            for (t.primary_constructor) |prop| {
+                if (prop.initializer) |init| try clearResolvedTypes(allocator, init);
+            }
+            for (t.methods) |m| {
+                try clearResolvedTypes(allocator, m);
+            }
+        },
+        .object_decl => |o| {
+            for (o.members) |m| {
+                try clearResolvedTypes(allocator, m);
+            }
+        },
         .fun_decl => |f| {
             if (f.body.data == .block) {
                 for (f.body.data.block.statements) |s| {

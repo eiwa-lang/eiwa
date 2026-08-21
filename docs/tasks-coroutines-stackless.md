@@ -147,7 +147,18 @@ Casos em ordem:
       `samples/task_p3_debug.ei` (99). Limitação conhecida: `try/catch` como última
       expressão do bloco não vira resultado do task (`blockReturnType` não trata
       `try_stmt` como expr — usar variável capturada + trailing, como nos testes).
-- [ ] P4 — `Task<T>` genérico, `await` em tipos genéricos, suspend em métodos de type.
+- [x] P4 — `Task<T>` genérico, `await` em tipos genéricos, suspend em métodos de type.
+      **CONCLUÍDO (2026-08)**: `transformModule` agora processa `type_decl.methods` e
+      `object_decl.members` além de funções top-level: extrai `rewriteFunctionBody` (reescreve
+      o corpo sem re-validar) e re-infere o `type_decl`/`object_decl` inteiro via
+      `inferTypeDecl`/`inferObjectDecl` para resolver o machinery no escopo de classe (`this`).
+      Fix crítico: `clearResolvedTypes` ganhou cases `.type_decl`/`.object_decl` (antes não
+      descia aos métodos — os `var_decl` reescritos ficavam sem `resolved_type` e o emitter
+      falhava `MissingTypeForVarDecl`). Validado: `samples/tests/task_transform_test.ei` **12/12**
+      (novos: `TaskCalculator.doubleOf` == 42, `sumOfTask` == 30, `tryCatchInMethod` == 42,
+      `TaskBoxer<T>.identity` em `Int` e `String`).
+- [ ] P5 — `Task<T>` exposto na stdlib stackless (remover `Task<T>`/`Awaitable` neco),
+      `Coroutine.sleep/delay` sobre o Scheduler (timer heap), I/O via `poll`.
 
 ## Fase D — Emissão LLVM
 
