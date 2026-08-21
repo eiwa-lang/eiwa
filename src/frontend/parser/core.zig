@@ -71,6 +71,7 @@ pub const Parser = struct {
     pub const skillDeclaration = declaration_mod.skillDeclaration;
     pub const libDeclaration = declaration_mod.libDeclaration;
     pub const parseAnnotations = declaration_mod.parseAnnotations;
+    pub const parseModifiers = declaration_mod.parseModifiers;
     pub const objectDeclaration = declaration_mod.objectDeclaration;
     pub const enumDeclaration = declaration_mod.enumDeclaration;
 

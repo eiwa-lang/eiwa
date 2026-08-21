@@ -1135,6 +1135,11 @@ pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         if (sym.variable) |v_sym| {
             var new_v = v_sym;
             new_v.decl_node = node;
+            // Preserve the boxed flag on re-inference (e.g. when the coroutines
+            // transform re-validates a function body, `var x` was already marked
+            // boxed by capture detection; `scope.define` above resets the
+            // Variable struct, so restore it here).
+            new_v.is_boxed = v.is_boxed;
             sym.variable = new_v;
             sym_ptr.* = sym;
         }

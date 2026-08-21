@@ -33,6 +33,53 @@ fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 /// normal builds stay quiet; enable with `EIWA_LLVM_VERBOSE=1`.
 pub var verbose: bool = false;
 
+/// True when the host `eiwac` binary itself links libgc (build option set by
+/// build.zig's findLibgcPath). Only then can JIT'd code resolve GC_* symbols
+/// from the host process (Bloco B, docs/tasks-bloco-b-gc-jit.md).
+pub const has_gc = build_options.has_gc;
+
+/// When true, emitted code allocates via GC_malloc/GC_realloc (zeroed,
+/// GC-managed memory, parity with the C backend) instead of raw malloc/realloc
+/// (never collected, never zeroed). Set by main.zig before emitModule:
+/// always for native builds (the binary links -lgc), and for the JIT only
+/// when the host links libgc (`has_gc`). When false the emitter keeps the
+/// historical malloc-first ordering and everything behaves as before.
+pub var prefer_gc_alloc: bool = false;
+
+/// libgc bindings into the host process. Only referenced when `has_gc` is
+/// true (Zig lazily compiles externs, so hosts without libgc never link these).
+const gc = struct {
+    pub extern "c" fn GC_init() void;
+    /// Registers [low, high_plus_1) as a root segment scanned by the collector.
+    pub extern "c" fn GC_add_roots(low: *anyopaque, high_plus_1: *anyopaque) void;
+};
+
+/// Returns the heap allocation function emitted code should call:
+/// GC_malloc-first when `prefer_gc_alloc`, malloc-first otherwise. Both
+/// prototypes are always declared in emitModule's pass 0, so the lookup
+/// never fails.
+pub fn getHeapAllocFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
+    const primary: [*:0]const u8 = if (prefer_gc_alloc) "GC_malloc" else "malloc";
+    const fallback: [*:0]const u8 = if (prefer_gc_alloc) "malloc" else "GC_malloc";
+    return llvm.LLVMGetNamedFunction(mod, primary) orelse llvm.LLVMGetNamedFunction(mod, fallback).?;
+}
+
+/// Same ordering policy as getHeapAllocFn, for buffer growth:
+/// GC_realloc-first when `prefer_gc_alloc` (GC_realloc is a real exported
+/// libgc function, unlike the GC_REALLOC macro), realloc-first otherwise.
+pub fn getHeapReallocFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
+    const ptr_type = llvm.LLVMPointerTypeInContext(llvm.LLVMGetModuleContext(mod), 0);
+    const size_t_type = llvm.LLVMInt64TypeInContext(llvm.LLVMGetModuleContext(mod));
+    const primary: [*:0]const u8 = if (prefer_gc_alloc) "GC_realloc" else "realloc";
+    const fallback: [*:0]const u8 = if (prefer_gc_alloc) "realloc" else "GC_realloc";
+    return llvm.LLVMGetNamedFunction(mod, primary) orelse
+        (llvm.LLVMGetNamedFunction(mod, fallback) orelse blk: {
+            var ps = [_]llvm.LLVMTypeRef{ ptr_type, size_t_type };
+            const ft = llvm.LLVMFunctionType(ptr_type, &ps, 2, 0);
+            break :blk llvm.LLVMAddFunction(mod, fallback, ft);
+        });
+}
+
 pub const LLVMEmitter = struct {
     allocator: std.mem.Allocator,
     context: llvm.LLVMContextRef,
@@ -126,28 +173,36 @@ pub const LLVMEmitter = struct {
         const gc_type = llvm.LLVMFunctionType(ptr_type, &gc_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "GC_malloc", gc_type);
         _ = llvm.LLVMAddFunction(mod, "malloc", gc_type);
+        {
+            var realloc_params = [_]llvm.LLVMTypeRef{ ptr_type, size_t_type };
+            const realloc_type = llvm.LLVMFunctionType(ptr_type, &realloc_params, 2, 0);
+            _ = llvm.LLVMAddFunction(mod, "GC_realloc", realloc_type);
+            _ = llvm.LLVMAddFunction(mod, "realloc", realloc_type);
+        }
 
         // `GC_MALLOC` (all-caps) is referenced by FFI `@Alias("GC_MALLOC")` code
         // (e.g. std.random's NativeMemory.allocate / randomBytes). MCJIT cannot
         // resolve it from the host binary, and the stub pass would otherwise
         // replace it with `ret null`, crashing any program that allocates via
-        // the FFI. Give it a real body that forwards to host `malloc` (the same
-        // malloc-first strategy used everywhere else in the emitter).
+        // the FFI. Give it a real body that forwards to the active heap
+        // allocator (GC_malloc when prefer_gc_alloc, malloc otherwise — the
+        // same ordering used everywhere else in the emitter).
         {
             const gc_malloc_ffi = llvm.LLVMAddFunction(mod, "GC_MALLOC", gc_type);
             const entry_bb = llvm.LLVMAppendBasicBlockInContext(self.context, gc_malloc_ffi, "entry");
             llvm.LLVMPositionBuilderAtEnd(self.builder, entry_bb);
             const n_param = llvm.LLVMGetParam(gc_malloc_ffi, 0);
-            const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
-            const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+            const alloc_fn = getHeapAllocFn(mod);
+            const alloc_type = llvm.LLVMGlobalGetValueType(alloc_fn);
             var margs = [_]llvm.LLVMValueRef{n_param};
-            const alloc = llvm.LLVMBuildCall2(self.builder, malloc_type, malloc_fn, &margs, 1, "gc_alloc");
+            const alloc = llvm.LLVMBuildCall2(self.builder, alloc_type, alloc_fn, &margs, 1, "gc_alloc");
             _ = llvm.LLVMBuildRet(self.builder, alloc);
         }
 
         // Same for `GC_REALLOC` (FFI @Alias("GC_REALLOC"), e.g. Standard.gcRealloc):
-        // a macro in gc.h, so MCJIT can't resolve it. Forward to libc `realloc`
-        // (which accepts NULL and behaves like malloc).
+        // a macro in gc.h, so MCJIT can't resolve it. Forward to the active
+        // heap reallocator (GC_realloc when prefer_gc_alloc, libc realloc
+        // otherwise — both accept NULL and behave like the alloc variant).
         {
             var r_params = [_]llvm.LLVMTypeRef{ ptr_type, size_t_type };
             const r_type = llvm.LLVMFunctionType(ptr_type, &r_params, 2, 0);
@@ -156,11 +211,7 @@ pub const LLVMEmitter = struct {
             llvm.LLVMPositionBuilderAtEnd(self.builder, entry_bb);
             const old_p = llvm.LLVMGetParam(gc_realloc_ffi, 0);
             const new_s = llvm.LLVMGetParam(gc_realloc_ffi, 1);
-            const realloc_fn = llvm.LLVMGetNamedFunction(mod, "realloc") orelse blk: {
-                var rp = [_]llvm.LLVMTypeRef{ ptr_type, size_t_type };
-                const rt = llvm.LLVMFunctionType(ptr_type, &rp, 2, 0);
-                break :blk llvm.LLVMAddFunction(mod, "realloc", rt);
-            };
+            const realloc_fn = getHeapReallocFn(mod);
             const realloc_type = llvm.LLVMGlobalGetValueType(realloc_fn);
             var rargs = [_]llvm.LLVMValueRef{ old_p, new_s };
             const ralloc = llvm.LLVMBuildCall2(self.builder, realloc_type, realloc_fn, &rargs, 2, "gc_realloc");
@@ -185,6 +236,35 @@ pub const LLVMEmitter = struct {
         const void_type = llvm.LLVMVoidTypeInContext(self.context);
         const void_fn_type = llvm.LLVMFunctionType(void_type, null, 0, 0);
         _ = llvm.LLVMAddFunction(mod, "GC_init", void_fn_type);
+
+        // Bloco B: native binaries (eiwac build) allocate via GC_malloc when
+        // prefer_gc_alloc, so the Boehm GC must be initialized before main.
+        // Emit a global constructor that calls GC_init — covers every entry
+        // shape (plain main, @MainWrapper chains, eiwa_test_main) without
+        // touching each one. The JIT path does NOT rely on this (MCJIT never
+        // runs global ctors); executeJIT calls GC_init from the host side.
+        if (prefer_gc_alloc) {
+            const ctor_fn = llvm.LLVMAddFunction(mod, "__eiwa_gc_init_ctor", void_fn_type);
+            const ctor_bb = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_fn, "entry");
+            llvm.LLVMPositionBuilderAtEnd(self.builder, ctor_bb);
+            const gc_init_fn = llvm.LLVMGetNamedFunction(mod, "GC_init").?;
+            _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, gc_init_fn, null, 0, "");
+            _ = llvm.LLVMBuildRetVoid(self.builder);
+
+            var ctor_entry_fields = [_]llvm.LLVMTypeRef{ i32_type, ptr_type, ptr_type };
+            const ctor_entry_type = llvm.LLVMStructTypeInContext(self.context, &ctor_entry_fields, 3, 0);
+            var ctor_entry_vals = [_]llvm.LLVMValueRef{
+                llvm.LLVMConstInt(i32_type, 65535, 0),
+                ctor_fn,
+                llvm.LLVMConstNull(ptr_type),
+            };
+            const ctor_entry = llvm.LLVMConstStructInContext(self.context, &ctor_entry_vals, 3, 0);
+            var ctor_arr_vals = [_]llvm.LLVMValueRef{ctor_entry};
+            const ctor_arr = llvm.LLVMConstArray(ctor_entry_type, &ctor_arr_vals, 1);
+            const ctors_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(ctor_arr), "llvm.global_ctors");
+            llvm.LLVMSetLinkage(ctors_global, llvm.LLVMAppendingLinkage);
+            llvm.LLVMSetInitializer(ctors_global, ctor_arr);
+        }
 
         var setjmp_params = [_]llvm.LLVMTypeRef{ptr_type};
         const setjmp_type = llvm.LLVMFunctionType(i32_type, &setjmp_params, 1, 0);
@@ -297,6 +377,11 @@ pub const LLVMEmitter = struct {
             if (m.data != .program) continue;
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .fun_decl) {
+                    // In test mode the entry point is `eiwa_test_main`, not a
+                    // user `fun main()`. Declaring a `main` from an imported
+                    // module (e.g. the CLI binary imported by cli/test) would
+                    // collide with the @MainWrapper entry symbol below.
+                    if (self.is_test_mode and std.mem.eql(u8, stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name, "main")) continue;
                     try self.declareFunction(mod, stmt, false);
                 } else if (stmt.data == .object_decl) {
                     for (stmt.data.object_decl.members) |member| {
@@ -495,6 +580,12 @@ pub const LLVMEmitter = struct {
                     if (stmt.data.fun_decl.generic_params.len > 0) continue;
                     const fname = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
                     if (!reachable.contains(fname)) continue;
+                    // In test mode the entry point is `eiwa_test_main`, not a
+                    // user `fun main()`. A `main` declared in an imported module
+                    // (e.g. the CLI binary imported by cli/test helpers) would
+                    // collide with the @MainWrapper entry symbol, silently
+                    // shadowing the test runner. Mirror the C backend: skip it.
+                    if (self.is_test_mode and std.mem.eql(u8, fname, "main")) continue;
                     if (m != ast_root) {
                         self.emitFunctionBodyOrStub(mod, stmt, fname, false);
                     } else {
@@ -826,7 +917,13 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "printf") or
                     std.mem.eql(u8, fn_name_s, "malloc") or
                     std.mem.eql(u8, fn_name_s, "realloc") or
+                    // libgc symbols resolved from the host process when the
+                    // host links libgc (Bloco B). Without the allowlist the
+                    // stub pass would rewrite GC_init to a no-op and
+                    // GC_realloc to `ret null`, silently breaking GC mode.
                     std.mem.eql(u8, fn_name_s, "GC_malloc") or
+                    std.mem.eql(u8, fn_name_s, "GC_realloc") or
+                    std.mem.eql(u8, fn_name_s, "GC_init") or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
                     std.mem.eql(u8, fn_name_s, "_setjmp") or
                     std.mem.eql(u8, fn_name_s, "longjmp") or
@@ -1097,7 +1194,7 @@ pub const LLVMEmitter = struct {
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i64_type = llvm.LLVMInt64TypeInContext(self.context);
 
-        const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+        const gc_func = getHeapAllocFn(mod);
         const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
 
         for (modules.items) |m| {
@@ -1716,14 +1813,9 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMBuildCondBr(self.builder, is_small, int_bb, str_bb);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, int_bb);
-        // buf = malloc(32); sprintf(buf, "%lld", val); ret buf
-        // TODO(emitter): malloc-first ordering is a libgc-linking workaround —
-        // see the identical note in emitTypeConstructor. buf is capped at 32
-        // bytes, matching the runtime's core_Int_toString bound.
-        // LLVM-SPECIFIC (NOT inherited from C): the C runtime's core_Int_toString
-        // uses GC_MALLOC via eiwa_runtime.h; this fallback is only because the
-        // `eiwa` host binary doesn't link libgc.
-        const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+        // buf = alloc(32); sprintf(buf, "%lld", val); ret buf. buf is capped
+        // at 32 bytes, matching the runtime's core_Int_toString bound.
+        const gc_func = getHeapAllocFn(mod);
         const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
         const buf_size = llvm.LLVMConstInt(i64_type, 32, 0);
         var gc_args = [_]llvm.LLVMValueRef{buf_size};
@@ -1823,9 +1915,9 @@ pub const LLVMEmitter = struct {
     /// Like emitToStringHelper/emitHashStringHelper, this is a hand-emitted
     /// copy of the stdlib body because the LLVM model treats String as a bare
     /// char* and can't run `core_String.replace` (which reads this.ptr /
-    /// this.length). malloc-first ordering is the libgc-linking workaround
-    /// (the stdlib body uses Standard.gcMalloc). LLVM-SPECIFIC (NOT inherited
-    /// from C): the C backend emits the real core_String.replace body.
+    /// this.length). Allocation follows the active heap allocator (GC_malloc
+    /// when prefer_gc_alloc). LLVM-SPECIFIC (NOT inherited from C): the C
+    /// backend emits the real core_String.replace body.
     fn emitStrReplaceHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
         const i64_type = llvm.LLVMInt64TypeInContext(self.context);
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
@@ -1850,7 +1942,7 @@ pub const LLVMEmitter = struct {
         const strstr_type = llvm.LLVMGlobalGetValueType(strstr_fn);
         const memcpy_fn = llvm.LLVMGetNamedFunction(mod, "memcpy") orelse return error.MemcpyNotFound;
         const memcpy_type = llvm.LLVMGlobalGetValueType(memcpy_fn);
-        const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse return error.MallocNotFound;
+        const malloc_fn = getHeapAllocFn(mod);
         const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
@@ -2517,20 +2609,12 @@ pub const LLVMEmitter = struct {
         const entry_block = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_val, "entry");
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
-        // Call malloc or GC_malloc.
-        // TODO(emitter): Preferring `malloc` over `GC_malloc` is a workaround:
-        // the `eiwa` host binary does not link libgc, so JIT'd code calling
-        // GC_malloc resolves to null/garbage and hangs. Using raw malloc means
-        // JIT-allocated objects are never GC-collected (leaks) and the memory
-        // model diverges from the C backend. Proper fix: link libgc into the
-        // host (or provide a stub GC_malloc that forwards to malloc), then
-        // revert to GC_malloc-first ordering. Also see the fixed 128-byte
-        // allocation below — it should be the struct's actual byte size
-        // (LLVMStoreSizeOfType), not a hardcoded upper bound.
-        // LLVM-SPECIFIC (NOT inherited from C): the C transpiler's constructors
-        // allocate via GC_MALLOC (see eiwa_runtime.h); no libgc in the host is
-        // a JIT-only constraint, so the C backend has no such workaround.
-        const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+        // Allocate the instance via the active heap allocator (GC_malloc when
+        // prefer_gc_alloc, malloc otherwise — see docs/tasks-bloco-b-gc-jit.md).
+        // TODO(emitter): the fixed 128-byte allocation below should be the
+        // struct's actual byte size (LLVMStoreSizeOfType), not a hardcoded
+        // upper bound.
+        const gc_func = getHeapAllocFn(mod);
         const gc_func_type = llvm.LLVMGlobalGetValueType(gc_func);
         const size_val = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(self.context), 128, 0);
         var gc_args = [_]llvm.LLVMValueRef{size_val};
@@ -3047,9 +3131,41 @@ pub const LLVMEmitter = struct {
         }
     }
 
+    /// Registers every JIT'd module global as a Boehm GC root segment
+    /// (Bloco B). JIT globals live in MCJIT-mmap'd memory, which the
+    /// collector does NOT scan by default — unlike a native binary's
+    /// .data/.bss. Without this, objects only reachable from globals
+    /// (object/enum singletons, eiwa_exception_stack, eiwa_active_exception)
+    /// could be collected while still alive. Must run after engine creation
+    /// (so global addresses are materialized) and before main runs.
+    fn registerJITGlobalsAsRoots(engine: llvm.LLVMExecutionEngineRef, mod: llvm.LLVMModuleRef) void {
+        const tm = llvm.LLVMGetExecutionEngineTargetMachine(engine);
+        const td = llvm.LLVMCreateTargetDataLayout(tm);
+        defer llvm.LLVMDisposeTargetData(td);
+
+        var glob_it = llvm.LLVMGetFirstGlobal(mod);
+        while (glob_it) |glob| : (glob_it = llvm.LLVMGetNextGlobal(glob)) {
+            if (llvm.LLVMIsDeclaration(glob) != 0) continue;
+            const addr = llvm.LLVMGetPointerToGlobal(engine, glob) orelse continue;
+            const size = llvm.LLVMABISizeOfType(td, llvm.LLVMGlobalGetValueType(glob));
+            if (size == 0) continue;
+            const base: [*]u8 = @ptrCast(addr);
+            // Roots stay registered until process exit: the execution engine
+            // is intentionally never disposed (see executeJIT below), so the
+            // segments remain valid for the whole program lifetime.
+            gc.GC_add_roots(base, base + @as(usize, @intCast(size)));
+        }
+    }
+
     /// Executes the in-memory LLVM module via JIT (for `eiwa run --backend=llvm`).
     pub fn executeJIT(self: *LLVMEmitter, io: std.Io) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
+        // Bloco B: initialize the Boehm GC before any JIT'd code can call
+        // GC_malloc. Programs without neco never run Neco_main_wrapper (the
+        // only GC_init caller before), so GC_malloc would SIGABRT. Idempotent
+        // — neco programs just init twice. has_gc is comptime: hosts without
+        // libgc compile this out entirely.
+        if (has_gc) gc.GC_init();
         {
             var verify_err: [*c]u8 = null;
             if (llvm.LLVMVerifyModule(mod, llvm.LLVMReturnStatusAction, &verify_err) != 0) {
@@ -3077,6 +3193,10 @@ pub const LLVMEmitter = struct {
         // Do not dispose execution engine here; disposing MCJIT before process exit
         // unmaps JIT'd memory pages while host unwinder runs, causing segfaults.
         // defer llvm.LLVMDisposeExecutionEngine(engine);
+
+        // Bloco B: with the engine materialized, register JIT globals as GC
+        // roots before any GC_malloc from the program can trigger a collection.
+        if (has_gc) registerJITGlobalsAsRoots(engine, mod);
 
         // When a @MainWrapper exists, the ultimate entry is `main(i32, ptr)`
         // (run and test mode); otherwise test mode uses eiwa_test_main.

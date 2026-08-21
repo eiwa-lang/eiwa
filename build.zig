@@ -56,15 +56,48 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
     return null;
 }
 
+/// Locates the Boehm GC (libgc) installation. When found, the `eiwac` host
+/// links libgc and the LLVM JIT can use real GC_malloc/GC_realloc (Bloco B,
+/// docs/tasks-bloco-b-gc-jit.md). When absent, the JIT keeps the malloc-first
+/// fallback and everything behaves as before.
+fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
+    if (b.option([]const u8, "gc-path", "Custom path to Boehm GC (libgc) installation")) |p| {
+        return .{ .lib_path = b.fmt("{s}/lib", .{p}) };
+    }
+    // macOS Homebrew (Apple Silicon)
+    if (fileExists(b, "/opt/homebrew/lib/libgc.dylib")) {
+        return .{ .lib_path = "/opt/homebrew/lib" };
+    }
+    // macOS Homebrew (Intel, under /usr/local)
+    if (fileExists(b, "/usr/local/lib/libgc.dylib")) {
+        return .{ .lib_path = "/usr/local/lib" };
+    }
+    // Ubuntu/Debian
+    if (fileExists(b, "/usr/lib/x86_64-linux-gnu/libgc.so")) {
+        return .{ .lib_path = "/usr/lib/x86_64-linux-gnu" };
+    }
+    // Linux generic (/usr/lib) and /usr/local — linker default search paths
+    if (fileExists(b, "/usr/lib/libgc.so")) {
+        return .{ .lib_path = null };
+    }
+    if (fileExists(b, "/usr/local/lib/libgc.so")) {
+        return .{ .lib_path = "/usr/local/lib" };
+    }
+    return null;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const llvm_info = findLlvmPath(b);
     const has_llvm = llvm_info != null;
+    const gc_info = findLibgcPath(b);
+    const has_gc = gc_info != null;
 
     const options = b.addOptions();
     options.addOption(bool, "has_llvm", has_llvm);
+    options.addOption(bool, "has_gc", has_gc);
     options.addOption([]const u8, "eiwa_home", b.path("src").getPath(b));
 
     const exe_module = b.createModule(.{
@@ -83,6 +116,13 @@ pub fn build(b: *std.Build) void {
             exe_module.addLibraryPath(.{ .cwd_relative = lib });
         }
         exe_module.linkSystemLibrary("LLVM", .{});
+        exe_module.link_libc = true;
+    }
+    if (gc_info) |info| {
+        if (info.lib_path) |lib| {
+            exe_module.addLibraryPath(.{ .cwd_relative = lib });
+        }
+        exe_module.linkSystemLibrary("gc", .{});
         exe_module.link_libc = true;
     }
 
@@ -122,6 +162,13 @@ pub fn build(b: *std.Build) void {
             test_module.addLibraryPath(.{ .cwd_relative = lib });
         }
         test_module.linkSystemLibrary("LLVM", .{});
+        test_module.link_libc = true;
+    }
+    if (gc_info) |info| {
+        if (info.lib_path) |lib| {
+            test_module.addLibraryPath(.{ .cwd_relative = lib });
+        }
+        test_module.linkSystemLibrary("gc", .{});
         test_module.link_libc = true;
     }
 

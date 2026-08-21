@@ -1,0 +1,39 @@
+import { assert, AssertionException } from "std.core"
+
+test "gc stress: array literal allocation" {
+    var i = 0
+    while (i < 20000) {
+        val lst = [i, i + 1, i + 2, i + 3]
+        if (lst[0] != i) {
+            assert(false)
+        }
+        i = i + 1
+    }
+}
+
+test "gc stress: arrays grow under collection pressure" {
+    val mlist = MutableList<Int>()
+    var i = 0
+    while (i < 20000) {
+        mlist.add(i)
+        val junk = "garbage " + i.toString()
+        i = i + 1
+    }
+    assert(mlist.size() == 20000)
+    assert(mlist[19999] == 19999)
+}
+
+test "gc stress: exceptions still work after collections" {
+    var i = 0
+    while (i < 5000) {
+        val junk = "more garbage " + i.toString()
+        i = i + 1
+    }
+    var caught = false
+    try {
+        throw AssertionException("boom")
+    } catch (e) {
+        caught = true
+    }
+    assert(caught)
+}

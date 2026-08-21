@@ -1,0 +1,85 @@
+import { assert } from "std.core"
+
+// Target semantics for the stackless task/await mechanism (what the Fase C
+// transform will GENERATE). Hand-written here as a spec + regression test.
+// Design notes (emitter constraints discovered):
+//   - Waiters are an intrusive linked list of structs (WaiterNode). A NULLABLE
+//     CONTRACT field (`Continuation?`) is broken (silent no-op dispatch), so we
+//     never use one here.
+//   - No zero-field sentinel continuation (segfaults when stored in a field).
+//
+// NOTE: names are Spec-prefixed because std.coroutines (implicitly imported)
+// already declares `WaiterNode`/`StackTask` — the real machinery the transform
+// generates. These local copies keep the emitter-constraint regression honest.
+
+type SpecWaiterNode(val cont: Continuation, var next: SpecWaiterNode?)
+
+type SpecIntTask(
+    var done: Bool,
+    var result: Int,
+    var waiters: SpecWaiterNode?
+)
+
+type SpecBlockCont(val task: SpecIntTask) : Continuation {
+    implement fun resume() {
+        this.task.result = 40 + 2
+        this.task.done = true
+        var node = this.task.waiters
+        while (node != null) {
+            Scheduler.schedule(node!!.cont)
+            node = node!!.next
+        }
+        this.task.waiters = null
+    }
+
+    implement fun isDone(): Bool = this.task.done
+}
+
+type SpecMainCont(var label: Int, val task: SpecIntTask, var result: Int) : Continuation {
+    implement fun resume() {
+        if (this.label == 0) {
+            Scheduler.schedule(SpecBlockCont(this.task))
+            this.label = 1
+            if (!this.task.done) {
+                this.task.waiters = SpecWaiterNode(this, this.task.waiters)
+                return
+            }
+        }
+        if (this.label == 1) {
+            this.result = this.task.result
+            this.label = 2
+        }
+    }
+
+    implement fun isDone(): Bool = this.label >= 2
+}
+
+test "stackless task + await delivers the block result to the suspended main" {
+    val task = SpecIntTask(false, 0, null)
+    val main = SpecMainCont(0, task, 0)
+    Scheduler.schedule(main)
+    Scheduler.run()
+    assert(main.result == 42)
+}
+
+test "await does not suspend when the task is already done" {
+    val task = SpecIntTask(true, 7, null)
+    val main = SpecMainCont(0, task, 0)
+    Scheduler.schedule(main)
+    Scheduler.run()
+    assert(main.result == 7)
+    assert(main.label == 2)
+}
+
+test "multiple waiters all get resumed when the task completes" {
+    val task = SpecIntTask(false, 0, null)
+    val m1 = SpecMainCont(0, task, 0)
+    val m2 = SpecMainCont(0, task, 0)
+    // register both waiters manually (simulating two awaiters), then complete
+    task.waiters = SpecWaiterNode(m1, null)
+    task.waiters = SpecWaiterNode(m2, task.waiters)
+    Scheduler.schedule(SpecBlockCont(task))
+    Scheduler.run()
+    assert(m1.result == 42)
+    assert(m2.result == 42)
+}

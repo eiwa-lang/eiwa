@@ -342,6 +342,7 @@ type Double : Stringable, Equatable, Hashable {
 }
 
 contract Awaitable<T> {
+    @Suspend
     fun await(): T
     fun start(): Awaitable<T>
     fun isDone(): Bool

@@ -1,0 +1,34 @@
+type NoopCont(val dummy: Int) : Continuation {
+    implement fun resume() {}
+    implement fun isDone(): Bool = true
+}
+
+type TinyCont(val name: String, var step: Int) : Continuation {
+    implement fun resume() {
+        echo("[tiny " + this.name + "] step=" + this.step.toString())
+        this.step = this.step + 1
+    }
+    implement fun isDone(): Bool = true
+}
+
+type Box(var cont: Continuation)
+
+fun main() {
+    echo("--- K2: Box(TinyCont) then overwrite NoopCont(dummy), schedule ---")
+    val k = Box(TinyCont("k0", 0))
+    k.cont = NoopCont(0)
+    Scheduler.schedule(k.cont)
+    Scheduler.run()
+
+    echo("--- N: Box(NoopCont(dummy)) then overwrite TinyCont, schedule ---")
+    val n = Box(NoopCont(0))
+    n.cont = TinyCont("n", 0)
+    Scheduler.schedule(n.cont)
+    Scheduler.run()
+
+    echo("--- O: var Continuation = NoopCont(dummy), direct resume ---")
+    var o: Continuation = NoopCont(0)
+    o.resume()
+
+    echo("--- end ---")
+}

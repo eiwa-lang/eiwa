@@ -422,7 +422,7 @@ pub fn emitExpression(
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                         if (obj_base == .Int) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                            const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+                            const gc_func = core.getHeapAllocFn(mod);
                             const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                             const buf_size = llvm.LLVMConstInt(i64_type, 32, 0);
                             var gc_args = [_]llvm.LLVMValueRef{buf_size};
@@ -445,7 +445,7 @@ pub fn emitExpression(
                             return llvm.LLVMBuildSelect(builder, obj_val, true_str, false_str, "bool_tostr");
                         } else if (obj_base == .Double) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                            const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+                            const gc_func = core.getHeapAllocFn(mod);
                             const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                             const buf_size = llvm.LLVMConstInt(i64_type, 64, 0);
                             var gc_args = [_]llvm.LLVMValueRef{buf_size};
@@ -806,16 +806,12 @@ pub fn emitExpression(
             const elem_llvm = arrayLiteralElementLLVMType(ctx, node);
             const elem_stride = arrayElemStride(ctx, elem_llvm);
 
-            // TODO(emitter): malloc-first ordering is the libgc-linking
-            // workaround — see the note in core.zig emitTypeConstructor.
             // The array is laid out as a raw buffer (header + elements),
             // matching the C transpiler's EiwaArray model. Header is 2 x i64
-            // slots (size, capacity); each element occupies `elem_stride` bytes.
-            // LLVM-SPECIFIC (NOT inherited from C): the C transpiler emits
-            // GC_MALLOC because its generated code links libgc via
-            // eiwa_runtime.h. This fallback exists only because the `eiwa` host
-            // binary doesn't link libgc; the C backend has no such workaround.
-            const malloc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+            // slots (size, capacity); each element occupies `elem_stride`
+            // bytes. Allocation goes through the active heap allocator
+            // (GC_malloc when prefer_gc_alloc).
+            const malloc_func = core.getHeapAllocFn(mod);
             const malloc_type = llvm.LLVMGlobalGetValueType(malloc_func);
             const size_bytes: i64 = 16 + count * elem_stride;
             const size_val = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), @bitCast(size_bytes), 0);
@@ -867,7 +863,7 @@ pub fn emitExpression(
                     if (structs.get(rt.Custom)) |s_info| {
                         for (s_info.field_names, 0..) |f_name, f_idx| {
                             if (std.mem.eql(u8, f_name, "items")) {
-                                const malloc_fn2 = llvm.LLVMGetNamedFunction(mod, "malloc") orelse break;
+                                const malloc_fn2 = core.getHeapAllocFn(mod);
                                 const malloc_type2 = llvm.LLVMGlobalGetValueType(malloc_fn2);
                                 var size_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 128, 0)};
                                 const struct_ptr = llvm.LLVMBuildCall2(builder, malloc_type2, malloc_fn2, &size_args, 1, "list_alloc");
@@ -1125,7 +1121,7 @@ pub fn emitExpression(
                 const total = llvm.LLVMBuildAdd(builder, len_a, len_b, "concat_len");
                 const total_plus_one = llvm.LLVMBuildAdd(builder, total, llvm.LLVMConstInt(i64_t, 1, 0), "concat_len1");
 
-                const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+                const gc_func = core.getHeapAllocFn(mod);
                 const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                 var gc_args = [_]llvm.LLVMValueRef{total_plus_one};
                 const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "concat_buf");
@@ -1584,9 +1580,9 @@ pub fn emitExpression(
             // --- Step 6: Back in parent_bb, build the closure struct ----------------
             if (parent_bb) |pbb| llvm.LLVMPositionBuilderAtEnd(builder, pbb);
 
-            // Get the malloc/GC_malloc function
-            const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse
-                llvm.LLVMGetNamedFunction(mod, "GC_malloc") orelse return error.MallocNotFound;
+            // Get the active heap allocation function (GC_malloc when
+            // prefer_gc_alloc — docs/tasks-bloco-b-gc-jit.md).
+            const malloc_fn = core.getHeapAllocFn(mod);
             const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
 
             // Allocate and fill the env struct
@@ -2183,15 +2179,7 @@ pub fn emitExpression(
                             const total = llvm.LLVMBuildAdd(builder, len_a, len_b, "concat_len");
                             const total_plus_one = llvm.LLVMBuildAdd(builder, total, llvm.LLVMConstInt(i64_type, 1, 0), "concat_len1");
 
-                            // array-literal malloc note — the C backend uses
-                            // GC_MALLOC via eiwa_runtime.h and has no fallback.
-                            const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse (llvm.LLVMGetNamedFunction(mod, "GC_malloc") orelse blk: {
-                                const p = llvm.LLVMPointerTypeInContext(ctx, 0);
-                                const i64_t = llvm.LLVMInt64TypeInContext(ctx);
-                                var ps = [_]llvm.LLVMTypeRef{i64_t};
-                                const ft = llvm.LLVMFunctionType(p, &ps, 1, 0);
-                                break :blk llvm.LLVMAddFunction(mod, "malloc", ft);
-                            });
+                            const gc_func = core.getHeapAllocFn(mod);
                             const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                             var gc_args = [_]llvm.LLVMValueRef{total_plus_one};
                             const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "concat_buf");
@@ -2383,7 +2371,7 @@ pub fn emitExpression(
                             const len_val = llvm.LLVMBuildSub(builder, end_val, start_val, "sub_len");
                             const len_plus_one = llvm.LLVMBuildAdd(builder, len_val, llvm.LLVMConstInt(i64_t, 1, 0), "sub_alloc_len");
 
-                            const gc_func = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+                            const gc_func = core.getHeapAllocFn(mod);
                             const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                             var gc_args = [_]llvm.LLVMValueRef{len_plus_one};
                             const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "sub_buf");
@@ -3733,7 +3721,7 @@ pub fn emitExpression(
                     const put_fn = llvm.LLVMGetNamedFunction(mod, put_name.ptr) orelse return error.MapLiteralPutMissing;
 
                     const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                    const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse llvm.LLVMGetNamedFunction(mod, "GC_malloc").?;
+                    const malloc_fn = core.getHeapAllocFn(mod);
                     const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
 
                     // 1. buckets buffer: [size, capacity, 16 x null]
@@ -3912,16 +3900,11 @@ pub fn coerceArg(
         const parent_bb = llvm.LLVMGetInsertBlock(builder);
         const mod = llvm.LLVMGetGlobalParent(llvm.LLVMGetBasicBlockParent(parent_bb));
         const c_ctx = llvm.LLVMGetTypeContext(param_type);
-        var gc_alloc = llvm.LLVMGetNamedFunction(mod, "GC_malloc");
-        if (gc_alloc == null) {
-            var ps = [_]llvm.LLVMTypeRef{llvm.LLVMInt64TypeInContext(c_ctx)};
-            const ft = llvm.LLVMFunctionType(param_type, &ps, 1, 0);
-            gc_alloc = llvm.LLVMAddFunction(mod, "GC_malloc", ft);
-        }
+        const gc_alloc = core.getHeapAllocFn(mod);
         const sz = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(c_ctx), 16, 0);
-        const ft2 = llvm.LLVMGlobalGetValueType(gc_alloc.?);
+        const ft2 = llvm.LLVMGlobalGetValueType(gc_alloc);
         var args = [_]llvm.LLVMValueRef{sz};
-        const heap_ptr = llvm.LLVMBuildCall2(builder, ft2, gc_alloc.?, &args, 1, "fat_box");
+        const heap_ptr = llvm.LLVMBuildCall2(builder, ft2, gc_alloc, &args, 1, "fat_box");
         _ = llvm.LLVMBuildStore(builder, arg_val, heap_ptr);
         return heap_ptr;
     }
@@ -4440,11 +4423,10 @@ fn emitArrayLvalue(
 }
 
 /// Emits `arr.push(val)` on the raw buffer layout (slot 0 = size,
-/// slot 1 = capacity, slots 2.. = elements), growing via realloc when full
-/// and writing the (possibly moved) buffer pointer back to the lvalue.
-/// TODO(emitter): realloc-first ordering is the same libgc-linking workaround
-/// as malloc in emitTypeConstructor — the C backend uses GC_REALLOC inside
-/// EiwaArray_push (src/backend/c_transpiler/core.zig:315). LLVM-SPECIFIC.
+/// slot 1 = capacity, slots 2.. = elements), growing via the active heap
+/// reallocator (GC_realloc when prefer_gc_alloc — matching the C backend's
+/// GC_REALLOC in EiwaArray_push) and writing the (possibly moved) buffer
+/// pointer back to the lvalue.
 fn emitNativeArrayPush(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -4488,12 +4470,7 @@ fn emitNativeArrayPush(
     const grow_bytes = llvm.LLVMBuildMul(builder, new_cap, llvm.LLVMConstInt(i64_type, @intCast(elem_stride), 0), "grow_bytes");
     const new_bytes = llvm.LLVMBuildAdd(builder, llvm.LLVMConstInt(i64_type, 16, 0), grow_bytes, "new_bytes");
 
-    var realloc_fn = llvm.LLVMGetNamedFunction(mod, "realloc");
-    if (realloc_fn == null) {
-        var realloc_params = [_]llvm.LLVMTypeRef{ ptr_type, i64_type };
-        const realloc_type = llvm.LLVMFunctionType(ptr_type, &realloc_params, 2, 0);
-        realloc_fn = llvm.LLVMAddFunction(mod, "realloc", realloc_type);
-    }
+    const realloc_fn = core.getHeapReallocFn(mod);
     const realloc_type = llvm.LLVMGlobalGetValueType(realloc_fn);
     var realloc_args = [_]llvm.LLVMValueRef{ arr_val, new_bytes };
     const grown_arr = llvm.LLVMBuildCall2(builder, realloc_type, realloc_fn, &realloc_args, 2, "grown_arr");

@@ -51,9 +51,14 @@ os itens deste bloco.
 
 ## 🟡 B. WORKAROUNDs de libgc no JIT
 
+> **⚠️ IMPORTANTE (2026-08):** "linkar libgc no host" **não é suficiente** para usar `GC_malloc`
+> no JIT — foi tentado e quebrou 11 testes (SIGABRT) porque programas sem neco não chamam
+> `GC_init()` e o JIT não registra raízes. O handoff completo está em
+> **[`docs/bloco-b-handoff.md`](bloco-b-handoff.md)** (causa raiz, checklist, special-cases a remover).
+
 > **Causa raiz única:** o binário host `eiwac` não linka libgc, então código JIT que chama
 > `GC_malloc` resolve para null/garbage e pendura. O emitter prefere `malloc` (leaks, sem GC)
-> até o host linkar libgc. O build nativo (`emitNativeBinary`) já usa `-lgc`.
+> até o host linkar libgc **e o GC ser inicializado/registrar raízes no JIT**.
 
 | ID | Local | Tipo | Descrição | Esforço |
 |---|---|---|---|---|
@@ -102,7 +107,8 @@ os itens deste bloco.
 3. **D3** (jmp_buf) — fragilidade pontual de plataforma.
 4. **D4** (multi-catch LLVM) — gap de paridade real, teste dedicado.
 5. **Bloco A** — após D4; destrava a remoção da tolerância `core.zig:555`.
-6. **Bloco B** — depende de decisão de build/link do host (libgc no `eiwac`).
+6. **Bloco B** — depende de `GC_init()` no JIT + registro de raízes + flip `malloc→GC_malloc`.
+   Handoff completo em **[`docs/bloco-b-handoff.md`](bloco-b-handoff.md)**.
 
 ---
 

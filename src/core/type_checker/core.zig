@@ -539,6 +539,20 @@ fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void 
     node.data.program.statements = new_stmts;
 }
 
+/// Reports a clear error when a local declaration's name is already bound (via
+/// an import) to a *different* symbol — the classic confusion where a user type
+/// named `Node` silently resolves to `std.collections.Node`, producing a
+/// misleading "Unresolved property" error far from the real cause. Returns
+/// error.TypeError after reporting when a collision is found.
+fn reportTypeNameCollision(self: *TypeChecker, stmt: *ASTNode, kind: []const u8, name: []const u8, prospective_c_name: []const u8) !void {
+    if (self.alias_map.get(name)) |aliased| {
+        if (!std.mem.eql(u8, aliased, prospective_c_name)) {
+            self.reportError(stmt.line, stmt.column, "TypeError: {s} '{s}' conflicts with an imported declaration ('{s}'). Rename it to avoid ambiguity.", .{ kind, name, aliased });
+            return error.TypeError;
+        }
+    }
+}
+
 fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
     if (self.status == .declaring_types or self.status == .declared_types or
         self.status == .declaring_signatures or self.status == .declared_signatures or
@@ -612,6 +626,11 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
             if (stmt.data == .type_decl) {
                 var c = &stmt.data.type_decl;
                 if (c.resolved_c_name == null) {
+                    const prospective: []const u8 = if (self.module_prefix) |prefix|
+                        try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, c.name })
+                    else
+                        c.name;
+                    try reportTypeNameCollision(self, stmt, "Type", c.name, prospective);
                     if (self.module_prefix) |prefix| {
                         c.resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, c.name });
                         if (!std.mem.eql(u8, c.name, "Int") and !std.mem.eql(u8, c.name, "Bool") and !std.mem.eql(u8, c.name, "Pointer")) {

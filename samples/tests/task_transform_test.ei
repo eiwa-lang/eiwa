@@ -1,0 +1,125 @@
+import { assert } from "std.core"
+
+// Fase C P1 regression: the compiler transforms
+//   `val t = task { block }` and `val r = t.await()`
+// (in function bodies) into the stackless machinery (StackTask + generated
+// Continuation + Scheduler). These tests drive that path through plain funs.
+
+fun simpleTask(): Int {
+    val t = task { 40 + 2 }
+    return t.await()
+}
+
+fun multiStatementTask(): Int {
+    val t = task {
+        var x = 5
+        x + x
+    }
+    return t.await()
+}
+
+fun twoTasks(): Int {
+    val a = task { 10 * 3 }
+    val b = task { 40 + 2 }
+    val ra = a.await()
+    val rb = b.await()
+    return ra + rb
+}
+
+// P2: a task whose block awaits another task (nested tasks).
+fun nestedTask(): Int {
+    val outer = task {
+        val inner = task { 40 + 2 }
+        inner.await() + 100
+    }
+    return outer.await()
+}
+
+// P2: the composite idiom `val r = task { ... }.await()` (receiver evaluated once).
+fun inlineTaskAwait(): Int {
+    val r = task { 21 * 2 }.await()
+    return r
+}
+
+// P2: loop containing suspension inside a task block.
+fun loopWithAwait(n: Int): Int {
+    val t = task {
+        var sum = 0
+        var i = 0
+        while (i < n) {
+            val r = task { i * 10 }.await()
+            sum = sum + r
+            i = i + 1
+        }
+        sum
+    }
+    return t.await()
+}
+
+// P3: try/catch inside a task block, exception thrown after a suspension is
+// captured by the catch (exception state crossing the await boundary).
+fun tryCatchAfterSuspend(): Int {
+    var caught = 0
+    val t = task {
+        try {
+            val inner = task { 40 }
+            var r = inner.await()
+            if (r == 40) {
+                throw Exception("boom after await")
+            }
+            caught = r
+        } catch (e: Exception) {
+            caught = 99
+        }
+        caught
+    }
+    return t.await()
+}
+
+// P3: try/catch where the awaited task completes normally (no exception path).
+fun tryWithAwaitNoThrow(): Int {
+    var caught = 0
+    val t = task {
+        try {
+            val inner = task { 40 }
+            var r = inner.await()
+            caught = r + 2
+        } catch (e: Exception) {
+            caught = -1
+        }
+        caught
+    }
+    return t.await()
+}
+
+test "task/await delivers the block result (single expression)" {
+    assert(simpleTask() == 42)
+}
+
+test "task block with locals evaluates to the last statement" {
+    assert(multiStatementTask() == 10)
+}
+
+test "multiple concurrent tasks each deliver their result" {
+    assert(twoTasks() == 72)
+}
+
+test "nested task: inner await inside an outer task block" {
+    assert(nestedTask() == 142)
+}
+
+test "composite `val r = task { ... }.await()` evaluates the receiver once" {
+    assert(inlineTaskAwait() == 42)
+}
+
+test "loop with suspension inside a task block" {
+    assert(loopWithAwait(3) == 30)
+}
+
+test "P3: exception thrown after suspension inside a task is caught" {
+    assert(tryCatchAfterSuspend() == 99)
+}
+
+test "P3: awaited task completing inside try/catch yields the block result" {
+    assert(tryWithAwaitNoThrow() == 42)
+}

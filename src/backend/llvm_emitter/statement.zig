@@ -82,8 +82,7 @@ pub fn emitStatement(
                 // writes load ptr from alloca then store value into ptr.
                 const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                 const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc") orelse
-                    llvm.LLVMGetNamedFunction(mod, "GC_malloc") orelse return error.MallocNotFound;
+                const malloc_fn = core.getHeapAllocFn(mod);
                 const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
                 // Allocate 16 bytes (fits Fat Pointer {ptr, ptr}, i64, ptr, double) for the value cell
                 const cell_size = llvm.LLVMConstInt(i64_type, 16, 0);

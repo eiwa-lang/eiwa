@@ -32,7 +32,7 @@ pub fn ArrayList(comptime T: type) type {
         }
 
         pub fn pop(self: *Self) T {
-            const val = self.unmanaged.pop();
+            const val = self.unmanaged.pop() orelse unreachable;
             self.items = self.unmanaged.items;
             return val;
         }

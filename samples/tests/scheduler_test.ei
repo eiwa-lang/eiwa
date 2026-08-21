@@ -1,0 +1,56 @@
+import { assert } from "std.core"
+
+// The stackless coroutine scheduler (Eiwa-pure, intrusive linked-list queue).
+// A `Continuation` is a state machine; the compiler will generate these from
+// suspend functions (Fase C). Here they are hand-written to prove the runtime.
+
+object Order {
+    var log: String = ""
+
+    fun record(s: String) {
+        Order.log = Order.log + s
+    }
+
+    fun reset() {
+        Order.log = ""
+    }
+}
+
+type PC(val name: String, var step: Int) : Continuation {
+    implement fun resume() {
+        if (this.step == 0) {
+            Order.record(this.name + "A;")
+            this.step = 1
+            Scheduler.schedule(this)
+        } else {
+            Order.record(this.name + "B;")
+            this.step = 2
+        }
+    }
+
+    implement fun isDone(): Bool = this.step >= 2
+}
+
+test "scheduler runs a continuation to completion" {
+    Order.reset()
+    Scheduler.schedule(PC("x", 0))
+    Scheduler.run()
+    assert(Order.log == "xA;xB;")
+}
+
+test "scheduler interleaves continuations cooperatively (FIFO)" {
+    Order.reset()
+    Scheduler.schedule(PC("1", 0))
+    Scheduler.schedule(PC("2", 0))
+    Scheduler.run()
+    assert(Order.log == "1A;2A;1B;2B;")
+}
+
+test "scheduler drains a queue left non-empty from a prior run" {
+    // Scheduler state is a singleton; ensure no leftover items leak between runs.
+    Order.reset()
+    Scheduler.schedule(PC("a", 0))
+    Scheduler.run()
+    Scheduler.run()
+    assert(Order.log == "aA;aB;")
+}

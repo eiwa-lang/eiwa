@@ -1,0 +1,63 @@
+import { assert } from "std.core"
+
+// Regression tests for self-referential types and contract values stored as
+// struct fields / passed as object-method params. These behaviors WORK today
+// (LLVM backend) and must keep working.
+
+type INode(val v: Int, var next: INode?)
+
+test "self-referential type links and reads through next" {
+    val n2 = INode(2, null)
+    val n1 = INode(1, n2)
+    assert(n1.v == 1)
+    assert(n1.next!!.v == 2)
+}
+
+contract Val {
+    fun value(): Int
+}
+
+type One : Val {
+    implement fun value(): Int = 1
+}
+
+type Two : Val {
+    implement fun value(): Int = 2
+}
+
+// Contract stored as a (non self-referential) struct field.
+type Holder(val v: Val)
+
+test "contract stored as struct field dispatches via vtable" {
+    val h = Holder(One())
+    assert(h.v.value() == 1)
+    val h2 = Holder(Two())
+    assert(h2.v.value() == 2)
+}
+
+// Self-referential type holding a contract field (intrusive linked list node).
+// NOTE: must not be named `Node` — that collides with `std.collections.Node`.
+type GNode(val g: Val, var next: GNode?)
+
+test "self-referential type can hold a contract field" {
+    val n = GNode(One(), null)
+    assert(n.g.value() == 1)
+    val m = GNode(Two(), n)
+    assert(m.next!!.g.value() == 1)
+}
+
+object Accum {
+    var total: Int = 0
+
+    fun add(v: Val) {
+        Accum.total = Accum.total + v.value()
+    }
+
+    fun get(): Int = Accum.total
+}
+
+test "object method accepts contract param and dispatches" {
+    Accum.add(One())
+    Accum.add(Two())
+    assert(Accum.get() == 3)
+}

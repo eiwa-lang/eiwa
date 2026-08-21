@@ -23,6 +23,12 @@ fun cliSrcDir(): String {
     return "."
 }
 
+// Runs a shell command discarding stdout/stderr (the tests only assert on the
+// exit code, and subprocess output would otherwise pollute the test suite log).
+fun qexec(cmd: String): Int {
+    return Process.exec(cmd + " > /dev/null 2>&1")
+}
+
 fun cliBinary(eiwac: String): String {
     val bin = "/tmp/eiwa_cli_itest_bin"
     val hashFile = bin + ".hash"
@@ -33,7 +39,7 @@ fun cliBinary(eiwac: String): String {
         cached = File.read(hashFile)
     }
     if (File.exists(bin) == false || cached != hash) {
-        val code = Process.exec(eiwac + " build --backend=c " + cliSrcDir() + "/src/main.ei -o " + bin)
+        val code = qexec(eiwac + " build --backend=c " + cliSrcDir() + "/src/main.ei -o " + bin)
         assert(code == 0)
         File.write(hashFile, hash)
     }
@@ -42,54 +48,54 @@ fun cliBinary(eiwac: String): String {
 
 test "cli: help and unknown commands" {
     val bin = cliBinary(eiwacPathForTests())
-    assert(Process.exec(bin + " --help") == 0)
-    assert(Process.exec(bin + " -h") == 0)
-    assert(Process.exec(bin + " badcmd") != 0)
-    assert(Process.exec(bin) != 0)
+    assert(qexec(bin + " --help") == 0)
+    assert(qexec(bin + " -h") == 0)
+    assert(qexec(bin + " badcmd") != 0)
+    assert(qexec(bin) != 0)
 }
 
 test "cli: run/build/test a standalone .ei file (delegates to eiwac)" {
     val eiwac = eiwacPathForTests()
     val bin = cliBinary(eiwac)
     val dir = "/tmp/eiwa_cli_itest_direct"
-    Process.exec("rm -rf " + dir)
-    assert(Process.exec("mkdir -p " + dir) == 0)
+    qexec("rm -rf " + dir)
+    assert(qexec("mkdir -p " + dir) == 0)
     File.write(dir + "/app.ei", "fun main() {\n    println(\"direct-ok\")\n}\n")
     File.write(dir + "/app_test.ei", "import { assert } from \"std.core\"\n\ntest \"direct test\" {\n    assert(1 + 1 == 2)\n}\n")
 
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run app.ei") == 0)
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release app.ei") == 0)
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build app.ei -o app_bin") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run app.ei") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release app.ei") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build app.ei -o app_bin") == 0)
     assert(File.exists(dir + "/app_bin"))
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " test app_test.ei") == 0)
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run missing.ei") != 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " test app_test.ei") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run missing.ei") != 0)
 
-    Process.exec("rm -rf " + dir)
+    qexec("rm -rf " + dir)
 }
 
 test "cli: run/build a project forwarding --release and --backend" {
     val eiwac = eiwacPathForTests()
     val bin = cliBinary(eiwac)
     val dir = "/tmp/eiwa_cli_itest_flags"
-    Process.exec("rm -rf " + dir)
-    assert(Process.exec("mkdir -p " + dir + "/src") == 0)
+    qexec("rm -rf " + dir)
+    assert(qexec("mkdir -p " + dir + "/src") == 0)
     File.write(dir + "/eiwa.yaml", "name: flags\nversion: 0.1.0\n")
     File.write(dir + "/src/main.ei", "fun main() {\n    println(\"flags-ok\")\n}\n")
 
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release") == 0)
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --backend=c") == 0)
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --release --backend=c") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --backend=c") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --release --backend=c") == 0)
     assert(File.exists(dir + "/bin/flags"))
 
-    Process.exec("rm -rf " + dir)
+    qexec("rm -rf " + dir)
 }
 
 test "cli: init creates the project skeleton" {
     val bin = cliBinary(eiwacPathForTests())
     val dir = "/tmp/eiwa_cli_itest_init"
-    Process.exec("rm -rf " + dir)
+    qexec("rm -rf " + dir)
 
-    assert(Process.exec(bin + " init " + dir) == 0)
+    assert(qexec(bin + " init " + dir) == 0)
     assert(File.exists(dir + "/eiwa.yaml"))
     assert(File.exists(dir + "/src/main.ei"))
 
@@ -97,19 +103,19 @@ test "cli: init creates the project skeleton" {
     assert(manifest.indexOf("name: eiwa_cli_itest_init") != -1)
     assert(manifest.indexOf("version: 0.1.0") != -1)
 
-    assert(Process.exec(bin + " init " + dir) != 0)
-    Process.exec("rm -rf " + dir)
+    assert(qexec(bin + " init " + dir) != 0)
+    qexec("rm -rf " + dir)
 }
 
 test "cli: add and remove manage manifest dependencies" {
     val bin = cliBinary(eiwacPathForTests())
     val dir = "/tmp/eiwa_cli_itest_add"
-    Process.exec("rm -rf " + dir)
-    assert(Process.exec(bin + " init " + dir) == 0)
+    qexec("rm -rf " + dir)
+    assert(qexec(bin + " init " + dir) == 0)
 
-    assert(Process.exec("cd " + dir + " && " + bin + " add orm github:eiwa-lang/orm --branch main") == 0)
-    assert(Process.exec("cd " + dir + " && " + bin + " add pg gitlab:eiwa-lang/pg --tag v1.0.0") == 0)
-    assert(Process.exec("cd " + dir + " && " + bin + " add util https://git.example.com/util.git") == 0)
+    assert(qexec("cd " + dir + " && " + bin + " add orm github:eiwa-lang/orm --branch main") == 0)
+    assert(qexec("cd " + dir + " && " + bin + " add pg gitlab:eiwa-lang/pg --tag v1.0.0") == 0)
+    assert(qexec("cd " + dir + " && " + bin + " add util https://git.example.com/util.git") == 0)
 
     var manifest = File.read(dir + "/eiwa.yaml")
     assert(manifest.indexOf("dependencies:") != -1)
@@ -119,15 +125,15 @@ test "cli: add and remove manage manifest dependencies" {
     assert(manifest.indexOf("tag: v1.0.0") != -1)
     assert(manifest.indexOf("git: https://git.example.com/util.git") != -1)
 
-    assert(Process.exec("cd " + dir + " && " + bin + " add orm github:x/y") != 0)
+    assert(qexec("cd " + dir + " && " + bin + " add orm github:x/y") != 0)
 
-    assert(Process.exec("cd " + dir + " && " + bin + " remove pg") == 0)
+    assert(qexec("cd " + dir + " && " + bin + " remove pg") == 0)
     manifest = File.read(dir + "/eiwa.yaml")
     assert(manifest.indexOf("gitlab") == -1)
     assert(manifest.indexOf("github: eiwa-lang/orm") != -1)
 
-    assert(Process.exec("cd " + dir + " && " + bin + " remove nope") != 0)
-    Process.exec("rm -rf " + dir)
+    assert(qexec("cd " + dir + " && " + bin + " remove nope") != 0)
+    qexec("rm -rf " + dir)
 }
 
 test "cli: freeze, update, --frozen, build, run and test with a local git dependency" {
@@ -135,40 +141,40 @@ test "cli: freeze, update, --frozen, build, run and test with a local git depend
     val bin = cliBinary(eiwac)
     val dir = "/tmp/eiwa_cli_itest_full"
     val repo = "/tmp/eiwa_cli_itest_repo"
-    Process.exec("rm -rf " + dir + " " + repo)
+    qexec("rm -rf " + dir + " " + repo)
 
-    assert(Process.exec("mkdir -p " + repo + "/src") == 0)
-    assert(Process.exec("git -C " + repo + " init -q") == 0)
+    assert(qexec("mkdir -p " + repo + "/src") == 0)
+    assert(qexec("git -C " + repo + " init -q") == 0)
     File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.1.0\n")
     File.write(repo + "/src/dep.ei", "fun hello() {\n    println(\"dep\")\n}\n")
-    assert(Process.exec("git -C " + repo + " add -A") == 0)
-    assert(Process.exec("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qm init") == 0)
+    assert(qexec("git -C " + repo + " add -A") == 0)
+    assert(qexec("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qm init") == 0)
 
-    assert(Process.exec(bin + " init " + dir) == 0)
-    assert(Process.exec("cd " + dir + " && " + bin + " add dep " + repo + " --branch main") == 0)
+    assert(qexec(bin + " init " + dir) == 0)
+    assert(qexec("cd " + dir + " && " + bin + " add dep " + repo + " --branch main") == 0)
 
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --frozen") != 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --frozen") != 0)
 
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " freeze") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " freeze") == 0)
     val freeze = File.read(dir + "/eiwa.freeze")
     assert(freeze.indexOf("commit: ") != -1)
     assert(freeze.indexOf("branch") == -1)
 
     //TODO........NAO PASSA ESSA BOSTA
-    // assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --frozen") == 0)
-    // assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run") == 0)
-    // assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " test") == 0)
+    // assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --frozen") == 0)
+    // assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run") == 0)
+    // assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " test") == 0)
 
     File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.2.0\n")
-    assert(Process.exec("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qam v2") == 0)
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " update dep") == 0)
+    assert(qexec("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qam v2") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " update dep") == 0)
     val head = trimForTest(Process.capture("git -C " + repo + " rev-parse HEAD"))
     val freezeAfter = File.read(dir + "/eiwa.freeze")
     assert(freezeAfter.indexOf(head) != -1)
 
-    assert(Process.exec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " update nope") != 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " update nope") != 0)
 
-    Process.exec("rm -rf " + dir + " " + repo)
+    qexec("rm -rf " + dir + " " + repo)
 }
 
 fun trimForTest(s: String): String {

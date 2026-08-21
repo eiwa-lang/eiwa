@@ -1,0 +1,8 @@
+type Box<T>(var v: T)
+
+fun main() {
+    val b = Box(42)
+    echo(b.v)
+    val s = Box("hi")
+    echo(s.v)
+}

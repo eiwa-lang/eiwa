@@ -40,24 +40,29 @@ object Coroutine {
         return Neco.join(id)
     }
 
+    @Suspend
     fun yield(): Int {
         return Neco.yield()
     }
 
+    @Suspend
     fun sleep(nanosecs: Int): Int {
         return Neco.sleep(nanosecs)
     }
 
+    @Suspend
     fun sleepMs(ms: Int): Int {
         return Neco.sleep(ms * 1000000)
     }
 }
 
 object EventLoop {
+    @Suspend
     fun waitReadable(fd: Int): Int {
         return Neco.waitReadable(fd)
     }
 
+    @Suspend
     fun waitWritable(fd: Int): Int {
         return Neco.waitWritable(fd)
     }
@@ -88,6 +93,7 @@ type Task<T>(
     val block: () -> T
 ): Awaitable<T>, Runnable, Taskable<T> + TaskableCoroutine {
 
+    @Suspend
     implement fun await(): T {
         if (!done) {
             join(id)
@@ -110,4 +116,74 @@ type Task<T>(
 
 }
 
+@Coroutine
 fun task<T>(block: () -> T) = Task<T>(null, false, null, block).start()
+
+// ============================================================================
+// Stackless coroutine scheduler (Fase E) — Eiwa puro, sem neco.
+//
+// O compilador transforma cada função suspend em uma state machine cujo estado
+// vive num objeto que implementa `Continuation` (label + locais salvos). Este
+// scheduler é o runtime cooperativo single-threaded: `schedule()` enfileira uma
+// continuation pronta e `run()` executa até a fila esvaziar. Uma continuation
+// que suspende NÃO é re-enfileirada por `run()` — ela se re-agenda sozinha
+// (timer/I/O) ou é agendada pela task que aguardava quando esta completa.
+// ============================================================================
+
+contract Continuation {
+    fun resume()
+    fun isDone(): Bool
+}
+
+// Intrusive FIFO queue node (a contract field inside a self-referential struct
+// works; a generic `MutableList<Continuation>` does NOT — the LLVM backend
+// cannot store fat pointers in generic collections yet).
+type ContNode(val cont: Continuation, var next: ContNode?)
+
+object Scheduler {
+    var head: ContNode? = null
+    var tail: ContNode? = null
+
+    fun schedule(cont: Continuation) {
+        val node = ContNode(cont, null)
+        if (Scheduler.tail == null) {
+            Scheduler.head = node
+            Scheduler.tail = node
+        } else {
+            Scheduler.tail!!.next = node
+            Scheduler.tail = node
+        }
+    }
+
+    fun run() {
+        while (Scheduler.head != null) {
+            val node = Scheduler.head!!
+            Scheduler.head = node.next
+            if (Scheduler.head == null) {
+                Scheduler.tail = null
+            }
+            node.cont.resume()
+        }
+    }
+}
+
+// ============================================================================
+// Stackless task/await cell (Fase C — generated code).
+//
+// The compiler transform rewrites:
+//   `val t = task { block }`  ->  allocate a StackTask<T>, generate a
+//                                Continuation that runs `block`, schedule it.
+//   `t.await()`               ->  poll the task (run the scheduler until done),
+//                                then return `t.result`.
+//
+// Waiters are an intrusive linked list of structs (NOT a nullable contract
+// field, which the LLVM backend mishandles — silent no-op dispatch).
+// ============================================================================
+
+type WaiterNode(val cont: Continuation, var next: WaiterNode?)
+
+type StackTask<T>(
+    var done: Bool,
+    var result: T?,
+    var waiters: WaiterNode?
+)

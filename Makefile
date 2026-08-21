@@ -1,16 +1,16 @@
 .PHONY: all eiwac eiwa test clean
 
-all: eiwac eiwa
+build: eiwac eiwa
 
 eiwac:
 	zig build
 
 eiwa: eiwac
-	./bin/eiwac build --backend=llvm -o bin/eiwa cli/src/main.ei
+	./bin/eiwac build -o bin/eiwa cli/src/main.ei
 
 test: eiwac
 	zig build test #language tests
-	./bin/eiwac test --backend=llvm #compiler tests
+	./bin/eiwac test #compiler tests
 	./bin/eiwa test ../eiwa/example/hello #hello integration tests
 	./bin/eiwa test ../eiwa/example/arest #arest integration tests
 

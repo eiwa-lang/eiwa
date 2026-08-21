@@ -7,6 +7,8 @@ const parser = @import("frontend/parser/core.zig");
 const c_transpiler = @import("backend/c_transpiler/core.zig");
 const ast = @import("core/ast.zig");
 const type_checker = @import("core/type_checker/core.zig");
+const coroutines = @import("core/coroutines.zig");
+const coroutines_transform = @import("core/coroutines_transform.zig");
 const eiwa_home = @import("core/eiwa_home.zig");
 const build_options = @import("build_options");
 const llvm_emitter = if (build_options.has_llvm) @import("backend/llvm_emitter/core.zig") else struct {};
@@ -47,6 +49,7 @@ fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 
 /// Main entry point for the Eiwa CLI.
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
 
@@ -461,6 +464,28 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // Coroutines (stackless, inference): mark suspend functions and suspension
+    // points before emission. The LLVM backend transforms marked functions.
+    var global_functions_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
+    for (registry.ordered_modules.items) |path| {
+        const mod = registry.modules.get(path).?;
+        var fn_it = mod.checker.functions_ast.iterator();
+        while (fn_it.next()) |entry| {
+            try global_functions_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+    coroutines.detectSuspendFunctions(arena.allocator(), &registry, &global_functions_ast) catch |err| {
+        std.debug.print("Error: coroutine detection failed: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+
+    // Fase C (P1): rewrite `val x = task { ... }` / `val x = r.await()` into the
+    // stackless machinery (generated Continuation + Scheduler) before emission.
+    coroutines_transform.transformProgram(arena.allocator(), &registry) catch |err| {
+        std.debug.print("Error: coroutine transform failed: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+
     if (backend_kind == .llvm) {
         if (!build_options.has_llvm) {
             std.debug.print("Error: The Eiwa compiler was built without LLVM support or LLVM 21+ was not found on your system.\n", .{});
@@ -468,6 +493,11 @@ pub fn main(init: std.process.Init) !void {
         }
         const emitter = try allocator.create(llvm_emitter.LLVMEmitter);
         emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
+        // Bloco B (docs/tasks-bloco-b-gc-jit.md): allocate via real GC_malloc/
+        // GC_realloc (zeroed, GC-managed) instead of raw malloc. Always for
+        // native builds (the binary links -lgc); for the JIT only when the
+        // host eiwac links libgc. Must be set before emitModule.
+        llvm_emitter.prefer_gc_alloc = is_build or llvm_emitter.has_gc;
         emitter.is_test_mode = is_test;
         emitter.contracts_ast = &global_contracts_ast;
         emitter.program_argv = if (positionals.items.len > 1) positionals.items[1..] else &.{};

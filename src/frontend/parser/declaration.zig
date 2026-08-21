@@ -9,47 +9,43 @@ const Parser = @import("core.zig").Parser;
 
 pub fn declaration(self: *Parser) anyerror!*ASTNode {
     const annotations = try self.parseAnnotations();
-    var modifiers = ArrayList(TokenType).init(self.allocator);
-
-    while (self.match(.kw_implement) or self.match(.kw_operator)) {
-        try modifiers.append(self.previous.token_type);
-    }
+    const modifiers = try self.parseModifiers();
 
     if (self.match(.kw_lib)) return try self.libDeclaration(annotations);
 
     if (self.match(.kw_val)) {
-        if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on val"); return error.ParseError; }
+        if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on val"); return error.ParseError; }
         return try self.varDeclaration(false);
     }
     if (self.match(.kw_var)) {
-        if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on var"); return error.ParseError; }
+        if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on var"); return error.ParseError; }
         return try self.varDeclaration(true);
     }
     if (self.match(.kw_fun)) {
-        return try self.funDeclaration(annotations, try modifiers.toOwnedSlice(), false);
+        return try self.funDeclaration(annotations, modifiers, false);
     }
     if (self.match(.kw_type)) {
-        if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on type"); return error.ParseError; }
+        if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on type"); return error.ParseError; }
         return try self.typeDeclaration(annotations);
     }
     if (self.match(.kw_contract)) {
-        if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on contract"); return error.ParseError; }
+        if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on contract"); return error.ParseError; }
         return try self.contractDeclaration(annotations);
     }
     if (self.match(.kw_skill)) {
-        if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on skill"); return error.ParseError; }
+        if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on skill"); return error.ParseError; }
         return try self.skillDeclaration(annotations);
     }
     if (self.match(.kw_object)) {
-        if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on object"); return error.ParseError; }
+        if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on object"); return error.ParseError; }
         return try self.objectDeclaration(annotations);
     }
     if (self.match(.kw_enum)) {
-        if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on enum"); return error.ParseError; }
+        if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on enum"); return error.ParseError; }
         return try self.enumDeclaration(annotations);
     }
     
-    if (modifiers.items.len > 0) {
+    if (modifiers.len > 0) {
         self.errorAtCurrent("Modifiers must precede a function declaration");
         return error.ParseError;
     }
@@ -62,6 +58,14 @@ pub fn declaration(self: *Parser) anyerror!*ASTNode {
     if (self.match(.kw_try)) return try self.tryStatement();
     if (self.match(.kw_throw)) return try self.throwStatement();
     return try self.expression();
+}
+
+pub fn parseModifiers(self: *Parser) anyerror![]TokenType {
+    var modifiers = ArrayList(TokenType).init(self.allocator);
+    while (self.match(.kw_implement) or self.match(.kw_operator)) {
+        try modifiers.append(self.previous.token_type);
+    }
+    return try modifiers.toOwnedSlice();
 }
 
 pub fn parseAnnotations(self: *Parser) anyerror![]ast.Annotation {
@@ -407,13 +411,10 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
     if (self.match(.l_brace)) {
         while (!self.check(.r_brace) and !self.check(.eof)) {
             const member_annotations = try self.parseAnnotations();
-            var modifiers = ArrayList(TokenType).init(self.allocator);
-            while (self.match(.kw_implement) or self.match(.kw_operator)) {
-                try modifiers.append(self.previous.token_type);
-            }
+            const modifiers = try self.parseModifiers();
 
             if (self.match(.kw_fun)) {
-                try methods.append(try self.funDeclaration(member_annotations, try modifiers.toOwnedSlice(), false));
+                try methods.append(try self.funDeclaration(member_annotations, modifiers, false));
             } else {
                 self.errorAtCurrent("Only methods are currently supported inside types.");
                 return error.ParseError;
@@ -457,13 +458,11 @@ pub fn contractDeclaration(self: *Parser, annotations: []ast.Annotation) anyerro
     // Braces are optional for empty (marker) contracts: `contract Animal`
     if (self.match(.l_brace)) {
         while (!self.check(.r_brace) and !self.check(.eof)) {
-            var modifiers = ArrayList(TokenType).init(self.allocator);
-            while (self.match(.kw_implement) or self.match(.kw_operator)) {
-                try modifiers.append(self.previous.token_type);
-            }
+            const member_annotations = try self.parseAnnotations();
+            const modifiers = try self.parseModifiers();
 
             if (self.match(.kw_fun)) {
-                const func = try self.funDeclaration(&[_]ast.Annotation{}, try modifiers.toOwnedSlice(), true);
+                const func = try self.funDeclaration(member_annotations, modifiers, true);
                 const f = func.data.fun_decl;
                 if (f.is_expr_body or f.body.data.block.statements.len > 0) {
                     self.errorAtCurrent("Contract methods cannot have a body.");
@@ -531,13 +530,10 @@ pub fn skillDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*
     var methods = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
         const member_annotations = try self.parseAnnotations();
-        var modifiers = ArrayList(TokenType).init(self.allocator);
-        while (self.match(.kw_implement) or self.match(.kw_operator)) {
-            try modifiers.append(self.previous.token_type);
-        }
+        const modifiers = try self.parseModifiers();
 
         if (self.match(.kw_fun)) {
-            try methods.append(try self.funDeclaration(member_annotations, try modifiers.toOwnedSlice(), false));
+            try methods.append(try self.funDeclaration(member_annotations, modifiers, false));
         } else {
             self.errorAtCurrent("Skills may only declare methods (no state, no constructors).");
             return error.ParseError;
@@ -614,20 +610,17 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
     var members = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
         const member_annotations = try self.parseAnnotations();
-        var modifiers = ArrayList(TokenType).init(self.allocator);
-        while (self.match(.kw_implement) or self.match(.kw_operator)) {
-            try modifiers.append(self.previous.token_type);
-        }
+        const modifiers = try self.parseModifiers();
 
         if (self.match(.kw_fun)) {
-            const func = try self.funDeclaration(member_annotations, try modifiers.toOwnedSlice(), false);
+            const func = try self.funDeclaration(member_annotations, modifiers, false);
             try members.append(func);
         } else if (self.match(.kw_val)) {
-            if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on val"); return error.ParseError; }
+            if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on val"); return error.ParseError; }
             const v = try self.varDeclaration(false);
             try members.append(v);
         } else if (self.match(.kw_var)) {
-            if (modifiers.items.len > 0) { self.errorAtCurrent("Modifiers not allowed on var"); return error.ParseError; }
+            if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on var"); return error.ParseError; }
             const v = try self.varDeclaration(true);
             try members.append(v);
         } else {

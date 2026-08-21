@@ -1,0 +1,31 @@
+import { assert } from "std.core"
+import { MutableList } from "std.collections"
+
+// KNOWN LIMITATION (LLVM backend): contract (fat pointer) values cannot yet be
+// stored inside generic collections or generic struct fields — the emitter
+// stubs the monomorphized accessors, so the stored value is lost.
+// These tests document the expected behavior and FAIL until the emitter is
+// fixed to store fat pointers correctly. They are the acceptance criteria for
+// that fix (needed by the stackless coroutine scheduler queue).
+
+contract Val {
+    fun value(): Int
+}
+
+type One : Val {
+    implement fun value(): Int = 1
+}
+
+test "contract stored in MutableList is retrievable and dispatchable" {
+    val list = MutableList<Val>()
+    list.add(One())
+    assert(list.size() == 1)
+    assert(list[0].value() == 1)
+}
+
+type CNode<T>(val item: T, var next: CNode<T>?)
+
+test "contract stored in generic struct field dispatches" {
+    val n = CNode<Val>(One(), null)
+    assert(n.item.value() == 1)
+}

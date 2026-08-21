@@ -177,6 +177,9 @@ pub const ASTNodeType = union(enum) {
         is_expr_body: bool, // true for `= a + b`, false for `{ ... }`
         resolved_c_name: ?[]const u8,
         from_skill: bool = false, // true when the method was cloned from a skill into a type
+        /// True when the function (transitively) contains a call to an `@Suspend`
+        /// function (detected by the coroutine pass, not by the parser).
+        is_suspend: bool = false,
     },
     type_decl: struct {
         annotations: []const Annotation,
@@ -268,6 +271,9 @@ pub const ASTNodeType = union(enum) {
         /// When `cFunctionPtr(fn)` is used, the C name of the generated
         /// trampoline for `fn`; the backend emits `&trampoline` instead of a call.
         c_fn_ptr: ?[]const u8 = null,
+        /// True when this call targets a suspend function (marked by the
+        /// coroutine detection pass). The emitter transforms the caller.
+        is_suspend_call: bool = false,
     },
     named_arg: struct {
         name: []const u8,
