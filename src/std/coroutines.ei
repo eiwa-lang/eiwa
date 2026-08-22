@@ -276,6 +276,34 @@ type StackTask<T>(
         return result!!
     }
 
+    // Cooperative await used by the compiler transform inside a state-machine
+    // task body: registers `cont` (the caller's continuation) as a waiter and
+    // returns false so the caller can suspend; returns true on the fast path
+    // when this task already completed. Waiters are appended (FIFO) and
+    // re-scheduled by the done state of the awaited task.
+    //
+    // NOTE: this is a compiler-called runtime API. There are NO handwritten
+    // .ei call sites — the compiler emits `recv.awaitCoop(this)` in generated
+    // continuation resume() bodies (see machineBuildCoopAwait in
+    // src/core/coroutines_transform.zig). Do NOT remove: it is exercised by
+    // samples/tests/coop_await_test.ei and its removal breaks compilation of
+    // any state-machine task body that awaits another task.
+    fun awaitCoop(cont: Continuation): Bool {
+        if (this.done) {
+            return true
+        }
+        if (this.waiters == null) {
+            this.waiters = WaiterNode(cont, null)
+        } else {
+            var cur = this.waiters!!
+            while (cur.next != null) {
+                cur = cur.next!!
+            }
+            cur.next = WaiterNode(cont, null)
+        }
+        return false
+    }
+
     implement fun isDone(): Bool = done
 }
 

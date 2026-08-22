@@ -385,10 +385,14 @@ pool exige coroutines que suspendam de verdade, não threads bloqueadas).
 
 - O `EventLoop.waitReadable/waitWritable` (via `poll`) pode ficar para uma fase seguinte:
   esperar readiness é o mesmo mecanismo do timer heap (uma lista de "waiters de I/O").
-- **Próxima etapa (handoff abaixo):** `await()` cooperativo (waiter-chain) dentro do corpo
-  do task — hoje blocking-poll no root; é o pré-requisito da Fase I (dispatchers/thread pool).
-- **Habilita a Fase I** (dispatchers/thread pool): sem suspensão verdadeira, não há
-  paralelismo — apenas threads bloqueadas. Concluir esta fase é pré-requisito da Fase I.
+- **`await()` cooperativo (waiter-chain) dentro do corpo do task — ✅ CONCLUÍDO (2026-08).**
+  Ver Fase K abaixo. `await()` continua blocking-poll **no root** (main/test/top-level — o
+  root é o driver) e em task bodies **single-shot** (sem sleep/yield — o poll acoplado não
+  faz mal). Dentro de um task body **state machine** (com sleep/yield), o await registra o
+  caller como waiter e suspende (ver Fase K).
+- **Habilita a Fase I** (dispatchers/thread pool): a waiter-chain é o pré-requisito da espera
+  cross-thread. Ainda falta a Fase I em si (thread pool, sincronização de estado, GC
+  multithread) — continua sendo **PROPOSTA, não o modelo atual**.
 - **Fix — erros de compilação sem backtrace Zig:** o pipeline de `main.zig` era `!void`
   e deixava erros de tipo/emissão propagarem para o runtime do Zig, que imprimia
   `error: TypeError` + stack trace nativo depois da mensagem Eiwa limpa. `main` agora é um
@@ -398,56 +402,115 @@ pool exige coroutines que suspendam de verdade, não threads bloqueadas).
 
 ---
 
-### Handoff — próxima etapa: `await()` cooperativo (waiter-chain) no corpo do task (pré-requisito da Fase I)
+## Fase K — `await()` cooperativo (waiter-chain) dentro do corpo do task — ✅ CONCLUÍDA (2026-08)
+
+> **Estado final:** dentro de um task body **state machine** (corpo com `sleep`/`sleepMs`/
+> `yield`), `await()` deixa de ser blocking-poll e vira uma **suspensão cooperativa**: o
+> caller registra o próprio continuation como **waiter** da task aguardada e devolve o
+> controle ao scheduler (`this.label = <read>; return`). Quando a task aguardada completa,
+> seu done state reschedule os waiters (FIFO). `samples/tests/coop_await_test.ei` (4 testes)
+> verde: valor após yield, valor após sleep com inner task lazy, result String, e **dois
+> tasks aguardando a MESMA task** retomados em FIFO (`S12`, r1=43, r2=44).
+
+### Mecanismo
+
+- `src/std/coroutines.ei` — `StackTask.awaitCoop(cont: Continuation): Bool`: fast path
+  `done` → `true`; senão **append** `WaiterNode(cont, null)` na cauda da waiter chain (FIFO,
+  para casar com a iteração head→tail do done state) e `false`. Método normal (NÃO
+  `implement` — não faz parte de `Awaitable<T>`).
+- `src/core/coroutines_transform.zig` — modo `coop` encadeado por `rewriteStatements`/
+  `rewriteStatement`/`rewritePreamble`/`rewriteBranch` (single-shot/root passam `false`,
+  `buildResumeStateMachine` passa `true`):
+  - `rewriteAwaitCall`/`rewriteTaskAwaitCall` em modo coop geram o marker
+    `val <name> = __CoopAwait(<recv>)` (com `type_ref` do result type — `stmt.resolved_type`
+    ou `singleTypeArg(recv.resolved_type)`; `hoistAwaitsWalk` preserva `decl.resolved_type`).
+  - `machineBuildStmt` detecta o marker (`isCoopAwaitMarker`) e chama
+    `machineBuildCoopAwait`: dois estados —
+    **guard**: `if (!<recv>.awaitCoop(this)) { this.label = <read>; return }` /
+    `this.label = <read>`;
+    **read**: `this.<name> = <recv>.result!!` (fast path quando já done) / `this.label = <after>`.
+  - **Promoção de novos locais**: `collectNewLocals` promove vars criadas pela machinery
+    (`__taskN`, binds como `inner`, `__awaitN`) a **body fields** (precisam sobreviver entre
+    estados — cada statement vira um estado próprio, sem merge). `fieldInitializerForTypeRef`
+    dá o default (primitivos/nullable via `defaultInitializerForTypeRef`; `StackTask<T>`
+    via `StackTask<T>(false, null, null)`). Depois `rewritePromotedRefs(new_locals)` reescreve
+    refs (`__taskN`→`this.__taskN`) e converte os var_decls em `this.<name> = ...`.
+  - **Fix de RHS não reescrito**: `rewritePromotedRefs`/`rewriteCapturedRefs` nos casos
+    `.var_decl` e `.assignment` agora reescrevem as refs do **initializer/value primeiro**
+    antes de converter para `set_expr`. Sem isso, `acc = inner.await() + acc` virava
+    `this.acc = inner.await() + acc` com `acc` **sem** `this.` no RHS → resolvia como class
+    property no resume() e o emitter lia o **box pointer** (lixo) em vez do valor boxed.
+  - **Ordem de splice**: `transformModule` agora spliceia tipos **monomorfizados primeiro**
+    (ex.: `StackTask<Int>`) e continuações depois. `declareType` emite o corpo do ctor
+    inline; o ctor do `__TaskBlockN` avalia os initializers de body fields (chamadas a
+    `StackTask<T>(...)`), então o tipo callee precisa estar declarado antes — senão
+    `VariableNotFound: coroutines_StackTask_Int` na emissão.
+
+### Checklist
+
+- [x] `StackTask.awaitCoop(cont)` — append FIFO na waiter chain + fast path.
+- [x] Modo `coop` no transform; marker `__CoopAwait`; guard/read states no CFG.
+- [x] Promoção de novos locais da machinery a body fields (`collectNewLocals`).
+- [x] Fix RHS nos `.var_decl`/`.assignment` de `rewritePromotedRefs`/`rewriteCapturedRefs`.
+- [x] Ordem de splice: monomorfizados antes das continuações.
+- [x] `coop_await_test.ei` (4 testes) verde; suíte `samples/tests` **68 PASS, 2 FAIL** (as 2
+      falhas continuam sendo `contract_collection_storage_test`/`closure_struct_field_test`,
+      pré-existentes). `interleave_test` (`ABABAB`), `yield_test`, `task_test`,
+      `task_transform_test`, `scheduler_test`, `body_fields_test` verdes.
+- [x] `zig build` + `zig build test` verdes.
+
+### Notas / limitações (Fase K)
+
+- **`await()` em task body single-shot continua blocking-poll** (sem sleep/yield não há state
+  machine; o poll reentrante funciona e não há outros tasks cooperativos para estrelvar).
+  Fazer awaits dispararem state machine é uma extensão futura, não o alvo desta fase.
+- `return <recv>.await()` dentro de corpo de task segue como **gap** (retorno prematuro do
+  `resume()`). `await` como operando dentro de `assignment` não é hoisted (falta caso
+  `.assignment` em `hoistAwaitsWalk`) — o `inner.await()` fica como chamada direta (bloqueia
+  via `Scheduler.run()`, funciona, mas não suspende).
+- `__CoopAwait`/`__TaskBlockN`/`__taskN`/`__awaitN` são nomes **internos do transform**,
+  consumidos antes da emissão (a golden rule "sem special cases por nome" refere-se ao
+  **emitter**/runtime — `__cblambda`, `__TaskBlock` — não ao transform, que já usa esses
+  nomes gerados).
+
+---
+
+### Handoff — próxima etapa
 
 > Este bloco consolida o estado real do código para que um agente/agente novo possa começar a
 > próxima etapa sem reconstruir contexto de sessão. Leia TODO este arquivo antes de mexer no
-> código (AGENTS.md, decisões acima, Fases C/D/E/F/J).
+> código (AGENTS.md, decisões acima, Fases C/D/E/F/J/K).
 
-**Estado da suíte (baseline):** `./bin/eiwac test samples/tests` → **67 test files PASS, 2 FAIL**.
+**Estado da suíte (baseline):** `./bin/eiwac test samples/tests` → **68 test files PASS, 2 FAIL**.
 As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_test.ei`
-(**pré-existentes, NÃO relacionadas a coroutines**). `interleave_test.ei` **PASSA** (`ABABAB`)
-e `yield_test.ei` (3 testes) verde. Commit de referência: `cc9de31` (Fase J + body fields +
-fixes). **`git status` limpo.**
+(**pré-existentes, NÃO relacionadas a coroutines**). `interleave_test.ei` **PASSA** (`ABABAB`),
+`yield_test.ei` (3 testes) verde, `coop_await_test.ei` (4 testes) verde. `git status` limpo.
 
 **Comandos:** `zig build` | `./bin/eiwac test samples/tests` |
-`./bin/eiwac test samples/tests/interleave_test.ei` | `./bin/eiwac test samples/tests/yield_test.ei`.
+`./bin/eiwac test samples/tests/coop_await_test.ei` | `./bin/eiwac test samples/tests/interleave_test.ei` |
+`./bin/eiwac test samples/tests/yield_test.ei`.
 
-**Próxima etapa — `await()` cooperativo dentro do corpo do task (waiter-chain, Kotlin-style):**
+**Próxima etapa (o que falta para a Fase I — dispatchers/thread pool, PROPOSTA):**
 
-- **Problema atual:** `await()` é **blocking-poll no root**: `buildPollStmt` gera
-  `while (!<recv>.done && Scheduler.runStep()) {}`. O caller roda o scheduler até a task
-  aguardada completar. Funciona single-thread (inclusive com timers), mas é **acoplado**:
-  um `await()` dentro do corpo de um task suspende o scheduler inteiro, e o modelo de espera
-  não é a waiter-chain que a **Fase I (dispatchers/thread pool)** exige (espera cross-thread
-  precisa que o caller suspenda de verdade, não que rode um loop local).
-- **Alvo:** `await()` dentro de um task body deve **registrar o continuation do caller como
-  waiter** da task aguardada e **suspender** (`this.label = <next>; return`). Quando a task
-  aguardada completa, seu resume reschedule os waiters (já implementado no done state:
-  `while (__waiterN != null) { Scheduler.schedule(__waiterN!!.cont); ... }`). O caller retoma
-  no label seguinte e lê `this.task.result`.
-- **Onde vive o código:**
-  - `src/core/coroutines_transform.zig`:
-    - `rewriteAwaitCall` / `rewriteTaskAwaitCall` / `rewriteReturnAwait` (L~1280+) — hoje
-      geram `buildPollStmt` + `val x = <recv>.result!!`. Virariam: se `recv.done` →
-      fast path `x = recv.result!!`; senão → `recv.waiters = WaiterNode(this, recv.waiters)`
-      (ou append na cauda) + `this.label = <next>` + `return` (suspensão), com o estado
-      seguinte fazendo `x = recv.result!!`.
-    - `buildResumeStateMachine` (L~1700) — o CFG já gera os estados; o await cooperativo
-      vira mais um tipo de "suspensão" (como sleep/yield), com estado de retomada.
-    - `buildPollStmt` (L~1350) — usado pelos awaits no ROOT (main/test/top-level), que NÃO
-      têm continuation e continuam blocking-poll (correto: o root é o driver).
-  - `src/std/coroutines.ei`:
-    - `type StackTask<T>(done, result, waiters)` + `type WaiterNode(cont, next)` — a lista de
-      waiters JÁ existe e é rescheduleada no done state. O `await()`/`isDone()` implementam
-      `Awaitable<T>`; `await()` hoje faz `Scheduler.run()` quando `!done` (usado por chamadas
-      diretas, não pelo transform).
-    - `Scheduler.runStep()` — ao completar, o resume da task agendada reschedule os waiters
-      (chain). Verificar ordem FIFO da waiter chain (hoje `buildResume` itera `waiters` e
-      `Scheduler.schedule` cada um — a ordem depende de como o waiter é inserido).
-  - **Atenção:** o done state do `buildResume` (single-shot) JÁ reschedule waiters; o
-    `buildResumeStateMachine` também (no state de done). A tarefa é fazer o **caller**
-    registrar-se como waiter em vez de poll.
+- **`await()` no ROOT ainda é blocking-poll** (`buildPollStmt`:
+  `while (!recv.done && Scheduler.runStep()) {}`). Para a Fase I (espera cross-thread) o root
+  precisaria suspender de verdade — mas o root não tem continuation. **Decisão pendente:** o
+  root poderia rodar um event loop dedicado (sem setjmp, como hoje) enquanto workers
+  processam; `await()` cross-thread exigiria `StackTask.await()` esperando uma condição
+  atômica. Isto é redesign (Fase I), não esta etapa.
+- **Awaits em task body single-shot continuam blocking-poll.** Se quiser uniformidade total
+  (waiter-chain em qualquer task), fazer `isAwaitCall`/`isTaskAwaitCall` dispararem
+  `state_machine` em `buildTaskBlockType` (hoje só `sleep`/`yield` disparam). Incremental:
+  primeiro `nestedTask`/`loopWithAwait` do `task_transform_test` verdes no caminho state
+  machine, depois flipar a detecção.
+- **`hoistAwaitsWalk` sem caso `.assignment`**: `x = inner.await() + x` não é hoisted (o await
+  vira chamada direta dentro do estado). Adicionar o caso `.assignment` (e `.index_set_expr`)
+  para hoist completo + `await` cooperativo em assignment values.
+- **`try` com `await` cooperativo dentro**: `machineBuildStmt` não tem caso `.try_stmt` (erro
+  `SuspendInOperand`). O single-shot já trata try+await; o state machine ainda não.
+- **`for` com suspensão dentro do corpo do task**: gap conhecido (erro `file:line`).
+- **Timer heap / `EventLoop.waitReadable/waitWritable`**: mesmo mecanismo do timer heap (lista
+  de waiters de I/O) — fase seguinte natural após a waiter-chain.
 
 **Modelo atual (referência):**
 
@@ -457,8 +520,10 @@ fixes). **`git status` limpo.**
   - `buildResumeStateMachine` — `resume()` como state machine p/ task bodies com
     `sleep`/`sleepMs`/`yield`: `while(true) { if (this.label==N) {...} else ... }`, locais
     promovidos a body fields, `this.label` default = entry. Builder CFG em ordem reversa;
-    statements plain viram estados próprios (nunca merge em joins).
-  - `buildPollStmt` — `await()` vira `while (!recv.done && Scheduler.runStep()) {}` (root).
+    statements plain viram estados próprios (nunca merge em joins). Awaits → marker
+    `__CoopAwait` (Fase K); novos locais da machinery promovidos via `collectNewLocals`.
+  - `buildPollStmt` — `await()` vira `while (!recv.done && Scheduler.runStep()) {}` (root e
+    task bodies single-shot).
   - `rewriteAwaitCall`/`rewriteTaskAwaitCall`/`rewriteReturnAwait`, `hoistAwaitsFromExpr`,
     `transformModule`/`transformFunction`, `buildTaskBlockType` (roteia state machine ×
     single-shot e adiciona `body_fields`).
@@ -468,7 +533,8 @@ fixes). **`git status` limpo.**
   - `object Scheduler` com `schedule`/`run`/`runStep` (FIFO intrusiva) + **timer heap**:
     `TimerNode(deadline, cont, next)`, `Scheduler.now` (relógio virtual ms),
     `sleep(cont, ms)`/`yield(cont)`/`fireTimers()`/`waitMs(ms)`. `run` = `while(runStep())`.
-  - `type StackTask<T>(done, result, waiters)` com `await()`/`isDone()` (Awaitable).
+  - `type StackTask<T>(done, result, waiters)` com `await()`/`isDone()` (Awaitable) +
+    `awaitCoop(cont)` (waiter-chain FIFO, usada pelo transform).
   - `Coroutine.sleep/sleepMs` (nanosleep) / `yield` (sched_yield) bloqueiam fora do corpo de
     task; dentro do corpo, o transform os reescreve em `Scheduler.sleep(this, ...)` /
     `Scheduler.yield(this)`.
@@ -478,13 +544,15 @@ fixes). **`git status` limpo.**
 
 1. `coroutines_transform.zig` já foi **perdido e reconstruído** uma vez — mudanças devem ser
    **conservadoras e incrementais**. Sem reescritas em massa sem teste verde por passo.
-2. **Sem gambiarras**: sem special cases por nome (`__cblambda`, `__TaskBlock`), sem chamadas
-   manuais de `LLVMAddFunction`, sem adaptar testes para acomodar bugs do compiler.
+2. **Sem gambiarras**: sem special cases por nome no **emitter**/runtime (`__cblambda`,
+   `__TaskBlock`), sem chamadas manuais de `LLVMAddFunction`, sem adaptar testes para
+   acomodar bugs do compiler. (Nomes internos do **transform** — `__CoopAwait`,
+   `__TaskBlockN`, `__taskN` — são consumidos antes da emissão e são o padrão existente.)
 3. **Não reintroduzir** neco, `@MainWrapper`, `--backend`, ou o contrato `Awaitable<T>`.
 4. **Sem prints/debug permanentes**.
 5. **Guardrail: testes que passam continuam passando** — não adaptar testes para o mecanismo.
 6. Após cada passo: `zig build` + teste mínimo + regressão (`task_test`, `task_transform_test`,
-   `scheduler_test`, `interleave_test`, `yield_test`, `body_fields_test`).
+   `scheduler_test`, `interleave_test`, `yield_test`, `body_fields_test`, `coop_await_test`).
 
 **Fixes recentes que não devem ser revertidos (contexto de sessões anteriores):**
 
@@ -496,6 +564,8 @@ fixes). **`git status` limpo.**
   (`isSuspendDecl`/`findMethodHasSuspend`), não por contrato.
 - Box de 16 bytes fixo para vars capturadas (`cell_size`) — TODO conhecido, alocar
   `LLVMStoreSizeOfType` (pré-existente nos closures).
+- Fase K: splice de monomorfizados antes das continuações; `.var_decl`/`.assignment`
+  reescrevem o RHS antes de converter para `set_expr`.
 
 **Gaps conhecidos (NÃO gastar tempo neles agora — não são a próxima etapa):**
 `object static String concat crasha` (`"x" + Obj.v`), `toString` mangled de List/Map

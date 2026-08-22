@@ -1,0 +1,94 @@
+import { assert } from "std.core"
+
+// Cooperative `await()` inside a state-machine task body (a body that contains
+// a true suspension point like sleep/yield). Instead of blocking-polling, the
+// caller's continuation registers as a waiter of the awaited task and suspends;
+// when the awaited task completes, its done state reschedules the waiter chain.
+// This is the waiter-chain prerequisite for dispatchers/thread pools (Fase I).
+
+object CoopLog {
+    var log: String = ""
+}
+
+// Basic acceptance: a task body with a suspension point that awaits an inner
+// task must deliver the correct value through the waiter-chain (not a poll).
+fun coopAwaitAfterYield(): Int {
+    var acc = 2
+    val t = task {
+        yield()
+        val inner = task { 40 }
+        acc = inner.await() + acc
+        acc
+    }
+    t.await()
+    return acc
+}
+
+test "cooperative await inside a task body delivers the value" {
+    assert(coopAwaitAfterYield() == 42)
+}
+
+// Same via sleep (timer heap) — the awaited inner task is created lazily after
+// the sleep, so the await MUST register a waiter and suspend, not block.
+fun coopAwaitAfterSleep(): Int {
+    val t = task {
+        var acc = 2
+        sleepMs(1)
+        val inner = task { 40 }
+        acc = inner.await() + acc
+        acc
+    }
+    return t.await()
+}
+
+test "task with sleep then cooperative await on a lazily-created inner task" {
+    assert(coopAwaitAfterSleep() == 42)
+}
+
+// String result through the cooperative path (await result is a promoted body
+// field with a "" default).
+fun coopAwaitString(): String {
+    val t = task {
+        sleepMs(1)
+        val s = task { "hello" }
+        s.await()
+    }
+    return t.await()
+}
+
+test "cooperative await returns a string value" {
+    assert(coopAwaitString() == "hello")
+}
+
+// Multiple waiters on the same shared task: both t1 and t2 register as waiters
+// while `shared` is still sleeping; when it completes it reschedules them in
+// FIFO order (waiter chain appended, not prepended).
+fun multiWaiter(): String {
+    CoopLog.log = ""
+    val shared = task {
+        sleepMs(100)
+        CoopLog.log = CoopLog.log + "S"
+        42
+    }
+    val t1 = task {
+        sleepMs(1)
+        val r = shared.await() + 1
+        CoopLog.log = CoopLog.log + "1"
+        r
+    }
+    val t2 = task {
+        sleepMs(2)
+        val r = shared.await() + 2
+        CoopLog.log = CoopLog.log + "2"
+        r
+    }
+    val r1 = t1.await()
+    val r2 = t2.await()
+    assert(r1 == 43)
+    assert(r2 == 44)
+    return CoopLog.log
+}
+
+test "multiple tasks awaiting the same task are resumed FIFO by the waiter chain" {
+    assert(multiWaiter() == "S12")
+}

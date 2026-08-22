@@ -102,7 +102,7 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
                 var test_stmts = ArrayList(*ASTNode).init(allocator);
                 defer test_stmts.deinit();
                 const before = generated.items.len;
-                try rewriteStatements(allocator, checker, td.body.data.block.statements, &counter, &generated, &test_stmts);
+                try rewriteStatements(allocator, checker, td.body.data.block.statements, &counter, &generated, &test_stmts, false);
                 if (generated.items.len > before or test_stmts.items.len != td.body.data.block.statements.len) {
                     // Drain the scheduler at the end of the test so
                     // fire-and-forget tasks (never awaited) still run.
@@ -121,25 +121,33 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
     // Collect continuation types produced during re-inference (monomorphized
     // generic instantiations such as `StackTask<Int>`, registered by
     // `monomorphizeClass` while `resolveTypeRef` runs inside the transform).
+    var mono_types = ArrayList(*ASTNode).init(allocator);
+    defer mono_types.deinit();
     for (checker.monomorphized_nodes.items) |mono| {
         if (mono.data != .type_decl) continue;
         if (containsNode(generated.items, mono)) continue;
-        try generated.append(mono);
+        try mono_types.append(mono);
     }
 
-    if (generated.items.len == 0) return;
+    if (generated.items.len == 0 and mono_types.items.len == 0) return;
 
     // Splice generated types into program statements right after the imports
     // (mirrors the splice `core_validate` performs for monomorphized nodes).
+    // Monomorphized types (e.g. `StackTask<Int>`) come FIRST: a generated
+    // continuation's ctor evaluates body-field initializers that call those
+    // ctors, and `declareType` emits ctor bodies inline — so the callee type
+    // must be declared before the continuation that references it.
     var insert_idx: usize = 0;
     for (module.data.program.statements, 0..) |s, i| {
         if (s.data == .import_stmt) insert_idx = i + 1;
     }
     const old = module.data.program.statements;
-    const new_stmts = try allocator.alloc(*ASTNode, old.len + generated.items.len);
+    const extra = generated.items.len + mono_types.items.len;
+    const new_stmts = try allocator.alloc(*ASTNode, old.len + extra);
     @memcpy(new_stmts[0..insert_idx], old[0..insert_idx]);
-    @memcpy(new_stmts[insert_idx..][0..generated.items.len], generated.items);
-    @memcpy(new_stmts[insert_idx + generated.items.len ..], old[insert_idx..]);
+    @memcpy(new_stmts[insert_idx..][0..mono_types.items.len], mono_types.items);
+    @memcpy(new_stmts[insert_idx + mono_types.items.len ..][0..generated.items.len], generated.items);
+    @memcpy(new_stmts[insert_idx + extra ..], old[insert_idx..]);
     module.data.program.statements = new_stmts;
 }
 
@@ -167,7 +175,7 @@ fn rewriteFunctionBody(
 
     var new_stmts = ArrayList(*ASTNode).init(allocator);
     defer new_stmts.deinit();
-    try rewriteStatements(allocator, checker, f.body.data.block.statements, counter, generated, &new_stmts);
+    try rewriteStatements(allocator, checker, f.body.data.block.statements, counter, generated, &new_stmts, false);
     // `fun main()`: drain the scheduler before returning so fire-and-forget
     // tasks (`task {}` never awaited) still run. run() no-ops on empty queue.
     if (std.mem.eql(u8, f.name, "main")) {
@@ -298,9 +306,10 @@ fn rewriteStatements(
     counter: *usize,
     generated: *ArrayList(*ASTNode),
     out: *ArrayList(*ASTNode),
+    coop: bool,
 ) anyerror!void {
     for (stmts) |stmt| {
-        const handled = try rewriteStatement(allocator, checker, stmt, counter, generated, out);
+        const handled = try rewriteStatement(allocator, checker, stmt, counter, generated, out, coop);
         if (!handled) try out.append(stmt);
     }
 }
@@ -315,6 +324,7 @@ fn rewriteStatement(
     counter: *usize,
     generated: *ArrayList(*ASTNode),
     out: *ArrayList(*ASTNode),
+    coop: bool,
 ) !bool {
     switch (stmt.data) {
         .var_decl => |*v| {
@@ -327,11 +337,11 @@ fn rewriteStatement(
                 if (isAwaitCall(init)) {
                     const recv = init.data.call_expr.callee.data.get_expr.object;
                     if (isTaskCall(recv)) {
-                        const gen = try rewriteTaskAwaitCall(allocator, checker, stmt, init, counter, generated);
+                        const gen = try rewriteTaskAwaitCall(allocator, checker, stmt, init, counter, generated, coop);
                         try out.appendSlice(gen);
                         return true;
                     }
-                    const gen = try rewriteAwaitCall(allocator, checker, stmt, init);
+                    const gen = try rewriteAwaitCall(allocator, checker, stmt, init, coop);
                     try out.appendSlice(gen);
                     return true;
                 }
@@ -339,7 +349,7 @@ fn rewriteStatement(
                     var preamble = ArrayList(*ASTNode).init(allocator);
                     defer preamble.deinit();
                     if (try hoistAwaitsFromExpr(allocator, checker, init, counter, &preamble)) {
-                        try rewritePreamble(allocator, checker, &preamble, counter, generated, out);
+                        try rewritePreamble(allocator, checker, &preamble, counter, generated, out, coop);
                         try out.append(stmt);
                         return true;
                     }
@@ -364,7 +374,7 @@ fn rewriteStatement(
                     var preamble = ArrayList(*ASTNode).init(allocator);
                     defer preamble.deinit();
                     if (try hoistAwaitsFromExpr(allocator, checker, val, counter, &preamble)) {
-                        try rewritePreamble(allocator, checker, &preamble, counter, generated, out);
+                        try rewritePreamble(allocator, checker, &preamble, counter, generated, out, coop);
                         try out.append(stmt);
                         return true;
                     }
@@ -375,7 +385,7 @@ fn rewriteStatement(
         .block => |*b| {
             var new_stmts = ArrayList(*ASTNode).init(allocator);
             defer new_stmts.deinit();
-            try rewriteStatements(allocator, checker, b.statements, counter, generated, &new_stmts);
+            try rewriteStatements(allocator, checker, b.statements, counter, generated, &new_stmts, coop);
             b.statements = try new_stmts.toOwnedSlice();
             return false;
         },
@@ -384,12 +394,12 @@ fn rewriteStatement(
                 var preamble = ArrayList(*ASTNode).init(allocator);
                 defer preamble.deinit();
                 if (try hoistAwaitsFromExpr(allocator, checker, i.condition, counter, &preamble)) {
-                    try rewritePreamble(allocator, checker, &preamble, counter, generated, out);
+                    try rewritePreamble(allocator, checker, &preamble, counter, generated, out, coop);
                 }
             }
-            try rewriteBranch(allocator, checker, i.then_branch, counter, generated);
+            try rewriteBranch(allocator, checker, i.then_branch, counter, generated, coop);
             if (i.else_branch) |e| {
-                try rewriteBranch(allocator, checker, e, counter, generated);
+                try rewriteBranch(allocator, checker, e, counter, generated, coop);
             }
             return false;
         },
@@ -398,21 +408,21 @@ fn rewriteStatement(
                 var preamble = ArrayList(*ASTNode).init(allocator);
                 defer preamble.deinit();
                 if (try hoistAwaitsFromExpr(allocator, checker, w.condition, counter, &preamble)) {
-                    try rewritePreamble(allocator, checker, &preamble, counter, generated, out);
+                    try rewritePreamble(allocator, checker, &preamble, counter, generated, out, coop);
                 }
             }
-            try rewriteBranch(allocator, checker, w.body, counter, generated);
+            try rewriteBranch(allocator, checker, w.body, counter, generated, coop);
             return false;
         },
         .for_stmt => |*f| {
-            try rewriteBranch(allocator, checker, f.iterable, counter, generated);
-            try rewriteBranch(allocator, checker, f.body, counter, generated);
+            try rewriteBranch(allocator, checker, f.iterable, counter, generated, coop);
+            try rewriteBranch(allocator, checker, f.body, counter, generated, coop);
             return false;
         },
         .try_stmt => |*t| {
-            try rewriteBranch(allocator, checker, t.body, counter, generated);
+            try rewriteBranch(allocator, checker, t.body, counter, generated, coop);
             for (t.catches) |*cb| {
-                try rewriteBranch(allocator, checker, cb.body, counter, generated);
+                try rewriteBranch(allocator, checker, cb.body, counter, generated, coop);
             }
             return false;
         },
@@ -421,7 +431,7 @@ fn rewriteStatement(
                 var preamble = ArrayList(*ASTNode).init(allocator);
                 defer preamble.deinit();
                 if (try hoistAwaitsFromExpr(allocator, checker, stmt, counter, &preamble)) {
-                    try rewritePreamble(allocator, checker, &preamble, counter, generated, out);
+                    try rewritePreamble(allocator, checker, &preamble, counter, generated, out, coop);
                     try out.append(stmt);
                     return true;
                 }
@@ -438,17 +448,18 @@ fn rewriteBranch(
     branch: *ASTNode,
     counter: *usize,
     generated: *ArrayList(*ASTNode),
+    coop: bool,
 ) anyerror!void {
     if (branch.data == .block) {
         var new_stmts = ArrayList(*ASTNode).init(allocator);
         defer new_stmts.deinit();
-        try rewriteStatements(allocator, checker, branch.data.block.statements, counter, generated, &new_stmts);
+        try rewriteStatements(allocator, checker, branch.data.block.statements, counter, generated, &new_stmts, coop);
         branch.data.block.statements = try new_stmts.toOwnedSlice();
         return;
     }
     var out = ArrayList(*ASTNode).init(allocator);
     defer out.deinit();
-    const handled = try rewriteStatement(allocator, checker, branch, counter, generated, &out);
+    const handled = try rewriteStatement(allocator, checker, branch, counter, generated, &out, coop);
     if (handled) {
         if (out.items.len == 1) {
             branch.* = out.items[0].*;
@@ -457,7 +468,8 @@ fn rewriteBranch(
 }
 
 /// Rewrites a hoisted await preamble (a list of `val __awaitN = <recv>.await()`
-/// statements produced by `hoistAwaitsFromExpr`) into poll + result form.
+/// statements produced by `hoistAwaitsFromExpr`) into poll or cooperative-await
+/// form depending on `coop`.
 fn rewritePreamble(
     allocator: std.mem.Allocator,
     checker: *TypeChecker,
@@ -465,9 +477,10 @@ fn rewritePreamble(
     counter: *usize,
     generated: *ArrayList(*ASTNode),
     out: *ArrayList(*ASTNode),
+    coop: bool,
 ) anyerror!void {
     for (preamble.items) |stmt| {
-        const handled = try rewriteStatement(allocator, checker, stmt, counter, generated, out);
+        const handled = try rewriteStatement(allocator, checker, stmt, counter, generated, out, coop);
         if (!handled) try out.append(stmt);
     }
 }
@@ -806,6 +819,10 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
             }
         },
         .assignment => |*a| {
+            // Rewrite references inside the value first (same rationale as
+            // rewritePromotedRefs: a bare `acc` in the RHS would resolve to
+            // the class property and emit the box pointer, not the value).
+            try rewriteCapturedRefs(allocator, captures, a.value);
             for (captures) |c| {
                 if (std.mem.eql(u8, a.name, c.name)) {
                     // `caught = 99` -> `this.caught = 99`
@@ -821,7 +838,6 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
                     return;
                 }
             }
-            try rewriteCapturedRefs(allocator, captures, a.value);
         },
         .lambda_expr => return,
         .block => |b| {
@@ -928,8 +944,12 @@ fn hoistAwaitsWalk(
         counter.* += 1;
         const copy = try allocator.create(ASTNode);
         copy.* = node.*;
+        const await_result = node.resolved_type;
         try clearResolvedTypes(allocator, copy);
         const decl = mkVarDecl(name, copy);
+        // Preserve the await result type so the machinery can type the
+        // cooperative-await marker (the copy's own types were cleared).
+        if (await_result) |rt| decl.resolved_type = rt;
         try preamble.append(decl);
         node.data = .{ .identifier = .{
             .name = name,
@@ -1058,7 +1078,7 @@ fn buildTaskBlockType(
         // The state-machine dispatch reads `this.label`; its default is the
         // entry state (the label where the machine begins).
         var entry_label: usize = 0;
-        resume_method = try buildResumeStateMachine(allocator, checker, captures, locals, body, result_type, counter, generated, &entry_label);
+        resume_method = try buildResumeStateMachine(allocator, checker, captures, locals, body, result_type, counter, generated, &entry_label, &body_fields);
         try methods.append(resume_method);
         try body_fields.append(.{
             .is_mut = true,
@@ -1112,7 +1132,7 @@ fn buildResume(
     }
     var rewritten = ArrayList(*ASTNode).init(allocator);
     defer rewritten.deinit();
-    try rewriteStatements(allocator, checker, body, counter, generated, &rewritten);
+    try rewriteStatements(allocator, checker, body, counter, generated, &rewritten, false);
 
     // Nodes rewritten above (captured refs -> `this.<name>`) keep stale resolved
     // types from the first validation pass. Clear them so re-inference descends
@@ -1444,6 +1464,120 @@ fn defaultInitializerForTypeRef(allocator: std.mem.Allocator, ref: *const ASTTyp
     return null;
 }
 
+/// A default initializer for a continuation body field generated by the
+/// machinery rewrite. Falls back to `StackTask<T>(false, null, null)` for
+/// task-valued fields (they are always assigned before being read; the
+/// initializer only needs to be type-correct). Null when unsupported.
+fn fieldInitializerForTypeRef(allocator: std.mem.Allocator, ref: *const ASTTypeRef) !?*ASTNode {
+    if (defaultInitializerForTypeRef(allocator, ref)) |d| return d;
+    if (std.mem.eql(u8, ref.name, "StackTask")) {
+        const ctor = mkCall(mkIdent("StackTask"), &.{ mkBoolLit(false), mkNullLit(), mkNullLit() });
+        if (ref.generic_args.len > 0) {
+            const type_args = try allocator.alloc(*const ASTTypeRef, ref.generic_args.len);
+            @memcpy(type_args, ref.generic_args);
+            ctor.data.call_expr.type_args = type_args;
+        }
+        return ctor;
+    }
+    return null;
+}
+
+/// Collects locals declared by the machinery rewrite (var_decls whose names are
+/// not already promoted) so they can be promoted to continuation body fields.
+/// The type is read from the var_decl's `type_ref` (set by the machinery
+/// builders) or from its resolved type.
+fn collectNewLocals(
+    allocator: std.mem.Allocator,
+    node: *ASTNode,
+    promoted_names: *std.StringHashMap(void),
+    out: *ArrayList(CapturedVar),
+) !void {
+    switch (node.data) {
+        .var_decl => |v| {
+            if (!promoted_names.contains(v.name)) {
+                try promoted_names.put(v.name, {});
+                const tr = if (v.type_ref) |t|
+                    t
+                else if (node.resolved_type) |rt|
+                    try typeRefForEiwaType(allocator, rt)
+                else
+                    null;
+                if (tr) |t| {
+                    try out.append(.{
+                        .name = v.name,
+                        .type_ref = t,
+                        .is_boxed = false,
+                    });
+                }
+            }
+            if (v.initializer) |init| try collectNewLocals(allocator, init, promoted_names, out);
+        },
+        .lambda_expr => return,
+        .block => |b| {
+            for (b.statements) |s| try collectNewLocals(allocator, s, promoted_names, out);
+        },
+        .call_expr => |c| {
+            if (isTaskCall(node)) return;
+            try collectNewLocals(allocator, c.callee, promoted_names, out);
+            for (c.arguments) |a| try collectNewLocals(allocator, a, promoted_names, out);
+        },
+        .if_expr => |i| {
+            try collectNewLocals(allocator, i.condition, promoted_names, out);
+            try collectNewLocals(allocator, i.then_branch, promoted_names, out);
+            if (i.else_branch) |e| try collectNewLocals(allocator, e, promoted_names, out);
+        },
+        .while_stmt => |w| {
+            try collectNewLocals(allocator, w.condition, promoted_names, out);
+            try collectNewLocals(allocator, w.body, promoted_names, out);
+        },
+        .for_stmt => |f| {
+            try collectNewLocals(allocator, f.iterable, promoted_names, out);
+            try collectNewLocals(allocator, f.body, promoted_names, out);
+        },
+        .return_stmt => |r| if (r.value) |v| try collectNewLocals(allocator, v, promoted_names, out),
+        .assignment => |a| try collectNewLocals(allocator, a.value, promoted_names, out),
+        .binary_expr => |b| {
+            try collectNewLocals(allocator, b.left, promoted_names, out);
+            try collectNewLocals(allocator, b.right, promoted_names, out);
+        },
+        .unary_expr => |u| try collectNewLocals(allocator, u.operand, promoted_names, out),
+        .get_expr => |g| try collectNewLocals(allocator, g.object, promoted_names, out),
+        .set_expr => |s| {
+            try collectNewLocals(allocator, s.object, promoted_names, out);
+            try collectNewLocals(allocator, s.value, promoted_names, out);
+        },
+        .index_expr => |i| {
+            try collectNewLocals(allocator, i.object, promoted_names, out);
+            try collectNewLocals(allocator, i.index, promoted_names, out);
+        },
+        .index_set_expr => |i| {
+            try collectNewLocals(allocator, i.object, promoted_names, out);
+            try collectNewLocals(allocator, i.index, promoted_names, out);
+            try collectNewLocals(allocator, i.value, promoted_names, out);
+        },
+        .try_stmt => |t| {
+            try collectNewLocals(allocator, t.body, promoted_names, out);
+            for (t.catches) |cb| try collectNewLocals(allocator, cb.body, promoted_names, out);
+        },
+        .throw_stmt => |t| try collectNewLocals(allocator, t.expr, promoted_names, out),
+        .when_expr => |w| {
+            if (w.subject) |s| try collectNewLocals(allocator, s, promoted_names, out);
+            for (w.cases) |case| {
+                for (case.conds) |cond| try collectNewLocals(allocator, cond, promoted_names, out);
+                try collectNewLocals(allocator, case.body, promoted_names, out);
+            }
+        },
+        .named_arg => |na| try collectNewLocals(allocator, na.value, promoted_names, out),
+        .array_literal => |al| {
+            for (al.elements) |e| try collectNewLocals(allocator, e, promoted_names, out);
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| try collectNewLocals(allocator, e, promoted_names, out);
+        },
+        else => {},
+    }
+}
+
 /// Rewrites references to promoted variables (captures + locals) into
 /// `this.<name>` field accesses, and converts their `var` declarations into
 /// `this.<name> = <init>` assignments. Like `rewriteCapturedRefs` but also
@@ -1465,6 +1599,12 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
             }
         },
         .assignment => |*a| {
+            // Rewrite references inside the value first (`acc = x + acc` must
+            // become `this.acc = x + this.acc`), then convert the assignment
+            // to a field set — otherwise a bare `acc` in the RHS would resolve
+            // to the class property and emit the box pointer instead of the
+            // boxed value.
+            try rewritePromotedRefs(allocator, promoted, a.value);
             for (promoted) |c| {
                 if (std.mem.eql(u8, a.name, c.name)) {
                     const assignment_name = a.name;
@@ -1479,25 +1619,28 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
                     return;
                 }
             }
-            try rewritePromotedRefs(allocator, promoted, a.value);
         },
         .var_decl => |*v| {
             if (v.initializer) |init| {
-                if (!isTaskCall(init) and !isAwaitCall(init)) {
+                if (!isTaskCall(init) and !isAwaitCall(init) and !isCoopAwaitCall(init)) {
+                    // Rewrite references inside the initializer first (a local
+                    // like `val inner = __taskN` must become `this.inner =
+                    // this.__taskN`), then convert the var_decl to a field set.
+                    try rewritePromotedRefs(allocator, promoted, init);
                     for (promoted) |c| {
                         if (std.mem.eql(u8, v.name, c.name)) {
                             const var_name = v.name;
+                            const init_value = init;
                             node.data = .{ .set_expr = .{
                                 .object = mkIdent("this"),
                                 .name = var_name,
-                                .value = init,
+                                .value = init_value,
                                 .is_safe = false,
                                 .is_boxed = c.is_boxed,
                             } };
                             return;
                         }
                     }
-                    try rewritePromotedRefs(allocator, promoted, init);
                 }
             }
         },
@@ -1660,6 +1803,10 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
         },
         .block => |b| return machineBuildStmts(m, b.statements, after),
         else => {
+            // Cooperative await marker: `val x = __CoopAwait(<recv>)`.
+            if (isCoopAwaitMarker(stmt)) {
+                return machineBuildCoopAwait(m, stmt, after);
+            }
             if (containsTrueSuspend(stmt)) return error.SuspendInOperand;
             const entry = try m.newState();
             try m.append(entry, stmt);
@@ -1703,7 +1850,9 @@ fn assembleMachine(m: *Machine) *ASTNode {
 }
 
 /// Generates the state-machine `resume()` for a task body containing true
-/// suspension points. Locals are promoted to body fields by the caller.
+/// suspension points. Locals are promoted to body fields by the caller; locals
+/// created during the machinery rewrite (`__taskN`/await-result binds) are
+/// promoted here, appended to `body_fields`.
 fn buildResumeStateMachine(
     allocator: std.mem.Allocator,
     checker: *TypeChecker,
@@ -1714,6 +1863,7 @@ fn buildResumeStateMachine(
     counter: *usize,
     generated: *ArrayList(*ASTNode),
     entry_out: *usize,
+    body_fields: *ArrayList(ast.ClassProp),
 ) !*ASTNode {
     // 1. Promote captures + locals to `this.<name>` (incl. var_decl → set).
     var promoted = ArrayList(CapturedVar).init(allocator);
@@ -1722,11 +1872,38 @@ fn buildResumeStateMachine(
     for (locals) |l| try promoted.append(l);
     for (body) |s| try rewritePromotedRefs(allocator, promoted.items, s);
 
-    // 2. Rewrite nested task/await machinery (awaits stay blocking-poll).
+    // 2. Rewrite nested task/await machinery. In state-machine mode (`coop`)
+    //    awaits become cooperative markers; the machine builder splits them.
     var rewritten = ArrayList(*ASTNode).init(allocator);
     defer rewritten.deinit();
-    try rewriteStatements(allocator, checker, body, counter, generated, &rewritten);
+    try rewriteStatements(allocator, checker, body, counter, generated, &rewritten, true);
     for (rewritten.items) |s| try clearResolvedTypes(allocator, s);
+
+    // 2b. Promote locals created by the machinery rewrite (task binds like
+    //     `val __taskN = StackTask(...)`, `val inner = __taskN`, and the
+    //     cooperative-await result vars). They are referenced across states,
+    //     so they must survive suspension as body fields.
+    var promoted_names = std.StringHashMap(void).init(allocator);
+    defer promoted_names.deinit();
+    for (promoted.items) |p| try promoted_names.put(p.name, {});
+    var new_locals = ArrayList(CapturedVar).init(allocator);
+    defer new_locals.deinit();
+    for (rewritten.items) |s| try collectNewLocals(allocator, s, &promoted_names, &new_locals);
+    for (new_locals.items) |nl| {
+        const default_init = try fieldInitializerForTypeRef(allocator, nl.type_ref) orelse
+            return error.UnsupportedStateMachineLocal;
+        try body_fields.append(.{
+            .is_mut = true,
+            .name = nl.name,
+            .type_ref = nl.type_ref,
+            .is_property = true,
+            .initializer = default_init,
+        });
+        try promoted.append(nl);
+    }
+    // Rewrite references to the newly promoted locals (`this.__taskN`,
+    // `this.inner`, `this.__awaitN`), converting their var_decls to field sets.
+    for (rewritten.items) |s| try rewritePromotedRefs(allocator, new_locals.items, s);
 
     // 3. Split the trailing value statement (becomes the done state's result).
     const is_void_result = result_type.* == .Void;
@@ -1812,7 +1989,9 @@ fn rewriteTaskCall(
         type_arg_refs[0] = try typeRefForEiwaType(allocator, result_type);
         ctor_call.data.call_expr.type_args = type_arg_refs;
     }
+    const stack_task_ref = try typeRefWithArgs(allocator, "StackTask", &.{result_type});
     const task_var = mkVarDecl(task_name, ctor_call);
+    task_var.data.var_decl.type_ref = stack_task_ref;
     try out.append(task_var);
 
     var ctor_args = ArrayList(*ASTNode).init(allocator);
@@ -1832,12 +2011,14 @@ fn rewriteTaskCall(
 
     // `val t = __taskN`
     const bind = mkVarDecl(v.name, mkIdent(task_name));
+    bind.data.var_decl.type_ref = stack_task_ref;
     try out.append(bind);
 
     return out.toOwnedSlice();
 }
 
-/// `val x = task { block }.await()` -> machinery + poll + `val x = result`.
+/// `val x = task { block }.await()` -> machinery + poll + `val x = result`
+/// (or, in cooperative mode, machinery + a `__CoopAwait` marker).
 fn rewriteTaskAwaitCall(
     allocator: std.mem.Allocator,
     checker: *TypeChecker,
@@ -1845,6 +2026,7 @@ fn rewriteTaskAwaitCall(
     await_call: *ASTNode,
     counter: *usize,
     generated: *ArrayList(*ASTNode),
+    coop: bool,
 ) ![]*ASTNode {
     const v = &stmt.data.var_decl;
     const recv = await_call.data.call_expr.callee.data.get_expr.object;
@@ -1854,8 +2036,14 @@ fn rewriteTaskAwaitCall(
 
     const machinery = try rewriteTaskCall(allocator, checker, stmt, recv, counter, generated);
     try out.appendSlice(machinery);
-    // machinery's last element binds `val t = __taskN`; use that name for the poll.
+    // machinery's last element binds `val t = __taskN`; use that name for the await.
     const task_name = machinery[machinery.len - 1].data.var_decl.initializer.?.data.identifier.name;
+
+    if (coop) {
+        const result_type = stmt.resolved_type orelse recv_result_type(recv);
+        try out.append(try mkCoopAwaitMarker(allocator, mkIdent(task_name), v.name, v.is_mut, result_type));
+        return out.toOwnedSlice();
+    }
 
     const poll = buildPollStmt(mkIdent(task_name));
     try out.append(poll);
@@ -1868,12 +2056,14 @@ fn rewriteTaskAwaitCall(
     return out.toOwnedSlice();
 }
 
-/// `val x = <recv>.await()` -> poll + `val x = <recv>.result!!`.
+/// `val x = <recv>.await()` -> poll + `val x = <recv>.result!!`
+/// (or, in cooperative mode, a `__CoopAwait` marker).
 fn rewriteAwaitCall(
     allocator: std.mem.Allocator,
     checker: *TypeChecker,
     stmt: *ASTNode,
     await_call: *ASTNode,
+    coop: bool,
 ) ![]*ASTNode {
     _ = checker;
     const v = &stmt.data.var_decl;
@@ -1881,6 +2071,12 @@ fn rewriteAwaitCall(
 
     var out = ArrayList(*ASTNode).init(allocator);
     defer out.deinit();
+
+    if (coop) {
+        const result_type = stmt.resolved_type orelse recv_result_type(recv);
+        try out.append(try mkCoopAwaitMarker(allocator, recv, v.name, v.is_mut, result_type));
+        return out.toOwnedSlice();
+    }
 
     try out.append(buildPollStmt(recv));
     const result_val = mkUnary(.bang_bang, mkGetExpr(recv, "result"));
@@ -1954,6 +2150,97 @@ fn buildPollStmt(recv: *ASTNode) *ASTNode {
     const cond = mkBinary(.and_and, not_done, step_call);
     const body = mkBlock(&.{});
     return mkWhile(cond, body);
+}
+
+// ---------------------------------------------------------------------------
+// Cooperative await (waiter-chain) inside state-machine task bodies
+//
+// In a task body that contains a true suspension point (sleep/yield), an
+// `await()` must NOT block-poll (that would block every other cooperative
+// task). Instead it registers the caller's continuation as a waiter of the
+// awaited task and suspends:
+//
+//   `val x = <recv>.await()`  ->  `val x = __CoopAwait(<recv>)`
+//
+// The machine builder splits this marker into two states:
+//   guard: if (!<recv>.awaitCoop(this)) { this.label = <read>; return }
+//          this.label = <read>
+//   read:  this.<x> = <recv>.result!!   (fast path when already done)
+//          this.label = <after>
+// ---------------------------------------------------------------------------
+
+/// True when a node is a call to the internal `__CoopAwait` marker function.
+fn isCoopAwaitCall(node: *ASTNode) bool {
+    if (node.data != .call_expr) return false;
+    const callee = node.data.call_expr.callee;
+    if (callee.data != .identifier) return false;
+    return std.mem.eql(u8, callee.data.identifier.name, "__CoopAwait");
+}
+
+/// True when a statement is the cooperative-await marker
+/// `val <name> = __CoopAwait(<recv>)`.
+fn isCoopAwaitMarker(node: *ASTNode) bool {
+    if (node.data != .var_decl) return false;
+    const v = &node.data.var_decl;
+    const init = v.initializer orelse return false;
+    return isCoopAwaitCall(init);
+}
+
+/// The await result type for a receiver whose resolved type is `StackTask<T>`.
+fn recv_result_type(recv: *ASTNode) ?*const EiwaType {
+    if (recv.resolved_type) |rt| {
+        const t = singleTypeArg(rt);
+        if (t.* != .Void) return t;
+    }
+    return null;
+}
+
+/// Builds `val <name> = __CoopAwait(<recv>)`. The var's type is the await
+/// result type (from the statement's resolved type or the receiver's resolved
+/// `StackTask<T>`), so it can be promoted to a continuation body field with a
+/// zero-value default.
+fn mkCoopAwaitMarker(
+    allocator: std.mem.Allocator,
+    recv: *ASTNode,
+    name: []const u8,
+    is_mut: bool,
+    result_type: ?*const EiwaType,
+) !*ASTNode {
+    const marker = mkVarDecl(name, mkCall(mkIdent("__CoopAwait"), &.{recv}));
+    marker.data.var_decl.is_mut = is_mut;
+    if (result_type) |t| {
+        if (t.* != .Void) {
+            marker.data.var_decl.type_ref = try typeRefForEiwaType(allocator, t);
+        }
+    }
+    return marker;
+}
+
+/// Builds the two states for a cooperative await marker and returns the label
+/// where the guard state begins.
+fn machineBuildCoopAwait(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
+    const v = &stmt.data.var_decl;
+    const recv = v.initializer.?.data.call_expr.arguments[0];
+
+    const guard_label = try m.newState();
+    const read_label = try m.newState();
+
+    // guard: if (!<recv>.awaitCoop(this)) { this.label = <read>; return }
+    //        this.label = <read>
+    const not_ready = mkUnary(.bang, mkCall(mkGetExpr(recv, "awaitCoop"), &.{mkIdent("this")}));
+    const suspend_block = mkBlock(&.{
+        mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(read_label))),
+        mkReturnVoid(),
+    });
+    const fall_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(read_label))) });
+    try m.append(guard_label, mkIfElse(not_ready, suspend_block, fall_block));
+
+    // read: this.<x> = <recv>.result!! ; this.label = <after>
+    const result_get = mkUnary(.bang_bang, mkGetExpr(recv, "result"));
+    try m.append(read_label, mkSetExpr(mkIdent("this"), v.name, result_get));
+    try m.append(read_label, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+
+    return guard_label;
 }
 
 // ---------------------------------------------------------------------------
