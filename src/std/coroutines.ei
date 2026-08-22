@@ -187,10 +187,6 @@ type StackTask<T>(
         return result!!
     }
 
-    implement fun start(): Awaitable<T> {
-        return this
-    }
-
     implement fun isDone(): Bool = done
 }
 

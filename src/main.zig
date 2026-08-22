@@ -4,7 +4,6 @@ const compat = @import("core/compat.zig");
 const ArrayList = compat.ArrayList;
 const lexer = @import("frontend/lexer.zig");
 const parser = @import("frontend/parser/core.zig");
-const c_transpiler = @import("backend/c_transpiler/core.zig");
 const ast = @import("core/ast.zig");
 const type_checker = @import("core/type_checker/core.zig");
 const coroutines = @import("core/coroutines.zig");
@@ -12,11 +11,6 @@ const coroutines_transform = @import("core/coroutines_transform.zig");
 const eiwa_home = @import("core/eiwa_home.zig");
 const build_options = @import("build_options");
 const llvm_emitter = if (build_options.has_llvm) @import("backend/llvm_emitter/core.zig") else struct {};
-
-pub const BackendKind = enum {
-    c,
-    llvm,
-};
 
 /// Converts a filesystem path (relative to the module root) into a
 /// root-relative dot import path. e.g. "samples/tests/foo_test.ei" -> ".samples.tests.foo_test".
@@ -73,9 +67,7 @@ pub fn main(init: std.process.Init) !void {
             \\  test       Run test blocks ("test \"name\" {{ ... }}")
             \\
             \\Options:
-            \\  --backend=c      Use the C backend (legacy)
-            \\  --backend=llvm   Use the LLVM backend (default, when available)
-            \\  --release        Optimized build (LLVM backend)
+            \\  --release        Optimized build
             \\  -o <name>        Output binary name (build command)
             \\  -I, -L, -l, -D   Extra flags forwarded to the C compiler
             \\  -h, --help       Show this help
@@ -107,8 +99,6 @@ pub fn main(init: std.process.Init) !void {
     var positionals = ArrayList([]const u8).init(allocator);
     defer positionals.deinit();
 
-    var backend_kind: BackendKind = if (build_options.has_llvm) .llvm else .c;
-    var backend_explicit: bool = false;
     var is_release: bool = false;
     var output_name: ?[]const u8 = null;
     var module_paths = ArrayList([]const u8).init(allocator);
@@ -117,18 +107,7 @@ pub fn main(init: std.process.Init) !void {
     var arg_idx: usize = 2;
     while (arg_idx < args.len) : (arg_idx += 1) {
         const arg = args[arg_idx];
-        if (std.mem.startsWith(u8, arg, "--backend=")) {
-            const val = arg["--backend=".len..];
-            if (std.mem.eql(u8, val, "llvm")) {
-                backend_kind = .llvm;
-            } else if (std.mem.eql(u8, val, "c")) {
-                backend_kind = .c;
-            } else {
-                std.debug.print("Error: unknown backend '{s}'. Valid options: --backend=c, --backend=llvm\n", .{val});
-                std.process.exit(1);
-            }
-            backend_explicit = true;
-        } else if (std.mem.eql(u8, arg, "-o")) {
+        if (std.mem.eql(u8, arg, "-o")) {
             if (arg_idx + 1 >= args.len) {
                 std.debug.print("Error: -o requires an output name\n", .{});
                 return;
@@ -207,12 +186,10 @@ pub fn main(init: std.process.Init) !void {
             var start_ts: CTimeSpec = undefined;
             _ = c_clock.clock_gettime(0, &start_ts);
 
-            const backend_flag: []const u8 = if (backend_kind == .llvm) "--backend=llvm" else "--backend=c";
-
             for (test_files.items) |tfile| {
                 var child_args = ArrayList([]const u8).init(allocator);
                 defer child_args.deinit();
-                try child_args.appendSlice(&[_][]const u8{ args[0], "test", backend_flag, tfile });
+                try child_args.appendSlice(&[_][]const u8{ args[0], "test", tfile });
                 if (is_release) try child_args.append("--release");
 
                 var child = try std.process.spawn(io, .{ .argv = child_args.items });
@@ -229,13 +206,12 @@ pub fn main(init: std.process.Init) !void {
             _ = c_clock.clock_gettime(0, &end_ts);
             const elapsed_sec = @as(f64, @floatFromInt(end_ts.tv_sec - start_ts.tv_sec)) +
                 @as(f64, @floatFromInt(end_ts.tv_nsec - start_ts.tv_nsec)) / 1_000_000_000.0;
-            const backend_name: []const u8 = if (backend_kind == .llvm) "LLVM" else "C";
 
             if (total_failed > 0) {
-                std.debug.print("\n{s} Test Suite: {d} PASSED, {d} FAILED in {d:.2}s\n", .{ backend_name, total_passed, total_failed, elapsed_sec });
+                std.debug.print("\nLLVM Test Suite: {d} PASSED, {d} FAILED in {d:.2}s\n", .{ total_passed, total_failed, elapsed_sec });
                 std.process.exit(1);
             } else {
-                std.debug.print("\n{s} Test Suite: ALL {d} TESTS PASSED in {d:.2}s!\n", .{ backend_name, total_passed, elapsed_sec });
+                std.debug.print("\nLLVM Test Suite: ALL {d} TESTS PASSED in {d:.2}s!\n", .{ total_passed, elapsed_sec });
                 std.process.exit(0);
             }
         }
@@ -407,25 +383,6 @@ pub fn main(init: std.process.Init) !void {
     var global_enums_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_contracts_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_alias_map = std.StringHashMap([]const u8).init(arena.allocator());
-    // @MainWrapper functions: lib wrappers (C runtime inits, e.g. neco) are
-    // outermost so they initialize runtimes (GC, scheduler) before user code
-    // runs; Eiwa wrappers follow in declaration order.
-    var global_main_wrappers = ArrayList(type_checker.MainWrapperInfo).init(arena.allocator());
-    // Lib wrappers (C runtime inits, e.g. neco) are outermost so they
-    // initialize runtimes (GC, scheduler) before any user code runs; Eiwa
-    // wrappers follow, both in declaration order.
-    for (registry.ordered_modules.items) |path| {
-        const mod = registry.modules.get(path).?;
-        for (mod.checker.main_wrappers.items) |wrapper| {
-            if (wrapper.is_lib) try global_main_wrappers.append(wrapper);
-        }
-    }
-    for (registry.ordered_modules.items) |path| {
-        const mod = registry.modules.get(path).?;
-        for (mod.checker.main_wrappers.items) |wrapper| {
-            if (!wrapper.is_lib) try global_main_wrappers.append(wrapper);
-        }
-    }
     for (registry.ordered_modules.items) |path| {
         const mod = registry.modules.get(path).?;
         var class_it = mod.checker.classes_ast.iterator();
@@ -486,245 +443,46 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
-    if (backend_kind == .llvm) {
-        if (!build_options.has_llvm) {
-            std.debug.print("Error: The Eiwa compiler was built without LLVM support or LLVM 21+ was not found on your system.\n", .{});
-            std.process.exit(1);
-        }
-        const emitter = try allocator.create(llvm_emitter.LLVMEmitter);
-        emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
-        // Bloco B (docs/tasks-bloco-b-gc-jit.md): allocate via real GC_malloc/
-        // GC_realloc (zeroed, GC-managed) instead of raw malloc. Always for
-        // native builds (the binary links -lgc); for the JIT only when the
-        // host eiwac links libgc. Must be set before emitModule.
-        llvm_emitter.prefer_gc_alloc = is_build or llvm_emitter.has_gc;
-        emitter.is_test_mode = is_test;
-        emitter.contracts_ast = &global_contracts_ast;
-        emitter.program_argv = if (positionals.items.len > 1) positionals.items[1..] else &.{};
-        {
-            var names = ArrayList([]const u8).init(arena.allocator());
-            var libs = ArrayList(bool).init(arena.allocator());
-            for (global_main_wrappers.items) |w| {
-                try names.append(w.c_name);
-                try libs.append(w.is_lib);
-            }
-            emitter.main_wrapper_c_names = names.items;
-            emitter.main_wrapper_is_lib = libs.items;
-        }
-
-        try emitter.emitModule(ast_root);
-
-        if (is_build) {
-            const basename = std.fs.path.basename(filename);
-            const ext = std.fs.path.extension(basename);
-            const out_bin_name = basename[0 .. basename.len - ext.len];
-            const final_bin = output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
-
-            try emitter.emitNativeBinary(final_bin, io);
-            std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
-        } else {
-            const exit_code = try emitter.executeJIT(io);
-            const code: u8 = if (exit_code < 0) 1 else @intCast(@min(exit_code, 255));
-            std.process.exit(code);
-        }
-        return;
-    }
-
-    var transpiler = c_transpiler.CTranspiler.init(allocator);
-    transpiler.is_test_mode = is_test;
-    transpiler.classes_ast = &global_classes_ast;
-    transpiler.objects_ast = &global_objects_ast;
-    transpiler.trampolines = &global_trampolines;
-    transpiler.enums_ast = &global_enums_ast;
-    transpiler.contracts_ast = &global_contracts_ast;
-    transpiler.alias_map = &global_alias_map;
-    transpiler.source_file = filename; // used for #line directives in C output
-    {
-        var names = ArrayList([]const u8).init(arena.allocator());
-        var libs = ArrayList(bool).init(arena.allocator());
-        for (global_main_wrappers.items) |w| {
-            try names.append(w.c_name);
-            try libs.append(w.is_lib);
-        }
-        transpiler.main_wrapper_c_names = names.items;
-        transpiler.main_wrapper_is_lib = libs.items;
-    }
-    defer transpiler.deinit();
-
-    const c_code = try transpiler.transpile(ast_root);
-    defer allocator.free(c_code);
-
-    const out_c_filename = "temp_out.c";
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_c_filename, .data = c_code });
-    // defer std.fs.cwd().deleteFile(out_c_filename) catch {};
-
-    // Invoke zig cc
-    const basename = std.fs.path.basename(filename);
-    const ext = std.fs.path.extension(basename);
-    const out_bin_name = basename[0 .. basename.len - ext.len];
-    const final_bin = if (is_test) "test_runner" else output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
-
-    const actual_zig = "zig";
-
-    const self_src_dir = eiwa_home.resolve(allocator);
-    const repo_root = std.fs.path.dirname(self_src_dir) orelse ".";
-
-    const inc_transpiler = try std.fs.path.join(allocator, &.{ repo_root, "src/backend/c_transpiler" });
-    const inc_third_party = try std.fs.path.join(allocator, &.{ repo_root, "src/runtime/third_party" });
-    const inc_transpiler_flag = try std.fmt.allocPrint(allocator, "-I{s}", .{inc_transpiler});
-    const inc_third_party_flag = try std.fmt.allocPrint(allocator, "-I{s}", .{inc_third_party});
-
-    var cc_argv = ArrayList([]const u8).init(allocator);
-    try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", "-O0", "-fwrapv", "-fno-sanitize=undefined" });
-    if (builtin.target.os.tag == .macos) {
-        const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
-        try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
-    }
-    try cc_argv.appendSlice(&[_][]const u8{
-        inc_transpiler_flag,
-        inc_third_party_flag,
-        out_c_filename,
-        "-lgc",
-    });
-
-    // Build requirements declared by `lib` annotations in Eiwa sources.
-    var inc_it = transpiler.c_includes.keyIterator();
-    while (inc_it.next()) |dir| {
-        try cc_argv.append(try std.fmt.allocPrint(allocator, "-I{s}", .{dir.*}));
-    }
-    var def_it = transpiler.c_defines.keyIterator();
-    while (def_it.next()) |def| {
-        try cc_argv.append(try std.fmt.allocPrint(allocator, "-D{s}", .{def.*}));
-    }
-    var src_it = transpiler.c_sources.keyIterator();
-    while (src_it.next()) |src| {
-        try cc_argv.append(src.*);
-    }
-
-    var lib_it = transpiler.link_libraries.keyIterator();
-    while (lib_it.next()) |lib_name| {
-        if (try resolvePkgConfig(allocator, io, lib_name.*)) |flags| {
-            for (flags) |flag| {
-                try cc_argv.append(flag);
-            }
-        } else {
-            const flag = try std.fmt.allocPrint(allocator, "-l{s}", .{lib_name.*});
-            try cc_argv.append(flag);
-        }
-
-        const macro = try std.fmt.allocPrint(allocator, "-DEIWA_USE_{s}", .{lib_name.*});
-        for (macro) |*c| {
-            c.* = std.ascii.toUpper(c.*);
-        }
-        try cc_argv.append(macro);
-    }
-
-    for (cli_c_flags.items) |flag| {
-        try cc_argv.append(flag);
-    }
-
-    try cc_argv.appendSlice(&[_][]const u8{ "-o", final_bin });
-
-    const result = try std.process.run(allocator, io, .{
-        .argv = cc_argv.items,
-    });
-    defer {
-        allocator.free(result.stdout);
-        allocator.free(result.stderr);
-    }
-
-    if (result.term != .exited or result.term.exited != 0) {
-        // Filter C stderr: show only semantic errors, hide internal C details.
-        // With #line directives in the generated C, clang now reports errors as:
-        //   person.ei:2:172: error: ...
-        // instead of temp_out.c:NNN:COL: error: ...
-        var found_error = false;
-        var lines = std.mem.splitScalar(u8, result.stderr, '\n');
-        while (lines.next()) |line| {
-            // Only process lines that contain 'error:'
-            if (std.mem.indexOf(u8, line, "error:") == null) continue;
-            if (std.mem.indexOf(u8, line, "too many errors") != null) continue;
-
-            if (std.mem.indexOf(u8, line, "temp_out.c:")) |_| {
-                // Fallback: error on a C-internal line (outside #line'd regions)
-                if (std.mem.indexOf(u8, line, "error: ")) |err_pos| {
-                    const raw_msg = line[err_pos + 7 ..];
-                    const msg = translateCError(raw_msg);
-                    if (!found_error) {
-                        std.debug.print("\nCompilation error:\n", .{});
-                        found_error = true;
-                    }
-                    std.debug.print("  → {s}\n", .{msg});
-                }
-            } else if (std.mem.indexOf(u8, line, ".ei:")) |ae_pos| {
-                // Error mapped back to an Eiwa source file via #line directive
-                // Format: path/to/file.ei:LINE:COL: error: MESSAGE
-                const location_part = line[0 .. ae_pos + 3]; // e.g. "../../samples/person.ei"
-                // Extract just the basename for cleaner output
-                const ae_basename = std.fs.path.basename(location_part);
-                // Find line number after the .ei:
-                const after_ae = line[ae_pos + 4 ..];
-                var col_it = std.mem.splitScalar(u8, after_ae, ':');
-                const line_num = col_it.next() orelse "?";
-                // Find the error message
-                if (std.mem.indexOf(u8, line, "error: ")) |err_pos| {
-                    std.debug.print("RAW C ERROR LINE: {s}\n", .{line});
-                    const raw_msg = line[err_pos + 7 ..];
-                    const msg = translateCError(raw_msg);
-                    if (!found_error) {
-                        std.debug.print("\nCompilation error:\n", .{});
-                        found_error = true;
-                    }
-                    std.debug.print("  → {s}:{s}: {s}\n", .{ ae_basename, line_num, msg });
-                }
-            } else {
-                // Non-file error (e.g. linker errors)
-                if (!found_error) {
-                    std.debug.print("\nCompilation error:\n", .{});
-                    found_error = true;
-                }
-                std.debug.print("  → {s}\n", .{line});
-            }
-        }
-        var err_it = std.mem.splitScalar(u8, result.stderr, '\n');
-        while (err_it.next()) |line| {
-            if (std.mem.indexOf(u8, line, "error:") != null) {
-                std.debug.print("C ERROR: {s}\n", .{line});
-            }
-        }
-        if (!found_error) {
-            std.debug.print("\nCompilation error (internal):\n{s}\n", .{result.stderr});
-        }
+    if (!build_options.has_llvm) {
+        std.debug.print("Error: The Eiwa compiler was built without LLVM support or LLVM 21+ was not found on your system.\n", .{});
         std.process.exit(1);
     }
-
-    if (!is_build) {
-        // Execute final binary
-        var exe_path_buf: [1024]u8 = undefined;
-        const exe_path = try std.fmt.bufPrint(&exe_path_buf, "./{s}", .{final_bin});
-
-        var child_argv = ArrayList([]const u8).init(allocator);
-        defer child_argv.deinit();
-        try child_argv.append(exe_path);
+    const emitter = try allocator.create(llvm_emitter.LLVMEmitter);
+    emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
+    // Bloco B (docs/tasks-bloco-b-gc-jit.md): allocate via real GC_malloc/
+    // GC_realloc (zeroed, GC-managed) instead of raw malloc. Always for
+    // native builds (the binary links -lgc); for the JIT only when the
+    // host eiwac links libgc. Must be set before emitModule.
+    llvm_emitter.prefer_gc_alloc = is_build or llvm_emitter.has_gc;
+    emitter.is_test_mode = is_test;
+    emitter.contracts_ast = &global_contracts_ast;
+    emitter.host_argv = args;
+    // argv[0] is the program name (basename of the file); the rest are the
+    // positional arguments after it. Exposed to Process.args()/argAt().
+    {
+        var argv = ArrayList([]const u8).init(arena.allocator());
+        const prog_name = std.fs.path.basename(filename);
+        try argv.append(prog_name);
         if (positionals.items.len > 1) {
-            for (positionals.items[1..]) |extra| {
-                try child_argv.append(extra);
-            }
+            for (positionals.items[1..]) |extra| try argv.append(extra);
         }
+        emitter.program_argv = argv.items;
+    }
 
-        var child = try std.process.spawn(io, .{
-            .argv = child_argv.items,
-        });
-        const term = try child.wait(io);
+    try emitter.emitModule(ast_root);
 
-        if (term == .exited and term.exited != 0) {
-            std.process.exit(term.exited);
-        } else if (term == .signal) {
-            std.debug.print("Error: Test runner crashed with signal {}\n", .{term.signal});
-            std.process.exit(1);
-        }
+    if (is_build) {
+        const basename = std.fs.path.basename(filename);
+        const ext = std.fs.path.extension(basename);
+        const out_bin_name = basename[0 .. basename.len - ext.len];
+        const final_bin = output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
+
+        try emitter.emitNativeBinary(final_bin, io);
+        std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
     } else {
-        std.debug.print("Successfully built {s}\n", .{final_bin});
+        const exit_code = try emitter.executeJIT(io);
+        const code: u8 = if (exit_code < 0) 1 else @intCast(@min(exit_code, 255));
+        std.process.exit(code);
     }
 }
 
@@ -732,75 +490,5 @@ test "imports" {
     _ = @import("core/ast.zig");
     _ = @import("frontend/lexer.zig");
     _ = @import("frontend/parser/core.zig");
-    _ = @import("backend/c_transpiler/core.zig");
 }
 
-/// Translate low-level C compiler error messages into user-friendly Eiwa errors.
-/// Hides internal details like mangled names and C-specific type nomenclature.
-fn translateCError(msg: []const u8) []const u8 {
-    // Int passed where String is expected (e.g. string concatenation without .toString())
-    if (std.mem.indexOf(u8, msg, "incompatible integer to pointer") != null and
-        std.mem.indexOf(u8, msg, "core_String") != null)
-    {
-        return "Type error: cannot use an Int value where a String is expected. Did you forget .toString()?";
-    }
-    // Null dereference / incomplete type
-    if (std.mem.indexOf(u8, msg, "incomplete definition of type") != null) {
-        return "Type error: attempted to use an undefined type. Check your imports.";
-    }
-    // Undeclared identifier
-    if (std.mem.indexOf(u8, msg, "use of undeclared identifier") != null) {
-        return "Name error: reference to an undeclared symbol. Check your imports and variable names.";
-    }
-    // Generic incompatible pointer (type mismatch between structs)
-    if (std.mem.indexOf(u8, msg, "incompatible pointer types") != null) {
-        return "Type error: incompatible types in assignment or function call.";
-    }
-    // Linker errors
-    if (std.mem.indexOf(u8, msg, "undefined reference") != null or
-        std.mem.indexOf(u8, msg, "undefined symbol") != null)
-    {
-        return "Linker error: symbol not found. Ensure all required modules are imported.";
-    }
-    // Fallback: return the raw message (still better than the full C trace)
-    return msg;
-}
-
-fn resolvePkgConfig(allocator: std.mem.Allocator, io: anytype, lib_name: []const u8) !?[][]const u8 {
-    const pkg1 = try std.fmt.allocPrint(allocator, "lib{s}", .{lib_name});
-    defer allocator.free(pkg1);
-    const names = [_][]const u8{ pkg1, lib_name };
-    const binaries = [_][]const u8{ "pkg-config", "/opt/homebrew/bin/pkg-config" };
-
-    const extra_paths = try std.fmt.allocPrint(allocator, "/opt/homebrew/opt/lib{s}/lib/pkgconfig:/opt/homebrew/opt/{s}/lib/pkgconfig:/usr/local/opt/lib{s}/lib/pkgconfig:/usr/local/opt/{s}/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig", .{ lib_name, lib_name, lib_name, lib_name });
-    defer allocator.free(extra_paths);
-
-    const env_var_arg = try std.fmt.allocPrint(allocator, "PKG_CONFIG_PATH={s}", .{extra_paths});
-    defer allocator.free(env_var_arg);
-
-    for (names) |name| {
-        for (binaries) |bin| {
-            const res = std.process.run(allocator, io, .{
-                .argv = &[_][]const u8{ "/usr/bin/env", env_var_arg, bin, "--cflags", "--libs", name },
-            }) catch continue;
-            defer {
-                allocator.free(res.stdout);
-                allocator.free(res.stderr);
-            }
-
-            if (res.term == .exited and res.term.exited == 0 and res.stdout.len > 0) {
-                var flags = ArrayList([]const u8).init(allocator);
-                var it = std.mem.tokenizeAny(u8, res.stdout, " \t\r\n");
-                while (it.next()) |tok| {
-                    if (tok.len > 0) {
-                        try flags.append(try allocator.dupe(u8, tok));
-                    }
-                }
-                if (flags.items.len > 0) {
-                    return try flags.toOwnedSlice();
-                }
-            }
-        }
-    }
-    return null;
-}

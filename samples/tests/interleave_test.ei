@@ -1,0 +1,49 @@
+// Behavior-target test: two tasks whose bodies are loops that sleep.
+//
+// Kotlin-style cooperative suspension interleaves the two loops at every
+// `sleep` point (the loop yields control back to the scheduler, which resumes
+// the other task, and a timer re-queues the sleeper later).
+//
+// The current stackless model is blocking-poll: `resume()` runs the whole body
+// in a single shot and `Coroutine.sleep` blocks the thread via `nanosleep`
+// (no `switch(label)`, no timer heap). So today the loops run SEQUENTIALLY
+// (A A A B B B) and this test FAILS.
+//
+// It is intentionally kept as the desired behavior: when the transform gains
+// real suspension points (`switch(label)` + cooperative timer heap — Fase C
+// item 4 / Fase E), this test must pass and the loops must interleave.
+
+object InterleaveLog {
+    var log: String = ""
+}
+
+fun runTwoSleepLoops(): String {
+    InterleaveLog.log = ""
+    val t1 = task {
+        var i = 0
+        while (i < 3) {
+            InterleaveLog.log = InterleaveLog.log + "A"
+            sleepMs(1)
+            i = i + 1
+        }
+        1
+    }
+    val t2 = task {
+        var i = 0
+        while (i < 3) {
+            InterleaveLog.log = InterleaveLog.log + "B"
+            sleepMs(1)
+            i = i + 1
+        }
+        2
+    }
+    t1.await()
+    t2.await()
+    return InterleaveLog.log
+}
+
+test "two loops with sleep interleave (Kotlin-style cooperative suspension)" {
+    // Desired interleaving (each task yields at sleep, so the scheduler
+    // alternates them). Current behavior: A A A B B B (sequential).
+    assert(runTwoSleepLoops() == "ABABAB")
+}

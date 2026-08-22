@@ -105,13 +105,6 @@ type StringHolder(val content: String) : ValueHolder<String> + FormattedHolderSk
     }
 }
 
-contract Awaitable<T> {
-    fun await(): T
-}
-
-skill TaskLibaco<T> : Awaitable<T> {
-}
-
 test "generic contract with multiple type parameters" {
     val formatter = NumberFormatter()
     val res = formatter.transform(42)

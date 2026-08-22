@@ -192,16 +192,30 @@ Casos em ordem:
       TODO: **object static String concat crasha** (`"x" + Obj.v` onde `v: String`) — bug
       pré-existente do emitter, não relacionado a coroutines; investigar emissão de get_expr
       de campo String de object em concat.
+      TODO: **interleave de loops com sleep** — `samples/tests/interleave_test.ei` (dois
+      `task { while { log+="A"; sleepMs(1) } }`/`"B"`) é um teste **de comportamento-alvo**
+      que hoje FALHA de propósito: o modelo blocking-poll roda os loops SEQUENCIALMENTE
+      (`AAABBB`), mas o assert exige `ABABAB` (interleaving Kotlin-style). Deve passar
+      quando `switch(label)` + timer heap cooperativo (Fase C item 4 / Fase E) existirem.
+      Deletado `samples/task_loop.ei` (era demonstração neco stackful com 2 loops infinitos
+      que travava no modelo stackless).
 
-## Fase D — Emissão LLVM
+## Fase D — Emissão LLVM — ✅ CONCLUÍDA (2026-08)
 
-- [ ] Emitir o struct `Continuation` (via structs existentes) + função `resume` (via
-      `emitFunctionBody` reaproveitado sobre o AST transformado).
-- [ ] Emitir calls do runtime: `scheduler_schedule/resume/suspend`, `COROUTINE_SUSPENDED`.
-- [ ] Entry de `main`/`eiwa_test_main`: rodar `scheduler_run()` (event loop) até vazio;
-      testes: cada `test {}` vira uma coroutine (substitui o loop atual de setjmp por
-      coroutines; manter setjmp p/ exceções dentro de cada teste).
-- [ ] Global ctor `__eiwa_gc_init_ctor` + `GC_init` host-side seguem como estão.
+- [x] Emitir o struct `Continuation` (via structs existentes) + função `resume` (via
+      `emitFunctionBody` reaproveitado sobre o AST transformado). — o transform gera
+      `__TaskBlockN` (com `resume()`/`isDone()`), declarados via `declareType`/emitidos
+      como métodos normais; validado em `task_transform_test`/`task_test`.
+- [x] Emitir calls do runtime: `scheduler_schedule/resume/suspend`, `COROUTINE_SUSPENDED`. —
+      no modelo blocking-poll, `Scheduler.schedule`/`Scheduler.run`/`runStep` são emitidos
+      como calls Eiwa normais; o sentinel `COROUTINE_SUSPENDED`/`switch(label)` não é usado
+      (o corpo roda inteiro num único resume com nested run — ver item 4 da Fase C).
+- [x] Entry de `main`/`eiwa_test_main`: rodar `scheduler_run()` (event loop) até vazio. —
+      sem `@MainWrapper`, o entry é `main`/`eiwa_test_main` direto; `Scheduler.run()` é
+      chamado no final (drain de fire-and-forget, ver Fase C/P5). O loop atual de setjmp
+      p/ exceções dentro de cada teste é **mantido** (não substituído por coroutines).
+- [x] Global ctor `__eiwa_gc_init_ctor` + `GC_init` host-side seguem como estão. — ctor
+      emitido quando `prefer_gc_alloc` (builds nativos); JIT chama `GC_init` do host.
 
 ## Fase E — Scheduler runtime **em Eiwa** (sem arquivo C)
 
@@ -212,17 +226,23 @@ Casos em ordem:
 
 - [x] `src/std/coroutines.ei`: base do scheduler Eiwa (sem neco) — ✅ PARCIAL (2026-08):
   - [x] `contract Continuation { resume(), isDone() }` — state machine gerada pelo compilador.
-  - [x] `object Scheduler` com `schedule(cont)`/`run()` — fila FIFO **linked list intrusiva**
-        (`type ContNode(val cont: Continuation, var next: ContNode?)`), NÃO `MutableList`
-        (o backend LLVM ainda não armazena fat pointers em coleções genéricas — ver
-        `samples/tests/contract_collection_storage_test.ei`).
+  - [x] `object Scheduler` com `schedule(cont)`/`run()`/`runStep()` — fila FIFO **linked
+        list intrusiva** (`type ContNode(val cont: Continuation, var next: ContNode?)`), NÃO
+        `MutableList` (o backend LLVM ainda não armazena fat pointers em coleções genéricas).
   - [x] Validado com continuations escritas à mão: interleaving cooperativo FIFO correto
         (`samples/tests/scheduler_test.ei`).
-  - [ ] `type Continuation` concreto com `result`/`done`/`waiters` (quando o transform precisar).
-  - [ ] Timer heap para `sleep/delay`; `lib NativePoll { @Header("<poll.h>") }` para I/O.
-  - [ ] Reescrever `Task<T>`/`task {}`/`Coroutine.*`/`EventLoop.*` sobre o Scheduler
-        (depende do transform, Fase C).
-- [ ] `src/std/system.ei` (sleep/yield), `net.ei` (poll bloqueante), `db.ei` (yield removido).
+  - [x] `type StackTask<T>(done, result, waiters)` — o "Continuation concreto" que o transform
+        usa (com `await`/`start`/`isDone` implementando `Awaitable<T>`).
+  - [x] `Task<T>`/`task {}`/`Coroutine.*`/`EventLoop.*` reescritos sobre o Scheduler/FFI
+        (Fase C/P5): `task<T>` retorna `StackTask<T>`; `Coroutine.sleep/sleepMs` via
+        `nanosleep`, `yield` via `sched_yield`, `EventLoop.waitReadable/waitWritable` via `poll`.
+  - [ ] **Timer heap cooperativo** para `sleep/delay` — HOJE `Coroutine.sleep` BLOQUEIA o
+        thread via `nanosleep` (não suspende o task). Timer heap exigiria: scheduler com
+        timeout em `runStep`/`await`, re-agendar a task após o prazo. Depende de switch(label)
+        para verdadeira suspensão (Fase C item 4) — adiado. O teste de comportamento-alvo é
+        `samples/tests/interleave_test.ei` (`ABABAB`), hoje falhando de propósito.
+- [x] `src/std/system.ei` (sleep/yield) — reescrito sobre o novo `Coroutine`; `net.ei`
+      (poll bloqueante) — usa `EventLoop` (poll); `db.ei` — `Coroutine.yield` (sched_yield).
 
 ## Fase F — Remover backend C + neco + @MainWrapper
 
@@ -237,6 +257,10 @@ Casos em ordem:
 - [ ] `samples`: deletar `task_sample.ei`, `task_loop.ei`, `task_test.ei` (ou reescrever
       `task_test.ei` usando o novo `task {}`); remover `Awaitable`/`TaskLibaco` mortos.
 - [ ] `core.ei`: remover `Awaitable<T>` do contrato (ou manter como interface do `Task`).
+      **Decidido (2026-08): MANTER como interface enxuta** — `Awaitable<T>` foi restaurado
+      com `@Suspend await(): T` + `isDone(): Bool` (SEM `start()`, que era no-op neco);
+      `StackTask<T>` o implementa. Mantém a polimorfia ("algo que pode ser aguardado")
+      sem o resquício neco. O compilador resolve `await`/`isDone` por receiver type + nome.
 
 ## Fase G — Validação (ordem obrigatória)
 
@@ -267,7 +291,11 @@ Casos em ordem:
 > (equivalente ao `Dispatchers.Main`/`Unconfined` do Kotlin). Para paralelismo real
 > (como `Dispatchers.Default`/`IO` do Kotlin ou goroutines do Go), é preciso um
 > dispatcher + thread pool. **PROPOSTA — não é o modelo atual; requer redesign.**
-> Só avaliar depois que Fase C/D/E/F estiverem completas e a suíte 100% verde.
+>
+> **Dependência:** esta fase depende da **Fase J** (suspensão verdadeira:
+> `switch(label)` + timer heap). Thread pool só faz sentido depois que coroutines
+> suspendem cooperativamente de verdade — sem isso, "paralelismo" é bloqueio de thread.
+> Fase J → Fase I.
 
 - [ ] **Conceito de `Dispatcher`**: contexto onde um `task {}` roda. Por padrão
       `Dispatcher.Single` (o scheduler atual, single-thread). Futuro: `Dispatcher.Default`
@@ -292,6 +320,121 @@ Casos em ordem:
 leve e concorrência estruturada (que é o objetivo do projeto). Paralelismo real adiciona
 uma camada grande de complexidade (sincronização, GC multithread) sem mudar o modelo de
 programação para o caso principal. Revisitar se houver demanda por CPU-bound paralelo.
+**Dependência obrigatória:** concluir a **Fase J** antes (suspensão verdadeira — o thread
+pool exige coroutines que suspendam de verdade, não threads bloqueadas).
+
+---
+
+## Fase J — Suspensão verdadeira: `switch(label)` + timer heap cooperativo (PRÓXIMA ETAPA)
+
+> **Estado atual:** o modelo blocking-poll roda o corpo inteiro de um task num único
+> `resume()`; `sleep`/`yield` bloqueiam o thread (`nanosleep`/`sched_yield`) e **não**
+> devolvem controle ao scheduler. Por isso `samples/tests/interleave_test.ei` falha
+> (`AAABBB` vs alvo `ABABAB`) — veja Fase C/P5 TODO e Fase E.
+
+**Diferença `yield()` × `delay()`/`sleep()` (semântica alvo, Kotlin-style):**
+
+- **`yield()`** = justiça (fairness), sem dimensão temporal. Re-enfileira a continuação na
+  fila **de prontas** e retorna `COROUTINE_SUSPENDED` — outra coroutine pronta roda agora,
+  e esta volta na próxima oportunidade. (`Scheduler.schedule(this); return SUSPENDED`)
+- **`delay()`/`sleep()`** = suspensão **por tempo**. Não volta para a fila de prontas; entra
+  num **timer heap** e só é re-agendada quando o relógio dispara. O scheduler segue rodando
+  outras coroutines enquanto isso. (`TimerHeap.schedule(this, now + ms); return SUSPENDED`)
+- Hoje os dois são equivalentes no efeito (bloqueiam o thread). A diferença só existe quando
+  o transform gerar **pontos de suspensão reais**.
+
+### Checklist
+
+- [ ] **Transform `switch(label)`** (Fase C item 4): reescrever o corpo em `resume(cont)`
+      com `switch(label)` — cada trecho retilíneo até o próximo ponto `@Suspend` é um estado.
+      Substituir o modelo blocking-poll (um único `resume()` com nested `Scheduler.run()`).
+- [ ] **Estado de suspensão no `Continuation`**: campos `label`, `result`, `exception`;
+      sentinel `COROUTINE_SUSPENDED` como retorno de função suspend que suspendeu.
+- [ ] **`TimerHeap` no `Scheduler`** (Fase E): fila por deadline (binária ou linked list
+      ordenada), `runStep`/`await` com timeout mínimo, re-agendar continuations vencidas.
+- [ ] **`Coroutine.sleep/sleepMs` reescritas**: `nanosleep` → timer heap; retornar
+      `COROUTINE_SUSPENDED` em vez de bloquear o thread.
+- [ ] **`Coroutine.yield` reescrito**: `sched_yield` → `Scheduler.schedule(this)` +
+      `COROUTINE_SUSPENDED` (fairness cooperativa).
+- [ ] **`interleave_test.ei` passa** (`ABABAB`) — critério de aceite da fase.
+- [ ] **Regressão**: `task_test.ei` (16/16), `task_transform_test.ei` (12/12),
+      `scheduler_test.ei`, suíte completa verde (exceto os 2 pré-existentes conhecidos).
+
+### Notas
+
+- O `EventLoop.waitReadable/waitWritable` (via `poll`) pode ficar para uma fase seguinte:
+  esperar readiness é o mesmo mecanismo do timer heap (uma lista de "waiters de I/O").
+- Ordem recomendada: (1) switch(label) com fast path síncrono intacto, (2) yield cooperativo,
+  (3) timer heap + sleep/delay, (4) interleave_test verde.
+- **Habilita a Fase I** (dispatchers/thread pool): sem suspensão verdadeira, não há
+  paralelismo — apenas threads bloqueadas. Concluir esta fase é pré-requisito da Fase I.
+
+---
+
+### Handoff — contexto obrigatório para quem inicia a Fase J
+
+> Este bloco consolida o estado real do código para que um agente/agente novo possa
+> começar a Fase J sem reconstruir contexto de sessão. Leia TODO este arquivo antes
+> de mexer no código (AGENTS.md, decisões acima, Fases C/D/E/F).
+
+**Estado da suíte (baseline):** `./bin/eiwac test samples/tests` → **64 PASS, 3 FAIL**.
+As 3 falhas são: `contract_collection_storage_test.ei` e `closure_struct_field_test.ei`
+(**pré-existentes, NÃO relacionadas a coroutines**) + `interleave_test.ei`
+(**falha proposital — critério de aceite da Fase J**).
+
+**Comandos:** `zig build` | `./bin/eiwac test samples/tests` | `./bin/eiwac test samples/tests/interleave_test.ei`.
+
+**Onde o modelo blocking-poll vive (o que a Fase J substitui):**
+
+- `src/core/coroutines_transform.zig`:
+  - `buildResume` (L1054) — gera `resume()` que executa o corpo TODO num único shot:
+    reescreve captures, splices o bloco, `this.task.result = <last>`, `done = true`,
+    reschedule da waiter chain. **Sem `switch(label)`.**
+  - `buildPollStmt` (L1347) — `await()` vira `while (!recv.done && Scheduler.runStep()) {}`.
+  - `rewriteAwaitCall`/`rewriteTaskAwaitCall`/`rewriteReturnAwait` — geram machinery
+    + poll (L1272, L1241, L1294).
+  - `hoistAwaitsFromExpr` (L906) — awaits-operando viram `val __awaitN = ...`.
+  - `transformModule` (L52) / `transformFunction` (L184) — pipeline; processa fun top-level,
+    type/object methods e `test_decl`.
+  - `buildTaskBlockType` (L992) — gera `type __TaskBlockN(val task: StackTask<T>, ...)`.
+- `src/std/coroutines.ei`:
+  - `contract Continuation { resume(), isDone() }` (L42).
+  - `object Scheduler` com `schedule`/`run`/`runStep` (FIFO intrusiva, L52-88).
+  - `type StackTask<T>(done, result, waiters)` com `await()`/`isDone()` (L176) — **sem**
+    `Awaitable` (removido na Fase F). `await()` faz `Scheduler.run()` quando `!done`.
+  - `Coroutine.sleep/sleepMs` usam `nanosleep` (BLOQUEIA), `yield` usa `sched_yield`
+    (L98-125) — ambos não-suspensivos.
+  - `task<T>` (L197) retorna `StackTask<T>(false, null, null)` — ctor chamado pelo transform.
+
+**Regras de ouro (não quebrar):**
+
+1. `coroutines_transform.zig` já foi **perdido e reconstruído** uma vez — mudanças devem ser
+   **conservadoras e incrementais**. Sem reescritas em massa sem teste verde por passo.
+2. **Sem gambiarras**: sem special cases por nome (`__cblambda`, `__TaskBlock`), sem chamadas
+   manuais de `LLVMAddFunction`, sem adaptar testes para acomodar bugs do compiler.
+3. **Não reintroduzir** neco, `@MainWrapper`, `--backend`, ou o contrato `Awaitable<T>`.
+4. **Sem prints/debug permanentes**.
+5. Ordem recomendada dentro da fase: (1) `switch(label)` com fast path síncrono intacto,
+   (2) `yield` cooperativo, (3) timer heap + `sleep`/`delay`, (4) `interleave_test` verde.
+6. Após cada passo: `zig build` + teste mínimo + regressão (`task_test`, `task_transform_test`,
+   `scheduler_test`).
+7. O `interleave_test.ei` deve ficar FALHANDO até o passo final — é o critério de aceite.
+   Não "consertar" o teste para passar antes do mecanismo real existir.
+
+**Fixes recentes que não devem ser revertidos (contexto de sessões anteriores):**
+
+- NUL-termination no trampoline `cFunctionPtr` (`src/backend/llvm_emitter/expression.zig` L1690):
+  `c_name` é slice não-terminado → usar `dupeZ` antes de `LLVMGetNamedFunction`.
+- `Awaitable<T>` mantido como interface enxuta (`@Suspend await` + `isDone`, SEM `start()`);
+  `StackTask` o implementa em `src/std/coroutines.ei`.
+- Detecção de suspend (`src/core/coroutines.zig`) resolve por **receiver type + nome**
+  (`isSuspendDecl`/`findMethodHasSuspend`), não por contrato.
+- Box de 16 bytes fixo para vars capturadas (`cell_size`) — TODO conhecido, alocar
+  `LLVMStoreSizeOfType` (pré-existente nos closures).
+
+**Gaps conhecidos que NÃO pertencem à Fase J** (não gastar tempo neles):
+`object static String concat crasha` (`"x" + Obj.v`), `toString` mangled de List/Map
+(pré-existente no emitter), `try/catch` como última expr de bloco de task.
 
 ---
 

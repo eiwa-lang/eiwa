@@ -39,7 +39,7 @@ fun cliBinary(eiwac: String): String {
         cached = File.read(hashFile)
     }
     if (File.exists(bin) == false || cached != hash) {
-        val code = qexec(eiwac + " build --backend=c " + cliSrcDir() + "/src/main.ei -o " + bin)
+        val code = qexec(eiwac + " build " + cliSrcDir() + "/src/main.ei -o " + bin)
         assert(code == 0)
         File.write(hashFile, hash)
     }
@@ -73,7 +73,7 @@ test "cli: run/build/test a standalone .ei file (delegates to eiwac)" {
     qexec("rm -rf " + dir)
 }
 
-test "cli: run/build a project forwarding --release and --backend" {
+test "cli: run/build a project forwarding --release" {
     val eiwac = eiwacPathForTests()
     val bin = cliBinary(eiwac)
     val dir = "/tmp/eiwa_cli_itest_flags"
@@ -83,8 +83,7 @@ test "cli: run/build a project forwarding --release and --backend" {
     File.write(dir + "/src/main.ei", "fun main() {\n    println(\"flags-ok\")\n}\n")
 
     assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release") == 0)
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --backend=c") == 0)
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --release --backend=c") == 0)
+    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --release") == 0)
     assert(File.exists(dir + "/bin/flags"))
 
     qexec("rm -rf " + dir)

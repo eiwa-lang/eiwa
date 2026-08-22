@@ -33,7 +33,7 @@ type CliArgs(
 // Options that consume the next argument as their value.
 fun isValueOption(arg: String): Bool {
     return arg == "-o" || arg == "--branch" || arg == "--tag" || arg == "--commit" ||
-        arg == "--module-path" || arg == "--backend"
+        arg == "--module-path"
 }
 
 fun optionValue(args: CliArgs, key: String): String? {
@@ -374,7 +374,6 @@ fun printHelp() {
     println("")
     println("Options:")
     println("  -o <name>       Output binary name/path (build)")
-    println("  --backend=<b>   Backend (c | llvm), projects and files")
     println("  --release       Optimized build (-O3), projects and files")
     println("  --module-path <d>  Extra directory to resolve imports (repeatable)")
     println("  -h, --help      Show this help")
@@ -755,15 +754,11 @@ fun compilerCommand(cmd: String) {
         }
     }
 
-    // Forward eiwac flags/options supplied on the CLI: --release, --backend=...,
+    // Forward eiwac flags/options supplied on the CLI: --release,
     // extra --module-path entries and user program args (after `--` on run).
     var extraFlags = ""
     if (hasFlag(args, "--release")) {
         extraFlags = extraFlags + " --release"
-    }
-    val backendOpt = optionValue(args, "--backend")
-    if (backendOpt != null) {
-        extraFlags = extraFlags + " --backend=" + backendOpt!!
     }
     var userModulePaths = ""
     var i = 0

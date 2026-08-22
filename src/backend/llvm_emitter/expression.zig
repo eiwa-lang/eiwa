@@ -1689,7 +1689,11 @@ pub fn emitExpression(
             // trampoline that forwards to the Eiwa function.
             if (call.c_fn_ptr) |tramp_name| {
                 const c_name = tramp_name["eiwa_cb_".len..];
-                const target = llvm.LLVMGetNamedFunction(mod, c_name.ptr) orelse return error.CFunctionPtrTargetNotFound;
+                const c_name_z = try std.heap.page_allocator.dupeZ(u8, c_name);
+                defer std.heap.page_allocator.free(c_name_z);
+                const target = llvm.LLVMGetNamedFunction(mod, c_name_z.ptr) orelse {
+                    return error.CFunctionPtrTargetNotFound;
+                };
                 const func_type = llvm.LLVMGlobalGetValueType(target);
 
                 const saved_block = llvm.LLVMGetInsertBlock(builder);
