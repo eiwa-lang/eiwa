@@ -128,6 +128,11 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, m
                 return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
             }
         }
+        for (c.body_fields) |prop| {
+            if (std.mem.eql(u8, prop.name, member_name)) {
+                return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+            }
+        }
         for (c.methods) |method| {
             if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, member_name)) {
                 if (method.data.fun_decl.type_ref) |tr| {
@@ -157,6 +162,11 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, m
             } else if (self.classes_ast.get(actual_contract)) |super_node| {
                 const sc = super_node.data.type_decl;
                 for (sc.primary_constructor) |prop| {
+                    if (std.mem.eql(u8, prop.name, member_name)) {
+                        return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+                    }
+                }
+                for (sc.body_fields) |prop| {
                     if (std.mem.eql(u8, prop.name, member_name)) {
                         return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
                     }
@@ -480,6 +490,14 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 }
             }
             if (prop_type == null) {
+                for (c.body_fields) |prop| {
+                    if (std.mem.eql(u8, prop.name, g.name)) {
+                        prop_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
+                        break;
+                    }
+                }
+            }
+            if (prop_type == null) {
                 for (c.methods) |method| {
                     if (std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
                         if (method.data.fun_decl.type_ref) |tr| {
@@ -717,6 +735,25 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                         }
                     }
                     break;
+                }
+            }
+            if (!found_prop) {
+                for (c.body_fields) |prop| {
+                    if (std.mem.eql(u8, prop.name, s.name)) {
+                        found_prop = true;
+                        if (!prop.is_mut) {
+                            self.reportError(node.line, node.column, "TypeError: Cannot assign to constant property '{s}' of type {}.", .{ s.name, base_type.* });
+                            return error.TypeError;
+                        }
+                        const prop_type = prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+                        if (prop_type) |pt| {
+                            if (!self.isCompatible(pt, assigned_type)) {
+                                self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
+                                return error.TypeError;
+                            }
+                        }
+                        break;
+                    }
                 }
             }
         }

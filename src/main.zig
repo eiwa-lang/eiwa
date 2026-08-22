@@ -45,6 +45,17 @@ fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
 
 pub fn main(init: std.process.Init) !void {
+    // Never let a Zig error value reach the runtime's default printer (which
+    // dumps `error: <name>` + a native stack trace). Eiwa diagnostics are
+    // reported inline (REPORT_ERROR with file:line:col) before the error
+    // propagates; here we just exit cleanly.
+    run(init) catch |err| {
+        std.debug.print("Error: compilation failed ({s}).\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+}
+
+fn run(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
 
     var args_list = ArrayList([]const u8).init(allocator);

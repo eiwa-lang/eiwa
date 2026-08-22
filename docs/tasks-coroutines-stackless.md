@@ -325,12 +325,14 @@ pool exige coroutines que suspendam de verdade, não threads bloqueadas).
 
 ---
 
-## Fase J — Suspensão verdadeira: `switch(label)` + timer heap cooperativo (PRÓXIMA ETAPA)
+## Fase J — Suspensão verdadeira: `switch(label)` + timer heap cooperativo — ✅ CONCLUÍDA (2026-08)
 
-> **Estado atual:** o modelo blocking-poll roda o corpo inteiro de um task num único
-> `resume()`; `sleep`/`yield` bloqueiam o thread (`nanosleep`/`sched_yield`) e **não**
-> devolvem controle ao scheduler. Por isso `samples/tests/interleave_test.ei` falha
-> (`AAABBB` vs alvo `ABABAB`) — veja Fase C/P5 TODO e Fase E.
+> **Estado final:** task bodies com pontos de suspensão reais (`sleep`/`sleepMs`/`yield`)
+> são transformados em **state machines** (`switch(label)` via dispatch `if (label==N)` em
+> `while(true)`); o Scheduler ganhou **timer heap** (lista ordenada por deadline + relógio
+> virtual) e `runStep`/`run` timer-aware. `samples/tests/interleave_test.ei` passa
+> (`ABABAB`). `await()` permanece blocking-poll no root; suspensão real acontece **dentro**
+> do corpo do task (que é o que o teste de aceite exige).
 
 **Diferença `yield()` × `delay()`/`sleep()` (semântica alvo, Kotlin-style):**
 
@@ -340,71 +342,101 @@ pool exige coroutines que suspendam de verdade, não threads bloqueadas).
 - **`delay()`/`sleep()`** = suspensão **por tempo**. Não volta para a fila de prontas; entra
   num **timer heap** e só é re-agendada quando o relógio dispara. O scheduler segue rodando
   outras coroutines enquanto isso. (`TimerHeap.schedule(this, now + ms); return SUSPENDED`)
-- Hoje os dois são equivalentes no efeito (bloqueiam o thread). A diferença só existe quando
-  o transform gerar **pontos de suspensão reais**.
 
 ### Checklist
 
-- [ ] **Transform `switch(label)`** (Fase C item 4): reescrever o corpo em `resume(cont)`
-      com `switch(label)` — cada trecho retilíneo até o próximo ponto `@Suspend` é um estado.
-      Substituir o modelo blocking-poll (um único `resume()` com nested `Scheduler.run()`).
-- [ ] **Estado de suspensão no `Continuation`**: campos `label`, `result`, `exception`;
-      sentinel `COROUTINE_SUSPENDED` como retorno de função suspend que suspendeu.
-- [ ] **`TimerHeap` no `Scheduler`** (Fase E): fila por deadline (binária ou linked list
-      ordenada), `runStep`/`await` com timeout mínimo, re-agendar continuations vencidas.
-- [ ] **`Coroutine.sleep/sleepMs` reescritas**: `nanosleep` → timer heap; retornar
-      `COROUTINE_SUSPENDED` em vez de bloquear o thread.
-- [ ] **`Coroutine.yield` reescrito**: `sched_yield` → `Scheduler.schedule(this)` +
-      `COROUTINE_SUSPENDED` (fairness cooperativa).
-- [ ] **`interleave_test.ei` passa** (`ABABAB`) — critério de aceite da fase.
-- [ ] **Regressão**: `task_test.ei` (16/16), `task_transform_test.ei` (12/12),
-      `scheduler_test.ei`, suíte completa verde (exceto os 2 pré-existentes conhecidos).
+- [x] **Transform `switch(label)`** (Fase C item 4): task bodies com `sleep`/`sleepMs`/`yield`
+      viram state machine em `resume()` (`while(true)` + dispatch `if (this.label == N)`).
+      Cada estado = trecho retilíneo até o próximo ponto de suspensão; transições explícitas
+      `this.label = <next>`. O builder CFG roda em **ordem reversa** (last→first, threading o
+      "after"); statements plain viram estados próprios (sem merge, para não corromper joins
+      de controle de fluxo). `continue`/`break` não existem na linguagem; `for`/`try` com
+      suspensão dentro são GAPS (erro `file:line`). Awaits continuam blocking-poll.
+- [x] **Locais promovidos a `body_fields`**: novos campos `var`/`val` no corpo do `type`
+      (feature nova, Kotlin-style) — o continuation do task ganha `var label: Int = <entry>`
+      + um campo por local do corpo (default: 0/0.0/false/""/null). `val` exige initializer;
+      `var` não-null exige initializer; `var`/`val` nullable omitem → null. Atribuir a `val`
+      é erro de tipo.
+- [x] **`TimerHeap` no `Scheduler`** (Fase E): `TimerNode(deadline, cont, next)` em lista
+      ordenada; `Scheduler.now` = relógio virtual (ms, avança pelos próprios waits);
+      `fireTimers()` bloqueia (nanosleep) até o deadline mais próximo e move vencidos para a
+      fila de prontas. `runStep`/`run` timer-aware (`await`-poll continua funcionando).
+- [x] **`Coroutine.sleep/sleepMs`/`yield` como pontos de suspensão**: no corpo do task o
+      transform reescreve `sleepMs(x)`→`Scheduler.sleep(this, x)`, `sleep(x)`→
+      `Scheduler.sleep(this, x/1e6)`, `yield()`→`Scheduler.yield(this)`, seguidos de
+      `this.label = <next>; return`. O `Continuation.resume()` **permanece `Void`** (sem
+      sentinel): a suspensão é sinalizada por auto-re-agendamento; conclusão via
+      `task.done = true`. Isso evita adaptar `scheduler_test.ei` (guardrail).
+- [x] **`interleave_test.ei` passa** (`ABABAB`) — critério de aceite da fase.
+- [x] **Regressão**: suíte `samples/tests` **67 PASS, 2 FAIL** (as 2 falhas são as
+      pré-existentes `contract_collection_storage_test`/`closure_struct_field_test`,
+      não relacionadas a coroutines). `body_fields_test.ei` (5) e `yield_test.ei` (1) novos.
+- [x] **Fix — tasks genuinamente `Task<Void>` não rodavam o corpo** (bug pré-existente
+      mascarado pelos `task { ...; 1 }` de `interleave_test`): o hoist do await gerava
+      `val __awaitN = <task>.result!!` que, para um task `Void` (`Void? !!` → Void), virava
+      um `var` de tipo Void; o emitter (`statement.zig` var_decl) só avaliava o initializer
+      por efeito **sem criar binding no scope** → a referência posterior a `__awaitN` falhava
+      com `VariableNotFound` e o `emitFunctionBodyOrStub` stubbava a função inteira
+      silenciosamente (retornando `false`/nada). **Correção:** o emitter agora liga o nome
+      de vars Void a um dummy no scope. `interleave_test`/`yield_test` são `Task<Void>`
+      (sem retorno numérico).
 
 ### Notas
 
 - O `EventLoop.waitReadable/waitWritable` (via `poll`) pode ficar para uma fase seguinte:
   esperar readiness é o mesmo mecanismo do timer heap (uma lista de "waiters de I/O").
-- Ordem recomendada: (1) switch(label) com fast path síncrono intacto, (2) yield cooperativo,
-  (3) timer heap + sleep/delay, (4) interleave_test verde.
+- Gaps da state machine: `for`/`try`/`return` com suspensão dentro do corpo do task;
+  await como receiver de composite; await cooperativo (waiter-chain) dentro do corpo
+  (hoje blocking-poll, correto enquanto a task aguardada suspende cooperativamente).
 - **Habilita a Fase I** (dispatchers/thread pool): sem suspensão verdadeira, não há
   paralelismo — apenas threads bloqueadas. Concluir esta fase é pré-requisito da Fase I.
+- **Fix — erros de compilação sem backtrace Zig:** o pipeline de `main.zig` era `!void`
+  e deixava erros de tipo/emissão propagarem para o runtime do Zig, que imprimia
+  `error: TypeError` + stack trace nativo depois da mensagem Eiwa limpa. `main` agora é um
+  wrapper que chama `run()` e, em erro, imprime `Error: compilation failed (<name>).` e
+  `exit(1)` — sem stack trace Zig. A mensagem Eiwa (REPORT_ERROR com file:line:col) já foi
+  impressa antes do erro propagar.
 
 ---
 
 ### Handoff — contexto obrigatório para quem inicia a Fase J
 
 > Este bloco consolida o estado real do código para que um agente/agente novo possa
-> começar a Fase J sem reconstruir contexto de sessão. Leia TODO este arquivo antes
-> de mexer no código (AGENTS.md, decisões acima, Fases C/D/E/F).
+> começar a Fase J (se ainda houver trabalho) sem reconstruir contexto de sessão. Leia TODO
+> este arquivo antes de mexer no código (AGENTS.md, decisões acima, Fases C/D/E/F).
 
-**Estado da suíte (baseline):** `./bin/eiwac test samples/tests` → **64 PASS, 3 FAIL**.
-As 3 falhas são: `contract_collection_storage_test.ei` e `closure_struct_field_test.ei`
-(**pré-existentes, NÃO relacionadas a coroutines**) + `interleave_test.ei`
-(**falha proposital — critério de aceite da Fase J**).
+**Estado da suíte (baseline):** `./bin/eiwac test samples/tests` → **66 PASS, 2 FAIL**.
+As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_test.ei`
+(**pré-existentes, NÃO relacionadas a coroutines**). `interleave_test.ei` agora **PASSA**
+(`ABABAB`). Novo teste: `body_fields_test.ei` (5).
 
 **Comandos:** `zig build` | `./bin/eiwac test samples/tests` | `./bin/eiwac test samples/tests/interleave_test.ei`.
 
-**Onde o modelo blocking-poll vive (o que a Fase J substitui):**
+**Modelo atual (blocking-poll no root + state machine no corpo do task):**
 
 - `src/core/coroutines_transform.zig`:
-  - `buildResume` (L1054) — gera `resume()` que executa o corpo TODO num único shot:
-    reescreve captures, splices o bloco, `this.task.result = <last>`, `done = true`,
-    reschedule da waiter chain. **Sem `switch(label)`.**
-  - `buildPollStmt` (L1347) — `await()` vira `while (!recv.done && Scheduler.runStep()) {}`.
-  - `rewriteAwaitCall`/`rewriteTaskAwaitCall`/`rewriteReturnAwait` — geram machinery
-    + poll (L1272, L1241, L1294).
-  - `hoistAwaitsFromExpr` (L906) — awaits-operando viram `val __awaitN = ...`.
-  - `transformModule` (L52) / `transformFunction` (L184) — pipeline; processa fun top-level,
-    type/object methods e `test_decl`.
-  - `buildTaskBlockType` (L992) — gera `type __TaskBlockN(val task: StackTask<T>, ...)`.
+  - `buildResume` — `resume()` single-shot (bloco sem suspensão real): reescreve captures,
+    splices o bloco, `this.task.result = <last>`, `done = true`, reschedule da waiter chain.
+  - `buildResumeStateMachine` — `resume()` como state machine p/ task bodies com
+    `sleep`/`sleepMs`/`yield`: `while(true) { if (this.label==N) {...} else ... }`, locais
+    promovidos a body fields, `this.label` default = entry. Builder CFG em ordem reversa;
+    statements plain viram estados próprios (nunca merge em joins).
+  - `buildPollStmt` — `await()` vira `while (!recv.done && Scheduler.runStep()) {}` (root;
+    funciona com timers pois `runStep` processa o timer heap).
+  - `rewriteAwaitCall`/`rewriteTaskAwaitCall`/`rewriteReturnAwait`, `hoistAwaitsFromExpr`,
+    `transformModule`/`transformFunction`, `buildTaskBlockType` (agora roteia state machine ×
+    single-shot e adiciona `body_fields`).
 - `src/std/coroutines.ei`:
-  - `contract Continuation { resume(), isDone() }` (L42).
-  - `object Scheduler` com `schedule`/`run`/`runStep` (FIFO intrusiva, L52-88).
-  - `type StackTask<T>(done, result, waiters)` com `await()`/`isDone()` (L176) — **sem**
-    `Awaitable` (removido na Fase F). `await()` faz `Scheduler.run()` quando `!done`.
-  - `Coroutine.sleep/sleepMs` usam `nanosleep` (BLOQUEIA), `yield` usa `sched_yield`
-    (L98-125) — ambos não-suspensivos.
-  - `task<T>` (L197) retorna `StackTask<T>(false, null, null)` — ctor chamado pelo transform.
+  - `contract Continuation { resume(), isDone() }` — `resume()` **Void** (não mudou; suspensão
+    é sinalizada por auto-re-agendamento, conclusão via `task.done = true`).
+  - `object Scheduler` com `schedule`/`run`/`runStep` (FIFO intrusiva) + **timer heap**:
+    `TimerNode(deadline, cont, next)`, `Scheduler.now` (relógio virtual ms),
+    `sleep(cont, ms)`/`yield(cont)`/`fireTimers()`/`waitMs(ms)`. `run` = `while(runStep())`.
+  - `type StackTask<T>(done, result, waiters)` com `await()`/`isDone()` (Awaitable).
+  - `Coroutine.sleep/sleepMs` (nanosleep) / `yield` (sched_yield) permanecem como bloqueio
+    para chamadas fora do corpo de task; dentro do corpo, o transform os reescreve em
+    `Scheduler.sleep(this, ...)`/`Scheduler.yield(this)`.
+  - `task<T>` retorna `StackTask<T>(false, null, null)` — ctor chamado pelo transform.
 
 **Regras de ouro (não quebrar):**
 
@@ -414,12 +446,9 @@ As 3 falhas são: `contract_collection_storage_test.ei` e `closure_struct_field_
    manuais de `LLVMAddFunction`, sem adaptar testes para acomodar bugs do compiler.
 3. **Não reintroduzir** neco, `@MainWrapper`, `--backend`, ou o contrato `Awaitable<T>`.
 4. **Sem prints/debug permanentes**.
-5. Ordem recomendada dentro da fase: (1) `switch(label)` com fast path síncrono intacto,
-   (2) `yield` cooperativo, (3) timer heap + `sleep`/`delay`, (4) `interleave_test` verde.
+5. **Guardrail: testes que passam continuam passando** — não adaptar testes para o mecanismo.
 6. Após cada passo: `zig build` + teste mínimo + regressão (`task_test`, `task_transform_test`,
-   `scheduler_test`).
-7. O `interleave_test.ei` deve ficar FALHANDO até o passo final — é o critério de aceite.
-   Não "consertar" o teste para passar antes do mecanismo real existir.
+   `scheduler_test`, `interleave_test`, `body_fields_test`).
 
 **Fixes recentes que não devem ser revertidos (contexto de sessões anteriores):**
 

@@ -49,9 +49,18 @@ contract Continuation {
 // cannot store fat pointers in generic collections yet).
 type ContNode(val cont: Continuation, var next: ContNode?)
 
+// Timer node for cooperative `sleep`: a continuation to re-schedule once the
+// virtual clock reaches `deadline`. Intrusive, kept in deadline order.
+type TimerNode(var deadline: Int, var cont: Continuation, var next: TimerNode?)
+
 object Scheduler {
     var head: ContNode? = null
     var tail: ContNode? = null
+    var timerHead: TimerNode? = null
+    // Virtual monotonic clock (ms). Advanced by the scheduler's own blocking
+    // waits (`waitMs`), so deadlines are relative to each other — no dependence
+    // on an OS clock.
+    var now: Int = 0
 
     fun schedule(cont: Continuation) {
         val node = ContNode(cont, null)
@@ -64,16 +73,96 @@ object Scheduler {
         }
     }
 
-    fun run() {
-        while (Scheduler.head != null) {
-            Scheduler.runStep()
+    // Registers `cont` to be re-scheduled after `ms` virtual milliseconds.
+    // Returns true (the continuation has suspended; its resume must return).
+    fun sleep(cont: Continuation, ms: Int): Bool {
+        val deadline = Scheduler.now + ms
+        var node = TimerNode(deadline, cont, null)
+        if (Scheduler.timerHead == null || Scheduler.timerHead!!.deadline > deadline) {
+            node.next = Scheduler.timerHead
+            Scheduler.timerHead = node
+        } else {
+            var cur = Scheduler.timerHead!!
+            var placed = false
+            while (cur.next != null && !placed) {
+                if (cur.next!!.deadline <= deadline) {
+                    cur = cur.next!!
+                } else {
+                    placed = true
+                }
+            }
+            node.next = cur.next
+            cur.next = node
         }
+        return true
     }
 
-    // Runs a single ready continuation. Returns false when the queue is empty.
-    // `await()` loops on this until the awaited task completes, so independent
-    // tasks queued behind it are NOT drained — they stay for their own await.
+    // Cooperative yield: re-queue `cont` at the end of the ready queue.
+    // Returns true (the continuation has suspended; its resume must return).
+    fun yield(cont: Continuation): Bool {
+        Scheduler.schedule(cont)
+        return true
+    }
+
+    // Moves every expired timer (deadline <= now) into the ready queue,
+    // blocking (waitMs) until the earliest deadline when none are due yet.
+    // Returns true when at least one timer was fired.
+    fun fireTimers(): Bool {
+        if (Scheduler.timerHead == null) {
+            return false
+        }
+        val first = Scheduler.timerHead!!
+        val delta = first.deadline - Scheduler.now
+        if (delta > 0) {
+            Scheduler.waitMs(delta)
+            Scheduler.now = first.deadline
+        }
+        var fired = false
+        var expired = true
+        while (Scheduler.timerHead != null && expired) {
+            val t = Scheduler.timerHead!!
+            if (t.deadline > Scheduler.now) {
+                expired = false
+            } else {
+                Scheduler.schedule(t.cont)
+                Scheduler.timerHead = t.next
+                fired = true
+            }
+        }
+        return fired
+    }
+
+    // Blocks the thread for `ms` (nanosleep). Only the scheduler calls this,
+    // when nothing else is ready — the root await/drain drives it.
+    fun waitMs(ms: Int) {
+        val ts = Standard.gcMalloc(16)
+        var sec = ms / 1000
+        var nsec = mod(ms, 1000) * 1000000
+        var i = 0
+        while (i < 8) {
+            NativeMemory.writeByte(ts, i, mod(sec, 256))
+            NativeMemory.writeByte(ts, 8 + i, mod(nsec, 256))
+            sec = sec / 256
+            nsec = nsec / 256
+            i = i + 1
+        }
+        NativeTime.nanosleep(ts, null)
+    }
+
+    fun run() {
+        while (Scheduler.runStep()) {}
+    }
+
+    // Runs a single ready continuation, firing due timers first. Returns false
+    // when nothing at all is pending (queue empty and no timers). `await()`
+    // loops on this until the awaited task completes, so independent tasks
+    // queued behind it are NOT drained — they stay for their own await.
     fun runStep(): Bool {
+        if (Scheduler.head == null) {
+            if (!Scheduler.fireTimers()) {
+                return false
+            }
+        }
         if (Scheduler.head == null) {
             return false
         }

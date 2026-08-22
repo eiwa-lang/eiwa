@@ -1,0 +1,68 @@
+import { assert } from "std.core"
+
+// Cooperative `yield()`: re-queues the running continuation at the end of the
+// ready queue, so the other task runs before it resumes. The interleaved log
+// is the observable behavior; some tasks are `Task<Void>`, others return a
+// value (the trailing expression captured into `task.result`).
+
+object YLog {
+    var log: String = ""
+}
+
+fun yieldInterleave(): String {
+    YLog.log = ""
+    val t1 = task {
+        YLog.log = YLog.log + "A"
+        yield()
+        YLog.log = YLog.log + "A"
+    }
+    val t2 = task {
+        YLog.log = YLog.log + "B"
+        yield()
+        YLog.log = YLog.log + "B"
+    }
+    t1.await()
+    t2.await()
+    return YLog.log
+}
+
+test "yield cooperatively interleaves two tasks" {
+    assert(yieldInterleave() == "ABAB")
+}
+
+// A task with a suspension point AND a return value: the state-machine path
+// must still capture the trailing expression into `task.result` (not just run
+// for side effects like a Void task).
+fun valueTaskSleep(): Int {
+    val t = task {
+        var acc = 2
+        sleepMs(1)
+        acc + 40
+    }
+    return t.await()
+}
+
+test "task with return value and suspension delivers the result" {
+    assert(valueTaskSleep() == 42)
+}
+
+test "two value-returning tasks interleave and deliver results" {
+    YLog.log = ""
+    val tVal = task {
+        YLog.log = YLog.log + "A"
+        yield()
+        YLog.log = YLog.log + "A"
+        40 + 1
+    }
+    val tVal2 = task {
+        YLog.log = YLog.log + "B"
+        yield()
+        40 + 2
+    }
+    val r = tVal.await()
+    assert(YLog.log == "ABA")
+    val r2 = tVal2.await()
+    assert(r == 41)
+    assert(r2 == 42)
+    assert(YLog.log == "ABA")
+}

@@ -66,6 +66,21 @@ pub fn emitStatement(
                 if (v.initializer) |init_node| {
                     _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, init_node);
                 }
+                // Still bind the name to a dummy so a later read of the
+                // variable resolves instead of failing with VariableNotFound
+                // (which would stub the whole function). The coroutine await
+                // hoist produces `val __awaitN = <task>.result!!` for a Void
+                // task (`Void? !!` -> Void); the binding is side-effect-only,
+                // but the name must exist for the trailing reference.
+                const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+                const name_z = try std.heap.page_allocator.dupeZ(u8, name);
+                defer std.heap.page_allocator.free(name_z);
+                const dummy = llvm.LLVMBuildAlloca(builder, ptr_type, name_z.ptr);
+                _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ptr_type), dummy);
+                try scope.put(name, dummy);
+                if (!std.mem.eql(u8, name, v.name)) {
+                    try scope.put(v.name, dummy);
+                }
                 return;
             }
 

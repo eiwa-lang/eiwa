@@ -1527,6 +1527,17 @@ pub const LLVMEmitter = struct {
                 try self.collectCallees(c.callee, reachable, worklist);
                 for (c.arguments) |arg| try self.collectCallees(arg, reachable, worklist);
             },
+            .type_decl => |t| {
+                // Constructor default args are cloned into call sites, so they
+                // are already walked there. Body-field initializers live only
+                // in the ctor — walk them so their callees stay reachable.
+                for (t.primary_constructor) |prop| {
+                    if (prop.initializer) |init_node| try self.collectCallees(init_node, reachable, worklist);
+                }
+                for (t.body_fields) |prop| {
+                    if (prop.initializer) |init_node| try self.collectCallees(init_node, reachable, worklist);
+                }
+            },
             else => {},
         }
     }
@@ -2524,6 +2535,19 @@ pub const LLVMEmitter = struct {
             try field_types.append(f_llvm_type);
         }
 
+        // Body fields (declared in the type body, not ctor args) are part of
+        // the struct layout but NOT constructor parameters. Their initializers
+        // are evaluated in the ctor body (see below).
+        for (t.body_fields) |prop| {
+            try field_names.append(prop.name);
+            const f_llvm_type = if (prop.resolved_type) |rt|
+                types_mapping.getLLVMTypeWithContracts(self.context, rt.*, self.contracts_ast)
+            else
+                llvm.LLVMPointerTypeInContext(self.context, 0);
+            try field_types.append(f_llvm_type);
+        }
+        const ctor_param_count = t.primary_constructor.len;
+
         llvm.LLVMStructSetBody(struct_type, if (field_types.items.len > 0) field_types.items.ptr else null, @intCast(field_types.items.len), 0);
 
         const field_names_owned = try field_names.toOwnedSlice();
@@ -2544,9 +2568,11 @@ pub const LLVMEmitter = struct {
             if (verbose) std.debug.print(">>> REGISTER_STRUCT_SHORT: name='{s}'\n", .{t.name});
         }
 
-        // Declare constructor function: name(params...) -> ptr
+        // Declare constructor function: name(primary ctor params...) -> ptr.
+        // Body fields are NOT parameters — they are initialized in the ctor.
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
-        const ctor_type = llvm.LLVMFunctionType(ptr_type, if (field_types_owned.len > 0) field_types_owned.ptr else null, @intCast(field_types_owned.len), 0);
+        const ctor_param_types = field_types_owned[0..ctor_param_count];
+        const ctor_type = llvm.LLVMFunctionType(ptr_type, if (ctor_param_types.len > 0) ctor_param_types.ptr else null, @intCast(ctor_param_types.len), 0);
 
         const ctor_val = llvm.LLVMAddFunction(mod, struct_name_z.ptr, ctor_type);
         try self.functions.put(name, ctor_val);
@@ -2567,7 +2593,7 @@ pub const LLVMEmitter = struct {
         const raw_ptr = llvm.LLVMBuildCall2(self.builder, gc_func_type, gc_func, &gc_args, 1, "raw_inst");
 
         // Store constructor parameters into struct fields
-        for (field_names_owned, 0..) |_, idx| {
+        for (0..ctor_param_count) |idx| {
             var param_val = llvm.LLVMGetParam(ctor_val, @intCast(idx));
             if (idx < field_types_owned.len) {
                 const field_type = field_types_owned[idx];
@@ -2584,6 +2610,43 @@ pub const LLVMEmitter = struct {
             }
             const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(idx), "field_gep");
             _ = llvm.LLVMBuildStore(self.builder, param_val, field_ptr);
+        }
+
+        // Evaluate body-field initializers in declaration order with `this`
+        // bound to the freshly allocated instance, storing into each field.
+        // Constructor fields are also bound (by their names) so an initializer
+        // can reference ctor params/properties, Kotlin-style.
+        if (t.body_fields.len > 0) {
+            var this_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
+            defer this_scope.deinit();
+            const this_z = try self.allocator.dupeZ(u8, "this");
+            defer self.allocator.free(this_z);
+            const this_alloca = llvm.LLVMBuildAlloca(self.builder, ptr_type, this_z.ptr);
+            _ = llvm.LLVMBuildStore(self.builder, raw_ptr, this_alloca);
+            try this_scope.put("this", this_alloca);
+
+            for (t.primary_constructor, 0..) |prop, i| {
+                const p_name_z = try self.allocator.dupeZ(u8, prop.name);
+                defer self.allocator.free(p_name_z);
+                const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(i), p_name_z.ptr);
+                const field_t = field_types_owned[i];
+                const val = llvm.LLVMBuildLoad2(self.builder, field_t, field_ptr, "ctor_field_load");
+                const alloca_ptr = llvm.LLVMBuildAlloca(self.builder, field_t, p_name_z.ptr);
+                _ = llvm.LLVMBuildStore(self.builder, val, alloca_ptr);
+                try this_scope.put(prop.name, alloca_ptr);
+            }
+
+            for (t.body_fields, 0..) |prop, i| {
+                const init_node = prop.initializer orelse continue;
+                const field_idx = ctor_param_count + i;
+                const field_type = field_types_owned[field_idx];
+                var init_val = try expression.emitExpression(self.context, mod, self.builder, &this_scope, &self.structs, &self.libs, init_node);
+                if (llvm.LLVMTypeOf(init_val) != field_type) {
+                    init_val = expression.coerceArg(self.builder, init_val, field_type);
+                }
+                const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(field_idx), "bfield_gep");
+                _ = llvm.LLVMBuildStore(self.builder, init_val, field_ptr);
+            }
         }
 
         _ = llvm.LLVMBuildRet(self.builder, raw_ptr);

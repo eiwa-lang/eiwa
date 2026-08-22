@@ -1025,7 +1025,51 @@ fn buildTaskBlockType(
 
     var methods = ArrayList(*ASTNode).init(allocator);
     defer methods.deinit();
-    try methods.append(try buildResume(allocator, checker, captures, body, result_type, counter, generated));
+
+    var body_fields = ArrayList(ast.ClassProp).init(allocator);
+    defer body_fields.deinit();
+
+    // Route: task bodies with a true suspension point (sleep/yield) become a
+    // `switch(label)` state machine; bodies without one keep the single-shot
+    // blocking-poll resume.
+    var state_machine = false;
+    for (body) |s| {
+        if (containsTrueSuspend(s)) {
+            state_machine = true;
+            break;
+        }
+    }
+
+    var resume_method: *ASTNode = undefined;
+    if (state_machine) {
+        const locals = try collectLocals(allocator, body);
+        defer allocator.free(locals);
+        for (locals) |l| {
+            const default_init = defaultInitializerForTypeRef(allocator, l.type_ref) orelse
+                return error.UnsupportedStateMachineLocal;
+            try body_fields.append(.{
+                .is_mut = true,
+                .name = l.name,
+                .type_ref = l.type_ref,
+                .is_property = true,
+                .initializer = default_init,
+            });
+        }
+        // The state-machine dispatch reads `this.label`; its default is the
+        // entry state (the label where the machine begins).
+        var entry_label: usize = 0;
+        resume_method = try buildResumeStateMachine(allocator, checker, captures, locals, body, result_type, counter, generated, &entry_label);
+        try methods.append(resume_method);
+        try body_fields.append(.{
+            .is_mut = true,
+            .name = "label",
+            .type_ref = typeRefSimple("Int"),
+            .is_property = true,
+            .initializer = mkIntLit(@intCast(entry_label)),
+        });
+    } else {
+        try methods.append(try buildResume(allocator, checker, captures, body, result_type, counter, generated));
+    }
     try methods.append(try buildIsDone(allocator));
 
     const type_node = try allocator.create(ASTNode);
@@ -1041,6 +1085,7 @@ fn buildTaskBlockType(
             .resolved_c_name = null,
             .contracts = &.{"Continuation"},
             .skills = &.{},
+            .body_fields = try body_fields.toOwnedSlice(),
         } },
     };
 
@@ -1172,6 +1217,561 @@ fn isValueStatement(node: *ASTNode) bool {
         .array_literal, .map_literal, .lambda_expr => return true,
         else => return false,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fase J — true suspension state machines (sleep/yield inside task bodies)
+//
+// A task body containing a cooperative suspension primitive (`sleep`/`sleepMs`/
+// `yield`) cannot run in a single `resume()` shot: it must suspend and be
+// re-scheduled by the Scheduler (timer heap / ready queue). The body is split
+// at those suspension points into a `switch(label)` state machine:
+//
+//   fun resume() {
+//       while (true) {
+//           if (this.label == L0) { <state L0> } else
+//           if (this.label == L1) { <state L1> } else
+//           ...
+//           else { <done: result, done=true, reschedule waiters, return> }
+//       }
+//   }
+//
+// Every local declared in the body is promoted to a body field of the
+// continuation, and every state transition is `this.label = <next>`.
+// ---------------------------------------------------------------------------
+
+/// A call to one of the cooperative suspension primitives (`sleep`/`sleepMs`/
+/// `yield`). These are the points that must suspend the continuation. The
+/// callee may be a bare identifier (`sleepMs(1)`) or an object method
+/// (`Coroutine.sleepMs(1)`).
+fn isSuspendPrimitiveCall(node: *ASTNode) bool {
+    if (node.data != .call_expr) return false;
+    const c = &node.data.call_expr;
+    const name = switch (c.callee.data) {
+        .get_expr => |g| g.name,
+        .identifier => |i| i.name,
+        else => return false,
+    };
+    return std.mem.eql(u8, name, "sleep") or
+        std.mem.eql(u8, name, "sleepMs") or
+        std.mem.eql(u8, name, "yield");
+}
+
+/// True if the subtree contains a cooperative suspension primitive. Task
+/// blocks and lambda bodies are coroutine boundaries — their suspensions
+/// belong to those inner continuations, not this one.
+fn containsTrueSuspend(node: *ASTNode) bool {
+    switch (node.data) {
+        .call_expr => |c| {
+            if (isTaskCall(node)) return false;
+            if (isSuspendPrimitiveCall(node)) return true;
+            if (containsTrueSuspend(c.callee)) return true;
+            for (c.arguments) |a| {
+                if (containsTrueSuspend(a)) return true;
+            }
+        },
+        .lambda_expr => return false,
+        .block => |b| {
+            for (b.statements) |s| {
+                if (containsTrueSuspend(s)) return true;
+            }
+        },
+        .binary_expr => |b| return containsTrueSuspend(b.left) or containsTrueSuspend(b.right),
+        .unary_expr => |u| return containsTrueSuspend(u.operand),
+        .get_expr => |g| return containsTrueSuspend(g.object),
+        .set_expr => |s| return containsTrueSuspend(s.object) or containsTrueSuspend(s.value),
+        .if_expr => |i| {
+            if (containsTrueSuspend(i.condition)) return true;
+            if (containsTrueSuspend(i.then_branch)) return true;
+            if (i.else_branch) |e| {
+                if (containsTrueSuspend(e)) return true;
+            }
+        },
+        .while_stmt => |w| return containsTrueSuspend(w.condition) or containsTrueSuspend(w.body),
+        .for_stmt => |f| return containsTrueSuspend(f.iterable) or containsTrueSuspend(f.body),
+        .return_stmt => |r| return if (r.value) |v| containsTrueSuspend(v) else false,
+        .assignment => |a| return containsTrueSuspend(a.value),
+        .index_expr => |i| return containsTrueSuspend(i.object) or containsTrueSuspend(i.index),
+        .index_set_expr => |i| return containsTrueSuspend(i.object) or containsTrueSuspend(i.index) or containsTrueSuspend(i.value),
+        .try_stmt => |t| {
+            if (containsTrueSuspend(t.body)) return true;
+            for (t.catches) |cb| {
+                if (containsTrueSuspend(cb.body)) return true;
+            }
+        },
+        .throw_stmt => |t| return containsTrueSuspend(t.expr),
+        .when_expr => |w| {
+            if (w.subject) |s| {
+                if (containsTrueSuspend(s)) return true;
+            }
+            for (w.cases) |case| {
+                for (case.conds) |cond| {
+                    if (containsTrueSuspend(cond)) return true;
+                }
+                if (containsTrueSuspend(case.body)) return true;
+            }
+        },
+        .named_arg => |na| return containsTrueSuspend(na.value),
+        .array_literal => |al| {
+            for (al.elements) |e| {
+                if (containsTrueSuspend(e)) return true;
+            }
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| {
+                if (containsTrueSuspend(e)) return true;
+            }
+        },
+        .var_decl => |v| return if (v.initializer) |init| containsTrueSuspend(init) else false,
+        else => {},
+    }
+    return false;
+}
+
+/// Collects every local variable declared in the task body (recursively, but
+/// not inside task/lambda boundaries) so they can be promoted to continuation
+/// body fields. Vars bound directly to `task {}/await()` are excluded — the
+/// machinery rewrite owns those (they become its own locals).
+fn collectLocals(allocator: std.mem.Allocator, body: []const *ASTNode) ![]CapturedVar {
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+    var out = ArrayList(CapturedVar).init(allocator);
+    for (body) |s| {
+        try collectLocalVars(allocator, s, &seen, &out);
+    }
+    return out.toOwnedSlice();
+}
+
+fn collectLocalVars(
+    allocator: std.mem.Allocator,
+    node: *ASTNode,
+    seen: *std.StringHashMap(void),
+    out: *ArrayList(CapturedVar),
+) !void {
+    switch (node.data) {
+        .var_decl => |v| {
+            if (v.initializer) |init| {
+                if (isTaskCall(init) or isAwaitCall(init)) return;
+            }
+            if (!seen.contains(v.name)) {
+                try seen.put(v.name, {});
+                if (node.resolved_type) |rt| {
+                    try out.append(.{
+                        .name = v.name,
+                        .type_ref = try typeRefForEiwaType(allocator, rt),
+                        .is_boxed = false,
+                    });
+                }
+            }
+            if (v.initializer) |init| try collectLocalVars(allocator, init, seen, out);
+        },
+        .lambda_expr => return,
+        .call_expr => |c| {
+            if (isTaskCall(node)) return;
+            try collectLocalVars(allocator, c.callee, seen, out);
+            for (c.arguments) |a| try collectLocalVars(allocator, a, seen, out);
+        },
+        .block => |b| {
+            for (b.statements) |s| try collectLocalVars(allocator, s, seen, out);
+        },
+        .if_expr => |i| {
+            try collectLocalVars(allocator, i.condition, seen, out);
+            try collectLocalVars(allocator, i.then_branch, seen, out);
+            if (i.else_branch) |e| try collectLocalVars(allocator, e, seen, out);
+        },
+        .while_stmt => |w| {
+            try collectLocalVars(allocator, w.condition, seen, out);
+            try collectLocalVars(allocator, w.body, seen, out);
+        },
+        .for_stmt => |f| {
+            try collectLocalVars(allocator, f.iterable, seen, out);
+            try collectLocalVars(allocator, f.body, seen, out);
+        },
+        .return_stmt => |r| if (r.value) |v| try collectLocalVars(allocator, v, seen, out),
+        .assignment => |a| try collectLocalVars(allocator, a.value, seen, out),
+        .binary_expr => |b| {
+            try collectLocalVars(allocator, b.left, seen, out);
+            try collectLocalVars(allocator, b.right, seen, out);
+        },
+        .unary_expr => |u| try collectLocalVars(allocator, u.operand, seen, out),
+        .get_expr => |g| try collectLocalVars(allocator, g.object, seen, out),
+        .set_expr => |s| {
+            try collectLocalVars(allocator, s.object, seen, out);
+            try collectLocalVars(allocator, s.value, seen, out);
+        },
+        .index_expr => |i| {
+            try collectLocalVars(allocator, i.object, seen, out);
+            try collectLocalVars(allocator, i.index, seen, out);
+        },
+        .index_set_expr => |i| {
+            try collectLocalVars(allocator, i.object, seen, out);
+            try collectLocalVars(allocator, i.index, seen, out);
+            try collectLocalVars(allocator, i.value, seen, out);
+        },
+        .try_stmt => |t| {
+            try collectLocalVars(allocator, t.body, seen, out);
+            for (t.catches) |cb| try collectLocalVars(allocator, cb.body, seen, out);
+        },
+        .throw_stmt => |t| try collectLocalVars(allocator, t.expr, seen, out),
+        .when_expr => |w| {
+            if (w.subject) |s| try collectLocalVars(allocator, s, seen, out);
+            for (w.cases) |case| {
+                for (case.conds) |cond| try collectLocalVars(allocator, cond, seen, out);
+                try collectLocalVars(allocator, case.body, seen, out);
+            }
+        },
+        .named_arg => |na| try collectLocalVars(allocator, na.value, seen, out),
+        .array_literal => |al| {
+            for (al.elements) |e| try collectLocalVars(allocator, e, seen, out);
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| try collectLocalVars(allocator, e, seen, out);
+        },
+        else => {},
+    }
+}
+
+/// A default initializer for a promoted local's continuation field. Only
+/// primitive/nullable types have a sensible zero-value; anything else means the
+/// state-machine path cannot promote the local (unsupported for now).
+fn defaultInitializerForTypeRef(allocator: std.mem.Allocator, ref: *const ASTTypeRef) ?*ASTNode {
+    _ = allocator;
+    if (ref.is_nullable or ref.union_types.len > 0) return mkNullLit();
+    if (std.mem.eql(u8, ref.name, "Int")) return mkIntLit(0);
+    if (std.mem.eql(u8, ref.name, "Double")) return mkDoubleLit(0.0);
+    if (std.mem.eql(u8, ref.name, "Bool")) return mkBoolLit(false);
+    if (std.mem.eql(u8, ref.name, "String")) return mkStringLit("");
+    return null;
+}
+
+/// Rewrites references to promoted variables (captures + locals) into
+/// `this.<name>` field accesses, and converts their `var` declarations into
+/// `this.<name> = <init>` assignments. Like `rewriteCapturedRefs` but also
+/// promotes locals declared inside the block (they must survive suspension).
+fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedVar, node: *ASTNode) !void {
+    switch (node.data) {
+        .identifier => |*i| {
+            for (promoted) |c| {
+                if (std.mem.eql(u8, i.name, c.name)) {
+                    const captured_name = i.name;
+                    node.data = .{ .get_expr = .{
+                        .object = mkIdent("this"),
+                        .name = captured_name,
+                        .is_safe = false,
+                        .is_boxed = c.is_boxed,
+                    } };
+                    return;
+                }
+            }
+        },
+        .assignment => |*a| {
+            for (promoted) |c| {
+                if (std.mem.eql(u8, a.name, c.name)) {
+                    const assignment_name = a.name;
+                    const assignment_value = a.value;
+                    node.data = .{ .set_expr = .{
+                        .object = mkIdent("this"),
+                        .name = assignment_name,
+                        .value = assignment_value,
+                        .is_safe = false,
+                        .is_boxed = c.is_boxed,
+                    } };
+                    return;
+                }
+            }
+            try rewritePromotedRefs(allocator, promoted, a.value);
+        },
+        .var_decl => |*v| {
+            if (v.initializer) |init| {
+                if (!isTaskCall(init) and !isAwaitCall(init)) {
+                    for (promoted) |c| {
+                        if (std.mem.eql(u8, v.name, c.name)) {
+                            const var_name = v.name;
+                            node.data = .{ .set_expr = .{
+                                .object = mkIdent("this"),
+                                .name = var_name,
+                                .value = init,
+                                .is_safe = false,
+                                .is_boxed = c.is_boxed,
+                            } };
+                            return;
+                        }
+                    }
+                    try rewritePromotedRefs(allocator, promoted, init);
+                }
+            }
+        },
+        .lambda_expr => return,
+        .block => |b| {
+            for (b.statements) |s| {
+                try rewritePromotedRefs(allocator, promoted, s);
+            }
+        },
+        .call_expr => |c| {
+            try rewritePromotedRefs(allocator, promoted, c.callee);
+            for (c.arguments) |arg| {
+                try rewritePromotedRefs(allocator, promoted, arg);
+            }
+        },
+        .binary_expr => |b| {
+            try rewritePromotedRefs(allocator, promoted, b.left);
+            try rewritePromotedRefs(allocator, promoted, b.right);
+        },
+        .unary_expr => |u| try rewritePromotedRefs(allocator, promoted, u.operand),
+        .get_expr => |g| try rewritePromotedRefs(allocator, promoted, g.object),
+        .set_expr => |s| {
+            try rewritePromotedRefs(allocator, promoted, s.object);
+            try rewritePromotedRefs(allocator, promoted, s.value);
+        },
+        .if_expr => |i| {
+            try rewritePromotedRefs(allocator, promoted, i.condition);
+            try rewritePromotedRefs(allocator, promoted, i.then_branch);
+            if (i.else_branch) |e| try rewritePromotedRefs(allocator, promoted, e);
+        },
+        .while_stmt => |w| {
+            try rewritePromotedRefs(allocator, promoted, w.condition);
+            try rewritePromotedRefs(allocator, promoted, w.body);
+        },
+        .for_stmt => |f| {
+            try rewritePromotedRefs(allocator, promoted, f.iterable);
+            try rewritePromotedRefs(allocator, promoted, f.body);
+        },
+        .return_stmt => |r| if (r.value) |v| try rewritePromotedRefs(allocator, promoted, v),
+        .try_stmt => |t| {
+            try rewritePromotedRefs(allocator, promoted, t.body);
+            for (t.catches) |cb| {
+                try rewritePromotedRefs(allocator, promoted, cb.body);
+            }
+        },
+        .throw_stmt => |t| try rewritePromotedRefs(allocator, promoted, t.expr),
+        .index_expr => |i| {
+            try rewritePromotedRefs(allocator, promoted, i.object);
+            try rewritePromotedRefs(allocator, promoted, i.index);
+        },
+        .index_set_expr => |i| {
+            try rewritePromotedRefs(allocator, promoted, i.object);
+            try rewritePromotedRefs(allocator, promoted, i.index);
+            try rewritePromotedRefs(allocator, promoted, i.value);
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| try rewritePromotedRefs(allocator, promoted, s);
+            for (w.cases) |case| {
+                for (case.conds) |cond| try rewritePromotedRefs(allocator, promoted, cond);
+                try rewritePromotedRefs(allocator, promoted, case.body);
+            }
+        },
+        .array_literal => |al| {
+            for (al.elements) |e| try rewritePromotedRefs(allocator, promoted, e);
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| try rewritePromotedRefs(allocator, promoted, e);
+        },
+        .named_arg => |na| try rewritePromotedRefs(allocator, promoted, na.value),
+        else => {},
+    }
+}
+
+/// A single state of the generated state machine: a straight-line statement
+/// list ending in a transition (`this.label = N`, a branch, a suspend, or the
+/// final done block).
+const MachineState = struct {
+    label: usize,
+    stmts: ArrayList(*ASTNode),
+};
+
+const Machine = struct {
+    allocator: std.mem.Allocator,
+    counter: *usize,
+    states: ArrayList(MachineState),
+
+    fn newState(self: *Machine) !usize {
+        const label = self.counter.*;
+        self.counter.* += 1;
+        const stmts = ArrayList(*ASTNode).init(self.allocator);
+        try self.states.append(.{ .label = label, .stmts = stmts });
+        return label;
+    }
+
+    fn stateIdx(self: *Machine, label: usize) !usize {
+        for (self.states.items, 0..) |s, i| {
+            if (s.label == label) return i;
+        }
+        return error.StateNotFound;
+    }
+
+    fn append(self: *Machine, label: usize, node: *ASTNode) !void {
+        const idx = try self.stateIdx(label);
+        try self.states.items[idx].stmts.append(node);
+    }
+};
+
+/// Builds the state machine for a statement list. `after` is the label control
+/// flows to when the list completes. Returns the label where the list begins.
+fn machineBuildStmts(m: *Machine, stmts: []const *ASTNode, after: usize) anyerror!usize {
+    var k = after;
+    var i: usize = stmts.len;
+    while (i > 0) {
+        i -= 1;
+        k = try machineBuildStmt(m, stmts[i], k);
+    }
+    return k;
+}
+
+/// A branch may be a block or a single statement.
+fn machineBuildBranch(m: *Machine, branch: *ASTNode, after: usize) anyerror!usize {
+    if (branch.data == .block) return machineBuildStmts(m, branch.data.block.statements, after);
+    return machineBuildStmt(m, branch, after);
+}
+
+fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
+    switch (stmt.data) {
+        .while_stmt => |w| {
+            if (containsTrueSuspend(w.condition)) return error.SuspendInCondition;
+            const lcond = try m.newState();
+            const lbody = try machineBuildBranch(m, w.body, lcond);
+            const then_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(lbody))) });
+            const else_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))) });
+            try m.append(lcond, mkIfElse(w.condition, then_block, else_block));
+            return lcond;
+        },
+        .if_expr => |i| {
+            if (containsTrueSuspend(i.condition)) return error.SuspendInCondition;
+            const lthen = try machineBuildBranch(m, i.then_branch, after);
+            const lelse = if (i.else_branch) |e| try machineBuildBranch(m, e, after) else after;
+            const entry = try m.newState();
+            const then_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(lthen))) });
+            const else_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(lelse))) });
+            try m.append(entry, mkIfElse(i.condition, then_block, else_block));
+            return entry;
+        },
+        .call_expr => {
+            if (isSuspendPrimitiveCall(stmt)) {
+                const entry = try m.newState();
+                try m.append(entry, try buildSuspendCall(stmt));
+                try m.append(entry, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+                try m.append(entry, mkReturnVoid());
+                return entry;
+            }
+            if (containsTrueSuspend(stmt)) return error.SuspendInOperand;
+            const entry = try m.newState();
+            try m.append(entry, stmt);
+            try m.append(entry, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+            return entry;
+        },
+        .block => |b| return machineBuildStmts(m, b.statements, after),
+        else => {
+            if (containsTrueSuspend(stmt)) return error.SuspendInOperand;
+            const entry = try m.newState();
+            try m.append(entry, stmt);
+            try m.append(entry, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+            return entry;
+        },
+    }
+}
+
+/// Rewrites a suspension primitive call (`sleepMs(x)`/`sleep(x)`/`yield()`) into
+/// the scheduler call the continuation uses to re-schedule itself.
+fn buildSuspendCall(stmt: *ASTNode) anyerror!*ASTNode {
+    const c = &stmt.data.call_expr;
+    const gname = switch (c.callee.data) {
+        .get_expr => |g| g.name,
+        .identifier => |i| i.name,
+        else => unreachable,
+    };
+    if (std.mem.eql(u8, gname, "yield")) {
+        return mkCall(mkGetExpr(mkIdent("Scheduler"), "yield"), &.{ mkIdent("this") });
+    }
+    const ms_arg = if (std.mem.eql(u8, gname, "sleepMs"))
+        c.arguments[0]
+    else
+        mkBinary(.slash, c.arguments[0], mkIntLit(1000000));
+    return mkCall(mkGetExpr(mkIdent("Scheduler"), "sleep"), &.{ mkIdent("this"), ms_arg });
+}
+
+/// Assembles `resume()`: `while (true) { <if/else chain over states> }`.
+fn assembleMachine(m: *Machine) *ASTNode {
+    var chain: *ASTNode = mkBlock(&.{ mkReturnVoid() });
+    var i: usize = m.states.items.len;
+    while (i > 0) {
+        i -= 1;
+        const s = &m.states.items[i];
+        const cond = mkBinary(.eq_eq, mkGetExpr(mkIdent("this"), "label"), mkIntLit(@intCast(s.label)));
+        const body_block = mkBlock(s.stmts.items);
+        chain = mkIfElse(cond, body_block, chain);
+    }
+    return mkWhile(mkBoolLit(true), mkBlock(&.{chain}));
+}
+
+/// Generates the state-machine `resume()` for a task body containing true
+/// suspension points. Locals are promoted to body fields by the caller.
+fn buildResumeStateMachine(
+    allocator: std.mem.Allocator,
+    checker: *TypeChecker,
+    captures: []const CapturedVar,
+    locals: []const CapturedVar,
+    body: []const *ASTNode,
+    result_type: *const EiwaType,
+    counter: *usize,
+    generated: *ArrayList(*ASTNode),
+    entry_out: *usize,
+) !*ASTNode {
+    // 1. Promote captures + locals to `this.<name>` (incl. var_decl → set).
+    var promoted = ArrayList(CapturedVar).init(allocator);
+    defer promoted.deinit();
+    try promoted.appendSlice(captures);
+    for (locals) |l| try promoted.append(l);
+    for (body) |s| try rewritePromotedRefs(allocator, promoted.items, s);
+
+    // 2. Rewrite nested task/await machinery (awaits stay blocking-poll).
+    var rewritten = ArrayList(*ASTNode).init(allocator);
+    defer rewritten.deinit();
+    try rewriteStatements(allocator, checker, body, counter, generated, &rewritten);
+    for (rewritten.items) |s| try clearResolvedTypes(allocator, s);
+
+    // 3. Split the trailing value statement (becomes the done state's result).
+    const is_void_result = result_type.* == .Void;
+    var leading = ArrayList(*ASTNode).init(allocator);
+    defer leading.deinit();
+    var trailing: ?*ASTNode = null;
+    if (!is_void_result and rewritten.items.len > 0 and isValueStatement(rewritten.items[rewritten.items.len - 1])) {
+        trailing = rewritten.pop();
+    }
+    try leading.appendSlice(rewritten.items);
+
+    // 4. Build the state machine (reverse: done state first).
+    var m = Machine{ .allocator = allocator, .counter = counter, .states = ArrayList(MachineState).init(allocator) };
+    defer m.states.deinit();
+    const done_label = try m.newState();
+    const entry = try machineBuildStmts(&m, leading.items, done_label);
+    entry_out.* = entry;
+
+    // 5. Done state: result store, done=true, reschedule waiter chain.
+    if (trailing) |tv| {
+        try m.append(done_label, mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "result", tv));
+    }
+    try m.append(done_label, mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "done", mkBoolLit(true)));
+    const waiter_name = try std.fmt.allocPrint(allocator, "__waiter{d}", .{counter.*});
+    counter.* += 1;
+    const waiter_var = mkVarDecl(waiter_name, mkGetExpr(mkGetExpr(mkIdent("this"), "task"), "waiters"));
+    waiter_var.data.var_decl.is_mut = true;
+    try m.append(done_label, waiter_var);
+    const while_body = mkBlock(&.{
+        mkCall(
+            mkGetExpr(mkIdent("Scheduler"), "schedule"),
+            &.{ mkGetExpr(mkUnary(.bang_bang, mkIdent(waiter_name)), "cont") },
+        ),
+        mkAssign(waiter_name, mkGetExpr(mkUnary(.bang_bang, mkIdent(waiter_name)), "next")),
+    });
+    try m.append(done_label, mkWhile(
+        mkBinary(.bang_eq, mkIdent(waiter_name), mkNullLit()),
+        while_body,
+    ));
+    try m.append(done_label, mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "waiters", mkNullLit()));
+    try m.append(done_label, mkReturnVoid());
+
+    // 6. Assemble resume().
+    const resume_body = assembleMachine(&m);
+    return mkFunDecl("resume", &.{}, resume_body, false, &.{.kw_implement});
 }
 
 // ---------------------------------------------------------------------------
@@ -1513,6 +2113,40 @@ fn mkIf(condition: *ASTNode, then_branch: *ASTNode) *ASTNode {
     return n;
 }
 
+fn mkIfElse(condition: *ASTNode, then_branch: *ASTNode, else_branch: *ASTNode) *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .if_expr = .{
+            .condition = condition,
+            .then_branch = then_branch,
+            .else_branch = else_branch,
+        } },
+    };
+    return n;
+}
+
+fn mkDoubleLit(value: f64) *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .double_literal = value },
+    };
+    return n;
+}
+
+fn mkStringLit(value: []const u8) *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .string_literal = value },
+    };
+    return n;
+}
+
 fn mkWhile(condition: *ASTNode, body: *ASTNode) *ASTNode {
     const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
     n.* = .{
@@ -1559,6 +2193,16 @@ fn mkReturn(value: *ASTNode) *ASTNode {
         .line = 0,
         .column = 0,
         .data = .{ .return_stmt = .{ .value = value } },
+    };
+    return n;
+}
+
+fn mkReturnVoid() *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .return_stmt = .{ .value = null } },
     };
     return n;
 }

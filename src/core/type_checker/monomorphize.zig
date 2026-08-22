@@ -135,8 +135,21 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
         }
         new_methods[i] = new_method;
     }
+    var new_body_fields = try self.allocator.alloc(ast.ClassProp, type_decl.body_fields.len);
+    for (type_decl.body_fields, 0..) |prop, i| {
+        new_body_fields[i] = prop;
+        new_body_fields[i].type_ref = try self.cloneTypeRef(prop.type_ref);
+        if (generic_map.get(prop.type_ref.name)) |g_type| {
+            new_body_fields[i].resolved_type = g_type;
+        }
+        if (prop.initializer) |init_node| {
+            new_body_fields[i].initializer = try self.cloneNode(init_node);
+        }
+    }
+
     var new_type_decl = type_decl;
     new_type_decl.primary_constructor = new_props;
+    new_type_decl.body_fields = new_body_fields;
     new_type_decl.methods = new_methods;
     new_type_decl.name = mangled_name;
     new_type_decl.resolved_c_name = mangled_name;

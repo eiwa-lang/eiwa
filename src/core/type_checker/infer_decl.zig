@@ -440,6 +440,33 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         }
     }
 
+    // Body fields (`var`/`val` declared in the type body, outside the primary
+    // constructor). They are NOT constructor args: their initializers run at
+    // construction time. Resolve types, validate initializers (with `this` in
+    // scope, so an initializer can reference other fields), and register them
+    // as class properties so `this.x`/`x` resolve inside methods.
+    for (c.body_fields) |*prop| {
+        const bf_type = prop.resolved_type orelse try self.resolveTypeRef(prop.type_ref);
+        prop.resolved_type = bf_type;
+
+        if (self.pass == .validation) {
+            if (prop.initializer) |init_node| {
+                // Infer the ORIGINAL node in-place (not a clone): the emitter
+                // evaluates `prop.initializer` directly in the ctor, so it needs
+                // resolved types on the actual AST nodes (`this.x` lookups etc).
+                init_node.expected_type = bf_type;
+                const init_type = try self.inferNode(init_node, &class_scope);
+                if (!self.isCompatible(bf_type, init_type)) {
+                    self.reportError(node.line, node.column, "TypeError: Body field initializer type {} is incompatible with property type {}.", .{ init_type.*, bf_type });
+                    return error.TypeError;
+                }
+            }
+        }
+
+        try class_props.put(prop.name, {});
+        try class_scope.define(prop.name, bf_type, prop.is_mut, false);
+    }
+
     const old_class_methods = self.current_class_methods;
     self.current_class_methods = c.methods;
     defer self.current_class_methods = old_class_methods;

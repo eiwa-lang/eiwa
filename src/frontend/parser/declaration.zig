@@ -408,6 +408,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
     }
 
     var methods = ArrayList(*ASTNode).init(self.allocator);
+    var body_fields = ArrayList(ast.ClassProp).init(self.allocator);
     if (self.match(.l_brace)) {
         while (!self.check(.r_brace) and !self.check(.eof)) {
             const member_annotations = try self.parseAnnotations();
@@ -415,8 +416,14 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
 
             if (self.match(.kw_fun)) {
                 try methods.append(try self.funDeclaration(member_annotations, modifiers, false));
+            } else if (self.match(.kw_var)) {
+                // Body field: `var name: Type = expr` (mutable, not a ctor arg).
+                try body_fields.append(try self.parseBodyField(true, modifiers));
+            } else if (self.match(.kw_val)) {
+                // Body field: `val name: Type = expr` (immutable, not a ctor arg).
+                try body_fields.append(try self.parseBodyField(false, modifiers));
             } else {
-                self.errorAtCurrent("Only methods are currently supported inside types.");
+                self.errorAtCurrent("Only methods and `var`/`val` fields are supported inside types.");
                 return error.ParseError;
             }
         }
@@ -432,7 +439,48 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
         .resolved_c_name = null,
         .contracts = try contracts.toOwnedSlice(),
         .skills = try skills.toOwnedSlice(),
+        .body_fields = try body_fields.toOwnedSlice(),
     } }, line, col);
+}
+
+/// Parses a body field declaration: `var`/`val` already consumed.
+///   `var x: T = expr`   (non-null requires initializer; nullable may omit → null)
+///   `val x: T = expr`   (initializer REQUIRED — Kotlin-style body property)
+/// Returns a `ClassProp` (is_property = true) that is NOT a constructor arg.
+pub fn parseBodyField(self: *Parser, is_mut: bool, modifiers: []const ast.TokenType) !ast.ClassProp {
+    if (modifiers.len > 0) {
+        self.errorAtCurrent("Modifiers not allowed on body fields.");
+        return error.ParseError;
+    }
+    try self.consume(.identifier, "Expected body field name.");
+    const field_name = self.previous.lexeme;
+
+    const parsed_type = try self.parseTypeAnnotation() orelse {
+        self.errorAtCurrent("Expected body field type.");
+        return error.ParseError;
+    };
+
+    var initializer: ?*ASTNode = null;
+    if (self.match(.eq)) {
+        initializer = try self.expression();
+    } else if (parsed_type.is_nullable) {
+        // Nullable body fields may omit the initializer and default to null.
+        initializer = try self.createNodeAt(.null_literal, self.previous.line, self.previous.column);
+    } else if (!is_mut) {
+        self.errorAtCurrent("Body `val` fields must have an initializer (Kotlin-style).");
+        return error.ParseError;
+    } else {
+        self.errorAtCurrent("Body `var` fields of non-nullable type must have an initializer.");
+        return error.ParseError;
+    }
+
+    return .{
+        .is_mut = is_mut,
+        .name = field_name,
+        .type_ref = parsed_type,
+        .is_property = true,
+        .initializer = initializer,
+    };
 }
 
 pub fn contractDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*ASTNode {

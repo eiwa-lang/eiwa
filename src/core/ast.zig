@@ -195,6 +195,11 @@ pub const ASTNodeType = union(enum) {
         skills: []const []const u8,
         skills_composed: bool = false,
         serde_generated: bool = false,
+        /// Mutable/immutable fields declared in the type body (outside the
+        /// primary constructor), e.g. `var count: Int = 0`. Each requires an
+        /// initializer evaluated at construction. They are NOT constructor
+        /// parameters — callers construct the type without them.
+        body_fields: []ClassProp = &.{},
     },
     contract_decl: struct {
         annotations: []const Annotation,

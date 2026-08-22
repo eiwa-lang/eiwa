@@ -1,0 +1,50 @@
+// Demonstration: body fields — `var`/`val` declared in the type body, outside
+// the primary constructor (Kotlin-style).
+//
+// Semantics:
+//   - NOT constructor arguments: `Counter(10)` — fields are initialized in ctor.
+//   - `var` (mutable) / `val` (immutable) with a mandatory initializer.
+//   - A nullable `var`/`val` may omit the initializer → defaults to null.
+//   - Initializers run at construction and may reference other fields via
+//     `this` (declaration order) and constructor params/properties.
+import { print } from "std.core"
+
+type Counter(val base: Int) {
+    var count: Int = 0
+    val label: String = "counter"
+    var doubled: Int = this.base * 2
+    var note: String?
+    var derived: Int = this.count + this.base
+
+    fun inc() {
+        this.count = this.count + 1
+    }
+
+    fun describe(): String {
+        return this.label + "#" + this.count.toString() + " base=" + this.base.toString()
+    }
+
+    fun clear() {
+        this.count = 0
+        this.note = null
+    }
+}
+
+fun main() {
+    val c = Counter(10)
+    print("initial: " + c.describe())
+    print("doubled: " + c.doubled.toString())
+    print("derived (count+base at ctor): " + c.derived.toString())
+    print("note (nullable default): " + if (c.note == null) "null" else c.note!!)
+
+    c.inc()
+    c.inc()
+    print("after 2 inc: " + c.describe())
+    print("doubled unchanged (evaluated at ctor): " + c.doubled.toString())
+
+    c.note = "hello"
+    print("note set: " + c.note!!)
+
+    val other = Counter(3)
+    print("independent instance count: " + other.count.toString())
+}

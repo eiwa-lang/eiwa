@@ -43,6 +43,11 @@ pub fn ArrayList(comptime T: type) type {
             return val;
         }
 
+        pub fn insert(self: *Self, index: usize, item: T) !void {
+            try self.unmanaged.insert(self.allocator, index, item);
+            self.items = self.unmanaged.items;
+        }
+
         pub fn toOwnedSlice(self: *Self) ![]T {
             const slice = try self.unmanaged.toOwnedSlice(self.allocator);
             self.items = &.{};

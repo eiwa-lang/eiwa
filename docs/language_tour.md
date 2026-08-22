@@ -602,6 +602,33 @@ type Button
 }
 ```
 
+#### Body Fields (`var` / `val` no corpo do `type`)
+
+Besides the primary-constructor properties, a `type` may declare **body fields**: `var`/`val`
+declared inside the type body (Kotlin-style). They are **not** constructor arguments — their
+initializers run once at construction, in declaration order, with `this` available (so an
+initializer can reference constructor params/properties and earlier fields).
+
+```kotlin
+type Counter(val base: Int) {
+    var count: Int = 0              // mutable body field
+    val label: String = "counter"   // immutable body field
+    var doubled: Int = this.base * 2   // initializer references ctor property
+    var note: String?               // nullable: initializer omitted → defaults to null
+
+    fun inc() { this.count = this.count + 1 }
+}
+
+val c = Counter(10)   // fields are NOT ctor args
+c.inc()               // c.count == 1, c.doubled == 20, c.note == null
+```
+
+Rules (Kotlin-inspired):
+- `val` body fields **require** an initializer.
+- `var` body fields of **non-nullable** type **require** an initializer.
+- `var`/`val` of **nullable** type may omit the initializer → defaults to `null`.
+- Assigning to a `val` body field is a compile-time error (`Cannot assign to constant property`).
+
 ### 11.2 `contract` — Behavioral Capabilities
 
 A `contract` defines a pure API: method signatures only. No state, no constructors, no implementation, no instantiation. Contracts are how Eiwa does polymorphism.
