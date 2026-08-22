@@ -780,7 +780,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Fase G — Validação:** suíte **68 PASS, 2 FAIL** (falhas pré-existentes), stress 20k,
       `main.ei` run/build verdes; `http_sample.ei` cliente passa, server segfaulta ao responder
       (gap pré-existente de sockets/`net.ei` no emitter).
-- [x] **Fase H — Docs:** AGENTS.md/agents.md, `architecture.md`, `decisions.md` (**ADR 48**),
+- [x] **Fase H — Docs:** AGENTS.md, `architecture.md`, `decisions.md` (**ADR 48**),
       `language_tour.md` (seção 20 stackless), roadmap Phase 68; `tasks-backend-parity.md`/
       `bloco-b-handoff.md` marcados obsoletos; removidos os plans superseded.
 - [ ] **Fase I — PROPOSTA (adiada):** Dispatchers / thread pool (paralelismo real) — pré-requisitos

@@ -11,5 +11,5 @@ updated: 2026-05-25
 - Branch name format should follow: `feature/[task-slug]` or `fix/[bug-slug]`.
 
 ## AI Agent Instructions
-- Refer to the root [agents.md](file:../../agents.md) for full compilation/build commands, codebase layout, and implementation rules.
+- Refer to the root [AGENTS.md](file:../../AGENTS.md) for full compilation/build commands, codebase layout, and implementation rules.
 

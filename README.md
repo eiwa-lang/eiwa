@@ -183,7 +183,7 @@ This generates the `eiwac` compiler binary in `./bin/`. To also build the `eiwa`
 Eiwa's compiler is fully documented. If you are curious about how we process ASTs or why we chose certain architectural paths, check out the `docs/` folder:
 
 - 🏛️ **[Architecture Overview](docs/architecture.md)**: How the Lexer, Parser, TypeChecker, and native LLVM backend pipeline work.
-- 🤖 **[AI Agent Guide](agents.md)**: Standard build commands, codebase mappings, and rules for LLM agents.
+- 🤖 **[AI Agent Guide](AGENTS.md)**: Standard build commands, codebase mappings, and rules for LLM agents.
 - ⚖️ **[Architectural Decisions (ADRs)](docs/decisions.md)**: Why we enforce operator modifiers and how we handle Null Safety.
 - 📈 **[Roadmap & Progress](docs/roadmap.md)**: The historic evolution of the compiler, completed phases, and future checklists.
 - 📖 **[Language Tour](docs/language_tour.md)**: Null Safety, Operator Overloading, Modules, Collections, and more.

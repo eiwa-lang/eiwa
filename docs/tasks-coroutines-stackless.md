@@ -288,7 +288,7 @@ Casos em ordem:
 
 ## Fase H — Docs — ✅ CONCLUÍDA (2026-08)
 
-- [x] `AGENTS.md`/`agents.md`: LLVM como único backend, coroutines stackless, mapa de módulos
+- [x] `AGENTS.md`: LLVM como único backend, coroutines stackless, mapa de módulos
       (`coroutines.zig`/`coroutines_transform.zig`), `src/std/coroutines.ei`.
 - [x] `architecture.md`: seção "Coroutines Stackless" no Core.
 - [x] `roadmap.md`: **Phase 68** (coroutines stackless, IN PROGRESS) como fase atual; fases
