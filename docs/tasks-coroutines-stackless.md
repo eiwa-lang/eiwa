@@ -157,8 +157,41 @@ Casos em ordem:
       falhava `MissingTypeForVarDecl`). Validado: `samples/tests/task_transform_test.ei` **12/12**
       (novos: `TaskCalculator.doubleOf` == 42, `sumOfTask` == 30, `tryCatchInMethod` == 42,
       `TaskBoxer<T>.identity` em `Int` e `String`).
-- [ ] P5 — `Task<T>` exposto na stdlib stackless (remover `Task<T>`/`Awaitable` neco),
+- [x] P5 — `Task<T>` exposto na stdlib stackless (remover `Task<T>`/`Awaitable` neco),
       `Coroutine.sleep/delay` sobre o Scheduler (timer heap), I/O via `poll`.
+      **CONCLUÍDO (2026-08, parcial)**: `src/std/coroutines.ei` foi reescrito **sem neco**
+      (stackful): removidos `lib Neco` + `@MainWrapper` + `Task<T>`/`Taskable`/`TaskableCoroutine`
+      neco; `task<T>` agora retorna `StackTask<T> : Awaitable<T>` (o entry sem `@MainWrapper` é
+      `main`/`eiwa_test_main` direto, e o `Scheduler`/`StackTask` stackless seguem). `Coroutine.sleep/
+      sleepMs` usam `nanosleep` (FFI), `yield` usa `sched_yield`, `EventLoop.waitReadable/waitWritable`
+      usam `poll` (FFI) — todos via primitivas de sistema, sem neco. Fixes no transform:
+      processa corpos de `test_decl` (task/await direto em `test {}`), `clearResolvedTypes` cobre
+      `.test_decl`, e `buildResume` não consome assignment/set como valor de retorno (`isValueStatement`
+      — tasks Void executam a última stmt por efeito, sem `this.task.result`). Validado:
+      `task_test.ei` **14/14** (reescrito p/ modelo stackless), suíte `samples/tests` 64/2.
+      **Propagação de writes em vars capturadas implementada**: campo capturado boxed é
+      declarado com `ClassProp.is_boxed`, o ctor do `__TaskBlockN` recebe o **box pointer**
+      (`identifier.is_box_ref` — single deref no call site), e o get/set de `this.<name>`
+      no resume faz double-deref (`get_expr`/`set_expr` `.is_boxed`). Writes dentro do task
+      agora voltam para a var externa (paridade com closures). **Semântica lazy**: o corpo do
+      task não roda na criação (`task {}` só cria + agenda); roda no primeiro `await()`
+      (`Scheduler.run()`). Diferente do neco (eager, `.start()` imediato). Gaps adiados:
+      **timer heap cooperativo** (sleep hoje bloqueia o thread via nanosleep — verdadeira
+      suspensão exige switch(label), Fase D).
+      **Scheduler melhorado (await não acopla tasks independentes)**: `buildPollStmt` gera
+      `while (!recv.done && Scheduler.runStep())` — roda só até a tarefa aguardada completar,
+      deixando tasks independentes na fila para o próprio await (novo `Scheduler.runStep()`).
+      **Drain de fire-and-forget**: `transformModule` agora transforma funções com `task{}`
+      mesmo sem `is_suspend` (main com `task{}` sem await), e anexa `Scheduler.run()` no final
+      do `main` e de cada `test {}` — tasks agendados mas nunca awaitados ainda rodam antes do
+      programa terminar. Validado: `task_test.ei` **16/16** (novos: `independent tasks are not
+      coupled by await`, `fire-and-forget task runs on the main scheduler drain`).
+      TODO: **box de 16 bytes fixo** (`statement.zig` `cell_size = 16`) — o cell heap de vars
+      boxed tem tamanho fixo que cabe fat pointer/i64/ptr/double, mas pode estourar para tipos
+      custom grandes; alocar `LLVMStoreSizeOfType` (pré-existente nos closures, estender no P5).
+      TODO: **object static String concat crasha** (`"x" + Obj.v` onde `v: String`) — bug
+      pré-existente do emitter, não relacionado a coroutines; investigar emissão de get_expr
+      de campo String de object em concat.
 
 ## Fase D — Emissão LLVM
 
@@ -227,6 +260,38 @@ Casos em ordem:
       `docs/bloco-b-handoff.md`: obsoletos/superseded.
 - [x] Limpar `gc_s1/ gc_s1a/ gc_s1b/ gc_s2/ gc_s3/ gc_stress_tmp/` (testes
       estáveis consolidados em `samples/tests/gc_stress_test.ei`).
+
+## Fase I — Proposta: Dispatchers / thread pool (paralelismo real, estilo Kotlin)
+
+> **Origem (2026-08):** o Eiwa implementa coroutines **cooperativas single-thread**
+> (equivalente ao `Dispatchers.Main`/`Unconfined` do Kotlin). Para paralelismo real
+> (como `Dispatchers.Default`/`IO` do Kotlin ou goroutines do Go), é preciso um
+> dispatcher + thread pool. **PROPOSTA — não é o modelo atual; requer redesign.**
+> Só avaliar depois que Fase C/D/E/F estiverem completas e a suíte 100% verde.
+
+- [ ] **Conceito de `Dispatcher`**: contexto onde um `task {}` roda. Por padrão
+      `Dispatcher.Single` (o scheduler atual, single-thread). Futuro: `Dispatcher.Default`
+      (thread pool = nº de cores), `Dispatcher.IO`.
+- [ ] **Scheduler por pool**: hoje `Scheduler` é um singleton global. Para paralelismo,
+      cada dispatcher tem sua própria fila + event loop numa thread OS dedicada. `await()`
+      precisa esperar **entre** threads (notificação/cross-thread), não só `runStep()` local.
+- [ ] **Sincronização de estado compartilhado**: tasks em threads diferentes acessam o
+      mesmo `StackTask`/box/var capturada — exige locks/atomics para `done`/`result`/`waiters`
+      e para vars boxed. Este é o maior risco de corretude (data races).
+- [ ] **GC multithread**: Boehm GC já suporta threads, mas o registro de raízes do JIT
+      (`registerJITGlobalsAsRoots`) e as stacks de múltiplas threads precisam ser revisados.
+- [ ] **Semântica**: definir se `task {}` num dispatcher paralelo roda eager (como Go/Kotlin
+      Default) ou continua lazy. Proposto: eager no dispatcher paralelo (agenda + roda na
+      thread do pool), lazy no single (atual).
+- [ ] **Como o programador escolhe**: `task(Dispatcher.Default) { ... }` ou
+      `withDispatcher { }` — alinhado ao `withContext` do Kotlin.
+- [ ] **Validar**: benchmark de CPU-bound (ex: N-Body paralelo) vs single-thread;
+      suíte existente continua verde no `Dispatcher.Single` (default).
+
+**Decisão recomendada:** adiar. O modelo cooperativo single-thread cobre os casos de I/O
+leve e concorrência estruturada (que é o objetivo do projeto). Paralelismo real adiciona
+uma camada grande de complexidade (sincronização, GC multithread) sem mudar o modelo de
+programação para o caso principal. Revisitar se houver demanda por CPU-bound paralelo.
 
 ---
 

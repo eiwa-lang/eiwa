@@ -58,7 +58,10 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
 
     for (module.data.program.statements) |stmt| {
         if (stmt.data == .fun_decl) {
-            if (!stmt.data.fun_decl.is_suspend) continue;
+            // Transform any function whose body contains task{}/await — even
+            // when it is NOT suspend (e.g. `main` with a bare `task {}` that is
+            // never awaited still needs the machinery + a final scheduler drain).
+            // rewriteFunctionBody's hasTaskOrAwait guard filters the rest.
             try transformFunction(allocator, checker, stmt, &counter, &generated);
         } else if (stmt.data == .type_decl) {
             const t = &stmt.data.type_decl;
@@ -89,6 +92,28 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
                 var t3: EiwaType = undefined;
                 checker.pass = .validation;
                 try infer_decl.inferObjectDecl(checker, stmt, &checker.global_scope, &t3);
+            }
+        } else if (stmt.data == .test_decl) {
+            // A `test "..." { }` block may contain task{}/await() directly
+            // (no surrounding suspend fun). Rewrite its body statements and
+            // re-infer so the generated machinery resolves.
+            const td = &stmt.data.test_decl;
+            if (td.body.data == .block) {
+                var test_stmts = ArrayList(*ASTNode).init(allocator);
+                defer test_stmts.deinit();
+                const before = generated.items.len;
+                try rewriteStatements(allocator, checker, td.body.data.block.statements, &counter, &generated, &test_stmts);
+                if (generated.items.len > before or test_stmts.items.len != td.body.data.block.statements.len) {
+                    // Drain the scheduler at the end of the test so
+                    // fire-and-forget tasks (never awaited) still run.
+                    try test_stmts.append(mkExprStmt(mkCall(mkGetExpr(mkIdent("Scheduler"), "run"), &.{})));
+                    td.body.data.block.statements = try test_stmts.toOwnedSlice();
+                    try clearResolvedTypes(allocator, stmt);
+                    checker.pass = .validation;
+                    _ = try checker.inferNode(stmt, &checker.global_scope);
+                } else {
+                    td.body.data.block.statements = try test_stmts.toOwnedSlice();
+                }
             }
         }
     }
@@ -143,6 +168,11 @@ fn rewriteFunctionBody(
     var new_stmts = ArrayList(*ASTNode).init(allocator);
     defer new_stmts.deinit();
     try rewriteStatements(allocator, checker, f.body.data.block.statements, counter, generated, &new_stmts);
+    // `fun main()`: drain the scheduler before returning so fire-and-forget
+    // tasks (`task {}` never awaited) still run. run() no-ops on empty queue.
+    if (std.mem.eql(u8, f.name, "main")) {
+        try new_stmts.append(mkExprStmt(mkCall(mkGetExpr(mkIdent("Scheduler"), "run"), &.{})));
+    }
     const rewritten = try new_stmts.toOwnedSlice();
     f.body.data.block.statements = rewritten;
     return true;
@@ -769,6 +799,7 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
                         .object = mkIdent("this"),
                         .name = captured_name,
                         .is_safe = false,
+                        .is_boxed = c.is_boxed,
                     } };
                     return;
                 }
@@ -785,6 +816,7 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
                         .name = assignment_name,
                         .value = assignment_value,
                         .is_safe = false,
+                        .is_boxed = c.is_boxed,
                     } };
                     return;
                 }
@@ -979,16 +1011,21 @@ fn buildTaskBlockType(
     });
 
     for (captures) |c| {
+        // Boxed captures hold the heap box pointer so writes inside the task
+        // propagate back to the outer variable (shared mutable capture). The
+        // type checker still types the field as the captured value type; the
+        // emitter allocates/accesses it as a pointer via `is_boxed`.
         try props.append(.{
             .is_mut = true,
             .name = c.name,
             .type_ref = c.type_ref,
+            .is_boxed = c.is_boxed,
         });
     }
 
     var methods = ArrayList(*ASTNode).init(allocator);
     defer methods.deinit();
-    try methods.append(try buildResume(allocator, checker, captures, body, counter, generated));
+    try methods.append(try buildResume(allocator, checker, captures, body, result_type, counter, generated));
     try methods.append(try buildIsDone(allocator));
 
     const type_node = try allocator.create(ASTNode);
@@ -1019,6 +1056,7 @@ fn buildResume(
     checker: *TypeChecker,
     captures: []const CapturedVar,
     body: []const *ASTNode,
+    result_type: *const EiwaType,
     counter: *usize,
     generated: *ArrayList(*ASTNode),
 ) !*ASTNode {
@@ -1042,14 +1080,23 @@ fn buildResume(
     defer stmts.deinit();
 
     // The last rewritten statement is the block result; it becomes
-    // `this.task.result = <last>`.
-    const result_expr = if (rewritten.items.len > 0) rewritten.pop() else mkIntLit(0);
+    // `this.task.result = <last>` — UNLESS the block result is Void or the
+    // last statement is a side-effect statement (assignment/set) that must be
+    // executed, not consumed as a value.
+    const is_void_result = result_type.* == .Void;
+    const last_is_value = if (rewritten.items.len > 0) isValueStatement(rewritten.items[rewritten.items.len - 1]) else false;
+    const has_result = !is_void_result and last_is_value;
+    const result_expr = if (has_result) rewritten.pop() else null;
 
-    // result store: this.task.result = <last>
+    // result store: this.task.result = <last> (only when the task has a value)
     const task_get = mkGetExpr(mkIdent("this"), "task");
-    const result_set = mkSetExpr(task_get, "result", result_expr);
-    try stmts.appendSlice(rewritten.items);
-    try stmts.append(result_set);
+    if (result_expr) |re| {
+        const result_set = mkSetExpr(task_get, "result", re);
+        try stmts.appendSlice(rewritten.items);
+        try stmts.append(result_set);
+    } else {
+        try stmts.appendSlice(rewritten.items);
+    }
 
     // this.task.done = true
     const done_set = mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "done", mkBoolLit(true));
@@ -1115,6 +1162,18 @@ fn blockReturnType(body: []const *ASTNode) *const EiwaType {
 
 var defaultVoidType: EiwaType = .Void;
 
+/// True when the statement produces a value usable as a task result (as
+/// opposed to a side-effect statement like an assignment/set that must be
+/// executed for its effect, not consumed as the block's value).
+fn isValueStatement(node: *ASTNode) bool {
+    switch (node.data) {
+        .int_literal, .double_literal, .string_literal, .bool_literal, .identifier,
+        .binary_expr, .unary_expr, .call_expr, .get_expr, .index_expr,
+        .array_literal, .map_literal, .lambda_expr => return true,
+        else => return false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Rewriting task/await call sites
 // ---------------------------------------------------------------------------
@@ -1160,8 +1219,11 @@ fn rewriteTaskCall(
     defer ctor_args.deinit();
     try ctor_args.append(mkIdent(task_name));
     for (captures) |c| {
+        // Boxed captures pass the box pointer (the outer var's heap cell) so
+        // writes inside the task's resume propagate back. Reads/writes of
+        // `this.<name>` inside the resume are marked `is_boxed` for double-deref.
         var arg = mkIdent(c.name);
-        if (c.is_boxed) arg.data.identifier.is_boxed = true;
+        arg.data.identifier.is_box_ref = c.is_boxed;
         try ctor_args.append(arg);
     }
     const block_ctor_call = mkCall(mkIdent(block_type.data.type_decl.name), ctor_args.items);
@@ -1283,11 +1345,15 @@ fn rewriteReturnTaskAwait(
 
 /// `if (!<recv>.done) { Scheduler.run() }`
 fn buildPollStmt(recv: *ASTNode) *ASTNode {
-    const cond = mkUnary(.bang, mkGetExpr(recv, "done"));
-    const body = mkBlock(&.{
-        mkExprStmt(mkCall(mkGetExpr(mkIdent("Scheduler"), "run"), &.{})),
-    });
-    return mkIf(cond, body);
+    // Run the scheduler until the awaited task is done — but NOT past it:
+    // `while (!recv.done && Scheduler.runStep()) {}` drains only what is
+    // needed to complete `recv`, leaving independent queued tasks for their
+    // own await (they are not spuriously coupled to this one).
+    const not_done = mkUnary(.bang, mkGetExpr(recv, "done"));
+    const step_call = mkCall(mkGetExpr(mkIdent("Scheduler"), "runStep"), &.{});
+    const cond = mkBinary(.and_and, not_done, step_call);
+    const body = mkBlock(&.{});
+    return mkWhile(cond, body);
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,6 +1607,13 @@ fn clearResolvedTypes(allocator: std.mem.Allocator, node: *ASTNode) !void {
         .object_decl => |o| {
             for (o.members) |m| {
                 try clearResolvedTypes(allocator, m);
+            }
+        },
+        .test_decl => |td| {
+            if (td.body.data == .block) {
+                for (td.body.data.block.statements) |s| {
+                    try clearResolvedTypes(allocator, s);
+                }
             }
         },
         .fun_decl => |f| {

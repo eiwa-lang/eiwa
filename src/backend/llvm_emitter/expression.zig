@@ -320,6 +320,12 @@ pub fn emitExpression(
             }
             if (scope.get(name)) |var_val| {
                 const val_type = llvm.LLVMTypeOf(var_val);
+                if (ident.is_box_ref) {
+                    // Yield the box pointer (single deref of the boxed var's
+                    // alloca) so a task ctor can share the mutable capture.
+                    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+                    return llvm.LLVMBuildLoad2(builder, ptr_type, var_val, "box_ref");
+                }
                 if (llvm.LLVMGetTypeKind(val_type) == llvm.LLVMPointerTypeKind) {
                     // Boxed variable: the alloca holds a ptr to the value heap cell.
                     // Perform double-deref: load box_ptr from alloca, then load value from box_ptr.
@@ -702,6 +708,16 @@ pub fn emitExpression(
                             } else {
                                 const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, real_obj, @intCast(f_idx), field_name_z.ptr);
                                 const field_type = s_info.field_types[f_idx];
+                                if (get.is_boxed) {
+                                    // Boxed field: field holds a ptr to the heap
+                                    // value cell (shared mutable capture).
+                                    const box_ptr = llvm.LLVMBuildLoad2(builder, field_type, field_ptr, "get_box_ptr");
+                                    const val_elem_type = if (node.resolved_type) |res_type|
+                                        types_mapping.getLLVMType(ctx, res_type.*)
+                                    else
+                                        llvm.LLVMInt64TypeInContext(ctx);
+                                    return llvm.LLVMBuildLoad2(builder, val_elem_type, box_ptr, "get_boxed_val");
+                                }
                                 return llvm.LLVMBuildLoad2(builder, field_type, field_ptr, "get_val");
                             }
                         }
@@ -791,6 +807,20 @@ pub fn emitExpression(
                             defer std.heap.page_allocator.free(field_name_z);
 
                             const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, obj_val, @intCast(f_idx), field_name_z.ptr);
+                            if (set.is_boxed) {
+                                // Boxed field: load the box pointer from the
+                                // field and store the value through it (shared
+                                // mutable capture).
+                                const box_ptr = llvm.LLVMBuildLoad2(builder, s_info.field_types[f_idx], field_ptr, "box_ptr_set");
+                                const val_elem_type = if (set.value.resolved_type) |res_type|
+                                    types_mapping.getLLVMType(ctx, res_type.*)
+                                else
+                                    llvm.LLVMInt64TypeInContext(ctx);
+                                if (storeValue(val, val_elem_type)) |sv| {
+                                    _ = llvm.LLVMBuildStore(builder, sv, box_ptr);
+                                }
+                                return val;
+                            }
                             if (storeValue(val, s_info.field_types[f_idx])) |sv| {
                                 _ = llvm.LLVMBuildStore(builder, sv, field_ptr);
                             }

@@ -2554,6 +2554,12 @@ pub const LLVMEmitter = struct {
         for (t.primary_constructor) |prop| {
             try field_names.append(prop.name);
             const ptr_type_fallback = llvm.LLVMPointerTypeInContext(self.context, 0);
+            if (prop.is_boxed) {
+                // Boxed capture: the field stores a pointer to the shared heap
+                // value cell (mutable capture propagating to the outer var).
+                try field_types.append(ptr_type_fallback);
+                continue;
+            }
             const f_llvm_type = if (prop.resolved_type) |rt|
                 types_mapping.getLLVMTypeWithContracts(self.context, rt.*, self.contracts_ast)
             else blk: {

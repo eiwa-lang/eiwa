@@ -121,6 +121,9 @@ pub const ClassProp = struct {
     resolved_type: ?*const type_system.EiwaType = null,
     is_property: bool = true,
     initializer: ?*ASTNode = null,
+    /// True when the field holds a box pointer to a shared mutable capture;
+    /// the emitter stores/loads through the box (stackless task capture).
+    is_boxed: bool = false,
 };
 
 pub const CatchBlock = struct {
@@ -251,6 +254,10 @@ pub const ASTNodeType = union(enum) {
         resolved_c_name: ?[]const u8,
         is_class_property: bool = false,
         is_boxed: bool = false,
+        /// True when the identifier must yield the box *pointer* (single deref
+        /// of the boxed var's alloca) instead of the boxed *value* (double
+        /// deref) — used for passing a shared mutable capture into a task ctor.
+        is_box_ref: bool = false,
         owner_type_c_name: ?[]const u8 = null,
     },
 
@@ -305,12 +312,18 @@ pub const ASTNodeType = union(enum) {
         name: []const u8,
         is_safe: bool,
         resolved_c_name: ?[]const u8 = null,
+        /// True when the field holds a box pointer (captured mutable var) and
+        /// reads must double-deref to reach the value (stackless task capture).
+        is_boxed: bool = false,
     },
     set_expr: struct {
         object: *ASTNode,
         name: []const u8,
         value: *ASTNode,
         is_safe: bool,
+        /// True when the field holds a box pointer (captured mutable var) and
+        /// writes must store through the box (stackless task capture).
+        is_boxed: bool = false,
     },
     block: struct {
         statements: []const *ASTNode,

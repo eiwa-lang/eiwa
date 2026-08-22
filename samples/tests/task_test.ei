@@ -97,8 +97,11 @@ test "task lambda can update outer scope" {
         num = 50
     }
     num = 12
-    assert(t.await() == 50)
-    assert(num == 12)
+    t.await()
+    // The task body runs lazily at await(), and writes to a captured `var`
+    // propagate back through the shared box — so `num` ends up 50.
+    assert(t.isDone())
+    assert(num == 50)
 }
 
 test "task explicitly typed Void should run to completion" {
@@ -109,4 +112,41 @@ test "task explicitly typed Void should run to completion" {
     t.await()
     assert(t.isDone())
     assert(executed)
+}
+
+object TaskLog {
+    var entries: String = ""
+}
+
+test "independent tasks are not coupled by await" {
+    TaskLog.entries = ""
+    val usersTask = task {
+        TaskLog.entries = TaskLog.entries + "U"
+        1
+    }
+    val configTask = task {
+        TaskLog.entries = TaskLog.entries + "C"
+        2
+    }
+    // Awaiting usersTask must not drain configTask (they are independent).
+    val users = usersTask.await()
+    assert(users == 1)
+    assert(TaskLog.entries == "U")
+    // configTask runs only when awaited itself.
+    val config = configTask.await()
+    assert(config == 2)
+    assert(TaskLog.entries == "UC")
+}
+
+test "fire-and-forget task runs on the main scheduler drain" {
+    var ran = false
+    val t = task {
+        ran = true
+    }
+    // `t` is never awaited; the compiler appends Scheduler.run() before main
+    // returns, so the task still executes and the write propagates.
+    val probe = task {
+        ran
+    }
+    assert(probe.await())
 }
