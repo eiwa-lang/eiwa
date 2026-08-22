@@ -1126,8 +1126,8 @@ Annotated `lib` blocks instruct the compiler and linker on how to process native
 - **`@Header` (Compile-Time Includes)**: Instructs the compiler to inject the corresponding `#include` directives so the C toolchain knows about function signatures, structs, and constants.
 - **`@Link` (Smart Linker Resolution via `pkg-config`)**: Instructs the Eiwa compiler to dynamically resolve library paths and flags using system `pkg-config` (e.g. `@Link("pq")` or `@Link("curl")`). The compiler automatically queries `pkg-config --cflags --libs` (searching standard OS and Homebrew `PKG_CONFIG_PATH` paths on macOS and Linux) and injects the appropriate `-I`, `-L`, and `-l` flags alongside preprocessor macros (`-DEIWA_USE_<NAME>`). If `pkg-config` is not available or doesn't find the package, it gracefully falls back to `-l<name>`.
 - **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag to the C compiler. Relative paths starting with `./` or `../` (e.g. `@Include("./native")`) are automatically resolved relative to the directory containing the `.ei` file.
-- **`@Source` (Vendored C Sources)**: Appends a C source file to the compilation, e.g. `@Source("src/runtime/third_party/neco/neco.c")`. Use for vendored C libraries compiled together with the program.
-- **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag to the C compiler, e.g. `@Define("NECO_STACKSIZE=262144")`.
+- **`@Source` (Vendored C Sources)**: Appends a C source file to the compilation, e.g. `@Source("src/runtime/third_party/mylib/mylib.c")`. Use for vendored C libraries compiled together with the program.
+- **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag to the C compiler, e.g. `@Define("MYLIB_BUFFER_SIZE=4096")`.
 - **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions.
 
 ### 16.1 Self-Contained Library Bindings
@@ -1223,65 +1223,13 @@ eiwac run app.ei -x 1 --verbose   # Process.args() -> ["-x", "1", "--verbose"]
 
 **Module search paths.** With `--module-path <dir>`, bare imports that do not resolve relative to the importing file are looked up in each module path (in order). Root-relative imports (`.x`) and `std.*` packages are never affected. This is how the `eiwa` CLI wires external dependencies (Section 30) without the compiler knowing about `~/.eiwa`.
 
-### 16.4 Custom Main Wrappers (`@MainWrapper`)
+### 16.4 Custom Main Wrappers (`@MainWrapper`) — REMOVIDO (2026-08)
 
-Some runtimes need to control how the program's entry point executes — initializing a coroutine scheduler, an embedded GC, a windowing/game loop *before* user `main` runs, and tearing state down afterwards. Eiwa lets you wrap the real `main` with any function annotated `@MainWrapper`.
-
-**Contract signature:**
-
-```kotlin
-@MainWrapper
-fun myWrapper(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int
-```
-
-- `mainFn` — a callable reference to the program's real entry point.
-- `argc` / `argv` — the command-line arguments forwarded from the OS.
-- Return value — becomes the process exit code.
-
-**Where the annotation is valid:**
-- a top-level function,
-- a method of an `object` (static),
-- a method of a `lib` block (C implementation provided via `@Source`).
-
-It is **invalid** on instance methods of a `type` (they require a receiver). Multiple `@MainWrapper` functions are **chained** outermost-first: `main = W0(W1(...Wn(real_main)))`. Lib wrappers (C runtime initializers, e.g. neco) are placed outermost so they set up runtimes (GC, scheduler) before any user code runs; Eiwa wrappers follow in declaration order.
-
-**Pure-Eiwa wrapper** (setup/teardown around main, no C involved):
-
-```kotlin
-import { println } from "std.io"
-
-@MainWrapper
-fun initApp(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int {
-    println("starting app")
-    val code = mainFn(argc, argv)
-    println("exiting with code " + code.toString())
-    return code
-}
-
-fun main() {
-    println("hello from main")
-}
-```
-
-**C lib wrapper** (implementation in the lib's `@Source` files):
-
-```kotlin
-@Source("neco.c")
-@Source("neco_wrapper.c")
-lib Neco {
-    @MainWrapper
-    @Alias("Neco_main_wrapper")
-    fun mainWrapper(mainFn: (Int, Pointer) -> Int, argc: Int, argv: Pointer): Int
-}
-```
-
-**ABI adaptation:** an Eiwa wrapper receives `mainFn` as a closure value and calls it with normal function-call syntax (`mainFn(argc, argv)`); a `lib` wrapper receives the raw C function pointer `int (*)(int, char**)` (the name comes from `@Alias`).
-
-**Compiler behavior:** the real `main` is renamed and the annotated wrapper becomes the entry point:
-
-```
-main(argc, argv) { return <wrapper>(real_main, argc, argv) }
-```
+> O mecanismo `@MainWrapper` foi **removido** junto com o runtime stackful (neco) — ver
+> ADR 48 / `docs/tasks-coroutines-stackless.md`. Com coroutines stackless o entry point é
+> sempre `main`/`eiwa_test_main` direto: o `Scheduler` de tasks é inicializado e drenado pelo
+> próprio `main` (via `Scheduler.run()` no final), sem shims de entry. O uso de `@MainWrapper`
+> no código agora é ignorado (annotation desconhecida é metadado inerte).
 
 ### 16.5 C Function Pointers (`funPointer { lambda }`)
 
@@ -1987,7 +1935,7 @@ If a type declares its own `let`, `run`, etc., the type's explicit method wins; 
 
 ## 25. Database Contracts & Connection Pooling (`std.db`)
 
-Eiwa provides provider-independent database contracts in `std.db` alongside a generic, fiber-cooperative connection pool (`ConnectionPool<C>`). Application code should depend only on `std.db` contracts (`Connection`, `Statement`, `Result`, `Row`) rather than driver-specific implementations.
+Eiwa provides provider-independent database contracts in `std.db` alongside a generic, cooperative connection pool (`ConnectionPool<C>`). Application code should depend only on `std.db` contracts (`Connection`, `Statement`, `Result`, `Row`) rather than driver-specific implementations.
 
 ### 25.1 Core Database Contracts
 
@@ -1996,9 +1944,9 @@ Eiwa provides provider-independent database contracts in `std.db` alongside a ge
 * **`Statement`**: Prepared statement interface (`.query()`, `.execute()`).
 * **`Connection`**: Core database connection interface (`.query(sql, params)`, `.execute(sql, params)`, `.prepare(sql)`, `.close()`).
 
-### 25.2 Generic Fiber-Cooperative Connection Pool (`ConnectionPool<C>`)
+### 25.2 Generic Cooperative Connection Pool (`ConnectionPool<C>`)
 
-The `ConnectionPool<C>` type is generic over any connection type `C` implementing `Connection` and `Closeable`. It manages connections non-blockingly by suspending fibers via `Coroutine.yield()` when the pool reaches its maximum connection limit.
+The `ConnectionPool<C>` type is generic over any connection type `C` implementing `Connection` and `Closeable`. It manages connections non-blockingly by yielding the current coroutine via `Coroutine.yield()` when the pool reaches its maximum connection limit.
 
 ```kotlin
 import { ConnectionPool, Connection } from "std.db"

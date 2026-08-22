@@ -172,7 +172,7 @@ zig build
 ```
 This generates the `eiwac` compiler binary in `./bin/`. To also build the `eiwa` CLI (written in Eiwa itself):
 ```bash
-./bin/eiwac build --backend=c -o bin/eiwa cli/src/main.ei
+./bin/eiwac build -o bin/eiwa cli/src/main.ei
 ```
 *(For a more detailed breakdown, see our [Setup Guide](docs/setup.md)).*
 
@@ -194,10 +194,10 @@ Eiwa's compiler is fully documented. If you are curious about how we process AST
 
 The **package manager** (`eiwa` CLI) just landed: projects with `eiwa.yaml`, git dependencies cloned into a shared local repository, and `build`/`run` commands. Next steps for it: `init`/`add`/`update`/`freeze` commands, registry dependencies and transitive resolution (MVS) — see [docs/plan_package_manager.md](docs/plan_package_manager.md).
 
-The **composition type system** (Phase 41) also landed recently: `type`, `contract`, `skill` and `implement` replaced classes and inheritance entirely. The **native LLVM backend** (Phase 20) is now the default — Eiwa compiles directly to LLVM IR, using a JIT for instant development loops and `-O3` optimization for production binaries. Other next steps include:
+The **composition type system** (Phase 41) also landed recently: `type`, `contract`, `skill` and `implement` replaced classes and inheritance entirely. The **native LLVM backend** (Phase 20) is the **only** backend — Eiwa compiles directly to LLVM IR, using a JIT for instant development loops and `-O3` optimization for production binaries. Concurrency is **cooperative stackless coroutines** (Phase 68): `task {}`/`await()` compiled into state machines driven by an Eiwa-pure Scheduler (timer heap + waiter chains). Other next steps include:
 - **Phase 42:** Null safety on contract receivers (`?.` dispatch on nullable contracts).
 - **Phase 43:** Heterogeneous contract collections (`List<Drawable>` with dynamic dispatch per element).
 - **Phase 44:** Composition test coverage hardening (cross-module skills, negative fixtures).
-- **Phase 36:** Fiber-based concurrency & event loop runtime.
+- **Coroutines:** incremental gaps (single-shot awaits, `try`/`for` with suspension, I/O waiters) and Dispatchers/thread pool as a postponed proposal.
 
 *(See [docs/roadmap.md](docs/roadmap.md) for the full granular roadmap and historic evolution).*

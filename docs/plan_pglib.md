@@ -1,6 +1,12 @@
 ````markdown
 # PostgreSQL Driver for Eiwa
 
+> **⚠️ OBSOLETO (2026-08):** plano histórico da Phase 53. O driver `src/postgres/` foi
+> **extraído** para o repo `eiwa-lang/postgres` (Phase 59) e o runtime de corrotinas migrou de
+> **neco (stackful)** para **coroutines stackless** (Phase 68 / ADR 48) — o async via
+> `Neco.waitReadable` não existe mais (o `EventLoop.waitReadable/waitWritable` atual usa `poll`
+> via FFI). Mantido apenas como histórico.
+
 ## Goal
 
 Implement the PostgreSQL driver for Eiwa using the native PostgreSQL client library (`libpq`).

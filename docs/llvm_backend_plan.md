@@ -1,5 +1,10 @@
 # Plano Mestre de Implementação — Fase 20: Emissor Nativo LLVM em Memória & Substituição do Backend C
 
+> **⚠️ OBSOLETO (2026-08):** plano de implementação da **Phase 20**, concluída. O backend C
+> foi **removido** (coroutines stackless, ADR 48) e o LLVM é o **único** backend — a
+> "arquitetura dupla zero-risco" (`--backend=c` + `--backend=llvm`) não existe mais. Mantido
+> apenas como histórico da implementação do emissor LLVM.
+
 ## 🎯 Objetivo Geral
 Substituir gradualmente e integralmente a geração de código C intermediário (`src/backend/c_transpiler/`) por um **Emissor Nativo LLVM IR 100% em Memória** (`src/backend/llvm_emitter/`), ativado via flag CLI `--backend=llvm`.
 

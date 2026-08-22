@@ -1,5 +1,11 @@
 # Phase 51 — Refatoração Task<T> (neco)
 
+> **⚠️ SUPERSEDED (2026-08):** o modelo neco (stackful) desta memória foi **removido**. O
+> concurrency atual é **coroutines stackless** (Phase 68 / ADR 48): `task {}`/`await()` viram
+> state machines geradas pelo compilador (`src/core/coroutines_transform.zig`) dirigidas por um
+> `Scheduler` em Eiwa puro (`src/std/coroutines.ei` — FIFO + timer heap + waiter-chain). Não há
+> C runtime de coroutines. Ver `docs/tasks-coroutines-stackless.md`.
+
 Decisões do Socratic Gate (2026-07-25):
 
 - **Migração:** neco + bindings primeiro, special cases removidos por último (suite sempre verde; dois runtimes coexistem temporariamente).

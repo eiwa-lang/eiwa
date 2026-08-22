@@ -1,5 +1,10 @@
 # Plano: Monomorfização + Refatoração de `Task<T>` (Alinhar com [read roadmap](docs/roadmap.md) Ver Phase 50 e Phase 51)
 
+> **⚠️ OBSOLETO (2026-08):** este plano levou o `Task<T>` ao modelo **neco (stackful)** da
+> Phase 51. O neco foi **removido** — o modelo atual é **coroutines stackless** (Phase 68 /
+> ADR 48 / `docs/tasks-coroutines-stackless.md`): `task {}`/`await()` viram state machines
+> geradas pelo compilador + Scheduler em Eiwa puro. Mantido apenas como histórico.
+
 ## Etapa 2 — Refatoração de `Task<T>` (Remover Special Cases) (Phase 51)
 
 ### O que será removido
