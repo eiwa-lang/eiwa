@@ -385,9 +385,8 @@ pool exige coroutines que suspendam de verdade, não threads bloqueadas).
 
 - O `EventLoop.waitReadable/waitWritable` (via `poll`) pode ficar para uma fase seguinte:
   esperar readiness é o mesmo mecanismo do timer heap (uma lista de "waiters de I/O").
-- Gaps da state machine: `for`/`try`/`return` com suspensão dentro do corpo do task;
-  await como receiver de composite; await cooperativo (waiter-chain) dentro do corpo
-  (hoje blocking-poll, correto enquanto a task aguardada suspende cooperativamente).
+- **Próxima etapa (handoff abaixo):** `await()` cooperativo (waiter-chain) dentro do corpo
+  do task — hoje blocking-poll no root; é o pré-requisito da Fase I (dispatchers/thread pool).
 - **Habilita a Fase I** (dispatchers/thread pool): sem suspensão verdadeira, não há
   paralelismo — apenas threads bloqueadas. Concluir esta fase é pré-requisito da Fase I.
 - **Fix — erros de compilação sem backtrace Zig:** o pipeline de `main.zig` era `!void`
@@ -399,20 +398,58 @@ pool exige coroutines que suspendam de verdade, não threads bloqueadas).
 
 ---
 
-### Handoff — contexto obrigatório para quem inicia a Fase J
+### Handoff — próxima etapa: `await()` cooperativo (waiter-chain) no corpo do task (pré-requisito da Fase I)
 
-> Este bloco consolida o estado real do código para que um agente/agente novo possa
-> começar a Fase J (se ainda houver trabalho) sem reconstruir contexto de sessão. Leia TODO
-> este arquivo antes de mexer no código (AGENTS.md, decisões acima, Fases C/D/E/F).
+> Este bloco consolida o estado real do código para que um agente/agente novo possa começar a
+> próxima etapa sem reconstruir contexto de sessão. Leia TODO este arquivo antes de mexer no
+> código (AGENTS.md, decisões acima, Fases C/D/E/F/J).
 
-**Estado da suíte (baseline):** `./bin/eiwac test samples/tests` → **66 PASS, 2 FAIL**.
+**Estado da suíte (baseline):** `./bin/eiwac test samples/tests` → **67 test files PASS, 2 FAIL**.
 As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_test.ei`
-(**pré-existentes, NÃO relacionadas a coroutines**). `interleave_test.ei` agora **PASSA**
-(`ABABAB`). Novo teste: `body_fields_test.ei` (5).
+(**pré-existentes, NÃO relacionadas a coroutines**). `interleave_test.ei` **PASSA** (`ABABAB`)
+e `yield_test.ei` (3 testes) verde. Commit de referência: `cc9de31` (Fase J + body fields +
+fixes). **`git status` limpo.**
 
-**Comandos:** `zig build` | `./bin/eiwac test samples/tests` | `./bin/eiwac test samples/tests/interleave_test.ei`.
+**Comandos:** `zig build` | `./bin/eiwac test samples/tests` |
+`./bin/eiwac test samples/tests/interleave_test.ei` | `./bin/eiwac test samples/tests/yield_test.ei`.
 
-**Modelo atual (blocking-poll no root + state machine no corpo do task):**
+**Próxima etapa — `await()` cooperativo dentro do corpo do task (waiter-chain, Kotlin-style):**
+
+- **Problema atual:** `await()` é **blocking-poll no root**: `buildPollStmt` gera
+  `while (!<recv>.done && Scheduler.runStep()) {}`. O caller roda o scheduler até a task
+  aguardada completar. Funciona single-thread (inclusive com timers), mas é **acoplado**:
+  um `await()` dentro do corpo de um task suspende o scheduler inteiro, e o modelo de espera
+  não é a waiter-chain que a **Fase I (dispatchers/thread pool)** exige (espera cross-thread
+  precisa que o caller suspenda de verdade, não que rode um loop local).
+- **Alvo:** `await()` dentro de um task body deve **registrar o continuation do caller como
+  waiter** da task aguardada e **suspender** (`this.label = <next>; return`). Quando a task
+  aguardada completa, seu resume reschedule os waiters (já implementado no done state:
+  `while (__waiterN != null) { Scheduler.schedule(__waiterN!!.cont); ... }`). O caller retoma
+  no label seguinte e lê `this.task.result`.
+- **Onde vive o código:**
+  - `src/core/coroutines_transform.zig`:
+    - `rewriteAwaitCall` / `rewriteTaskAwaitCall` / `rewriteReturnAwait` (L~1280+) — hoje
+      geram `buildPollStmt` + `val x = <recv>.result!!`. Virariam: se `recv.done` →
+      fast path `x = recv.result!!`; senão → `recv.waiters = WaiterNode(this, recv.waiters)`
+      (ou append na cauda) + `this.label = <next>` + `return` (suspensão), com o estado
+      seguinte fazendo `x = recv.result!!`.
+    - `buildResumeStateMachine` (L~1700) — o CFG já gera os estados; o await cooperativo
+      vira mais um tipo de "suspensão" (como sleep/yield), com estado de retomada.
+    - `buildPollStmt` (L~1350) — usado pelos awaits no ROOT (main/test/top-level), que NÃO
+      têm continuation e continuam blocking-poll (correto: o root é o driver).
+  - `src/std/coroutines.ei`:
+    - `type StackTask<T>(done, result, waiters)` + `type WaiterNode(cont, next)` — a lista de
+      waiters JÁ existe e é rescheduleada no done state. O `await()`/`isDone()` implementam
+      `Awaitable<T>`; `await()` hoje faz `Scheduler.run()` quando `!done` (usado por chamadas
+      diretas, não pelo transform).
+    - `Scheduler.runStep()` — ao completar, o resume da task agendada reschedule os waiters
+      (chain). Verificar ordem FIFO da waiter chain (hoje `buildResume` itera `waiters` e
+      `Scheduler.schedule` cada um — a ordem depende de como o waiter é inserido).
+  - **Atenção:** o done state do `buildResume` (single-shot) JÁ reschedule waiters; o
+    `buildResumeStateMachine` também (no state de done). A tarefa é fazer o **caller**
+    registrar-se como waiter em vez de poll.
+
+**Modelo atual (referência):**
 
 - `src/core/coroutines_transform.zig`:
   - `buildResume` — `resume()` single-shot (bloco sem suspensão real): reescreve captures,
@@ -421,21 +458,20 @@ As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_t
     `sleep`/`sleepMs`/`yield`: `while(true) { if (this.label==N) {...} else ... }`, locais
     promovidos a body fields, `this.label` default = entry. Builder CFG em ordem reversa;
     statements plain viram estados próprios (nunca merge em joins).
-  - `buildPollStmt` — `await()` vira `while (!recv.done && Scheduler.runStep()) {}` (root;
-    funciona com timers pois `runStep` processa o timer heap).
+  - `buildPollStmt` — `await()` vira `while (!recv.done && Scheduler.runStep()) {}` (root).
   - `rewriteAwaitCall`/`rewriteTaskAwaitCall`/`rewriteReturnAwait`, `hoistAwaitsFromExpr`,
-    `transformModule`/`transformFunction`, `buildTaskBlockType` (agora roteia state machine ×
+    `transformModule`/`transformFunction`, `buildTaskBlockType` (roteia state machine ×
     single-shot e adiciona `body_fields`).
 - `src/std/coroutines.ei`:
-  - `contract Continuation { resume(), isDone() }` — `resume()` **Void** (não mudou; suspensão
-    é sinalizada por auto-re-agendamento, conclusão via `task.done = true`).
+  - `contract Continuation { resume(), isDone() }` — `resume()` **Void** (suspensão é
+    sinalizada por auto-re-agendamento; conclusão via `task.done = true`).
   - `object Scheduler` com `schedule`/`run`/`runStep` (FIFO intrusiva) + **timer heap**:
     `TimerNode(deadline, cont, next)`, `Scheduler.now` (relógio virtual ms),
     `sleep(cont, ms)`/`yield(cont)`/`fireTimers()`/`waitMs(ms)`. `run` = `while(runStep())`.
   - `type StackTask<T>(done, result, waiters)` com `await()`/`isDone()` (Awaitable).
-  - `Coroutine.sleep/sleepMs` (nanosleep) / `yield` (sched_yield) permanecem como bloqueio
-    para chamadas fora do corpo de task; dentro do corpo, o transform os reescreve em
-    `Scheduler.sleep(this, ...)`/`Scheduler.yield(this)`.
+  - `Coroutine.sleep/sleepMs` (nanosleep) / `yield` (sched_yield) bloqueiam fora do corpo de
+    task; dentro do corpo, o transform os reescreve em `Scheduler.sleep(this, ...)` /
+    `Scheduler.yield(this)`.
   - `task<T>` retorna `StackTask<T>(false, null, null)` — ctor chamado pelo transform.
 
 **Regras de ouro (não quebrar):**
@@ -448,7 +484,7 @@ As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_t
 4. **Sem prints/debug permanentes**.
 5. **Guardrail: testes que passam continuam passando** — não adaptar testes para o mecanismo.
 6. Após cada passo: `zig build` + teste mínimo + regressão (`task_test`, `task_transform_test`,
-   `scheduler_test`, `interleave_test`, `body_fields_test`).
+   `scheduler_test`, `interleave_test`, `yield_test`, `body_fields_test`).
 
 **Fixes recentes que não devem ser revertidos (contexto de sessões anteriores):**
 
@@ -461,9 +497,10 @@ As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_t
 - Box de 16 bytes fixo para vars capturadas (`cell_size`) — TODO conhecido, alocar
   `LLVMStoreSizeOfType` (pré-existente nos closures).
 
-**Gaps conhecidos que NÃO pertencem à Fase J** (não gastar tempo neles):
+**Gaps conhecidos (NÃO gastar tempo neles agora — não são a próxima etapa):**
 `object static String concat crasha` (`"x" + Obj.v`), `toString` mangled de List/Map
-(pré-existente no emitter), `try/catch` como última expr de bloco de task.
+(pré-existente no emitter), `try/catch` como última expr de bloco de task, `for`/`try`/`return`
+com suspensão dentro do corpo do task, await como receiver de composite.
 
 ---
 
