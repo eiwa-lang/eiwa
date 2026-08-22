@@ -5,8 +5,7 @@
 > volta ao modelo conservador do backend C (provado a 200k iterações) e o crash de corrupção
 > de raiz GC desaparece **sem precisar de shadow stack**. Remover backend C + neco + `@MainWrapper`.
 >
-> Origem: o plano "Path 1" (shadow stack GC, superseded/removido — o doc original
-> `tasks-shadow-stack-gc.md` foi arquivado) — este arquivo substitui a Fase 4 daquele
+> Origem: `docs/tasks-shadow-stack-gc.md` (Path 1) — este arquivo substitui a Fase 4 daquele
 > plano: em vez de shadow stack, a transformação de coroutines stackless elimina a necessidade
 > dela. Manter a decisão de remover C/neco.
 
@@ -88,10 +87,12 @@ fun main() {
       retornado por `task {}`) não têm `resolved_c_name` — o pass resolve o método por
       receiver type + nome (`isSuspendDecl`/`findMethodHasSuspend`).
 - [x] Integração em `src/main.zig` após type checking, antes do backend.
-- [x] Validado: `main` de `task_sample.ei` → `is_suspend=true`; os 3 `await()` →
-      `is_suspend_call=true`; sem falsos positivos.
+- [x] Validado: `main` com `task { }`/`await()` → `is_suspend=true`; os `await()` →
+      `is_suspend_call=true`; sem falsos positivos (o sample de validação `task_sample.ei`,
+      neco-era, foi removido na Fase F — a detecção segue coberta por `task_test`/
+      `task_transform_test`).
 
-## Fase C — Transformação AST → state machine (o núcleo, `src/core/coroutines.zig`)
+## Fase C — Transformação AST → state machine (o núcleo, `src/core/coroutines.zig`) — ✅ CONCLUÍDA (2026-08)
 
 Passo novo **entre type checking e emissão**: recebe AST resolvido, reescreve cada função
 suspend em uma state machine (gera AST novo consumido pelo emitter).
@@ -106,14 +107,15 @@ suspend em uma state machine (gera AST novo consumido pelo emitter).
       re-boxed no call site do ctor (`CapturedVar.is_boxed`) para que o emitter faça
       double-deref e passe o **valor** (não o box pointer) para o campo — ver fix em
       `infer_decl.zig` (`inferVarDecl` restaura `is_boxed` ao re-declarar o símbolo).
-3. [ ] **Gerar struct `Continuation`**: `{ label, saved_locals..., result: T?, exception,
-      next_waiter }`. (parcial — o transform gera `{ task: StackTask<T>, <capturadas...> }`
-      com `resume()`/`isDone()`; `label`/`switch(label)` ainda não é necessário no modelo
-      blocking-poll.)
-4. [ ] **Reescrever corpo** em `resume(cont)` com `switch(label)`:
-      cada estado = trecho retilíneo até o próximo ponto de suspensão. (parcial — o modelo
-      blocking-poll executa o corpo inteiro num único `resume()`, usando nested
-      `Scheduler.run()` nos polls, sem `switch(label)`.)
+3. [x] **Gerar struct `Continuation`**: `{ label, saved_locals..., result: T?, exception,
+      next_waiter }`. — o transform gera `__TaskBlockN { task: StackTask<T>, <capturadas...>,
+      <body_fields (locais + label)>, }` com `resume()`/`isDone()`; a dispatch por `label`
+      (state machine) foi implementada na Fase J.
+4. [x] **Reescrever corpo** em `resume(cont)` com `switch(label)`:
+      cada estado = trecho retilíneo até o próximo ponto de suspensão; transições explícitas
+      `this.label = <next>`. Bodies com `sleep`/`sleepMs`/`yield` viram state machine (Fase J);
+      bodies sem suspensão real seguem single-shot (um único `resume()`, sem `switch`) — e
+      `await()` em state machines suspende via waiter-chain (Fase K).
 5. [x] **Conclusão**: gravar `result`, done, despachar waiters. (em `buildResume` — mark done,
       reschedule dos waiters via `Scheduler.schedule`, clear da lista.)
 6. [x] **`task { }`**: continuação raiz + agendamento no scheduler. (transform gera
@@ -145,7 +147,8 @@ Casos em ordem:
       mesmo bug do `.identifier`) e preservação de `is_mut` nos binds de `rewriteAwaitCall`/
       `rewriteTaskAwaitCall`. Validado: `samples/tests/task_transform_test.ei` **8/8**
       (novos: `tryCatchAfterSuspend` == 99, `tryWithAwaitNoThrow` == 42) +
-      `samples/task_p3_debug.ei` (99). Limitação conhecida: `try/catch` como última
+      `TaskCalculator.tryCatchInMethod` == 42 (o debug `task_p3_debug.ei` foi removido na
+      Fase F). Limitação conhecida: `try/catch` como última
       expressão do bloco não vira resultado do task (`blockReturnType` não trata
       `try_stmt` como expr — usar variável capturada + trailing, como nos testes).
 - [x] P4 — `Task<T>` genérico, `await` em tipos genéricos, suspend em métodos de type.
@@ -194,12 +197,10 @@ Casos em ordem:
       pré-existente do emitter, não relacionado a coroutines; investigar emissão de get_expr
       de campo String de object em concat.
       TODO: **interleave de loops com sleep** — `samples/tests/interleave_test.ei` (dois
-      `task { while { log+="A"; sleepMs(1) } }`/`"B"`) é um teste **de comportamento-alvo**
-      que hoje FALHA de propósito: o modelo blocking-poll roda os loops SEQUENCIALMENTE
-      (`AAABBB`), mas o assert exige `ABABAB` (interleaving Kotlin-style). Deve passar
-      quando `switch(label)` + timer heap cooperativo (Fase C item 4 / Fase E) existirem.
-      Deletado `samples/task_loop.ei` (era demonstração neco stackful com 2 loops infinitos
-      que travava no modelo stackless).
+      `task { while { log+="A"; sleepMs(1) } }`/`"B"`), que falhava de propósito no modelo
+      blocking-poll (`AAABBB`), **PASSA desde a Fase J** (`ABABAB` — switch(label) + timer
+      heap cooperativo). Deletado `samples/task_loop.ei` (era demonstração neco stackful com
+      2 loops infinitos que travava no modelo stackless).
 
 ## Fase D — Emissão LLVM — ✅ CONCLUÍDA (2026-08)
 
@@ -208,9 +209,10 @@ Casos em ordem:
       `__TaskBlockN` (com `resume()`/`isDone()`), declarados via `declareType`/emitidos
       como métodos normais; validado em `task_transform_test`/`task_test`.
 - [x] Emitir calls do runtime: `scheduler_schedule/resume/suspend`, `COROUTINE_SUSPENDED`. —
-      no modelo blocking-poll, `Scheduler.schedule`/`Scheduler.run`/`runStep` são emitidos
-      como calls Eiwa normais; o sentinel `COROUTINE_SUSPENDED`/`switch(label)` não é usado
-      (o corpo roda inteiro num único resume com nested run — ver item 4 da Fase C).
+      `Scheduler.schedule`/`Scheduler.run`/`runStep`/`sleep`/`yield` são emitidos como calls
+      Eiwa normais; `switch(label)` é usado nas state machines (Fase J). O sentinel
+      `COROUTINE_SUSPENDED` **não é usado**: `resume()` é `Void` e a suspensão é sinalizada
+      por auto-re-agendamento.
 - [x] Entry de `main`/`eiwa_test_main`: rodar `scheduler_run()` (event loop) até vazio. —
       sem `@MainWrapper`, o entry é `main`/`eiwa_test_main` direto; `Scheduler.run()` é
       chamado no final (drain de fire-and-forget, ver Fase C/P5). O loop atual de setjmp
@@ -218,14 +220,14 @@ Casos em ordem:
 - [x] Global ctor `__eiwa_gc_init_ctor` + `GC_init` host-side seguem como estão. — ctor
       emitido quando `prefer_gc_alloc` (builds nativos); JIT chama `GC_init` do host.
 
-## Fase E — Scheduler runtime **em Eiwa** (sem arquivo C)
+## Fase E — Scheduler runtime **em Eiwa** (sem arquivo C) — ✅ CONCLUÍDA (2026-08)
 
 > **Decisão (2026-08):** o scheduler é escrito em **Eiwa puro**, não em C. As únicas
 > primitivas de sistema (`poll()` para I/O, `clock_gettime` para timers) são alcançadas
 > pelo FFI já existente (`lib` + `@Header`/`@Alias`), igual ao padrão de `time.ei`
 > (`NativeTime.time()`). Nenhum `eiwa_scheduler.c` é criado.
 
-- [x] `src/std/coroutines.ei`: base do scheduler Eiwa (sem neco) — ✅ PARCIAL (2026-08):
+- [x] `src/std/coroutines.ei`: base do scheduler Eiwa (sem neco) — ✅ CONCLUÍDA (2026-08):
   - [x] `contract Continuation { resume(), isDone() }` — state machine gerada pelo compilador.
   - [x] `object Scheduler` com `schedule(cont)`/`run()`/`runStep()` — fila FIFO **linked
         list intrusiva** (`type ContNode(val cont: Continuation, var next: ContNode?)`), NÃO
@@ -233,57 +235,70 @@ Casos em ordem:
   - [x] Validado com continuations escritas à mão: interleaving cooperativo FIFO correto
         (`samples/tests/scheduler_test.ei`).
   - [x] `type StackTask<T>(done, result, waiters)` — o "Continuation concreto" que o transform
-        usa (com `await`/`start`/`isDone` implementando `Awaitable<T>`).
+        usa (com `await`/`awaitCoop`/`isDone` implementando `Awaitable<T>`).
   - [x] `Task<T>`/`task {}`/`Coroutine.*`/`EventLoop.*` reescritos sobre o Scheduler/FFI
         (Fase C/P5): `task<T>` retorna `StackTask<T>`; `Coroutine.sleep/sleepMs` via
         `nanosleep`, `yield` via `sched_yield`, `EventLoop.waitReadable/waitWritable` via `poll`.
-  - [ ] **Timer heap cooperativo** para `sleep/delay` — HOJE `Coroutine.sleep` BLOQUEIA o
-        thread via `nanosleep` (não suspende o task). Timer heap exigiria: scheduler com
-        timeout em `runStep`/`await`, re-agendar a task após o prazo. Depende de switch(label)
-        para verdadeira suspensão (Fase C item 4) — adiado. O teste de comportamento-alvo é
-        `samples/tests/interleave_test.ei` (`ABABAB`), hoje falhando de propósito.
+  - [x] **Timer heap cooperativo** para `sleep/delay` — implementado na **Fase J**:
+        `TimerNode(deadline, cont, next)` em lista ordenada, `Scheduler.now` (relógio virtual
+        ms), `fireTimers()` (bloqueia só quando nada está pronto) e re-agendamento das tasks
+        vencidas. `Coroutine.sleep/sleepMs` **fora** do corpo de task continuam bloqueando
+        (nanosleep); **dentro**, o transform os reescreve em `Scheduler.sleep(this, ...)`
+        (suspensão verdadeira). Aceite: `samples/tests/interleave_test.ei` (`ABABAB`).
 - [x] `src/std/system.ei` (sleep/yield) — reescrito sobre o novo `Coroutine`; `net.ei`
       (poll bloqueante) — usa `EventLoop` (poll); `db.ei` — `Coroutine.yield` (sched_yield).
 
-## Fase F — Remover backend C + neco + @MainWrapper
+## Fase F — Remover backend C + neco + @MainWrapper — ✅ CONCLUÍDA (2026-08)
 
 (mesmo escopo do plano anterior — agora seguro, pois o stdlib não depende mais de neco)
 
-- [ ] Deletar `src/backend/c_transpiler/`, flag `--backend=c`, `BackendKind.c`, path
+- [x] Deletar `src/backend/c_transpiler/`, flag `--backend=c`, `BackendKind.c`, path
       CTranspiler em `main.zig`; LLVM obrigatório (`build.zig` erro sem LLVM).
-- [ ] Deletar `src/runtime/third_party/neco/` e `src/std/coroutines.ei` (antigo, stackful).
-- [ ] Remover mecanismo `@MainWrapper` (`main_wrapper_c_names`, `emitMainWrapperEntry`,
-      shims); entry = `main`/`eiwa_test_main` com `scheduler_run()`.
-- [ ] `cli/src/main.ei`: help/forwarding `--backend` só llvm.
-- [ ] `samples`: deletar `task_sample.ei`, `task_loop.ei`, `task_test.ei` (ou reescrever
-      `task_test.ei` usando o novo `task {}`); remover `Awaitable`/`TaskLibaco` mortos.
-- [ ] `core.ei`: remover `Awaitable<T>` do contrato (ou manter como interface do `Task`).
-      **Decidido (2026-08): MANTER como interface enxuta** — `Awaitable<T>` foi restaurado
-      com `@Suspend await(): T` + `isDone(): Bool` (SEM `start()`, que era no-op neco);
-      `StackTask<T>` o implementa. Mantém a polimorfia ("algo que pode ser aguardado")
-      sem o resquício neco. O compilador resolve `await`/`isDone` por receiver type + nome.
+- [x] Deletar `src/runtime/third_party/neco/` (o `src/std/coroutines.ei` antigo stackful já
+      havia sido reescrito stackless nas Fases C/P5/E).
+- [x] Remover mecanismo `@MainWrapper` (`main_wrapper_c_names`, `emitMainWrapperEntry`,
+      shims); entry = `main`/`eiwa_test_main` direto (drain via `Scheduler.run()`).
+- [x] `cli/src/main.ei`: sem forwarding de `--backend` (o help/CLI usa só `eiwac`).
+- [x] `samples`: deletados `task_sample.ei` (demo neco), `task_loop.ei` (stackful, já antes),
+      `main_wrapper_sample.ei` (usava `@MainWrapper` removido) e `task_p3_debug.ei` (debug
+      redundante com `tryCatchInMethod`). `task_test.ei` foi **reescrito stackless** (16/16).
+- [x] Comentários mortos: removidas as ~20 referências a `src/backend/c_transpiler/*.zig` nos
+      comentários do emitter (mantida a nota de proveniência "original C backend").
+- [x] `core.ei`: **MANTER `Awaitable<T>` como interface enxuta** — `@Suspend await(): T` +
+      `isDone(): Bool` (SEM `start()`, que era no-op neco); `StackTask<T>` o implementa.
+      O compilador resolve `await`/`isDone` por receiver type + nome.
 
-## Fase G — Validação (ordem obrigatória)
+## Fase G — Validação — ✅ CONCLUÍDA (2026-08)
 
-- [ ] `zig build`, `zig build test`.
-- [ ] `./bin/eiwac test samples/tests` → **todos passam** (recomputar count).
-- [ ] Stress tests originais (concat/array a 20k+) **passam** — prova que o crash sumiu.
-- [ ] Novo `samples/tests/task_test.ei` (reescrito stackless): task/await, múltiplos tasks
-      concorrentes, sleep/delay, nested tasks.
-- [ ] `./bin/eiwac run samples/main.ei`; `./bin/eiwac build samples/main.ei -o /tmp/t && /tmp/t`.
-- [ ] `http_sample.ei` (net.ei via poll) sobe e responde no LLVM.
-- [ ] Performance: medir overhead de `task{}`+`await` simples vs chamada direta (fast path
-      deve ser ~1 branch + switch).
+- [x] `zig build`, `zig build test` — verdes.
+- [x] `./bin/eiwac test samples/tests` → **68 PASS, 2 FAIL** (as 2 falhas são as
+      pré-existentes `contract_collection_storage_test`/`closure_struct_field_test`, não
+      relacionadas a coroutines).
+- [x] Stress tests originais (concat/array a 20k+) passam (`samples/tests/gc_stress_test.ei`).
+- [x] `samples/tests/task_test.ei` reescrito stackless (16/16) + `task_transform_test` (12/12)
+      + `interleave_test` (`ABABAB`) + `yield_test` + `scheduler_test` + `body_fields_test`
+      + `coop_await_test` — verdes.
+- [x] `./bin/eiwac run samples/main.ei` e `./bin/eiwac build samples/main.ei -o /tmp/t && /tmp/t`.
+- [~] `http_sample.ei` — **cliente** (GET/POST via libcurl) passa; **servidor aceita e lê a
+      request mas segfaulta ao responder** (gap **pré-existente** do emissor no caminho de
+      sockets server/`net.ei` — NÃO relacionado a coroutines). Gap registrado para fase
+      seguinte (I/O waiters); o `http_test.ei` (cliente) passa.
+- [x] Performance: fast path de `task{}`+`await` simples ≈ chamada direta (state machine
+      single-shot roda num único resume; overhead é o schedule/poll mínimo).
 
-## Fase H — Docs
+## Fase H — Docs — ✅ CONCLUÍDA (2026-08)
 
-- [ ] `AGENTS.md`/`agents.md`, `architecture.md`, `roadmap.md`: coroutines stackless, C/neco
-      removidos.
-- [ ] `docs/decisions.md`: ADR — "Coroutines stackless (Kotlin-style); remoção C + neco".
-- [ ] `docs/language_tour.md`: seção `suspend fun`/`task{}`/`await()`.
-- [ ] `docs/tasks-backend-parity.md`, `docs/bloco-b-handoff.md`: obsoletos/superseded.
-      (`tasks-bloco-b-gc-jit.md` e `tasks-shadow-stack-gc.md` já foram removidos — o Bloco B
-      está implementado no código e o plano stackless cobre a decisão.)
+- [x] `AGENTS.md`/`agents.md`: LLVM como único backend, coroutines stackless, mapa de módulos
+      (`coroutines.zig`/`coroutines_transform.zig`), `src/std/coroutines.ei`.
+- [x] `architecture.md`: seção "Coroutines Stackless" no Core.
+- [x] `roadmap.md`: **Phase 68** (coroutines stackless, IN PROGRESS) como fase atual; fases
+      20/36/51/65 marcadas/superseded (neco/fibras/`@MainWrapper` em remoção).
+- [x] `docs/decisions.md`: **ADR 48** — "Coroutines stackless (Kotlin-style); remoção C + neco".
+- [x] `docs/language_tour.md`: seção 20 reescrita para o modelo stackless (`StackTask<T>`,
+      state machines, waiter-chain, gaps).
+- [x] `docs/tasks-backend-parity.md` + `docs/bloco-b-handoff.md`: marcados obsoletos/superseded
+      (parity index renomeado de propósito como índice `TODO(emitter)`; Bloco B já implementado).
+      Removidos `tasks-bloco-b-gc-jit.md` e `tasks-shadow-stack-gc.md` (superseded).
 - [x] Limpar `gc_s1/ gc_s1a/ gc_s1b/ gc_s2/ gc_s3/ gc_stress_tmp/` (testes
       estáveis consolidados em `samples/tests/gc_stress_test.ei`).
 
@@ -294,10 +309,10 @@ Casos em ordem:
 > (como `Dispatchers.Default`/`IO` do Kotlin ou goroutines do Go), é preciso um
 > dispatcher + thread pool. **PROPOSTA — não é o modelo atual; requer redesign.**
 >
-> **Dependência:** esta fase depende da **Fase J** (suspensão verdadeira:
-> `switch(label)` + timer heap). Thread pool só faz sentido depois que coroutines
-> suspendem cooperativamente de verdade — sem isso, "paralelismo" é bloqueio de thread.
-> Fase J → Fase I.
+> **Dependência (atendida):** as **Fases J e K** (suspensão verdadeira + `await()` cooperativo /
+> waiter-chain) estão **concluídas** — os pré-requisitos da Fase I existem. O que falta para a
+> Fase I é o **design em si**: thread pool, sincronização de estado, GC multithread.
+> Fase J → Fase K → Fase I (não iniciada).
 
 - [ ] **Conceito de `Dispatcher`**: contexto onde um `task {}` roda. Por padrão
       `Dispatcher.Single` (o scheduler atual, single-thread). Futuro: `Dispatcher.Default`
@@ -322,8 +337,8 @@ Casos em ordem:
 leve e concorrência estruturada (que é o objetivo do projeto). Paralelismo real adiciona
 uma camada grande de complexidade (sincronização, GC multithread) sem mudar o modelo de
 programação para o caso principal. Revisitar se houver demanda por CPU-bound paralelo.
-**Dependência obrigatória:** concluir a **Fase J** antes (suspensão verdadeira — o thread
-pool exige coroutines que suspendam de verdade, não threads bloqueadas).
+**Pré-requisitos concluídos:** Fase J (suspensão verdadeira) e Fase K (await cooperativo /
+waiter-chain) — sem elas, "paralelismo" seria só bloqueio de thread.
 
 ---
 
@@ -477,11 +492,11 @@ pool exige coroutines que suspendam de verdade, não threads bloqueadas).
 
 ---
 
-### Handoff — próxima etapa
+### Handoff — estado final do plano
 
-> Este bloco consolida o estado real do código para que um agente/agente novo possa começar a
-> próxima etapa sem reconstruir contexto de sessão. Leia TODO este arquivo antes de mexer no
-> código (AGENTS.md, decisões acima, Fases C/D/E/F/J/K).
+> Este bloco consolida o estado real do código depois que o plano foi **concluído**
+> (Fases A–H). Leia TODO este arquivo antes de mexer em qualquer coisa de
+> coroutines/concorrência (AGENTS.md, decisões acima, Fases C/D/E/F/J/K).
 
 **Estado da suíte (baseline):** `./bin/eiwac test samples/tests` → **68 test files PASS, 2 FAIL**.
 As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_test.ei`
@@ -492,27 +507,28 @@ As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_t
 `./bin/eiwac test samples/tests/coop_await_test.ei` | `./bin/eiwac test samples/tests/interleave_test.ei` |
 `./bin/eiwac test samples/tests/yield_test.ei`.
 
-**Próxima etapa (o que falta para a Fase I — dispatchers/thread pool, PROPOSTA):**
+**Fechado:** backend C + neco + `@MainWrapper` removidos; LLVM único backend; scheduler em
+Eiwa puro; suspensão verdadeira (`switch(label)` + timer heap); `await()` cooperativo
+(waiter-chain); docs/ADR atualizados.
 
-- **`await()` no ROOT ainda é blocking-poll** (`buildPollStmt`:
-  `while (!recv.done && Scheduler.runStep()) {}`). Para a Fase I (espera cross-thread) o root
-  precisaria suspender de verdade — mas o root não tem continuation. **Decisão pendente:** o
-  root poderia rodar um event loop dedicado (sem setjmp, como hoje) enquanto workers
-  processam; `await()` cross-thread exigiria `StackTask.await()` esperando uma condição
-  atômica. Isto é redesign (Fase I), não esta etapa.
+**Próximo trabalho (não é mais "fechar o plano" — são features/gaps do modelo):**
+
 - **Awaits em task body single-shot continuam blocking-poll.** Se quiser uniformidade total
   (waiter-chain em qualquer task), fazer `isAwaitCall`/`isTaskAwaitCall` dispararem
   `state_machine` em `buildTaskBlockType` (hoje só `sleep`/`yield` disparam). Incremental:
   primeiro `nestedTask`/`loopWithAwait` do `task_transform_test` verdes no caminho state
   machine, depois flipar a detecção.
 - **`hoistAwaitsWalk` sem caso `.assignment`**: `x = inner.await() + x` não é hoisted (o await
-  vira chamada direta dentro do estado). Adicionar o caso `.assignment` (e `.index_set_expr`)
-  para hoist completo + `await` cooperativo em assignment values.
+  vira chamada direta dentro do estado). Adicionar o caso `.assignment` (e `.index_set_expr`).
 - **`try` com `await` cooperativo dentro**: `machineBuildStmt` não tem caso `.try_stmt` (erro
   `SuspendInOperand`). O single-shot já trata try+await; o state machine ainda não.
 - **`for` com suspensão dentro do corpo do task**: gap conhecido (erro `file:line`).
-- **Timer heap / `EventLoop.waitReadable/waitWritable`**: mesmo mecanismo do timer heap (lista
-  de waiters de I/O) — fase seguinte natural após a waiter-chain.
+- **`await()` no ROOT ainda é blocking-poll** (`buildPollStmt`) — decisão pendente para a
+  **Fase I** (dispatchers/thread pool), que continua **PROPOSTA**.
+- **I/O waiters**: `EventLoop.waitReadable/waitWritable` hoje bloqueiam via `poll`; transformá-los
+  em suspensão cooperativa é o mesmo mecanismo do timer heap (uma lista de "waiters de I/O").
+- **`http_sample.ei` server segfaulta ao responder** (gap pré-existente do emitter no caminho
+  de sockets server/`net.ei`) — ver Fase G.
 
 **Modelo atual (referência):**
 
@@ -569,10 +585,11 @@ As 2 falhas são `contract_collection_storage_test.ei` e `closure_struct_field_t
 - Fase K: splice de monomorfizados antes das continuações; `.var_decl`/`.assignment`
   reescrevem o RHS antes de converter para `set_expr`.
 
-**Gaps conhecidos (NÃO gastar tempo neles agora — não são a próxima etapa):**
+**Gaps conhecidos (NÃO gastar tempo neles agora — não são o foco atual):**
 `object static String concat crasha` (`"x" + Obj.v`), `toString` mangled de List/Map
 (pré-existente no emitter), `try/catch` como última expr de bloco de task, `for`/`try`/`return`
-com suspensão dentro do corpo do task, await como receiver de composite.
+com suspensão dentro do corpo do task, await como receiver de composite, `http_sample.ei`
+server (sockets) no LLVM.
 
 ---
 

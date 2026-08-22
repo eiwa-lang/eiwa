@@ -506,3 +506,22 @@ Adotar **fat pointers à la Rust** como modelo canônico de dispatch de contrato
 
 **Razão:**
 Dispatch O(1) sem busca linear, casa naturalmente com múltiplos contratos por tipo (impossível com vptr único estilo C++), é trivialmente devirtualizável pelo otimizador LLVM quando a vtable é constante conhecida, e é o modelo provado em produção pelo Rust (`&dyn Trait`). O custo é a mudança de representação de valores de contrato em todo o pipeline (coerção de argumentos, unions, coleções heterogêneas `List<Drawable>` — Phase 43), justificando uma fase dedicada.
+
+## ADR 48: Coroutines Stackless (estilo Kotlin) + Remoção do backend C e do neco
+**Status:** Aprovado / Implementado (Fases A–K)
+**Data:** Agosto 2026
+
+**Contexto:**
+1. O modelo de concorrência era baseado em **neco (stackful)** — stack switching em C com registro de stacks como raízes GC (`GC_add_roots`/`GC_set_stackbottom`). Os stress tests a 20k iterações crashavam com corrupção de memória: um slot de stack não escaneado numa coleta → objeto vivo coletado → ponteiro stale.
+2. A investigação (Path 1) propôs **shadow stack** no emitter LLVM; mas corrotinas stackful exigem escanear stacks que o Boehm GC não gerencia de forma confiável.
+3. O backend C (`c_transpiler`) era o único suporte de compatibilidade restante — paridade total LLVM já alcançada (Phase 63/64) tornava-o dispensável.
+
+**Decisão:**
+1. **Coroutines stackless (estilo Kotlin):** funções suspensas (`task {}`/`await()`) são transformadas pelo compilador em **state machines** — objetos heap `Continuation` com `label` + locais promovidos, resumíveis via `Scheduler` Eiwa-puro (fila FIFO + timer heap). Sem stack switching: o estado suspenso é alcançável por ponteiros, coberto pela varredura conservadora do OS stack. O GC volta ao modelo do antigo backend C (provado a 200k iterações) — o crash desaparece **sem shadow stack**.
+2. **Suspensão cooperativa:** `sleep`/`sleepMs`/`yield` viram pontos de suspensão reais (`switch(label)`); `await()` em task bodies state machine registra o caller como **waiter** (cadeia FIFO) e suspende, retomando quando a task aguardada completa.
+3. **Remoção do backend C + neco + `@MainWrapper`:** LLVM passa a ser o **único** backend (obrigatório no build). O entry vira `main`/`eiwa_test_main` direto (sem shims de `@MainWrapper`).
+4. **Scheduler em Eiwa puro:** o runtime de corrotinas é escrito em Eiwa (`src/std/coroutines.ei`); as únicas primitivas de sistema (`nanosleep`/`sched_yield`/`poll`) vêm do FFI (`lib` + `@Header`/`@Alias`). Nenhum `eiwa_scheduler.c`.
+5. **Paralelismo real (thread pool / dispatchers) é PROPOSTA adiada:** requer espera cross-thread, sincronização de estado e GC multithread — redesign, não o modelo atual.
+
+**Razão:**
+Elimina a classe inteira de bugs de raízes GC não escaneadas sem a complexidade da shadow stack; mantém o modelo de programação Kotlin (`task {}`/`await()`) sem runtime C de corrotinas; simplifica o projeto removendo o segundo backend e o mecanismo `@MainWrapper`. Plano operacional: `docs/tasks-coroutines-stackless.md`.

@@ -297,13 +297,12 @@ pub const LLVMEmitter = struct {
         // is platform/arch-specific, and setjmp/longjmp are used via raw symbol
         // linkage without knowing the actual target layout. Proper fix: emit the
         // frame with the real `jmp_buf` size for the target (or follow the C
-        // transpiler, which includes eiwa_runtime.h and lets the C compiler
+        // transpiler, which included eiwa_runtime.h and let the C compiler
         // size it), instead of hardcoding 512 bytes.
         // INHERITED GAMBIARRA: the EiwaExceptionFrame + setjmp/longjmp model came
-        // from the C backend — see PRE-EXISTING comment in
-        // src/backend/c_transpiler/statement.zig (try_stmt) and the frame
-        // struct in src/backend/c_transpiler/eiwa_runtime.h. The C version
-        // declares the frame as real C types (`jmp_buf`); this LLVM copy
+        // from the C backend — see the PRE-EXISTING try_stmt comment and the
+        // frame struct in the original C runtime. The C version
+        // declared the frame as real C types (`jmp_buf`); this LLVM copy
         // hardcodes the buffer size because it has no C header to include.
         const frame_struct = llvm.LLVMStructCreateNamed(self.context, "EiwaExceptionFrame");
         const buf_type = llvm.LLVMArrayType(llvm.LLVMInt64TypeInContext(self.context), 64);
@@ -607,9 +606,9 @@ pub const LLVMEmitter = struct {
                     // is_boxed/isPrimitive flags) and skip on that, not on names.
                     // INHERITED GAMBIARRA: the notion that primitives/String are
                     // special-cased rather than fully materialized comes from the
-                    // C backend's value model (see PRE-EXISTING comments in
-                    // src/backend/c_transpiler/eiwa_runtime.h and the C
-                    // transpiler's is_boxed flags). The C backend can still emit
+                    // C backend's value model (see PRE-EXISTING comments in the
+                    // original C runtime and its is_boxed flags). The C backend
+                    // could emit
                     // primitive method bodies; the LLVM model cannot, hence the
                     // skip list. Fixing the value model in LLVM removes this list.
                     const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
@@ -942,7 +941,7 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "labs") or
                     std.mem.eql(u8, fn_name_s, "llabs") or
                     // POSIX socket helpers hand-emitted by emitSocketHelpers
-                    // (src/backend/c_transpiler/runtime/net_helpers.h equivalents).
+                    // (equivalents of the original C backend's net_helpers.h).
                     // These are real libc functions; without the allowlist the
                     // undefined-function stub pass below rewrites them to
                     // `ret 0`, so socket() creates no socket and bind/accept
@@ -1713,9 +1712,9 @@ pub const LLVMEmitter = struct {
         }
 
         // The net helpers (eiwa_tcp_bind/accept, eiwa_socket_read/write,
-        // eiwa_tcp_set_nonblocking, eiwa_socket_close) live as `static inline`
-        // in src/backend/c_transpiler/runtime/net_helpers.h, which the C
-        // backend #includes into its generated code. The LLVM backend has no C
+        // eiwa_tcp_set_nonblocking, eiwa_socket_close) lived as `static inline`
+        // in the original C backend's net_helpers.h, which that backend
+        // #included into its generated code. The LLVM backend has no C
         // to inject the header into and the JIT dylib never compiles it, so the
         // externs would resolve to null (EXC_BAD_ACCESS on the first call).
         // Hand-emit their bodies as IR, like eiwa_to_string/eiwa_now_millis.
@@ -1804,11 +1803,10 @@ pub const LLVMEmitter = struct {
     /// (see the String-concat TODO), this helper becomes redundant with the
     /// stdlib body and should be deleted.
     /// INHERITED GAMBIARRA: the name-based hashCode dispatch + small-int tagging
-    /// came from the C backend — see PRE-EXISTING comments in
-    /// src/backend/c_transpiler/expression.zig (get_expr hashCode) and
-    /// src/backend/c_transpiler/eiwa_runtime.h (eiwa_hash_code). The C version
-    /// dispatches through the Hashable vtable for custom types; this LLVM copy
-    /// only handles char* strings and boxes ints.
+    /// came from the C backend — see PRE-EXISTING comments in the original C
+    /// backend (get_expr hashCode) and its runtime (eiwa_hash_code). The C
+    /// version dispatches through the Hashable vtable for custom types; this
+    /// LLVM copy only handles char* strings and boxes ints.
     fn emitHashStringHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
         const i64_type = llvm.LLVMInt64TypeInContext(self.context);
         const i8_type = llvm.LLVMInt8TypeInContext(self.context);
@@ -2107,8 +2105,8 @@ pub const LLVMEmitter = struct {
 
     /// Hand-emits the POSIX socket helpers used by `std.net`
     /// (eiwa_tcp_bind/accept, eiwa_socket_read/write, eiwa_tcp_set_nonblocking,
-    /// eiwa_socket_close). These are `static inline` in
-    /// src/backend/c_transpiler/runtime/net_helpers.h — the C backend #includes
+    /// eiwa_socket_close). These were `static inline` in the original C
+    /// backend's net_helpers.h — that backend #included
     /// the header into generated code, but the LLVM module has no C to inject
     /// into and the JIT dylib never compiles the header, so the externs would
     /// resolve to null and crash on first call. Kept in sync with the C

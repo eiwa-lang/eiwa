@@ -4,8 +4,10 @@ This document tracks the historical progress, current status, and future roadmap
 
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
 >
-> **Fase atual (2026-08):** **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção
-> do backend C + neco + `@MainWrapper`). Plano operacional detalhado:
+> **Fase atual (2026-08):** **Phase 68 — Coroutines Stackless** (async/await Kotlin-style;
+> remoção do backend C + neco + `@MainWrapper`) — **concluída** (Fases A–H); restam os gaps
+> incrementais do modelo (awaits em single-shot, `try`/`for` com suspensão, I/O waiters) e a
+> **Fase I** (dispatchers/thread pool) como proposta adiada. Plano operacional:
 > [`docs/tasks-coroutines-stackless.md`](tasks-coroutines-stackless.md).
 
 ---
@@ -746,7 +748,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 
 ---
 
-### Phase 68: Coroutines Stackless — async/await estilo Kotlin (IN PROGRESS)
+### Phase 68: Coroutines Stackless — async/await estilo Kotlin (CONCLUÍDA — Fase I adiada como proposta)
 > **Decisão de arquitetura (2026-08):** o modelo de concorrência migrou de **neco (stackful)** para
 > **coroutines stackless** (estilo Kotlin): o compilador transforma funções suspensas em **state
 > machines** (`Continuation` no heap), eliminando stack switching. Sem corrotinas neco, o GC volta ao
@@ -771,13 +773,19 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Fase K — `await()` cooperativo (waiter-chain):** awaits em task bodies state machine registram
       o caller como waiter (`StackTask.awaitCoop`) e suspendem; retomados em FIFO pelo done state;
       `coop_await_test.ei` (4 testes) verde.
-- [ ] **Fase F — Remover backend C + neco + `@MainWrapper`:** `src/backend/c_transpiler/`,
-      `src/runtime/third_party/neco/`, `@MainWrapper` (`main_wrapper_c_names`, `emitMainWrapperEntry`),
-      `--backend` (LLVM obrigatório no build.zig), `cli/src/main.ei`, samples mortos.
-- [ ] **Fase G — Validação final:** suíte completa, stress 20k+, `main.ei` run/build, `http_sample.ei`.
-- [ ] **Fase H — Docs:** AGENTS.md, `architecture.md`, `decisions.md` (ADR), `language_tour.md`.
-- [ ] **Fase I — PROPOSTA (adiada):** Dispatchers / thread pool (paralelismo real) — requer suspensão
-      cross-thread + sincronização de estado + GC multithread; redesign, não o modelo atual.
+- [x] **Fase F — Remover backend C + neco + `@MainWrapper`:** `src/backend/c_transpiler/`,
+      `src/runtime/third_party/neco/`, `@MainWrapper`, `--backend` (LLVM único e obrigatório),
+      samples mortos (`task_sample`, `main_wrapper_sample`, `task_p3_debug`, `task_loop`), ~20
+      refs mortas a `c_transpiler` nos comentários do emitter.
+- [x] **Fase G — Validação:** suíte **68 PASS, 2 FAIL** (falhas pré-existentes), stress 20k,
+      `main.ei` run/build verdes; `http_sample.ei` cliente passa, server segfaulta ao responder
+      (gap pré-existente de sockets/`net.ei` no emitter).
+- [x] **Fase H — Docs:** AGENTS.md/agents.md, `architecture.md`, `decisions.md` (**ADR 48**),
+      `language_tour.md` (seção 20 stackless), roadmap Phase 68; `tasks-backend-parity.md`/
+      `bloco-b-handoff.md` marcados obsoletos; removidos os plans superseded.
+- [ ] **Fase I — PROPOSTA (adiada):** Dispatchers / thread pool (paralelismo real) — pré-requisitos
+      (J/K) concluídos; falta o design em si (sincronização de estado, GC multithread). Redesign,
+      não o modelo atual.
 
 > **Suíte atual:** `./bin/eiwac test samples/tests` → **68 PASS, 2 FAIL** (as 2 falhas —
 > `contract_collection_storage_test`/`closure_struct_field_test` — são pré-existentes, não

@@ -46,6 +46,13 @@ The most critical part of the compiler. It ensures mathematical and logical corr
 - **AST Desugaring**: Transforms high-level constructs into low-level method calls (e.g., converting `a + b` to `a.plus(b)` dynamically).
 - **Compatibility Layer (`compat.zig`)**: Adapts Zig 0.16.0 unmanaged `std.ArrayList(T)` to provide managed-like ergonomics with direct `.items` slice access and formatted text writers (`.print(...)`, `.writeAll(...)`), isolating toolchain breaking changes from compiler passes.
 
+### Coroutines Stackless (`coroutines.zig`, `coroutines_transform.zig`)
+Eiwa's concurrency model is **cooperative stackless coroutines** (Kotlin-style `task {}`/`await()`), with no C coroutine runtime (neco removed, 2026-08). The compiler rewrites suspending task bodies into **state machines** (heap `Continuation` objects) driven by an Eiwa-pure `Scheduler`:
+- **Detection** (`coroutines.zig`): post-typecheck pass seeds `@Suspend` stdlib methods and computes the transitive closure of suspend functions (`fun_decl.is_suspend`).
+- **Transform** (`coroutines_transform.zig`): rewrites `task { }`/`.await()`/`sleep`/`yield` into generated `__TaskBlockN` continuation types (`resume()` as a `switch(label)` state machine), promoting captured/live locals to continuation body fields. Awaits inside state-machine bodies register the caller as a **waiter** (`StackTask.awaitCoop`, FIFO chain) and suspend; the awaited task's done state reschedules the waiters.
+- **Runtime** (`src/std/coroutines.ei`): `Scheduler` (intrusive FIFO + timer heap + virtual clock), `StackTask<T>`, `Continuation` contract. Suspension points (`sleep`/`sleepMs`/`yield`) reach OS primitives via FFI (`nanosleep`/`sched_yield`/`poll`).
+- GC-safe by construction: suspended state lives in heap objects, so the conservative OS-stack scan covers everything — no stack switching, no shadow stack.
+
 ---
 
 ## 3. Backend (Native LLVM)

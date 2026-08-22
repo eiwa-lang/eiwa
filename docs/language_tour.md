@@ -1498,15 +1498,19 @@ Then, run `eiwa test` in your terminal. The compiler will automatically discover
 
 ## 20. Concorrência Estruturada (`task` / `await`)
 
-> **Nota:** Esta seção descreve a API pública de concorrência do Eiwa. O runtime subjacente usa fibras cooperativas sobre um event loop single-threaded (kqueue/epoll). Para detalhes da implementação, consulte o ADR 35.
+> **Nota:** Esta seção descreve a API pública de concorrência do Eiwa. O runtime subjacente é de
+> **coroutines stackless** (estilo Kotlin): o compilador transforma corpos de `task { }` em **state
+> machines** (objetos heap `Continuation`) dirigidos por um `Scheduler` escrito em Eiwa puro (fila
+> FIFO + timer heap). Sem stack switching, sem threads expostas. Detalhes: ADR 48 e
+> `docs/tasks-coroutines-stackless.md`.
 
 Eiwa oferece concorrência leve e estruturada através de duas funções da stdlib: `task { }` e `.await()`. Não existem keywords especiais, threads expostas, ou callbacks — apenas lambdas e tipos genéricos.
 
 ### 20.1 Conceitos Básicos
 
-- `task { expr }` — função da stdlib que recebe uma lambda e retorna `Task<T>`. A lambda é executada em uma fibra separada, concorrentemente à fibra atual.
-- `task.await()` — método em `Task<T>` que suspende a fibra atual até o resultado da task estar disponível. É o **único ponto de suspensão** na linguagem.
-- `Task<T>` — tipo genérico declarado na stdlib com tratamento especial pelo compilador.
+- `task { expr }` — função da stdlib que recebe uma lambda e retorna `StackTask<T>` (declarada como `Task<T>` na stdlib). A lambda é agendada no `Scheduler` cooperativo e executada de forma lazy (no primeiro `await()`).
+- `task.await()` — método em `StackTask<T>` que suspende a coroutine atual até o resultado da task estar disponível.
+- `StackTask<T>` — tipo genérico declarado na stdlib (`src/std/coroutines.ei`), implementando o contrato `Awaitable<T>`.
 
 ```kotlin
 import { Task } from "std.core"
@@ -1535,7 +1539,7 @@ fun main() {
 
 ### 20.2 Múltiplas Tasks
 
-Tasks são executadas concorrentemente. O scheduler alterna entre fibras quando uma delas suspende (via `await()` ou I/O).
+Tasks são executadas cooperativamente. O scheduler alterna entre continuations quando uma delas suspende (via `await()`, `sleep`/`yield` ou I/O).
 
 ```kotlin
 fun main() {
@@ -1552,7 +1556,7 @@ fun main() {
 
 ### 20.3 Tasks Aninhadas
 
-Tasks podem conter outras tasks. O `await()` interno suspende apenas a fibra da task externa, não a thread principal.
+Tasks podem conter outras tasks. O `await()` interno suspende apenas a continuação da task externa, não a thread principal.
 
 ```kotlin
 fun main() {
@@ -1612,20 +1616,28 @@ A standard library expõe dois objetos estáticos em `std.coroutines` para opera
 import { Coroutine, EventLoop } from "std.coroutines"
 
 fun example() {
-    // Pausa ou cede o controle da fibra atual
+    // Fora do corpo de um task: pausa a thread (nanosleep) ou cede (sched_yield).
     Coroutine.yield()
     Coroutine.sleep(1)
 
-    // Aguarda prontidão de socket/FD de forma não-bloqueante
+    // Aguarda prontidão de socket/FD (poll).
     EventLoop.waitReadable(fd)
     EventLoop.waitWritable(fd)
 }
 ```
 
+> **Dentro do corpo de um `task { }`**, `sleep`/`sleepMs`/`yield` viram **pontos de suspensão
+> cooperativos de verdade** (o transform os reescreve em `Scheduler.sleep(this, ...)`/
+> `Scheduler.yield(this)`): o corpo é compilado como state machine e o control volta ao scheduler,
+> que retoma a task quando o timer dispara — sem bloquear a thread. `await()` dentro de um corpo
+> state machine registra o caller como waiter da task aguardada e suspende (waiter-chain FIFO).
+
 ### 20.8 Limitações do MVP
 
 - **Sem cancelamento** — `task.cancel()` fica para uma fase futura.
-- **Single-threaded** — todas as tasks rodam em uma única thread OS (scheduler concorrente). Paralelismo real (Execution Contexts) é uma evolução futura documentada no roadmap.
+- **Single-threaded** — todas as tasks rodam em uma única thread OS (scheduler cooperativo). Paralelismo real (Dispatchers / thread pool) é uma proposta adiada (Fase I do plano stackless).
+- **`await()` no root** (main/test/top-level) é blocking-poll — o root é o driver e não tem continuation; suspensão cooperativa acontece **dentro** dos corpos de task.
+- **Gaps do transform:** `for`/`try` com `sleep`/`yield` dentro do corpo do task, e `await` como operando dentro de `assignment`, ainda não suspendem cooperativamente (erro `file:line` ou chamada direta bloqueante).
 
 ---
 

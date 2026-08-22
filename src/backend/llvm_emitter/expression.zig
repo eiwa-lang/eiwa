@@ -387,8 +387,8 @@ pub fn emitExpression(
             // TODO(emitter): SPECIAL CASE — review before promoting LLVM to
             // default backend. `push`/`get`/`set`/`length` on .Array are
             // inlined here instead of emitting shared EiwaArray_* helpers like
-            // the C transpiler does (src/backend/c_transpiler/core.zig:290).
-            // LLVM-SPECIFIC (NOT inherited from C): the C backend generates one
+            // the original C transpiler did.
+            // LLVM-SPECIFIC (NOT inherited from C): the C backend generated one
             // EiwaArray struct + push/set functions per element type; the LLVM
             // emitter uses an untyped i64 buffer and inlines the operations.
             if (get.object.resolved_type) |obj_rt| {
@@ -413,8 +413,8 @@ pub fn emitExpression(
             // helper (single source of truth) and prefer a resolved-type flag
             // from the type checker over name matching.
             // INHERITED GAMBIARRA: the name-based toString + eiwa_to_string
-            // fallback came from the C backend — see PRE-EXISTING comment in
-            // src/backend/c_transpiler/expression.zig (get_expr toString).
+            // fallback came from the C backend — see the PRE-EXISTING get_expr
+            // toString comment in the original C backend.
             if (std.mem.eql(u8, get.name, "toString")) {
                 if (get.object.resolved_type) |obj_rt| {
                     const obj_base = obj_rt.*;
@@ -2143,8 +2143,8 @@ pub fn emitExpression(
             // fix: materialize a real String representation (or reuse
             // eiwa_concat from the runtime) so string ops share one code path.
             // INHERITED GAMBIARRA: string-as-char* + inline concat traces to the
-            // C backend's String model (EiwaString/Str, eiwa_concat in
-            // src/backend/c_transpiler/eiwa_runtime.h). The C version allocates
+            // C backend's String model (EiwaString/Str, eiwa_concat in the
+            // original C runtime). The C version allocated
             // a real String header; this LLVM inline path returns a bare buffer
             // with no header, so `.length`/`.ptr` semantics differ.
             if (call.callee.data == .get_expr) {
@@ -2924,8 +2924,8 @@ pub fn emitExpression(
             // path (e.g. only handle `toString` at the call_expr level and make
             // get_expr return the boxed value).
             // INHERITED GAMBIARRA: name-based toString dispatch traces back to
-            // the C backend — see PRE-EXISTING comment in
-            // src/backend/c_transpiler/expression.zig (get_expr toString). This
+            // the C backend — see the PRE-EXISTING get_expr toString comment in
+            // the original C backend. This
             // pass-through layer is LLVM-specific (a consequence of emitting the
             // call at get_expr time), but the underlying stringly-typed dispatch
             // is the inherited part.
@@ -3299,10 +3299,9 @@ pub fn emitExpression(
                             // `is` compares actual types, not pointer ranges.
                             // INHERITED GAMBIARRA: the `< 0x10000`/`<= 1` tagging
                             // rule came from the C backend — see PRE-EXISTING
-                            // comments in src/backend/c_transpiler/expression.zig
-                            // (is_expr / when is_type_cond) and
-                            // src/backend/c_transpiler/eiwa_runtime.h. The C
-                            // version extends the range check with an exact
+                            // comments in the original C backend (is_expr /
+                            // when is_type_cond) and its runtime. The C
+                            // version extended the range check with an exact
                             // EiwaTypeDescriptor comparison for custom types;
                             // this LLVM copy stops at the range check (no
                             // descriptors exist in the LLVM model). The tag
@@ -3902,8 +3901,8 @@ pub fn emitExpression(
 /// LLVM type-kind sniffing. Until then, keep this as the single choke-point for
 /// all argument coercion (do NOT add ad-hoc boxing at individual call sites).
 /// INHERITED GAMBIARRA: the boxing model itself (primitives raw, boxed custom/
-/// union values) traces back to the C backend's `is_boxed` flags in
-/// src/backend/c_transpiler/expression.zig. The C transpiler uses the type
+/// union values) traces back to the original C backend's `is_boxed` flags.
+/// The C transpiler used the type
 /// checker's is_boxed decision directly; this LLVM coercion re-derives it from
 /// LLVM type kinds, which is the fragile part. Aligning both on the same
 /// type-checker flag removes the sniffing here.

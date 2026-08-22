@@ -1,5 +1,13 @@
 # Tasks de Paridade Backend (LLVM vs C)
 
+> **⚠️ SUPERSEDED (2026-08):** o backend C foi **removido** (coroutines stackless, ADR 48 /
+> `docs/tasks-coroutines-stackless.md`). Não há mais "paridade LLVM vs C". Este arquivo foi
+> renomeado de propósito para permanecer como **índice operacional dos `TODO(emitter)`**
+> restantes no backend LLVM (GAPs, SPECIAL CASEs, WORKAROUNDs, duplicações do runtime) — use-o
+> para caçar dívidas técnicas do emissor. O trabalho estrutural (modelo de valor de `String`,
+> dispatch via vtable real) continua valendo, referenciado pelo `docs/roadmap.md` (Task 61.5 /
+> Task 64.11).
+>
 > **Contexto:** durante a fase de paridade LLVM/C (Phase 61-66) foram acumulados TODO no
 > emissor LLVM (`src/backend/llvm_emitter/`) que mapeiam **GAPs reais**, **SPECIAL CASEs**,
 > **WORKAROUNDs** (libgc) e **duplicações** do runtime. Este arquivo é o índice operacional

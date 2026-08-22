@@ -5,7 +5,8 @@ Welcome, AI Agent! This guide outlines the project context, technical stack, arc
 ## 🌌 Project Overview
 Eiwa is a pragmatic, statically typed, natively compiled systems language with a Kotlin-inspired syntax. 
 * **The Compiler** is built from scratch in **Zig (0.16.0)**.
-* **The Backend** compiles Eiwa code (`.ei`) into **LLVM IR** via the LLVM C API — executed through a JIT for development loops and optimized with `-O3` for production binaries. A C-transpilation backend remains for compatibility and is not the primary path.
+* **The Backend** compiles Eiwa code (`.ei`) into **LLVM IR** via the LLVM C API — executed through a JIT for development loops and optimized with `-O3` for production binaries. LLVM is the **only** backend (the C transpiler was removed, 2026-08).
+* **Concurrency:** cooperative **stackless coroutines** (Kotlin-style `task {}`/`await()`). The compiler transforms suspending task bodies into **state machines** (heap `Continuation` objects) and an Eiwa-pure `Scheduler` (FIFO queue + timer heap) drives them — no stack switching, no C coroutine runtime. Plan: `docs/tasks-coroutines-stackless.md`.
 * **Memory Management:** Driven by a conservative Garbage Collector (**Boehm GC**).
 
 ---
@@ -14,12 +15,12 @@ Eiwa is a pragmatic, statically typed, natively compiled systems language with a
 
 1. **Unified Class-Only Type System (No Raw Primitive Types in User-Space):**
    - Eiwa has **NO raw primitive types** visible to the user (like Kotlin).
-   - Everything visible to the user is a **`type`** (`Int`, `Double`, `Bool`, `String`, `Pointer`, etc.) defined and declared in `src/std/core.ei` (annotated with `@Primitive(...)` for internal C/LLVM backend layout representation).
+   - Everything visible to the user is a **`type`** (`Int`, `Double`, `Bool`, `String`, `Pointer`, etc.) defined and declared in `src/std/core.ei` (annotated with `@Primitive(...)` for internal LLVM backend layout representation).
    - User code interacts strictly with `type`, `contract`, `skill`, and `object`.
 
 2. **Explicit Stdlib Declarations (No Magic Methods or Floating APIs):**
    - Every method, operator, type, or property accessible to the end user **MUST be explicitly declared** in `src/std/` (e.g. `src/std/core.ei`).
-   - Compiler backend passes (C Transpiler / LLVM Emitter) **MUST NOT introduce magic methods** or hidden user-accessible APIs out of thin air without a matching declaration in the standard library.
+   - Compiler backend passes (LLVM Emitter) **MUST NOT introduce magic methods** or hidden user-accessible APIs out of thin air without a matching declaration in the standard library.
    - If a standard feature or builtin method is backed by internal compiler intrinsics or backend instructions, it must still have its formal signature declared in `src/std/core.ei` (annotated with `@Primitive` or `@Alias` where appropriate) for documentation, IDE resolution, and architectural consistency.
 
 ---
@@ -54,10 +55,11 @@ zig build test
 * [src/frontend/parser.zig](src/frontend/parser.zig): Recursive Descent Parser. Generates the AST.
 * [src/core/ast.zig](src/core/ast.zig): Defines AST data structures (`ASTNode`, `TokenType`). Tracks positions (`line`, `column`).
 * [src/core/types.zig](src/core/types.zig): Type Checker and Scope Resolver. Resolves types, desugars operators (`+` to `.plus()`), and manages symbols.
-* [src/backend/c_transpiler.zig](src/backend/c_transpiler.zig): Generates the C output.
-* [src/backend/c_transpiler/eiwa_runtime.h](src/backend/c_transpiler/eiwa_runtime.h): Core runtime definitions, structures (e.g., `EiwaString`), and GC integration.
+* [src/core/coroutines.zig](src/core/coroutines.zig): Suspend detection pass (`@Suspend` seeds + transitive closure).
+* [src/core/coroutines_transform.zig](src/core/coroutines_transform.zig): Stackless AST transform — rewrites `task {}`/`.await()`/sleep/yield into generated `Continuation` state machines + `Scheduler` calls.
+* [src/backend/llvm_emitter/](src/backend/llvm_emitter/): The LLVM IR backend (core.zig, expression.zig, statement.zig) — the **only** backend.
 * [src/runtime/third_party/](src/runtime/third_party/): Vendored C libraries and Eiwa C wrappers. Each library's `lib` block points `@Header` directly at its own wrapper.
-* [src/std/](src/std/): The Eiwa Standard Library package (written in Eiwa). Includes `std/core.ei` and `std/time.ei`.
+* [src/std/](src/std/): The Eiwa Standard Library package (written in Eiwa). Includes `std/core.ei`, `std/coroutines.ei` (Scheduler + StackTask), `std/time.ei`.
 * [samples/](samples/): Example scripts and syntax tests.
 * [tests/](tests/): Automated toolchain test cases.
 
@@ -70,7 +72,8 @@ zig build test
 * [docs/decisions.md](docs/decisions.md): ADRs (Architecture Decision Records). **Read before introducing new patterns or changing existing decisions** to avoid rework.
 * [docs/language_tour.md](docs/language_tour.md): Full Eiwa syntax reference. Use when writing samples, tests, or `.ei` code examples.
 * [docs/roadmap.md](docs/roadmap.md): Phase history, completed tasks, and pending features. Read to identify the current project state.
-* [docs/tasks-backend-parity.md](docs/tasks-backend-parity.md): Operacional index of every remaining `TODO(emitter)` in the LLVM backend (GAPs, SPECIAL CASEs, WORKAROUNDs, runtime duplicates) with file:line references. Read before working on LLVM/C backend parity.
+* [docs/tasks-coroutines-stackless.md](docs/tasks-coroutines-stackless.md): **Plano operacional atual** — coroutines stackless (task/await, state machines, Scheduler/timer heap, remoção C/neco). Read before touching anything concurrency/coroutine related.
+* [docs/tasks-backend-parity.md](docs/tasks-backend-parity.md): Operacional index of every remaining `TODO(emitter)` in the LLVM backend (GAPs, SPECIAL CASEs, WORKAROUNDs, runtime duplicates) with file:line references. Read before working on LLVM emitter cleanup.
 * [docs/setup.md](docs/setup.md): Dependency installation and environment setup. Only needed during initial setup.
 
 ---
@@ -99,9 +102,9 @@ Eiwa has **NO implementation inheritance** (`class`, `open`, `abstract`, and `ov
 
 ## ⚠️ Critical Rules & Gotchas for LLMs
 1. **Zig Version:** Ensure compatibility with Zig `0.16.0`. Do not use deprecated API structures from older versions.
-2. **Type Checking First:** Never generate code bypassing validations. All semantic checks, Null Safety, and Type Enforcements must happen in `src/core/types.zig` before calling the transpiler.
-3. **Boehm GC Integration:** Memory allocation in the transpiled C code must use GC-managed hooks (like `GC_MALLOC` or `GC_MALLOC_ATOMIC`) via runtime definitions. Do not use raw malloc/free.
-4. **Name Mangling:** Types, objects, skills, contracts, functions, and standard library methods use Name Mangling (e.g., `system_Int` instead of raw `Int`) in the C backend to avoid naming collisions.
+2. **Type Checking First:** Never generate code bypassing validations. All semantic checks, Null Safety, and Type Enforcements must happen in `src/core/types.zig` before the LLVM emitter.
+3. **Boehm GC Integration:** Emitted allocations must go through the active heap allocator (`getHeapAllocFn`/`getHeapReallocFn`, GC_malloc-first when `prefer_gc_alloc`) — zeroed + GC-managed. Do not use raw malloc/free.
+4. **Name Mangling:** Types, objects, skills, contracts, functions, and standard library methods use Name Mangling (e.g., `system_Int` instead of raw `Int`) in the LLVM backend to avoid naming collisions.
 5. **No Placeholders:** When writing Eiwa examples or test cases, write complete, working assertions.
 6. **Task Status Tracking:** Refer to [docs/roadmap.md](docs/roadmap.md) for the historic roadmap, completed phases, and pending features.
 7. **Composition Type System:** NEVER use `class`, `open`, `abstract`, or `override`. Always use `type`, `contract`, `skill`, `object`, and `implement`.

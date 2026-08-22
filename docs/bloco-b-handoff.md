@@ -1,5 +1,11 @@
 # Handoff — Bloco B Real: Boehm GC dentro do JIT LLVM
 
+> **⚠️ OBSOLETO (2026-08):** o **Bloco B foi implementado** — o JIT LLVM aloca via
+> `GC_malloc`/`GC_realloc` de verdade (`prefer_gc_alloc`, `getHeapAllocFn`/`getHeapReallocFn`,
+> `GC_init` host-side, `registerJITGlobalsAsRoots`, ctor `__eiwa_gc_init_ctor`). Mantido apenas
+> como **histórico da investigação** (causa raiz e tentativas). O plano correspondente
+> (`tasks-bloco-b-gc-jit.md`) foi removido.
+
 > **Status (2026-08):** investigado e tentado, **NÃO resolvido**. Este doc é o handoff completo para
 > quem for atacar o Bloco B de verdade. Registra o que já foi feito, o que foi tentado e quebrou,
 > a causa raiz real, o checklist de implementação, e os special-cases que ficam redundantes ao

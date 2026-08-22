@@ -296,8 +296,7 @@ pub fn emitStatement(
             // (slot 0 = size, slots 2.. = elements). Item values are loaded as
             // i64 slots and bitcast to pointers when the element type is a
             // reference type. LLVM-SPECIFIC (NOT inherited from C): the C
-            // transpiler iterates EiwaArray struct fields (data/length) — see
-            // src/backend/c_transpiler/statement.zig (for_stmt).
+            // transpiler iterated EiwaArray struct fields (data/length).
             const arr_rt = if (f.iterable.resolved_type) |rt| rt.* else return error.UnsupportedForIterable;
             if (arr_rt != .Array and arr_rt != .Custom) return error.UnsupportedForIterable;
 
