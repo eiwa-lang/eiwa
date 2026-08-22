@@ -1611,7 +1611,7 @@ pub fn emitExpression(
             if (parent_bb) |pbb| llvm.LLVMPositionBuilderAtEnd(builder, pbb);
 
             // Get the active heap allocation function (GC_malloc when
-            // prefer_gc_alloc — docs/tasks-bloco-b-gc-jit.md).
+            // prefer_gc_alloc).
             const malloc_fn = core.getHeapAllocFn(mod);
             const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
 

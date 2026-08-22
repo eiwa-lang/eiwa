@@ -35,7 +35,7 @@ pub var verbose: bool = false;
 
 /// True when the host `eiwac` binary itself links libgc (build option set by
 /// build.zig's findLibgcPath). Only then can JIT'd code resolve GC_* symbols
-/// from the host process (Bloco B, docs/tasks-bloco-b-gc-jit.md).
+/// from the host process (Bloco B).
 pub const has_gc = build_options.has_gc;
 
 /// When true, emitted code allocates via GC_malloc/GC_realloc (zeroed,
@@ -2582,7 +2582,7 @@ pub const LLVMEmitter = struct {
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
         // Allocate the instance via the active heap allocator (GC_malloc when
-        // prefer_gc_alloc, malloc otherwise — see docs/tasks-bloco-b-gc-jit.md).
+        // prefer_gc_alloc, malloc otherwise).
         // TODO(emitter): the fixed 128-byte allocation below should be the
         // struct's actual byte size (LLVMStoreSizeOfType), not a hardcoded
         // upper bound.

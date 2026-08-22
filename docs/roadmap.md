@@ -3,6 +3,10 @@
 This document tracks the historical progress, current status, and future roadmap of the Eiwa Compiler. 
 
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
+>
+> **Fase atual (2026-08):** **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção
+> do backend C + neco + `@MainWrapper`). Plano operacional detalhado:
+> [`docs/tasks-coroutines-stackless.md`](tasks-coroutines-stackless.md).
 
 ---
 
@@ -90,7 +94,10 @@ This document tracks the historical progress, current status, and future roadmap
 - [x] **Task 19.2:** Add support for Multi-Catch (`catch (e: ExceptionA | ExceptionB)`) and optional catch blocks (`catch { ... }`).
 - [x] **Task 19.3:** Map Exceptions and non-local unwinding in the C Transpiler via `<setjmp.h>` (setjmp/longjmp).
 
-### Phase 20: LLVM Native Emitter & Release Pipeline (IN PROGRESS — PARITY GAPS)
+### Phase 20: LLVM Native Emitter & Release Pipeline (COMPLETED — LLVM é o único backend, ver Phase 68)
+> **Nota (2026-08, Phase 68):** com a remoção do backend C (Fase F da Phase 68), o LLVM deixa de ser
+> "padrão com C secundário" e vira o **único backend** (obrigatório no build.zig). O histórico abaixo
+> (paridade e promoção) está mantido; a Task 20.12 foi concluída e o backend C entra em remoção.
 > **Nota de paridade (Ago 2026, branch `feat/llvm-backend-parity`):** a Task 20.12 (promoção do LLVM a padrão) está **bloqueada** — o emissor ainda não tem paridade total com o backend C.
 > **Avanços estruturais recentes (Fev/Ago 2026):**
 > 1. **Resolução Estática de Propriedades de Classe na AST (`owner_type_c_name`)**: Adicionamos o campo `owner_type_c_name` aos nós `identifier` e `assignment` da AST (`src/core/ast.zig`) e sua anotação estática no Type Checker (`src/core/type_checker/infer_expr.zig`). Isso eliminou heurísticas frágeis de varredura/adivinhação de structs via HashMap no backend LLVM (`statement.zig` e `expression.zig`), garantindo calculo exato de offsets `GEP2` e prevenindo colisões com structs da stdlib (ex: `json_JsonParser`).
@@ -222,7 +229,10 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
 - [x] **Task 35.3:** Implement `std.http.Server` utilizing `libuv` or lightweight non-blocking sockets with custom C wrappers for event dispatching.
 - [x] **Task 35.4:** Write integration tests and sample scripts verifying basic HTTP requests and responses.
 
-### Phase 36: Concorrência Estruturada — Fibras + Tasks (UNIFIED — merged former Phase 36 + Phase 50) (COMPLETED)
+### Phase 36: Concorrência Estruturada — Fibras + Tasks (UNIFIED — merged former Phase 36 + Phase 50) (COMPLETED — SUPERSEDED BY PHASES 51/68)
+> **Nota (2026-08):** o runtime de **fibras** (`fiber.c`/`fiber.h`) foi substituído pelo neco
+> (Phase 51) e este por **coroutines stackless** (Phase 68). `task {}`/`await()` hoje são state
+> machines geradas pelo compilador, sem stack switching. Histórico mantido.
 > **Nota:** O runtime de fibras foi implementado em **C** (`fiber.c`/`fiber.h`) em vez de Zig, integrando-se diretamente com o C transpilado. A passagem de ponteiros para `makecontext` no macOS arm64 exigiu o workaround de empacotar ponteiros 64-bit como dois argumentos `int`.
 
 #### Camada 1 — Runtime de Fibras e Scheduler (C)
@@ -381,7 +391,10 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 50.1.4:** Cache de instâncias via `monomorphized_nodes` + `functions_ast` para evitar duplicação
 - [x] **Verify:** `zig build && ./zig-out/bin/eiwa test` (128 testes) passa; funções genéricas com `T` funcionam; métodos genéricos com type args funcionam
 
-### Phase 51: Refatoração de `Task<T>` (Corotinas 100% em Eiwa) (DONE)
+### Phase 51: Refatoração de `Task<T>` (Corotinas 100% em Eiwa) (DONE — SUPERSEDED BY PHASE 68)
+> **Nota (2026-08):** esta fase levou o `Task<T>` ao modelo **neco (stackful)**. A **Phase 68**
+> (coroutines stackless) **substitui o neco**: o `@MainWrapper`/`lib Neco` são removidos e o runtime
+> de corrotinas vira state machine gerada pelo compilador + Scheduler em Eiwa puro. Histórico mantido.
 > **Dependência:** Monomorfização Real (Fase 50) concluída ✅.
 >
 > **Nota:** Plano detalhado em `docs/plano_mono_task.md`. O destino final é `Task<T>` 100% em Eiwa via `contract + skill + lib {}` (neco — https://github.com/tidwall/neco), removendo todos os casos especiais (special cases) do compilador.
@@ -644,7 +657,12 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 
 ---
 
-### Phase 65: Compilação de `@Source` C no Backend LLVM + `@MainWrapper` (IN PROGRESS)
+### Phase 65: Compilação de `@Source` C no Backend LLVM + `@MainWrapper` (COMPLETED — `@MainWrapper` superseded)
+> **Nota (2026-08, Phase 68):** o **Bloco A** (`@Source`/`@Header`/`@Define`/`@Include`/`@Link` no
+> LLVM — interop C completa de lib blocks) **permanece** e é o que permite o stdlib stackless
+> alcançar `nanosleep`/`sched_yield`/`poll` por FFI. O **Bloco B (`@MainWrapper`)** foi o único
+> usuário do neco e está **em remoção** pela Phase 68 (Fase F): sem neco, o entry é `main`/
+> `eiwa_test_main` direto e o mecanismo `@MainWrapper`/`emitMainWrapperEntry`/shims é deletado.
 > **Motivação:** Os 2 arquivos restantes em `failing_llvm` (`task_test.ei` e `http_test.ei`) batem no **mesmo gap fundamental**: o backend LLVM não compila os arquivos C `@Source` dos `lib` blocks. O stub pass deixa o FFI C (neco, curl) como extern sem corpo e não-resolvido → MCJIT chama endereço 0x0 → segfault. O path C (`src/main.zig:501-543`) já coleta `c_sources`/`c_includes`/`c_defines`/`link_libraries` dos libs e compila; o `emitNativeBinary` do LLVM (`core.zig:2236`) só faz `zig cc temp_llvm.o -o bin -lgc` — sem os `@Source`. Isso também destrava **qualquer lib block futuro** do usuário no backend LLVM (interop C completa, não só libc resolvida pelo MCJIT do host).
 >
 > **Projeto (em 2 blocos):**
@@ -725,6 +743,45 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 > - [ ] **Task 67.2:** LLVM emitter — registrar a função local no escopo de emissão para que chamadas resolvam; emitir como função LLVM privada. Verify: mesmo teste roda no backend LLVM.
 > - [ ] **Task 67.3:** Capturas — variáveis `var` externas atribuídas dentro da função local devem ser boxed (como lambdas). Verify: função local que acumula num contador externo propaga a mutação.
 > - [ ] **Verify 67:** guardrail `samples/tests` verde nos dois backends; um teste dedicado `local_functions_test.ei` cobre declaração, chamada, recursão e captura.
+
+---
+
+### Phase 68: Coroutines Stackless — async/await estilo Kotlin (IN PROGRESS)
+> **Decisão de arquitetura (2026-08):** o modelo de concorrência migrou de **neco (stackful)** para
+> **coroutines stackless** (estilo Kotlin): o compilador transforma funções suspensas em **state
+> machines** (`Continuation` no heap), eliminando stack switching. Sem corrotinas neco, o GC volta ao
+> modelo conservador do backend C (provado a 200k iterações) — o crash de corrupção de raiz GC
+> desaparece **sem shadow stack**. Supersede as Phases 36 (fibras), 51 (neco) e o mecanismo
+> `@MainWrapper` da Phase 65 (ambos em remoção).
+>
+> **Plano master:** [`docs/tasks-coroutines-stackless.md`](tasks-coroutines-stackless.md) (Fases A–K).
+> Remove backend C + neco + `@MainWrapper`; o LLVM vira o único backend (obrigatório).
+
+- [x] **Fase A — Detecção por inferência (sem keyword `suspend`):** `@Suspend`/`@Coroutine` no stdlib;
+      AST `is_suspend`/`is_suspend_call`; fecho transitivo pós-typecheck (`src/core/coroutines.zig`).
+- [x] **Fase B — Type checking / detecção:** seeds `@Suspend`, fecho transitivo, fronteira `@Coroutine`.
+- [x] **Fase C — Transform AST → state machine (`src/core/coroutines_transform.zig`):** P1 retilíneo,
+      P2 loops/await-como-operando, P3 try/catch, P4 métodos de type + genéricos, P5 stdlib stackless
+      (`StackTask<T>`, Scheduler, boxed captures, fire-and-forget drain).
+- [x] **Fase D — Emissão LLVM:** `__TaskBlockN` via types/métodos normais; `Scheduler.*` como calls Eiwa.
+- [x] **Fase E — Scheduler em Eiwa puro** (sem arquivo C): FIFO intrusiva + timer heap + relógio virtual;
+      `sleep/sleepMs`/`yield`/`EventLoop.*` via FFI (`nanosleep`/`sched_yield`/`poll`).
+- [x] **Fase J — Suspensão verdadeira:** `switch(label)` state machines + timer heap cooperativo;
+      `interleave_test.ei` (`ABABAB`) verde; `body_fields_test`/`yield_test` novos.
+- [x] **Fase K — `await()` cooperativo (waiter-chain):** awaits em task bodies state machine registram
+      o caller como waiter (`StackTask.awaitCoop`) e suspendem; retomados em FIFO pelo done state;
+      `coop_await_test.ei` (4 testes) verde.
+- [ ] **Fase F — Remover backend C + neco + `@MainWrapper`:** `src/backend/c_transpiler/`,
+      `src/runtime/third_party/neco/`, `@MainWrapper` (`main_wrapper_c_names`, `emitMainWrapperEntry`),
+      `--backend` (LLVM obrigatório no build.zig), `cli/src/main.ei`, samples mortos.
+- [ ] **Fase G — Validação final:** suíte completa, stress 20k+, `main.ei` run/build, `http_sample.ei`.
+- [ ] **Fase H — Docs:** AGENTS.md, `architecture.md`, `decisions.md` (ADR), `language_tour.md`.
+- [ ] **Fase I — PROPOSTA (adiada):** Dispatchers / thread pool (paralelismo real) — requer suspensão
+      cross-thread + sincronização de estado + GC multithread; redesign, não o modelo atual.
+
+> **Suíte atual:** `./bin/eiwac test samples/tests` → **68 PASS, 2 FAIL** (as 2 falhas —
+> `contract_collection_storage_test`/`closure_struct_field_test` — são pré-existentes, não
+> relacionadas a coroutines). `zig build` + `zig build test` verdes.
 
 ---
 

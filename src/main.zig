@@ -460,7 +460,7 @@ fn run(init: std.process.Init) !void {
     }
     const emitter = try allocator.create(llvm_emitter.LLVMEmitter);
     emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
-    // Bloco B (docs/tasks-bloco-b-gc-jit.md): allocate via real GC_malloc/
+    // Bloco B: allocate via real GC_malloc/
     // GC_realloc (zeroed, GC-managed) instead of raw malloc. Always for
     // native builds (the binary links -lgc); for the JIT only when the
     // host eiwac links libgc. Must be set before emitModule.

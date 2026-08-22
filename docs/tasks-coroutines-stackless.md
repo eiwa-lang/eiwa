@@ -5,7 +5,8 @@
 > volta ao modelo conservador do backend C (provado a 200k iterações) e o crash de corrupção
 > de raiz GC desaparece **sem precisar de shadow stack**. Remover backend C + neco + `@MainWrapper`.
 >
-> Origem: `docs/tasks-shadow-stack-gc.md` (Path 1) — este arquivo substitui a Fase 4 daquele
+> Origem: o plano "Path 1" (shadow stack GC, superseded/removido — o doc original
+> `tasks-shadow-stack-gc.md` foi arquivado) — este arquivo substitui a Fase 4 daquele
 > plano: em vez de shadow stack, a transformação de coroutines stackless elimina a necessidade
 > dela. Manter a decisão de remover C/neco.
 
@@ -280,8 +281,9 @@ Casos em ordem:
       removidos.
 - [ ] `docs/decisions.md`: ADR — "Coroutines stackless (Kotlin-style); remoção C + neco".
 - [ ] `docs/language_tour.md`: seção `suspend fun`/`task{}`/`await()`.
-- [ ] `docs/tasks-backend-parity.md`, `docs/tasks-bloco-b-gc-jit.md`,
-      `docs/bloco-b-handoff.md`: obsoletos/superseded.
+- [ ] `docs/tasks-backend-parity.md`, `docs/bloco-b-handoff.md`: obsoletos/superseded.
+      (`tasks-bloco-b-gc-jit.md` e `tasks-shadow-stack-gc.md` já foram removidos — o Bloco B
+      está implementado no código e o plano stackless cobre a decisão.)
 - [x] Limpar `gc_s1/ gc_s1a/ gc_s1b/ gc_s2/ gc_s3/ gc_stress_tmp/` (testes
       estáveis consolidados em `samples/tests/gc_stress_test.ei`).
 
