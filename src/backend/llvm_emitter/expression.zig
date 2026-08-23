@@ -2741,7 +2741,14 @@ pub fn emitExpression(
                                         // null. Route toString/hashCode through the runtime helpers
                                         // (small-int tagging + descriptor/string fast paths) — mirrors
                                         // the C backend's eiwa_to_string/eiwa_hash_code.
-                                        var null_val = llvm.LLVMConstNull(c_ret_t);
+                                        // Void-returning contract methods have no value to null-fill
+                                        // on the null-vtable path (the void merge below ignores
+                                        // null_val). LLVMConstNull on a void type hits
+                                        // Constant::getNullValue's llvm_unreachable and traps.
+                                        var null_val: llvm.LLVMValueRef = if (llvm.LLVMGetTypeKind(c_ret_t) == llvm.LLVMVoidTypeKind)
+                                            llvm.LLVMConstNull(llvm.LLVMInt32TypeInContext(c_ctx))
+                                        else
+                                            llvm.LLVMConstNull(c_ret_t);
                                         const m_name = c_target_fun_decl.data.fun_decl.name;
                                         const c_ptr_t = llvm.LLVMPointerTypeInContext(c_ctx, 0);
                                         if (std.mem.eql(u8, m_name, "toString")) {
@@ -2811,11 +2818,21 @@ pub fn emitExpression(
                                         types_mapping.getLLVMTypeWithContracts(ctx, nrt.*, global_contracts_ast_ptr)
                                     else
                                         ret_t;
-                                    const const_null = llvm.LLVMConstNull(null_val);
+                                    const const_null = if (llvm.LLVMGetTypeKind(null_val) == llvm.LLVMVoidTypeKind)
+                                        llvm.LLVMConstNull(llvm.LLVMInt32TypeInContext(ctx))
+                                    else
+                                        llvm.LLVMConstNull(null_val);
                                     const else_end_bb = llvm.LLVMGetInsertBlock(builder);
                                     _ = llvm.LLVMBuildBr(builder, merge_bb);
 
                                     llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+                                    if (llvm.LLVMGetTypeKind(ret_t) == llvm.LLVMVoidTypeKind) {
+                                        // Void-returning safe call: there is no value to merge
+                                        // across the null-check branches (a phi cannot carry
+                                        // void). The call value is discarded; the enclosing
+                                        // emitter continues at the merge block.
+                                        return call_val;
+                                    }
                                     const phi = llvm.LLVMBuildPhi(builder, llvm.LLVMTypeOf(const_null), "safe_call_res");
                                     var incoming_vals = [_]llvm.LLVMValueRef{ call_val, const_null };
                                     var incoming_blocks = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };
@@ -3018,7 +3035,14 @@ pub fn emitExpression(
                                     _ = llvm.LLVMBuildBr(builder, merge_bb);
 
                                     llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
-                                    const const_null = llvm.LLVMConstNull(ret_t);
+                                    // Void-returning methods have no value to null-fill on
+                                    // the null branch (the void merge below ignores it);
+                                    // LLVMConstNull(void) would hit getNullValue's
+                                    // llvm_unreachable and trap.
+                                    const const_null = if (llvm.LLVMGetTypeKind(ret_t) == llvm.LLVMVoidTypeKind)
+                                        llvm.LLVMConstNull(llvm.LLVMInt32TypeInContext(ctx))
+                                    else
+                                        llvm.LLVMConstNull(ret_t);
                                     const else_end_bb = llvm.LLVMGetInsertBlock(builder);
                                     _ = llvm.LLVMBuildBr(builder, merge_bb);
 
