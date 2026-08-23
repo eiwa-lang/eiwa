@@ -64,7 +64,10 @@ RUN case "$TARGETARCH" in \
 
 # Shipped layout: <bin>/eiwac + <src>/ side by side, exactly like the release
 # tarball, so eiwa_home resolves the stdlib at runtime (EIWA_HOME backstop).
+# EIWA_BASELINE_CPU forces portable binaries when building projects inside the
+# container (no host-only features like AVX-512, which break under emulation).
 ENV EIWA_HOME=/opt/eiwa/src \
+    EIWA_BASELINE_CPU=1 \
     PATH="/opt/eiwa/bin:${PATH}"
 
 WORKDIR /work

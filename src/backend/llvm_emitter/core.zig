@@ -3021,11 +3021,18 @@ pub const LLVMEmitter = struct {
             return error.LLVMTargetError;
         }
 
-        const cpu = llvm.LLVMGetHostCPUName();
-        defer llvm.LLVMDisposeMessage(cpu);
-
-        const features = llvm.LLVMGetHostCPUFeatures();
-        defer llvm.LLVMDisposeMessage(features);
+        // Host CPU tuning by default; set EIWA_BASELINE_CPU=1 to emit a
+        // portable binary (baseline x86_64/arm64, no host-only features like
+        // AVX-512). Needed so releases built on modern CI runners keep working
+        // on older CPUs / emulators (e.g. Rosetta 2, which lacks AVX-512).
+        const use_host_cpu = std.c.getenv("EIWA_BASELINE_CPU") == null;
+        var cpu: [*c]const u8 = "";
+        var features: [*c]const u8 = "";
+        if (use_host_cpu) {
+            cpu = llvm.LLVMGetHostCPUName();
+            features = llvm.LLVMGetHostCPUFeatures();
+        }
+        defer if (use_host_cpu) llvm.LLVMDisposeMessage(@ptrCast(@constCast(cpu)));
 
         const opt_level: llvm.LLVMCodeGenOptLevel = if (self.is_release) llvm.LLVMCodeGenLevelAggressive else llvm.LLVMCodeGenLevelNone;
 

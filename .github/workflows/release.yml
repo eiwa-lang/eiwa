@@ -47,10 +47,15 @@ jobs:
         run: brew install bdw-gc llvm@21
 
       - name: Build eiwac
-        run: zig build
+        # Baseline CPU: release binaries must run on any x86_64/arm64 (incl.
+        # emulators like Rosetta 2, which lack AVX-512). `zig build` defaults to
+        # `-mcpu=native`, baking the CI runner's host features into the binary.
+        run: zig build -Dcpu=baseline
 
       - name: Build eiwa CLI
-        run: ./bin/eiwac build -o bin/eiwa cli/src/main.ei
+        # eiwac emits with the host CPU by default; force a portable binary for
+        # the shipped CLI (see EIWA_BASELINE_CPU in the LLVM emitter).
+        run: EIWA_BASELINE_CPU=1 ./bin/eiwac build -o bin/eiwa cli/src/main.ei
 
       - name: Package tarball
         run: |
