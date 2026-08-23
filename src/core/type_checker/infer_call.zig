@@ -29,6 +29,56 @@ fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
     }
 }
 
+/// Returns the declared field type when `member_name` is a constructor
+/// property or body field (NOT a method) of the concrete type `base_type`.
+/// Used to give function-typed struct fields precedence over same-named
+/// methods composed from auto-injected skills (e.g. `Scope.run(block)` must
+/// not shadow a `val run: () -> Int` field).
+fn lookupDeclaredField(self: *TypeChecker, base_type: *const EiwaType, member_name: []const u8) ?*const EiwaType {
+    var name_opt: ?[]const u8 = null;
+    switch (base_type.*) {
+        .Custom => |n| name_opt = n,
+        .GenericInstance => |gi| {
+            const actual_gi_base = self.alias_map.get(gi.base_name) orelse gi.base_name;
+            var mangled = ArrayList(u8).init(self.allocator);
+            mangled.appendSlice(actual_gi_base) catch return null;
+            mangled.appendSlice("_") catch return null;
+            for (gi.type_args, 0..) |t_arg, idx| {
+                if (idx > 0) mangled.appendSlice("_") catch return null;
+                t_arg.formatSafe(mangled.writer()) catch return null;
+            }
+            name_opt = mangled.toOwnedSlice() catch return null;
+        },
+        else => return null,
+    }
+    if (name_opt == null) return null;
+    const actual_name = self.alias_map.get(name_opt.?) orelse name_opt.?;
+    var class_node_opt = self.classes_ast.get(actual_name);
+    if (class_node_opt == null and self.registry != null) {
+        var mod_it = self.registry.?.modules.iterator();
+        while (mod_it.next()) |entry| {
+            const mod_actual = entry.value_ptr.checker.alias_map.get(actual_name) orelse actual_name;
+            if (entry.value_ptr.checker.classes_ast.get(mod_actual)) |bn| {
+                class_node_opt = bn;
+                break;
+            }
+        }
+    }
+    if (class_node_opt == null) return null;
+    const c = class_node_opt.?.data.type_decl;
+    for (c.primary_constructor) |prop| {
+        if (std.mem.eql(u8, prop.name, member_name)) {
+            return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+        }
+    }
+    for (c.body_fields) |prop| {
+        if (std.mem.eql(u8, prop.name, member_name)) {
+            return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+        }
+    }
+    return null;
+}
+
 fn createGetExprNode(self: *TypeChecker, obj_name: []const u8, resolved_c_name: ?[]const u8, member_name: []const u8, line: usize, column: usize) !*ASTNode {
     const obj_ident = try self.allocator.create(ASTNode);
     obj_ident.* = .{
@@ -1399,11 +1449,17 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
                         // Propagate the declared parameter types to the provided
                         // args so the backend can coerce to the exact contract
-                        // (fat-pointer vtable) instead of guessing.
+                        // (fat-pointer vtable) instead of guessing. Lambda args
+                        // must be inferred here with the expected type bound —
+                        // otherwise a `type Cont(val run: () -> Int); Cont({42})`
+                        // stores a Void-returning closure.
                         for (c.arguments, 0..) |arg, arg_i| {
                             if (arg_i < type_decl.primary_constructor.len) {
                                 if (type_decl.primary_constructor[arg_i].resolved_type orelse self.resolveTypeRef(type_decl.primary_constructor[arg_i].type_ref) catch null) |pt| {
                                     arg.expected_type = pt;
+                                    if (arg.resolved_type == null) {
+                                        _ = try self.inferNode(arg, scope);
+                                    }
                                 }
                             }
                         }
@@ -1455,6 +1511,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             if (arg_i < type_decl.primary_constructor.len) {
                                 if (type_decl.primary_constructor[arg_i].resolved_type orelse self.resolveTypeRef(type_decl.primary_constructor[arg_i].type_ref) catch null) |pt| {
                                     arg.expected_type = pt;
+                                    if (arg.resolved_type == null) {
+                                        _ = try self.inferNode(arg, scope);
+                                    }
                                 }
                             }
                         }
@@ -1470,8 +1529,46 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         return error.TypeError;
     } else if (c.callee.data == .get_expr) {
         _ = try self.inferNode(c.callee, scope);
-        
+
         const g = c.callee.data.get_expr;
+
+        // Function-typed struct field: `obj.run()` invokes the closure stored
+        // in the field, not a (possibly skill-composed) method with the same
+        // name. `inferGetExpr` resolves declared fields before methods, so a
+        // matching field wins here and the call is emitted through the dynamic
+        // closure (fat pointer) path — no method dispatch / default filling.
+        if (g.object.resolved_type) |obj_type| {
+            const obj_base = extractBaseType(obj_type);
+            if (lookupDeclaredField(self, obj_base, g.name)) |field_type| {
+                const fbase = extractBaseType(field_type);
+                if (fbase.* == .Function) {
+                    const f = fbase.Function;
+                    for (c.arguments, 0..) |arg, arg_i| {
+                        if (arg_i < f.params.len) {
+                            arg.expected_type = f.params[arg_i];
+                        }
+                        if (arg.data == .lambda_expr) {
+                            _ = try self.inferNode(arg, scope);
+                        }
+                    }
+                    for (c.arguments, 0..) |arg, arg_i| {
+                        if (arg_i < f.params.len) {
+                            if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
+                                self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
+                                return error.TypeError;
+                            }
+                        }
+                    }
+                    t.* = f.return_type.*;
+                    node.resolved_type = t;
+                    return;
+                } else {
+                    self.reportError(node.line, node.column, "TypeError: Cannot call a field '{s}' of non-function type {}.", .{ g.name, field_type.* });
+                    return error.TypeError;
+                }
+            }
+        }
+
         var is_static = false;
         var found_static_method: ?*ASTNode = null;
         

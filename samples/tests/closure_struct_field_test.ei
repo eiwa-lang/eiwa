@@ -1,9 +1,9 @@
 import { assert } from "std.core"
 
-// KNOWN LIMITATION (LLVM backend): a closure/function value stored as a struct
-// field produces invalid IR ("Operand is null") at emission. Documents the gap;
-// FAILS to compile until the emitter supports function-typed struct fields.
-// (Relevant to alternative continuation designs for the stackless scheduler.)
+// A closure/function value stored as a struct field is callable: `obj.run()`
+// invokes the closure stored in the field (via the dynamic fat-pointer path)
+// instead of any same-named skill-composed method (e.g. `Scope.run`).
+// Relevant to alternative continuation designs for the stackless scheduler.
 
 type Cont(val run: () -> Int)
 

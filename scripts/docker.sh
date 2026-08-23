@@ -24,7 +24,9 @@ case "${1:-build}" in
     ;;
   push)
     say "Building and pushing $IMAGE:$TAG (amd64 + arm64) ..."
-    docker buildx build --platform linux/amd64,linux/arm64 \
+    docker buildx build \
+      --build-arg EIWA_CACHE_BUST="$(date +%s)" \
+      --platform linux/amd64,linux/arm64 \
       -t "$IMAGE:$TAG" \
       -t "$IMAGE:latest" \
       --push .

@@ -21,6 +21,7 @@ FROM debian:trixie-slim
 
 # Build args. EIWA_VERSION="latest" resolves the newest tag via the GitHub API.
 ARG EIWA_VERSION=latest
+ARG EIWA_CACHE_BUST=1
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
