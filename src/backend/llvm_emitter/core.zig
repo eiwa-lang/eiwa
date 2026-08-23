@@ -538,14 +538,26 @@ pub const LLVMEmitter = struct {
                             const cm_name = cm.data.fun_decl.name;
                             var impl_fn: ?llvm.LLVMValueRef = null;
 
-                            // Look for matching method implementation in the type
+                            // Look for matching method implementation in the type.
+                            // `startsWith` covers the exact method plus overload
+                            // suffixes, but the character after the prefix MUST be
+                            // an overload separator (`_`) — otherwise a longer
+                            // method name that merely starts with this one would
+                            // match (`rows` must not pick `rowsAffected`). Neither
+                            // a bare `endsWith` (a monomorphized method of another
+                            // type can end with this prefix via its type arg).
                             const target_prefix = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_c_name, cm_name });
                             defer self.allocator.free(target_prefix);
 
                             var fit = self.functions.iterator();
                             while (fit.next()) |entry| {
                                 const fk = entry.key_ptr.*;
-                                if (std.mem.eql(u8, fk, target_prefix) or std.mem.startsWith(u8, fk, target_prefix) or std.mem.endsWith(u8, fk, target_prefix)) {
+                                if (std.mem.eql(u8, fk, target_prefix)) {
+                                    impl_fn = entry.value_ptr.*;
+                                    try self.markReachable(fk, &reachable, &worklist);
+                                    break;
+                                }
+                                if (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_') {
                                     impl_fn = entry.value_ptr.*;
                                     try self.markReachable(fk, &reachable, &worklist);
                                     break;
