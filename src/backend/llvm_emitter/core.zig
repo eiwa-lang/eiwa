@@ -105,6 +105,10 @@ pub const LLVMEmitter = struct {
     c_includes: std.StringHashMap(void),
     c_defines: std.StringHashMap(void),
     link_libraries: std.StringHashMap(void),
+    /// Extra C flags forwarded from the CLI (`-I`, `-L`, `-l`, `-D`) so lib
+    /// compilation in the JIT can reach non-default library locations (e.g.
+    /// Homebrew keg-only libpq needs `-L/opt/homebrew/opt/libpq/lib`).
+    cli_c_flags: []const []const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         _ = llvm.LLVMInitializeNativeTarget();
@@ -3038,6 +3042,7 @@ pub const LLVMEmitter = struct {
                 try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
             }
             try cc_argv.appendSlice(&[_][]const u8{ "-o", lib_filename, "-lgc" });
+            for (self.cli_c_flags) |flag| try cc_argv.append(flag);
             try self.appendLibRequirements(&cc_argv);
 
             var child = try std.process.spawn(io, .{ .argv = cc_argv.items });

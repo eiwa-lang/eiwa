@@ -56,13 +56,8 @@ pub fn isContractType(resolved_type: types.EiwaType, contracts_ast: ?*std.String
     else
         name;
 
-    var contract_short_name = base_type_name;
-    if (std.mem.lastIndexOfScalar(u8, base_type_name, '_')) |idx| {
-        contract_short_name = base_type_name[idx + 1 ..];
-    }
-
     const ca = contracts_ast orelse return false;
-    if (ca.contains(name) or ca.contains(contract_short_name) or ca.contains(base_type_name)) return true;
+    if (ca.contains(name) or ca.contains(base_type_name)) return true;
 
     return false;
 }

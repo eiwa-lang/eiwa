@@ -323,11 +323,18 @@ pub fn emitStatement(
 
             llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
             const i_body = llvm.LLVMBuildLoad2(builder, i64_type, i_ptr, "for_i_body");
-            const elem_offset = llvm.LLVMBuildAdd(builder, i_body, llvm.LLVMConstInt(i64_type, 2, 0), "for_offset");
-            var elem_idx = [_]llvm.LLVMValueRef{elem_offset};
-            const elem_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &elem_idx, 1, "for_elem_ptr");
-            var item_val = llvm.LLVMBuildLoad2(builder, i64_type, elem_ptr, "for_item");
-            if (arr_rt == .Array) {
+            // Load the element using the array's element stride/type (mirrors the
+            // index path): contract elements are 16-byte fat pointers {data,
+            // vtable}, so loading them as i64 slots would truncate the vtable.
+            const elem_type = expression.arrayElemLLVMType(ctx, f.iterable.resolved_type);
+            const elem_stride = expression.arrayElemStride(ctx, elem_type);
+            const for_elem_name = try std.heap.page_allocator.dupeZ(u8, "for_elem_ptr");
+            defer std.heap.page_allocator.free(for_elem_name);
+            const elem_ptr = expression.arrayElemTypedPtr(builder, ctx, arr_val, i_body, elem_type, elem_stride, for_elem_name.ptr);
+            var item_val = llvm.LLVMBuildLoad2(builder, elem_type, elem_ptr, "for_item");
+            // Only when the element type fell back to an i64 slot (arrayElemLLVMType
+            // could not resolve it): reconstruct ref/double values the old way.
+            if (llvm.LLVMGetTypeKind(elem_type) == llvm.LLVMIntegerTypeKind and arr_rt == .Array) {
                 const elem_t = arr_rt.Array.*;
                 if (elem_t == .Custom or elem_t == .String or elem_t == .Pointer or elem_t == .Array or elem_t == .Union or elem_t == .Function) {
                     item_val = llvm.LLVMBuildIntToPtr(builder, item_val, llvm.LLVMPointerTypeInContext(ctx, 0), "for_item_ptr");

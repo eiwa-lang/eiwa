@@ -1429,6 +1429,16 @@ pub fn emitExpression(
                         continue;
                     }
                 }
+                // Infer from the expected Function type: an explicit lambda
+                // param like `{ tx -> ... }` bound to `(Connection) -> Void`
+                // must get the contract's fat-pointer type, not an i64 fallback
+                // (the caller passes a fat pointer for the Connection).
+                if (node.resolved_type) |rt| {
+                    if (rt.* == .Function and i < rt.Function.params.len) {
+                        param_types[i] = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.params[i].*, global_contracts_ast_ptr);
+                        continue;
+                    }
+                }
                 param_types[i] = i64_type;
             }
             // Handle implicit `it` param. `it` exists only when the expected
@@ -2486,6 +2496,19 @@ pub fn emitExpression(
                                 }
 
                             if (method_idx) |m_idx| {
+                                // Every vtable for this contract has the same layout
+                                // (a struct of N fn pointers), so derive its LLVM type
+                                // from the contract methods — works for both constant
+                                // globals and runtime-loaded vtable pointers.
+                                var vtable_fn_count: usize = 0;
+                                for (c_decl.methods) |cm| {
+                                    if (cm.data == .fun_decl) vtable_fn_count += 1;
+                                }
+                                const vtable_ptr_arr = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, vtable_fn_count);
+                                defer std.heap.page_allocator.free(vtable_ptr_arr);
+                                for (vtable_ptr_arr) |*p| p.* = llvm.LLVMPointerTypeInContext(ctx, 0);
+                                const vtable_llvm_type = llvm.LLVMStructTypeInContext(ctx, vtable_ptr_arr.ptr, @intCast(vtable_fn_count), 0);
+
                                 const fat_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
                                 const data_ptr = if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_ptr)) == llvm.LLVMStructTypeKind)
                                     llvm.LLVMBuildExtractValue(builder, fat_ptr, 0, "fat_data")
@@ -2520,6 +2543,7 @@ pub fn emitExpression(
                                         c_libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
                                         c_fat_ptr: llvm.LLVMValueRef,
                                         c_data_ptr: llvm.LLVMValueRef,
+                                        c_vtable_t: llvm.LLVMTypeRef,
                                         c_m_idx: usize,
                                         c_target_fun_decl: *ast.ASTNode,
                                         c_ret_t: llvm.LLVMTypeRef,
@@ -2558,7 +2582,13 @@ pub fn emitExpression(
                                         _ = llvm.LLVMBuildCondBr(c_builder, is_vt_null, vt_null_bb, vt_ok_bb);
 
                                         llvm.LLVMPositionBuilderAtEnd(c_builder, vt_ok_bb);
-                                        const vtable_val_t = llvm.LLVMGlobalGetValueType(c_vtable_ptr);
+                                        // The vtable's layout is a struct of N fn
+                                        // pointers. Use the type derived from the
+                                        // contract (NOT LLVMGlobalGetValueType, which
+                                        // only works when the vtable is a constant
+                                        // global — a fat pointer loaded at runtime
+                                        // carries a runtime vtable pointer).
+                                        const vtable_val_t = c_vtable_t;
                                         const fn_slot_ptr = if (llvm.LLVMGetTypeKind(vtable_val_t) == llvm.LLVMStructTypeKind) blk: {
                                             var gep2_indices = [_]llvm.LLVMValueRef{
                                                 llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(c_ctx), 0, 0),
@@ -2670,7 +2700,7 @@ pub fn emitExpression(
                                     _ = llvm.LLVMBuildCondBr(builder, is_null, else_bb, then_bb);
 
                                     llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
-                                    const call_val = try emit_dispatch(ctx, mod, builder, scope, structs, libs, fat_ptr, data_ptr, m_idx, target_fun_decl.?, ret_t, call);
+                                    const call_val = try emit_dispatch(ctx, mod, builder, scope, structs, libs, fat_ptr, data_ptr, vtable_llvm_type, m_idx, target_fun_decl.?, ret_t, call);
                                     const then_end_bb = llvm.LLVMGetInsertBlock(builder);
                                     _ = llvm.LLVMBuildBr(builder, merge_bb);
 
@@ -2690,7 +2720,7 @@ pub fn emitExpression(
                                     llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
                                     return phi;
                                 } else {
-                                    return try emit_dispatch(ctx, mod, builder, scope, structs, libs, fat_ptr, data_ptr, m_idx, target_fun_decl.?, ret_t, call);
+                                    return try emit_dispatch(ctx, mod, builder, scope, structs, libs, fat_ptr, data_ptr, vtable_llvm_type, m_idx, target_fun_decl.?, ret_t, call);
                                 }
                             }
                             }
@@ -4305,7 +4335,7 @@ pub fn arrayElemStride(ctx: llvm.LLVMContextRef, elem_llvm_type: llvm.LLVMTypeRe
 /// Builds a typed pointer to array element `idx`, whose base offset in the raw
 /// buffer is `16 + idx * stride` (header is 2 x i64 slots). The returned pointer
 /// is typed as `*elem_type` so loads/stores use the correct width.
-fn arrayElemTypedPtr(
+pub fn arrayElemTypedPtr(
     builder: llvm.LLVMBuilderRef,
     ctx: llvm.LLVMContextRef,
     arr_ptr: llvm.LLVMValueRef,

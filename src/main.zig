@@ -467,6 +467,7 @@ fn run(init: std.process.Init) !void {
     llvm_emitter.prefer_gc_alloc = is_build or llvm_emitter.has_gc;
     emitter.is_test_mode = is_test;
     emitter.contracts_ast = &global_contracts_ast;
+    emitter.cli_c_flags = cli_c_flags.items;
     emitter.host_argv = args;
     // argv[0] is the program name (basename of the file); the rest are the
     // positional arguments after it. Exposed to Process.args()/argAt().

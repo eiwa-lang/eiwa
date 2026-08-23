@@ -1,0 +1,18 @@
+import { assert } from "std.core"
+
+contract Drawable { fun draw(): Int }
+type Circle : Drawable {
+    implement fun draw(): Int = 42
+}
+
+test "for-in over frozen List<Drawable> + contract dispatch" {
+    val shapes = MutableList<Drawable>()
+    shapes.add(Circle())
+    shapes.add(Circle())
+    val frozen = shapes.freeze()
+    var total = 0
+    for (shape in frozen) {
+        total = total + shape.draw()
+    }
+    assert(total == 84)
+}
