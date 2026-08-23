@@ -2523,9 +2523,15 @@ fn mkFunDecl(name: []const u8, params: []const ast.Param, body: *ASTNode, is_exp
     return n;
 }
 
+/// Clears resolved types so re-inference descends into rewritten subtrees.
+/// NOTE: `expected_type` is intentionally PRESERVED: it is a type hint set by a
+/// parent's inference (e.g. an array literal default `= []` materialized into a
+/// call's arguments gets its `List<T>` expected type). Re-inference infers a
+/// call's arguments BEFORE resolving the callee (infer_call.zig pre-loop), so
+/// without the preserved hint an empty array literal would lose its expected
+/// type and fail with "Cannot infer type of empty array literal".
 fn clearResolvedTypes(allocator: std.mem.Allocator, node: *ASTNode) !void {
     node.resolved_type = null;
-    node.expected_type = null;
     switch (node.data) {
         .type_decl => |t| {
             for (t.primary_constructor) |prop| {

@@ -1,0 +1,15 @@
+import { assert } from "std.core"
+
+contract HasExec {
+    fun execute(sql: String, params: List<String> = []): Int
+}
+
+type FakeExec : HasExec {
+    implement fun execute(sql: String, params: List<String> = []): Int = params.size()
+}
+
+test "array literal resolves expected List<String> through contract" {
+    val e: HasExec = FakeExec()
+    assert(e.execute("x", ["Alice"]) == 1)
+    assert(e.execute("y") == 0)
+}

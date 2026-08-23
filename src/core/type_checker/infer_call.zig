@@ -262,6 +262,12 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
                         try self.substituteParam(cloned, prev_p.name, prev_arg);
                     }
                 }
+                // Propagate the declared param type so an empty default like
+                // `params: List<String> = []` infers (mirrors every other
+                // default-fill site).
+                if (p.type_ref) |tr| {
+                    cloned.expected_type = self.resolveTypeRef(tr) catch null;
+                }
                 _ = try self.inferNode(cloned, scope);
                 new_args[pi] = cloned;
             } else {
@@ -819,6 +825,24 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
         }
 
+        // Fast path: the callee was already resolved to a concrete function
+        // symbol during the first validation pass (static object methods are
+        // desugared from `get_expr` into an identifier with `resolved_c_name`).
+        // Re-resolving by name fails on re-inference (the coroutines transform
+        // re-runs inference over rewritten test/fun bodies), so trust the
+        // existing binding.
+        if (best_match == null) {
+            if (c.callee.data.identifier.resolved_c_name) |rcn| {
+                if (self.functions_ast.get(rcn)) |fn_node| {
+                    if (fn_node.resolved_type) |ft| {
+                        if (ft.* == .Function) {
+                            best_match = ft;
+                        }
+                    }
+                }
+            }
+        }
+
         if (best_match) |matched| {
             const f = matched.Function;
             const func_node = self.functions_ast.get(f.c_name).?;
@@ -1007,6 +1031,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     while (i < func_decl.params.len) : (i += 1) {
                         if (func_decl.params[i].initializer) |init_node| {
                             const cloned = try self.cloneNode(init_node);
+                            if (func_decl.params[i].type_ref) |tr| {
+                                cloned.expected_type = self.resolveTypeRef(tr) catch null;
+                            }
                             new_args[i] = cloned;
                             _ = try self.inferNode(cloned, scope);
                         }

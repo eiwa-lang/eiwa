@@ -1,0 +1,27 @@
+import { assert } from "std.core"
+import { Connection, Result, Statement, Row } from "std.db"
+
+type FakeResult : Result {
+    implement fun rows(): List<Row> = List<Row>()
+    implement fun rowsAffected(): Int = 0
+}
+type FakeStatement : Statement {
+    implement fun query(params: List<String> = []): Result = FakeResult()
+    implement fun execute(params: List<String> = []): Result = FakeResult()
+}
+type FakeConn : Connection {
+    implement fun execute(sql: String, params: List<String> = []): Result = FakeResult()
+    implement fun query(sql: String, params: List<String> = []): Result = FakeResult()
+    implement fun prepare(sql: String): Statement = FakeStatement()
+    implement fun close() {}
+}
+fun factory(): Connection = FakeConn()
+
+test "contract method with default [] inside task body (Int result)" {
+    val db = factory()
+    val t = task {
+        val r = db.query("SELECT 1")
+        r.rows().size()
+    }
+    assert(t.await() == 0)
+}
