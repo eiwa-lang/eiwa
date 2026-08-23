@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 const eiwa_home = @import("../../core/eiwa_home.zig");
 const ast = @import("../../core/ast.zig");
 const ts = @import("../../core/type_system.zig");
+const tc_core = @import("../../core/type_checker/core.zig");
 const compat = @import("../../core/compat.zig");
 const ArrayList = compat.ArrayList;
 const types_mapping = @import("types.zig");
@@ -109,6 +110,9 @@ pub const LLVMEmitter = struct {
     /// compilation in the JIT can reach non-default library locations (e.g.
     /// Homebrew keg-only libpq needs `-L/opt/homebrew/opt/libpq/lib`).
     cli_c_flags: []const []const u8 = &.{},
+    /// Module registry (set by main.zig) — used to resolve `@Source`/`@Include`
+    /// relative paths against the DECLARING module's file (not the entry file).
+    registry: ?*tc_core.ModuleRegistry = null,
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         _ = llvm.LLVMInitializeNativeTarget();
@@ -365,9 +369,21 @@ pub const LLVMEmitter = struct {
         // Pass 1b: Declare all lib blocks (external FFI prototypes)
         for (modules.items) |m| {
             if (m.data != .program) continue;
+            // Real filesystem path of this module, so relative @Source/@Include
+            // resolve against the DECLARING file (not the entry file).
+            var module_path: ?[]const u8 = null;
+            if (self.registry) |reg| {
+                var it = reg.modules.iterator();
+                while (it.next()) |entry| {
+                    if (entry.value_ptr.ast_root == m) {
+                        module_path = entry.value_ptr.filename;
+                        break;
+                    }
+                }
+            }
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .lib_decl) {
-                    try self.declareLib(mod, stmt);
+                    try self.declareLib(mod, stmt, module_path);
                 }
             }
         }
@@ -2371,7 +2387,7 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMBuildRet(self.builder, millis);
     }
 
-    fn declareLib(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, lib_node: *ast.ASTNode) !void {
+    fn declareLib(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, lib_node: *ast.ASTNode, module_path: ?[]const u8) !void {
         const lib = lib_node.data.lib_decl;
 
         // Collect build requirements from lib annotations so the backend can
@@ -2382,11 +2398,23 @@ pub const LLVMEmitter = struct {
             if (std.mem.eql(u8, ann.name, "Link")) {
                 for (ann.arguments) |arg| try self.link_libraries.put(arg, {});
             } else if (std.mem.eql(u8, ann.name, "Source")) {
-                for (ann.arguments) |arg| try self.c_sources.put(try resolveRepoPath(self.allocator, arg), {});
+                for (ann.arguments) |arg| {
+                    // `./`/`../` resolve relative to the importing .ei file (like
+                    // @Include); anything else goes through resolveRepoPath
+                    // (maps `src/...` to the compiler repo).
+                    if ((std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../"))) {
+                        const base = module_path orelse self.source_file;
+                        const dir = std.fs.path.dirname(base) orelse ".";
+                        try self.c_sources.put(try std.fs.path.join(self.allocator, &.{ dir, arg }), {});
+                    } else {
+                        try self.c_sources.put(try resolveRepoPath(self.allocator, arg), {});
+                    }
+                }
             } else if (std.mem.eql(u8, ann.name, "Include")) {
                 for (ann.arguments) |arg| {
-                    if ((std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../")) and self.source_file.len > 0) {
-                        const dir = std.fs.path.dirname(self.source_file) orelse ".";
+                    if ((std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../"))) {
+                        const base = module_path orelse self.source_file;
+                        const dir = std.fs.path.dirname(base) orelse ".";
                         try self.c_includes.put(try std.fs.path.join(self.allocator, &.{ dir, arg }), {});
                     } else {
                         try self.c_includes.put(try resolveRepoPath(self.allocator, arg), {});
@@ -2959,6 +2987,7 @@ pub const LLVMEmitter = struct {
             output_filename,
             "-lgc",
         });
+        for (self.cli_c_flags) |flag| try cc_argv.append(flag);
 
         // Build requirements declared by `lib` annotations (@Include/@Define/@Source/@Link),
         // so vendored C sources compile and link into the native binary.
