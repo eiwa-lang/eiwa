@@ -3100,7 +3100,29 @@ pub fn emitExpression(
                                 else => "",
                             };
                             if (arg_c_name.len > 0) {
-                                if (global_contracts_ast_ptr) |ca| {
+                                var contract_c_name: []const u8 = "";
+                                if (arg_node.expected_type) |et| {
+                                    const ebase = ts.extractBaseType(et);
+                                    if (ebase.* == .Custom) contract_c_name = ebase.Custom;
+                                }
+                                if (contract_c_name.len == 0) {
+                                    if (call.callee.resolved_type) |crt| {
+                                        const base_crt = ts.extractBaseType(crt);
+                                        if (base_crt.* == .Function) {
+                                            const p_idx: usize = if (base_crt.Function.receiver != null and idx == 0) 0 else idx;
+                                            if (p_idx < base_crt.Function.params.len) {
+                                                switch (ts.extractBaseType(base_crt.Function.params[p_idx]).*) {
+                                                    .Custom => |n| contract_c_name = n,
+                                                    .GenericInstance => |gi| contract_c_name = gi.base_name,
+                                                    else => {},
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if (contract_c_name.len > 0) {
+                                    arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
+                                } else if (global_contracts_ast_ptr) |ca| {
                                     var it = ca.iterator();
                                     while (it.next()) |entry| {
                                         const c_name = entry.key_ptr.*;
