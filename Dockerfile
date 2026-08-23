@@ -11,8 +11,9 @@
 #   docker run --rm -v "$PWD":/work eiwalang/eiwa eiwac run script.ei
 #
 # Runtime deps: eiwac links libLLVM.so.21.1 (libllvm21) and the eiwa CLI links
-# Boehm GC (libgc; libunwind on arm64). No build toolchain is included
-# (no zig, no LLVM headers).
+# Boehm GC (libgc; libunwind on arm64). `eiwac build` links native binaries
+# (and the JIT compiles lib C sources) via the system C compiler, so `gcc` is
+# included. No zig / LLVM headers / dev toolchain needed.
 #
 # Base is Debian 13 (trixie, glibc 2.41): the release binary is built on
 # Ubuntu 24.04 (glibc 2.39) so a base older than 2.39 would not load it.
@@ -34,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && CODENAME="$(sed -n 's/.*VERSION_CODENAME=\([a-z]*\).*/\1/p' /etc/os-release)" \
     && echo "deb [signed-by=/etc/apt/trusted.gpg.d/apt.llvm.org.asc] https://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-21 main" > /etc/apt/sources.list.d/llvm.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends libllvm21 libgc-dev libunwind-dev \
+    && apt-get install -y --no-install-recommends libllvm21 libgc-dev libunwind-dev gcc \
     && rm -rf /var/lib/apt/lists/*
 
 RUN case "$TARGETARCH" in \

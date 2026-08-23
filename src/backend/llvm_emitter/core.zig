@@ -2965,6 +2965,45 @@ pub const LLVMEmitter = struct {
         }
     }
 
+    /// Picks the C compiler/linker driver for the native link / shared-lib
+    /// steps. Prefers the system compiler (`cc`/`clang`/`gcc`) so `eiwac`
+    /// does not hard-require zig at runtime; `zig cc` is only a fallback when
+    /// no system compiler is on PATH. The whole point of the LLVM backend is
+    /// to avoid extra toolchain deps — a plain C compiler is enough to link.
+    fn pickLinkDriver(self: *LLVMEmitter, io: std.Io) []const u8 {
+        const candidates = [_][]const u8{ "cc", "clang", "gcc", "zig" };
+        for (candidates) |name| {
+            if (self.executableOnPath(io, name)) return name;
+        }
+        return "cc";
+    }
+
+    fn executableOnPath(self: *LLVMEmitter, io: std.Io, name: []const u8) bool {
+        const path_env = (std.c.getenv("PATH") orelse return false);
+        var it = std.mem.splitScalar(u8, std.mem.span(path_env), ':');
+        while (it.next()) |dir| {
+            if (dir.len == 0) continue;
+            const full = std.fs.path.join(self.allocator, &.{ dir, name }) catch continue;
+            const found = blk: {
+                std.Io.Dir.cwd().access(io, full, .{}) catch break :blk false;
+                break :blk true;
+            };
+            self.allocator.free(full);
+            if (found) return true;
+        }
+        return false;
+    }
+
+    /// Appends the `<driver>` prefix for a link/compile invocation: `zig cc`
+    /// takes the subcommand, the system compilers are invoked directly.
+    fn appendLinkDriverPrefix(argv: *ArrayList([]const u8), driver: []const u8) !void {
+        if (std.mem.eql(u8, driver, "zig")) {
+            try argv.appendSlice(&[_][]const u8{ "zig", "cc" });
+        } else {
+            try argv.append(driver);
+        }
+    }
+
     /// Direct native binary emission using LLVMTargetMachineEmitToFile.
     pub fn emitNativeBinary(self: *LLVMEmitter, output_filename: []const u8, io: std.Io) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
@@ -3018,13 +3057,16 @@ pub const LLVMEmitter = struct {
         }
         defer std.Io.Dir.cwd().deleteFile(io, obj_filename) catch {};
 
-        // Link object file into native binary via zig cc
-        const actual_zig = "zig";
+        // Link object file into native binary. Prefers the system C compiler
+        // (no zig required at runtime); falls back to `zig cc` when no system
+        // compiler is on PATH.
+        const link_driver = self.pickLinkDriver(io);
         var cc_argv = ArrayList([]const u8).init(self.allocator);
         defer cc_argv.deinit();
 
         const opt_flag = if (self.is_release) "-O3" else "-O0";
-        try cc_argv.appendSlice(&[_][]const u8{ actual_zig, "cc", opt_flag, "-fwrapv" });
+        try appendLinkDriverPrefix(&cc_argv, link_driver);
+        try cc_argv.appendSlice(&[_][]const u8{ opt_flag, "-fwrapv" });
         if (builtin.target.os.tag == .macos) {
             const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
             try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
@@ -3113,7 +3155,9 @@ pub const LLVMEmitter = struct {
             var cc_argv = ArrayList([]const u8).init(self.allocator);
             defer cc_argv.deinit();
 
-            try cc_argv.appendSlice(&[_][]const u8{ "zig", "cc", "-shared", "-O0", "-fwrapv" });
+            const link_driver = self.pickLinkDriver(io);
+            try appendLinkDriverPrefix(&cc_argv, link_driver);
+            try cc_argv.appendSlice(&[_][]const u8{ "-shared", "-O0", "-fwrapv" });
             if (builtin.target.os.tag == .macos) {
                 const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
                 try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
