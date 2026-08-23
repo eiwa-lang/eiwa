@@ -1,0 +1,20 @@
+test "string startsWith handles prefix matching" {
+    assert("/app.css".startsWith("/"))
+    assert("/app.css".startsWith("/app"))
+    assert("/app.css".startsWith("/app.css"))
+    assert(!("/app.css".startsWith("app")))
+    assert(!("/app.css".startsWith("x")))
+    assert("".startsWith(""))
+    assert(!("".startsWith("a")))
+}
+
+test "string endsWith handles suffix matching" {
+    assert("/app.css".endsWith("css"))
+    assert("/app.css".endsWith(".css"))
+    assert("/app.css".endsWith("/app.css"))
+    assert(!("/app.css".endsWith("CSS")))
+    assert(!("/app.css".endsWith("x")))
+    assert("aba".endsWith("a"))
+    assert("".endsWith(""))
+    assert(!("".endsWith("a")))
+}

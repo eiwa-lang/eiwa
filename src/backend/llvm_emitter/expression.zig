@@ -2356,6 +2356,108 @@ pub fn emitExpression(
                     }
                 }
 
+                if (std.mem.eql(u8, g.name, "startsWith") and call.arguments.len >= 1) {
+                    if (obj_rt_opt) |obj_rt| {
+                        const obj_base = ts.extractBaseType(obj_rt).*;
+                        const is_string = switch (obj_base) {
+                            .String => true,
+                            .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String"),
+                            .Pointer => |p| switch (p.*) {
+                                .String => true,
+                                .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String"),
+                                else => false,
+                            },
+                            else => false,
+                        };
+                        if (is_string) {
+                            const str_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            const prefix_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                            const strstr_fn = llvm.LLVMGetNamedFunction(mod, "strstr") orelse blk: {
+                                const p = llvm.LLVMPointerTypeInContext(ctx, 0);
+                                var ps = [_]llvm.LLVMTypeRef{ p, p };
+                                const ft = llvm.LLVMFunctionType(p, &ps, 2, 0);
+                                break :blk llvm.LLVMAddFunction(mod, "strstr", ft);
+                            };
+                            const ft = llvm.LLVMGlobalGetValueType(strstr_fn);
+                            var args = [_]llvm.LLVMValueRef{ str_ptr, prefix_ptr };
+                            const match_ptr = llvm.LLVMBuildCall2(builder, ft, strstr_fn, &args, 2, "starts_match");
+                            const is_start = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, match_ptr, str_ptr, "is_start");
+                            return is_start;
+                        }
+                    }
+                }
+
+                if (std.mem.eql(u8, g.name, "endsWith") and call.arguments.len >= 1) {
+                    if (obj_rt_opt) |obj_rt| {
+                        const obj_base = ts.extractBaseType(obj_rt).*;
+                        const is_string = switch (obj_base) {
+                            .String => true,
+                            .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String"),
+                            .Pointer => |p| switch (p.*) {
+                                .String => true,
+                                .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String"),
+                                else => false,
+                            },
+                            else => false,
+                        };
+                        if (is_string) {
+                            const str_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            const suffix_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                            const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+                            const i32_t = llvm.LLVMInt32TypeInContext(ctx);
+                            const p_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+
+                            const strlen_fn = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
+                                var ps = [_]llvm.LLVMTypeRef{p_t};
+                                const ft = llvm.LLVMFunctionType(i64_t, &ps, 1, 0);
+                                break :blk llvm.LLVMAddFunction(mod, "strlen", ft);
+                            };
+                            const strlen_ft = llvm.LLVMGlobalGetValueType(strlen_fn);
+                            var s1_args = [_]llvm.LLVMValueRef{str_ptr};
+                            const str_len = llvm.LLVMBuildCall2(builder, strlen_ft, strlen_fn, &s1_args, 1, "str_len");
+                            var s2_args = [_]llvm.LLVMValueRef{suffix_ptr};
+                            const suffix_len = llvm.LLVMBuildCall2(builder, strlen_ft, strlen_fn, &s2_args, 1, "suffix_len");
+
+                            const strcmp_fn = llvm.LLVMGetNamedFunction(mod, "strcmp") orelse blk: {
+                                var ps = [_]llvm.LLVMTypeRef{ p_t, p_t };
+                                const ft = llvm.LLVMFunctionType(i32_t, &ps, 2, 0);
+                                break :blk llvm.LLVMAddFunction(mod, "strcmp", ft);
+                            };
+                            const strcmp_ft = llvm.LLVMGlobalGetValueType(strcmp_fn);
+
+                            const diff = llvm.LLVMBuildSub(builder, str_len, suffix_len, "suffix_diff");
+                            const in_range = llvm.LLVMBuildICmp(builder, llvm.LLVMIntSGE, diff, llvm.LLVMConstInt(i64_t, 0, 0), "in_range");
+
+                            const parent_func = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+                            const cmp_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "ew_cmp");
+                            const else_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "ew_false");
+                            const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "ew_merge");
+                            _ = llvm.LLVMBuildCondBr(builder, in_range, cmp_bb, else_bb);
+
+                            llvm.LLVMPositionBuilderAtEnd(builder, cmp_bb);
+                            var gep_idx = [_]llvm.LLVMValueRef{diff};
+                            const cmp_ptr = llvm.LLVMBuildGEP2(builder, llvm.LLVMInt8TypeInContext(ctx), str_ptr, &gep_idx, 1, "ew_cmp_ptr");
+                            var c_args = [_]llvm.LLVMValueRef{ cmp_ptr, suffix_ptr };
+                            const c_res = llvm.LLVMBuildCall2(builder, strcmp_ft, strcmp_fn, &c_args, 2, "ew_cmp_res");
+                            const eq_zero = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, c_res, llvm.LLVMConstInt(i32_t, 0, 0), "ew_eq");
+                            const cmp_end_bb = llvm.LLVMGetInsertBlock(builder);
+                            _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+                            llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+                            const else_end_bb = llvm.LLVMGetInsertBlock(builder);
+                            _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+                            llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+                            const i1_t = llvm.LLVMInt1TypeInContext(ctx);
+                            const phi = llvm.LLVMBuildPhi(builder, i1_t, "ends_bool");
+                            var inc_vals = [_]llvm.LLVMValueRef{ eq_zero, llvm.LLVMConstInt(i1_t, 0, 0) };
+                            var inc_bbs = [_]llvm.LLVMBasicBlockRef{ cmp_end_bb, else_end_bb };
+                            llvm.LLVMAddIncoming(phi, &inc_vals, &inc_bbs, 2);
+                            return phi;
+                        }
+                    }
+                }
+
                 if (std.mem.eql(u8, g.name, "toDouble") and call.arguments.len == 0) {
                     if (obj_rt_opt) |obj_rt| {
                         const obj_base = ts.extractBaseType(obj_rt).*;
@@ -2729,6 +2831,12 @@ pub fn emitExpression(
                     if (!handled_vtable) {
                         var type_name: []const u8 = "";
                         var base_obj_rt = ts.extractBaseType(obj_rt);
+                        // A raw `Pointer` receiver (element Void — e.g. the value
+                        // returned by gcMalloc) dispatches to the `core_Pointer`
+                        // methods. Capture it before the loop below unwraps the
+                        // pointer into its element type (Void), which would leave
+                        // `type_name` empty and route the call to a stub.
+                        const is_raw_pointer = base_obj_rt.* == .Pointer and base_obj_rt.Pointer.* == .Void;
                         while (base_obj_rt.* == .Union or base_obj_rt.* == .Pointer) {
                             if (base_obj_rt.* == .Union) {
                                 if (base_obj_rt.Union.left.* != .Null) {
@@ -2740,7 +2848,9 @@ pub fn emitExpression(
                                 base_obj_rt = ts.extractBaseType(base_obj_rt.Pointer);
                             }
                         }
-                        if (base_obj_rt.* == .String or (base_obj_rt.* == .Custom and (std.mem.eql(u8, base_obj_rt.Custom, "String") or std.mem.eql(u8, base_obj_rt.Custom, "core_String")))) {
+                        if (is_raw_pointer) {
+                            type_name = "core_Pointer";
+                        } else if (base_obj_rt.* == .String or (base_obj_rt.* == .Custom and (std.mem.eql(u8, base_obj_rt.Custom, "String") or std.mem.eql(u8, base_obj_rt.Custom, "core_String")))) {
                             type_name = "core_String";
                         } else if (base_obj_rt.* == .Custom) {
                             type_name = base_obj_rt.Custom;
@@ -2913,6 +3023,16 @@ pub fn emitExpression(
                                     _ = llvm.LLVMBuildBr(builder, merge_bb);
 
                                     llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+                                    if (llvm.LLVMGetTypeKind(ret_t) == llvm.LLVMVoidTypeKind) {
+                                        // No value to merge for a void-returning
+                                        // method: route to a fresh continuation
+                                        // block where the enclosing function keeps
+                                        // emitting (mirrors the contract dispatch).
+                                        const safe_cont_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "safe_call_cont");
+                                        _ = llvm.LLVMBuildBr(builder, safe_cont_bb);
+                                        llvm.LLVMPositionBuilderAtEnd(builder, safe_cont_bb);
+                                        return call_res;
+                                    }
                                     const phi = llvm.LLVMBuildPhi(builder, ret_t, "safe_call_val");
                                     var incoming_vals = [_]llvm.LLVMValueRef{ call_res, const_null };
                                     var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };

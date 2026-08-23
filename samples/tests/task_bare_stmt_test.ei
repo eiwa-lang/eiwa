@@ -1,0 +1,18 @@
+import { Scheduler } from "std.coroutines"
+
+test "bare task statement is scheduled and runs" {
+    var ran = false
+    task {
+        ran = true
+    }
+    Scheduler.run()
+    assert(ran)
+}
+
+test "task with await returns its value" {
+    val t = task {
+        42
+    }
+    val res = t.await()
+    assert(res == 42)
+}

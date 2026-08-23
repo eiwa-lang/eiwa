@@ -483,19 +483,19 @@ fun updateCommand() {
     var k = 0
     while (k < deps.size()) {
         val dep = deps[k]
+        var old = ""
+        var m = 0
+        while (m < ctx.deps.size()) {
+            if (ctx.deps[m].name == dep.name) {
+                old = ctx.deps[m].commit
+            }
+            m = m + 1
+        }
         if (updateTarget == null || dep.name == updateTarget!!) {
             matched = true
             if (hasSource(dep) == false) {
                 println("Error: dependency '" + dep.name + "' is not a git dependency")
                 exit(1)
-            }
-            var old = ""
-            var m = 0
-            while (m < ctx.deps.size()) {
-                if (ctx.deps[m].name == dep.name) {
-                    old = ctx.deps[m].commit
-                }
-                m = m + 1
             }
             resolveCommit(dep)
             if (old == dep.commit) {
@@ -505,6 +505,11 @@ fun updateCommand() {
             } else {
                 println(dep.name + " updated: " + old + " -> " + dep.commit)
             }
+        } else {
+            // Keep the already-resolved commit for deps that were NOT the
+            // update target — otherwise serializing them with an empty commit
+            // makes the next build try to re-clone them (and fail).
+            dep.commit = old
         }
         k = k + 1
     }

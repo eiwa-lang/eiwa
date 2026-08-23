@@ -997,14 +997,23 @@ pub const LLVMEmitter = struct {
         }
 
         try self.emitArgvSupport(mod);
-        try self.emitEntryShim(mod);
+        try self.emitEntryShim(mod, &modules);
     }
 
     /// Emits `main(i32 argc, ptr argv)` — the real C entry the OS runtime
     /// calls. It stores argv into eiwa_argc/eiwa_argv (for Process.args())
     /// and forwards to the program entry: `eiwa_test_main` in test mode, or
     /// the user's `main` renamed to `__eiwa_prog_main` in run/build mode.
-    fn emitEntryShim(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
+    ///
+    /// In run/build mode it also runs the enum + object singleton initializers
+    /// (mirroring the C backend's `__eiwa_main`, which seeded object member
+    /// globals like `Log.rootLogger` before any user code ran). Test mode emits
+    /// the same initializers at the top of `eiwa_test_main` instead.
+    fn emitEntryShim(
+        self: *LLVMEmitter,
+        mod: llvm.LLVMModuleRef,
+        modules: *ArrayList(*ast.ASTNode),
+    ) !void {
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i32_type = llvm.LLVMInt32TypeInContext(self.context);
 
@@ -1040,6 +1049,18 @@ pub const LLVMEmitter = struct {
         };
         _ = llvm.LLVMBuildStore(self.builder, argc_val, argc_global);
         _ = llvm.LLVMBuildStore(self.builder, argv_val, argv_global);
+
+        // Run enum + object singleton initializers before any user code.
+        // Only in run/build mode; test mode already emits them at the top of
+        // `eiwa_test_main`. Enum instances (e.g. LogLevel.INFO) must be seeded
+        // first so object initializers that reference them (Logger() default
+        // args) resolve to real instances instead of null.
+        if (!self.is_test_mode) {
+            var obj_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
+            defer obj_scope.deinit();
+            try self.emitEnumInitializers(mod, modules);
+            try self.emitObjectInitializers(mod, modules, &obj_scope);
+        }
 
         // Call the real program main.
         const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(real_main_type));
@@ -1482,14 +1503,29 @@ pub const LLVMEmitter = struct {
                 // `{Type}_{method}` mangled method call on a struct instance.
                 if (g.object.resolved_type) |obj_rt| {
                     var type_name: []const u8 = "";
-                    if (obj_rt.* == .Custom) {
-                        type_name = obj_rt.Custom;
-                    } else if (obj_rt.* == .Pointer and obj_rt.Pointer.* == .Custom) {
-                        type_name = obj_rt.Pointer.Custom;
+                    switch (obj_rt.*) {
+                        .Custom => |n| type_name = n,
+                        .GenericInstance => |gi| type_name = gi.base_name,
+                        .String => type_name = "core_String",
+                        .Int => type_name = "core_Int",
+                        .Bool => type_name = "core_Bool",
+                        .Double => type_name = "core_Double",
+                        .Pointer => |p| {
+                            // Raw pointer (element Void) → core_Pointer; a typed
+                            // pointer dispatches by its element type.
+                            if (p.* == .Custom) {
+                                type_name = p.Custom;
+                            } else if (p.* == .String) {
+                                type_name = "core_String";
+                            } else if (p.* == .Void) {
+                                type_name = "core_Pointer";
+                            }
+                        },
+                        else => {},
                     }
-                        if (type_name.len > 0 and self.structs.get(type_name) != null) {
-                            const buf = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_name, g.name });
-                            try self.markReachable(buf, reachable, worklist);
+                    if (type_name.len > 0 and self.structs.get(type_name) != null) {
+                        const buf = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_name, g.name });
+                        try self.markReachable(buf, reachable, worklist);
                         self.allocator.free(buf);
                     }
                 }

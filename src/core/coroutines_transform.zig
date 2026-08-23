@@ -427,6 +427,11 @@ fn rewriteStatement(
             return false;
         },
         else => {
+            if (stmt.data == .call_expr and isTaskCall(stmt)) {
+                const gen = try rewriteBareTaskCall(allocator, checker, stmt, stmt, counter, generated);
+                try out.appendSlice(gen);
+                return true;
+            }
             if (containsAwait(stmt)) {
                 var preamble = ArrayList(*ASTNode).init(allocator);
                 defer preamble.deinit();
@@ -1052,6 +1057,13 @@ fn buildTaskBlockType(
     // Route: task bodies with a true suspension point (sleep/yield) become a
     // `switch(label)` state machine; bodies without one keep the single-shot
     // blocking-poll resume.
+    //
+    // NOTE: `.await()` does NOT trigger the state machine yet — awaits in
+    // single-shot task bodies stay blocking-poll. Flipping this (adding
+    // `containsAwait(s)` to the condition) exposes unexercised paths: the
+    // composite `val r = task{...}.await()` machinery bind, and boxed captures
+    // of promoted locals by nested tasks. Revisit incrementally per the doc
+    // (Gap 1: awaits em single-shot), one green test at a time.
     var state_machine = false;
     for (body) |s| {
         if (containsTrueSuspend(s)) {
@@ -1622,7 +1634,15 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
         },
         .var_decl => |*v| {
             if (v.initializer) |init| {
-                if (!isTaskCall(init) and !isAwaitCall(init) and !isCoopAwaitCall(init)) {
+                if (isCoopAwaitCall(init)) {
+                    // Cooperative-await marker: keep the var_decl (the machine
+                    // builder consumes it), but still rewrite references inside
+                    // its receiver so a composite `val r = __CoopAwait(__taskN)`
+                    // becomes `val r = __CoopAwait(this.__taskN)`.
+                    try rewritePromotedRefs(allocator, promoted, init);
+                    return;
+                }
+                if (!isTaskCall(init) and !isAwaitCall(init)) {
                     // Rewrite references inside the initializer first (a local
                     // like `val inner = __taskN` must become `this.inner =
                     // this.__taskN`), then convert the var_decl to a field set.
@@ -1903,7 +1923,13 @@ fn buildResumeStateMachine(
     }
     // Rewrite references to the newly promoted locals (`this.__taskN`,
     // `this.inner`, `this.__awaitN`), converting their var_decls to field sets.
-    for (rewritten.items) |s| try rewritePromotedRefs(allocator, new_locals.items, s);
+    // NOTE: must rewrite with `promoted` (captures + locals + new_locals), NOT
+    // just `new_locals`: the machinery created in step 2 generates NEW ctor args
+    // (e.g. `__TaskBlock2(__task1, i)` for a nested task capturing a local `i`)
+    // that reference promoted locals created by step 1's pass. Rewriting only
+    // `new_locals` leaves a bare `i` in the nested ctor arg, which the emitter
+    // then treats as a boxed capture and dereferences a null pointer.
+    for (rewritten.items) |s| try rewritePromotedRefs(allocator, promoted.items, s);
 
     // 3. Split the trailing value statement (becomes the done state's result).
     const is_void_result = result_type.* == .Void;
@@ -2017,6 +2043,35 @@ fn rewriteTaskCall(
     return out.toOwnedSlice();
 }
 
+/// Rewrites a bare `task { ... }` expression statement (no `val x =` binding).
+/// The task machinery is generated and scheduled, but the result binding is
+/// dropped — the task is fire-and-forget. Without this a bare `task {}`
+/// statement is left as a runtime call to `task<T>()`, which allocates a
+/// StackTask but never schedules it, so the body never runs.
+fn rewriteBareTaskCall(
+    allocator: std.mem.Allocator,
+    checker: *TypeChecker,
+    stmt: *ASTNode,
+    task_call: *ASTNode,
+    counter: *usize,
+    generated: *ArrayList(*ASTNode),
+) ![]*ASTNode {
+    var temp = ASTNode{
+        .line = stmt.line,
+        .column = stmt.column,
+        .data = .{ .var_decl = .{
+            .is_mut = false,
+            .name = "__bare_task",
+            .type_ref = null,
+            .initializer = task_call,
+        } },
+    };
+    const gen = try rewriteTaskCall(allocator, checker, &temp, task_call, counter, generated);
+    // rewriteTaskCall returns [val __taskN = ...; Scheduler.schedule(...); val t = __taskN].
+    // Drop the final binding for a bare statement.
+    return gen[0 .. gen.len - 1];
+}
+
 /// `val x = task { block }.await()` -> machinery + poll + `val x = result`
 /// (or, in cooperative mode, machinery + a `__CoopAwait` marker).
 fn rewriteTaskAwaitCall(
@@ -2035,16 +2090,22 @@ fn rewriteTaskAwaitCall(
     defer out.deinit();
 
     const machinery = try rewriteTaskCall(allocator, checker, stmt, recv, counter, generated);
-    try out.appendSlice(machinery);
     // machinery's last element binds `val t = __taskN`; use that name for the await.
     const task_name = machinery[machinery.len - 1].data.var_decl.initializer.?.data.identifier.name;
 
     if (coop) {
+        // The composite `val r = task { ... }.await()` binds `r` to the StackTask
+        // in the machinery AND to the await result in the marker. Dropping the
+        // machinery bind leaves `r` owned by the marker alone — otherwise the
+        // promoted body field `this.r` takes the StackTask type and `r` on the
+        // RHS of later statements (e.g. `sum = sum + r`) fails to resolve.
         const result_type = stmt.resolved_type orelse recv_result_type(recv);
+        try out.appendSlice(machinery[0 .. machinery.len - 1]);
         try out.append(try mkCoopAwaitMarker(allocator, mkIdent(task_name), v.name, v.is_mut, result_type));
         return out.toOwnedSlice();
     }
 
+    try out.appendSlice(machinery);
     const poll = buildPollStmt(mkIdent(task_name));
     try out.append(poll);
 

@@ -5,9 +5,11 @@ This document tracks the historical progress, current status, and future roadmap
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
 >
 > **Fase atual (2026-08):** **Phase 68 — Coroutines Stackless** (async/await Kotlin-style;
-> remoção do backend C + neco + `@MainWrapper`) — **concluída** (Fases A–H); restam os gaps
-> incrementais do modelo (awaits em single-shot, `try`/`for` com suspensão, I/O waiters) e a
-> **Fase I** (dispatchers/thread pool) como proposta adiada. Plano operacional:
+> remoção do backend C + neco + `@MainWrapper`) — **concluída** (Fases A–K); restam os gaps
+> incrementais do modelo (awaits em single-shot, `try`/`for` com suspensão, I/O waiters).
+> **Phase 69 — Dispatchers / thread pool** (paralelismo real, estilo Kotlin `Dispatchers`) —
+> **planejada** (pré-requisitos J/K concluídos; Fase I promovida de proposta a plano). Plano
+> operacional:
 > [`docs/tasks-coroutines-stackless.md`](tasks-coroutines-stackless.md).
 
 ---
@@ -783,13 +785,165 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Fase H — Docs:** AGENTS.md, `architecture.md`, `decisions.md` (**ADR 48**),
       `language_tour.md` (seção 20 stackless), roadmap Phase 68; `tasks-backend-parity.md`/
       `bloco-b-handoff.md` marcados obsoletos; removidos os plans superseded.
-- [ ] **Fase I — PROPOSTA (adiada):** Dispatchers / thread pool (paralelismo real) — pré-requisitos
-      (J/K) concluídos; falta o design em si (sincronização de estado, GC multithread). Redesign,
-      não o modelo atual.
+- [ ] **Fase I — Dispatchers / thread pool (paralelismo real):** agora formalizada como a
+      **Phase 69** abaixo — pré-requisitos (Fases J/K) concluídos; o design completo segue
+      na Phase 69.
 
 > **Suíte atual:** `./bin/eiwac test samples/tests` → **68 PASS, 2 FAIL** (as 2 falhas —
 > `contract_collection_storage_test`/`closure_struct_field_test` — são pré-existentes, não
 > relacionadas a coroutines). `zig build` + `zig build test` verdes.
+
+---
+
+### Phase 69: Dispatchers & Thread Pool — paralelismo real (estilo Kotlin `Dispatchers`) (PLANEJADA / PROPOSTA)
+> **Status:** **PLANEJADA** — não implementada. Fase I do plano stackless promovida a plano
+> operacional completo. Prereq concluídos: **Fase J** (suspensão verdadeira `switch(label)`) e
+> **Fase K** (await cooperativo / waiter-chain) — sem elas "paralelismo" seria só bloqueio de
+> thread. Esta fase adiciona paralelismo **real** (CPU-bound multi-thread) mantendo o modelo
+> stackless; NÃO reintroduz stack switching nem o GC crash de corrupção de raiz.
+>
+> **Plano master:** [`docs/tasks-coroutines-stackless.md`](tasks-coroutines-stackless.md) §Fase I.
+
+#### Conceito — espelhado no modelo Kotlin
+
+| Eiwa (alvo) | Kotlin | Significado |
+|---|---|---|
+| `Dispatcher.Single` (default, atual) | `Dispatchers.Main`/`Unconfined` | cooperativo single-thread — **o modelo atual, inalterado por default** |
+| `Dispatcher.Default` | `Dispatchers.Default` | thread pool com `n = numLogicalCores()` threads OS, FIFO + timer heap por pool, work-stealing não obrigatório (v1) |
+| `Dispatcher.IO` | `Dispatchers.IO` | pool maior voltado a I/O (desbloqueado, não bloqueado) — escopo futuro opcional |
+| `withDispatcher(Default) { }` | `withContext(Dispatchers.Default)` | muda o dispatcher do bloco suspend atual |
+| `task(Dispatcher.Default) { }` | `CoroutineScope(Default).launch` | agenda eager no pool (roda na thread do pool) |
+| `await()` cross-thread | `await()` entre dispatchers | suspensão cooperativa; o waiter é re-agendado **na fila do dispatcher do waiter** |
+
+Semântica alvo:
+- `task {}` **sem** dispatcher → `Dispatcher.Single` (lazy, corrente) — compatibilidade total.
+- `task(Default) {}` → **eager**: agenda e roda numa thread do pool (estilo Go/Kotlin Default).
+- `await()` numa task de outro dispatcher → waiter-chain cross-thread: o done state agenda o
+  waiter na fila **do dispatcher do waiter** (não do callee), preservando a garantia FIFO.
+- Sleep/timer heap: **um por pool**; `fireTimers()` só bloqueia o thread do próprio pool
+  (cada pool avança seu relógio virtual).
+
+#### Checklist
+
+##### Etapa 0 — Primitivas de threading + sincronização no stdlib (sem C próprio)
+> Sem arquivo C novo. Tudo via FFI `lib {}` (padrão de `coroutines.ei`/`time.ei`).
+- [ ] **Task 69.0.1:** `src/std/thread.ei` — `lib NativeThread` com bindings POSIX:
+      `pthread_create`, `pthread_join`, `pthread_self`, `pthread_mutex_lock/unlock`,
+      `pthread_cond_init/wait/signal/broadcast`, `sched_getcpu`/`sysconf(_SC_NPROCESSORS_ONLN)`
+      (via `@Header("<pthread.h>")`/`@Alias`). `type Thread` (identificador + `join()`),
+      `object Threads` com `numCores()`.
+- [ ] **Task 69.0.2:** Primitivos de **atomics/volatile** no stdlib (`std/atomic.ei`):
+      `AtomicBool`/`AtomicInt` (read/write/compareAndSwap via `lib NativeAtomic` —
+      `__atomic_load_n`/`__atomic_store_n`/`__sync_bool_compare_and_swap`, GCC builtins
+      expostos por FFI ou via `@Primitive` no `core.ei`). **Backend:** map para LLVM
+      `atomicrmw`/`cmpxchg`/`load atomic` quando disponível (helper no emitter), fallback
+      C builtin. `done`/`result`/`waiters` de `StackTask` precisam de visibilidade entre
+      threads.
+- [ ] **Verify 69.0:** `pthread_create`+`join` via FFI roda num sample (`threads_sample.ei`);
+      `Threads.numCores() >= 1`; mutex/cond protegem um contador compartilhado sem race.
+
+##### Etapa 1 — `Scheduler` de singleton (`object`) para instância (`type`)
+> Hoje `object Scheduler` é um singleton global (estado estático + FFI). Para pools
+> paralelos cada dispatcher precisa da **própria** fila + timer heap + relógio virtual.
+- [ ] **Task 69.1.1:** Converter `object Scheduler` em `type Scheduler` com os campos atuais
+      (`head`/`tail`/`timerHead`/`now`) como membros de instância; `src/std/coroutines.ei`
+      mantém um default: `val SingleScheduler = Scheduler()` (ou `Dispatcher.Single.scheduler`).
+- [ ] **Task 69.1.2:** Atualizar o **transform** (`src/core/coroutines_transform.zig`) e o
+      runtime gerado para referenciar o scheduler **do dispatcher corrente** em vez do
+      singleton: `Scheduler.run`/`runStep`/`sleep`/`yield`/`schedule` recebem o `Scheduler`
+      como arg (ou são métodos de instância chamados em `Dispatcher.current`). Como o body
+      do task é emitido como código Eiwa normal, isso é só **trocar o receiver** dos calls
+      gerados (`buildPollStmt`/`buildResumeStateMachine`/`machineBuildCoopAwait`).
+- [ ] **Task 69.1.3:** `Dispatcher.current`: um thread-local "qual dispatcher estou rodando"
+      (estático por pool worker; `Single` no main). `withDispatcher { }` seta/restaura.
+- [ ] **Verify 69.1:** Suíte de coroutines (`task_test`, `interleave_test`, `yield_test`,
+      `coop_await_test`, `scheduler_test`, `task_transform_test`) segue verde com o scheduler
+      instanciado (regressão pura, sem comportamento novo).
+
+##### Etapa 2 — Thread pool por dispatcher
+- [ ] **Task 69.2.1:** `type Dispatcher(val name: String, val nThreads: Int, val scheduler: Scheduler)`
+      + `object Dispatchers { val Single = Dispatcher("single", 1, SingleScheduler) }`;
+      `Dispatcher.Default` criado com `nThreads = Threads.numCores()` e N `Thread` workers.
+- [ ] **Task 69.2.2:** Worker loop (Eiwa puro): cada thread do pool roda
+      `while (true) { scheduler.lock(); while (scheduler.isEmpty()) cond.wait(); cont = scheduler.pop(); unlock(); cont.resume() }`
+      — `Scheduler` ganha **mutex + condvar** em volta de `schedule`/`runStep` (a fila é
+      compartilhada entre threads; timer heap também). `schedule` faz `cond.signal()`.
+- [ ] **Task 69.2.3:** **Terminação do pool**: contador de tasks pendentes (ready + timers +
+      waiters ativos) ou sentinel; `Dispatcher.shutdown()`/`join()` para o programa não
+      pendurar ao final (drain em `main` antes de sair).
+- [ ] **Verify 69.2:** N workers processam N tasks CPU-bound concorrentemente; `Threads.numCores()`
+      workers ativos (medir via contador); terminação limpa sem deadlock/leak de thread.
+
+##### Etapa 3 — `await()` cross-thread (waiter-chain entre dispatchers)
+- [ ] **Task 69.3.1:** `StackTask.awaitCoop(cont)` hoje anexa na waiter chain local e o done
+      state (mesma thread) re-agenda. Para cross-thread, o **waiter registra o dispatcher do
+      caller**: `WaiterNode(cont, dispatcher)`; quando a task completa numa thread do pool,
+      o done state chama `waiter.dispatcher.scheduler.schedule(waiter.cont)` — re-agenda na
+      fila **do waiter**, não na fila do callee (e `cond.signal()` do pool do waiter).
+- [ ] **Task 69.3.2:** `await()` no **root/single** (blocking-poll `buildPollStmt`) continua
+      igual quando a task alvo é do próprio dispatcher; quando o alvo é de outro pool,
+      `Scheduler.runStep()` não adianta — o root deve **esperar no condvar** do pool alvo
+      (ou fazer `awaitCoop` também no root — decidir na execução; v1: root faz
+      `while (!recv.done) wait(cond)` com timeout pequeno + `fireTimers`, cooperativo).
+- [ ] **Task 69.3.3:** **Atomics em `StackTask`**: `done`/`result` lidos/escritos por threads
+      diferentes → usar `AtomicBool`/volatile (Task 69.0.2) nos campos do `StackTask` e na
+      waiter chain (append FIFO é single-producer por task — o produtor é o corpo da task;
+      os waiters são readers atômicos de `done`). Documentar o modelo de memória.
+- [ ] **Verify 69.3:** `coop_await_test` (waiter-chain FIFO) verde no `Single`; **novo teste**
+      `cross_thread_await_test.ei`: task no `Default` completa numa thread do pool e o waiter
+      (root single) retoma em FIFO com o valor correto, sem race (rodar com `-O3` + muitas
+      iterações).
+
+##### Etapa 4 — GC multithread
+- [ ] **Task 69.4.1:** Registrar cada thread do pool no Boehm GC: `GC_allow_register_threads()`
+      (chamado no init, antes de criar threads) + `GC_register_my_thread(&stack_base)` no
+      início do worker (via `GC_get_stack_base()`). `src/backend/llvm_emitter/core.zig`
+      (`__eiwa_gc_init_ctor`) ou o wrapper de thread chamam essas exposições do `lib GC`.
+- [ ] **Task 69.4.2:** Revisar `registerJITGlobalsAsRoots`/`executeJIT` para stacks de múltiplas
+      threads: o Boehm marca as stacks registradas; o JIT só precisa garantir que `GC_init`
+      rode antes de qualquer thread. Validação com `gc_stress_test` rodando em N threads
+      (concorrência) + JIT e build nativo.
+- [ ] **Verify 69.4:** `gc_stress_test.ei` (concat/array 20k+) roda com tasks em `Default`
+      sem corrupção; `zig build test` + build nativo `-O3` verdes; valgrind/ASAN opcional.
+
+##### Etapa 5 — Semântica & API pública
+- [ ] **Task 69.5.1:** `task(Dispatcher) { }` — overload de `task<T>` aceitando um `Dispatcher`
+      como primeiro arg (ou função separada `taskOn(dispatcher, block)`); **eager** quando o
+      dispatcher != Single (agenda + roda no pool), **lazy** no Single (atual). O transform
+      passa o dispatcher para o `__TaskBlockN` ctor/schedule.
+- [ ] **Task 69.5.2:** `withDispatcher(dispatcher) { }` — bloco suspend que troca
+      `Dispatcher.current` (seta no resume, restaura ao concluir/suspender) e re-agenda a
+      própria continuação na fila do novo dispatcher.
+- [ ] **Verify 69.5:** Sample `samples/threads_sample.ei` (N-Body ou soma paralela) com
+      `task(Dispatcher.Default) { }` + `await()` coleta resultado correto; `withDispatcher`
+      muda a thread de execução (imprimir `Threads.selfId()` antes/depois).
+
+##### Etapa 6 — Validação & benchmark
+- [ ] **Task 69.6.1:** Benchmark CPU-bound (ex.: N-Body, mandelbrot, ou soma de primes) em
+      `Single` vs `Default` com 4/8 cores; medir speedup ≈ `numCores` (amortizado).
+- [ ] **Task 69.6.2:** Regressão completa: suíte `samples/tests` verde no `Dispatcher.Single`
+      (default, zero mudança de comportamento para código existente) + `zig build` +
+      `zig build test`.
+- [ ] **Verify 69.6:** Guardrail da suíte; speedup documentado no sample; sem prints/debug.
+
+#### Riscos / decisões abertas
+- **Data races em estado compartilhado** é o maior risco de corretude (`done`/`result`/
+  `waiters` de `StackTask`, vars boxed capturadas acessadas por threads diferentes).
+  Mitigação v1: **atomics para flags/result**, **lock por task para a waiter chain**,
+  e documentar que vars capturadas compartilhadas entre dispatchers exigem sincronização
+  explícita do usuário (sem garantia de memory order). Liveness > races.
+- **GC multithread**: Boehm GC já suporta threads (`GC_register_my_thread`); validar a
+  interação com `GC_allow_register_threads` + o GC_init do JIT (host-side) e o ctor nativo.
+- **Work-stealing** (Go) é adiado — v1 usa **fila única por pool com mutex** (simples,
+  suficiente para I/O leve e CPU-bound chunked). Revisitar se o lock da fila virar gargalo.
+- **`Dispatcher.IO`** (pool de I/O desbloqueado, estilo Kotlin `IO`) fica para depois da v1
+  (Default) validada; I/O waiters cooperativos (`EventLoop.waitReadable` como suspensão) são
+  o mesmo mecanismo do timer heap e podem entrar na v1 se o tempo permitir.
+- **Semântica eager × lazy** já decidida: eager no pool paralelo, lazy no Single — para não
+  mudar o comportamento de nenhum código existente.
+- Se o risco de data race se provar alto demais na validação, escopo de queda: limitar v1 a
+  **tasks fire-and-forget** em `Default` com resultado coletado via `withDispatcher` (único
+  ponto de sincronização), deixando `await()` cross-thread para a v2.
 
 ---
 

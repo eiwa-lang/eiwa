@@ -1,6 +1,16 @@
 import { Person } from "person"
 import { sum } from "math"
 
+type Counter(val value: Int) {
+    fun bump(): Int {
+        return this.value + 1
+    }
+}
+
+object Stats {
+    val counter = Counter(41)
+}
+
 val r = sum(10, 5)
 echo(r)
 
@@ -8,3 +18,6 @@ val v = Person("John", 30)
 echo(v.name)
 echo(v.age)
 echo(v.greet())
+
+val ans = Stats.counter.bump()
+echo(ans)

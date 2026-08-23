@@ -279,10 +279,10 @@ Casos em ordem:
       + `interleave_test` (`ABABAB`) + `yield_test` + `scheduler_test` + `body_fields_test`
       + `coop_await_test` — verdes.
 - [x] `./bin/eiwac run samples/main.ei` e `./bin/eiwac build samples/main.ei -o /tmp/t && /tmp/t`.
-- [~] `http_sample.ei` — **cliente** (GET/POST via libcurl) passa; **servidor aceita e lê a
-      request mas segfaulta ao responder** (gap **pré-existente** do emissor no caminho de
-      sockets server/`net.ei` — NÃO relacionado a coroutines). Gap registrado para fase
-      seguinte (I/O waiters); o `http_test.ei` (cliente) passa.
+- [~] `http_sample.ei` — **cliente** (GET/POST via libcurl) passa; **servidor** agora serve
+      (RESOLVIDO 2026-08 — ver gaps: object init em run/build, dispatch de método em `Pointer`,
+      `startsWith`/`endsWith` inline, `task {}` statement + drain no arest). O exemplo `home`
+      (arest) serve página, fragments e static assets em nativo e JIT.
 - [x] Performance: fast path de `task{}`+`await` simples ≈ chamada direta (state machine
       single-shot roda num único resume; overhead é o schedule/poll mínimo).
 
@@ -302,17 +302,16 @@ Casos em ordem:
 - [x] Limpar `gc_s1/ gc_s1a/ gc_s1b/ gc_s2/ gc_s3/ gc_stress_tmp/` (testes
       estáveis consolidados em `samples/tests/gc_stress_test.ei`).
 
-## Fase I — Proposta: Dispatchers / thread pool (paralelismo real, estilo Kotlin)
+## Fase I — Dispatchers / thread pool (paralelismo real, estilo Kotlin) — PLANEJADA como Phase 69
 
 > **Origem (2026-08):** o Eiwa implementa coroutines **cooperativas single-thread**
 > (equivalente ao `Dispatchers.Main`/`Unconfined` do Kotlin). Para paralelismo real
 > (como `Dispatchers.Default`/`IO` do Kotlin ou goroutines do Go), é preciso um
-> dispatcher + thread pool. **PROPOSTA — não é o modelo atual; requer redesign.**
+> dispatcher + thread pool.
 >
-> **Dependência (atendida):** as **Fases J e K** (suspensão verdadeira + `await()` cooperativo /
-> waiter-chain) estão **concluídas** — os pré-requisitos da Fase I existem. O que falta para a
-> Fase I é o **design em si**: thread pool, sincronização de estado, GC multithread.
-> Fase J → Fase K → Fase I (não iniciada).
+> **Status (2026-08):** promovida de **proposta adiada** a **plano operacional completo** —
+> ver **Phase 69** em [`docs/roadmap.md`](roadmap.md) (tabela Kotlin × Eiwa, etapas 0–6,
+> riscos). Resumo dos itens abaixo; o detalhamento por tarefa está no roadmap.
 
 - [ ] **Conceito de `Dispatcher`**: contexto onde um `task {}` roda. Por padrão
       `Dispatcher.Single` (o scheduler atual, single-thread). Futuro: `Dispatcher.Default`
@@ -323,22 +322,21 @@ Casos em ordem:
 - [ ] **Sincronização de estado compartilhado**: tasks em threads diferentes acessam o
       mesmo `StackTask`/box/var capturada — exige locks/atomics para `done`/`result`/`waiters`
       e para vars boxed. Este é o maior risco de corretude (data races).
-- [ ] **GC multithread**: Boehm GC já suporta threads, mas o registro de raízes do JIT
-      (`registerJITGlobalsAsRoots`) e as stacks de múltiplas threads precisam ser revisados.
-- [ ] **Semântica**: definir se `task {}` num dispatcher paralelo roda eager (como Go/Kotlin
-      Default) ou continua lazy. Proposto: eager no dispatcher paralelo (agenda + roda na
-      thread do pool), lazy no single (atual).
+- [ ] **GC multithread**: Boehm GC já suporta threads (`GC_allow_register_threads` +
+      `GC_register_my_thread`), mas o registro de raízes do JIT (`registerJITGlobalsAsRoots`)
+      e as stacks de múltiplas threads precisam ser revisados.
+- [ ] **Semântica**: `task {}` num dispatcher paralelo roda **eager** (como Go/Kotlin
+      Default: agenda + roda na thread do pool); **lazy** no single (atual).
 - [ ] **Como o programador escolhe**: `task(Dispatcher.Default) { ... }` ou
       `withDispatcher { }` — alinhado ao `withContext` do Kotlin.
 - [ ] **Validar**: benchmark de CPU-bound (ex: N-Body paralelo) vs single-thread;
       suíte existente continua verde no `Dispatcher.Single` (default).
 
-**Decisão recomendada:** adiar. O modelo cooperativo single-thread cobre os casos de I/O
-leve e concorrência estruturada (que é o objetivo do projeto). Paralelismo real adiciona
-uma camada grande de complexidade (sincronização, GC multithread) sem mudar o modelo de
-programação para o caso principal. Revisitar se houver demanda por CPU-bound paralelo.
-**Pré-requisitos concluídos:** Fase J (suspensão verdadeira) e Fase K (await cooperativo /
-waiter-chain) — sem elas, "paralelismo" seria só bloqueio de thread.
+**Decisão:** implementar como **Phase 69** no roadmap (etapas 0–6: threads FFI/atomics →
+`Scheduler` como instância → pool por dispatcher → await cross-thread → GC multithread →
+API/semântica → validação/benchmark). **Pré-requisitos concluídos:** Fase J (suspensão
+verdadeira) e Fase K (await cooperativo / waiter-chain) — sem elas, "paralelismo" seria
+só bloqueio de thread.
 
 ---
 
@@ -518,6 +516,24 @@ Eiwa puro; suspensão verdadeira (`switch(label)` + timer heap); `await()` coope
   `state_machine` em `buildTaskBlockType` (hoje só `sleep`/`yield` disparam). Incremental:
   primeiro `nestedTask`/`loopWithAwait` do `task_transform_test` verdes no caminho state
   machine, depois flipar a detecção.
+  > **Experimento (2026-08, REVERTIDO):** um flip direto (adicionar `containsAwait(s)` à
+  > condição de `state_machine`) expôs **3 bugs encadeados** em caminhos nunca exercitados
+  > (todos os testes usavam single-shot): (1) o composto `val r = task{...}.await()` bindava
+  > `r` duas vezes (machinery `val r = __taskN` + marker `val r = __CoopAwait(...)`), e o
+  > body field `this.r` pegava o tipo `StackTask_Int`; (2) o caminho single-shot perdeu o
+  > `appendSlice(machinery)` (bug meu de edição, `__task0` undeclared); (3) **capture boxed de
+  > local promovido**: `i` local do corpo do task externo vira body field `this.i` (Int puro,
+  > `collectLocalVars` força `is_boxed=false`), mas o task interno `task { i * 10 }` captura
+  > `i` com `boxed=true` (checker marca var mutável capturada por lambda) → ctor do
+  > `__TaskBlock2` recebe Int como box pointer → `resume()` deref de ponteiro nulo (segfault,
+  > confirmado no lldb: `ldr x8, [x8]` em `__TaskBlock2_resume`). Fixes parciais mantidos
+  > (dormentes, validados pela suíte): coop composto dropa o bind da machinery
+  > (`rewriteTaskAwaitCall` coop), `rewritePromotedRefs` reescreve o receiver do marker
+  > coop-await, e `buildResumeStateMachine` reescreve com `promoted` (não só `new_locals` —
+  > os args do ctor gerados na etapa 2 referenciam locals promovidos na etapa 1). **Ação
+  > correta para retomar:** forçar o caminho state machine para `nestedTask`/`loopWithAwait`
+  > um de cada vez (não flip global), e resolver o bug 3 (boxed capture de local promovido a
+  > body field) antes do flip.
 - **`hoistAwaitsWalk` sem caso `.assignment`**: `x = inner.await() + x` não é hoisted (o await
   vira chamada direta dentro do estado). Adicionar o caso `.assignment` (e `.index_set_expr`).
 - **`try` com `await` cooperativo dentro**: `machineBuildStmt` não tem caso `.try_stmt` (erro
@@ -527,8 +543,22 @@ Eiwa puro; suspensão verdadeira (`switch(label)` + timer heap); `await()` coope
   **Fase I** (dispatchers/thread pool), que continua **PROPOSTA**.
 - **I/O waiters**: `EventLoop.waitReadable/waitWritable` hoje bloqueiam via `poll`; transformá-los
   em suspensão cooperativa é o mesmo mecanismo do timer heap (uma lista de "waiters de I/O").
-- **`http_sample.ei` server segfaulta ao responder** (gap pré-existente do emitter no caminho
-  de sockets server/`net.ei`) — ver Fase G.
+- **BRIDGE — `Scheduler.run()` no loop de accept do arest** (2026-08, `arest/src/arest/arest.ei`):
+  `task { dispatcher.dispatch(conn) }` só **enfileira** (stackless lazy); como o `accept()`
+  bloqueia via `poll(-1)` e nunca retorna ao root, nada bombeia a FIFO e o handler não roda
+  (conexão aceita no backlog mas sem resposta). O bridge adiciona `Scheduler.run()` logo após
+  agendar, fazendo o handler síncrono rodar até o fim. ⚠️ **REMOVER este `Scheduler.run()` quando
+  os I/O waiters cooperativos (Fase I / Phase 69) estiverem prontos**: com `waitReadable`/
+  `waitWritable` virando suspensão real, o accept loop vira um await cooperativo no scheduler e
+  o drain manual deixa de ser necessário (concorrência real de conexões).
+- **Server HTTP no LLVM — RESOLVIDO (2026-08)** (era "`http_sample.ei` server segfaulta ao
+  responder", ver Fase G). Causas raiz corrigidas no emitter: (a) object/enum initializers
+  só rodavam em modo teste (singletons como `Log.rootLogger` ficavam null → segfault 0x8);
+  (b) safe-call de método em `Pointer` (`buf?.writeByte`) não despachava e o corpo era stub
+  (`Socket.read` → `ret null`); (c) `String.startsWith`/`endsWith` eram stubs (métodos de
+  primitivos pulados no Pass 2) → `serveStatic` nunca casava; (d) `task {}` como statement
+  (sem `val x =`) nunca era agendado. Validação: server do exemplo `home` serve página,
+  fragments e static assets em nativo e JIT.
 
 **Modelo atual (referência):**
 
@@ -585,11 +615,11 @@ Eiwa puro; suspensão verdadeira (`switch(label)` + timer heap); `await()` coope
 - Fase K: splice de monomorfizados antes das continuações; `.var_decl`/`.assignment`
   reescrevem o RHS antes de converter para `set_expr`.
 
-**Gaps conhecidos (NÃO gastar tempo neles agora — não são o foco atual):**
+**Gaps conhecidos a corrigir:**
 `object static String concat crasha` (`"x" + Obj.v`), `toString` mangled de List/Map
 (pré-existente no emitter), `try/catch` como última expr de bloco de task, `for`/`try`/`return`
-com suspensão dentro do corpo do task, await como receiver de composite, `http_sample.ei`
-server (sockets) no LLVM.
+com suspensão dentro do corpo do task, await como receiver de composite. (Server HTTP no LLVM:
+**resolvido** — ver nota do BRIDGE `Scheduler.run()` acima.)
 
 ---
 

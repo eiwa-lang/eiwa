@@ -198,6 +198,6 @@ The **composition type system** (Phase 41) also landed recently: `type`, `contra
 - **Phase 42:** Null safety on contract receivers (`?.` dispatch on nullable contracts).
 - **Phase 43:** Heterogeneous contract collections (`List<Drawable>` with dynamic dispatch per element).
 - **Phase 44:** Composition test coverage hardening (cross-module skills, negative fixtures).
-- **Coroutines:** incremental gaps (single-shot awaits, `try`/`for` with suspension, I/O waiters) and Dispatchers/thread pool as a postponed proposal.
+- **Coroutines:** incremental gaps (single-shot awaits, `try`/`for` with suspension, I/O waiters) and **Phase 69 — Dispatchers/thread pool** (parallelism real, Kotlin `Dispatchers`-style) as a planned proposal in the roadmap.
 
 *(See [docs/roadmap.md](docs/roadmap.md) for the full granular roadmap and historic evolution).*

@@ -1,0 +1,10 @@
+test "pointer writeByte/readByte method call dispatches correctly" {
+    val buf = Standard.gcMalloc(8)
+    buf?.writeByte(0, 65)
+    buf?.writeByte(1, 66)
+    val b0 = buf?.readByte(0)
+    val b1 = buf?.readByte(1)
+    assert(b0 != null)
+    assert(b0 == 65)
+    assert(b1 == 66)
+}
