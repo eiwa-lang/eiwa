@@ -31,7 +31,7 @@ jobs:
         run: |
           sudo apt-get update
           # libunwind-dev is required on arm64 (Boehm GC links libunwind there)
-          sudo apt-get install -y libgc-dev libunwind-dev
+          sudo apt-get install -y libgc-dev libunwind-dev libcurl4-openssl-dev
           wget -q https://apt.llvm.org/llvm.sh
           sudo chmod +x llvm.sh
           sudo ./llvm.sh 21
