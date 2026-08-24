@@ -267,7 +267,52 @@ pub fn emitExpression(
             }
             const str_z = try std.heap.page_allocator.dupeZ(u8, unescaped.items);
             defer std.heap.page_allocator.free(str_z);
-            return llvm.LLVMBuildGlobalStringPtr(builder, str_z.ptr, "str_tmp");
+            // Length-prefixed literal: a private global `{ i64 len, [len+1 x i8] data }`
+            // with the String pointing AT the data. `.length` reads the header at
+            // `ptr - 8`; the data keeps its NUL terminator for FFI.
+            const i8_type = llvm.LLVMInt8TypeInContext(ctx);
+            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+            const lit_len = unescaped.items.len;
+            // Pad the data array to at least 16 bytes so the union `is String`
+            // heuristic (which inspects `[ptr + 8]` to tell a String from a
+            // struct object) reads zeros for short literals instead of the next
+            // global's bytes. The tail stays zero-initialized.
+            // TODO(emitter): WORKAROUND (Phase 70) — remove once unions carry a real type tag.
+            const data_size = @max(lit_len + 1, 16);
+            const padded = try std.heap.page_allocator.alloc(u8, data_size);
+            defer std.heap.page_allocator.free(padded);
+            @memset(padded, 0);
+            @memcpy(padded[0..unescaped.items.len], unescaped.items);
+            const arr_t = llvm.LLVMArrayType(i8_type, @intCast(data_size));
+            var str_struct_fields = [_]llvm.LLVMTypeRef{ i64_type, arr_t };
+            const str_struct_t = llvm.LLVMStructTypeInContext(ctx, &str_struct_fields, 2, 0);
+            const len_c = llvm.LLVMConstInt(i64_type, @intCast(lit_len), 0);
+            const data_c = llvm.LLVMConstStringInContext(ctx, padded.ptr, @intCast(data_size), 1);
+            var init_fields = [_]llvm.LLVMValueRef{ len_c, data_c };
+            const init_c = llvm.LLVMConstStructInContext(ctx, &init_fields, 2, 0);
+            // Name the global by a content hash so identical literals MERGE into
+            // one global. A unique global per occurrence would register thousands
+            // of JIT globals as GC root sets (Boehm's limit) and crash with
+            // "Too many root sets" on larger programs.
+            var h: u64 = 0xcbf29ce484222325;
+            for (padded[0..lit_len]) |ch| {
+                h = (h ^ ch) *% 0x100000001b3;
+            }
+            const lit_name = try std.fmt.allocPrint(std.heap.page_allocator, "str_lit_{x}\x00", .{@as(u64, h)});
+            defer std.heap.page_allocator.free(lit_name);
+            const g = llvm.LLVMGetNamedGlobal(mod, lit_name.ptr) orelse blk: {
+                const ng = llvm.LLVMAddGlobal(mod, str_struct_t, lit_name.ptr);
+                llvm.LLVMSetInitializer(ng, init_c);
+                llvm.LLVMSetLinkage(ng, llvm.LLVMPrivateLinkage);
+                break :blk ng;
+            };
+            var struct_idx = [_]llvm.LLVMValueRef{
+                llvm.LLVMConstInt(i64_type, 0, 0),
+                llvm.LLVMConstInt(i64_type, 1, 0),
+            };
+            const data_arr_ptr = llvm.LLVMConstGEP2(str_struct_t, g, &struct_idx, 2);
+            var zero_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+            return llvm.LLVMConstGEP2(arr_t, data_arr_ptr, &zero_idx, 1);
         },
         .identifier => |ident| {
             const name = ident.resolved_c_name orelse ident.name;
@@ -372,8 +417,9 @@ pub fn emitExpression(
             return error.VariableNotFound;
         },
         .get_expr => |get| {
-            // In the LLVM emitter a String value IS a char pointer, so `.ptr`
-            // (and `.length`-free access) resolves to the string value itself.
+            // In the LLVM emitter a String value IS a char pointer (pointing at
+            // its data), so `.ptr` (and `.length`-free access) resolves to the
+            // string value itself.
             if (get.object.resolved_type) |obj_rt| {
                 const base = obj_rt.*;
                 if ((base == .String or base == .Pointer) and std.mem.eql(u8, get.name, "ptr")) {
@@ -444,11 +490,12 @@ pub fn emitExpression(
                             const fmt = llvm.LLVMBuildGlobalStringPtr(builder, "%lld", "int_fmt");
                             var sprintf_args = [_]llvm.LLVMValueRef{ buf, fmt, obj_val };
                             _ = llvm.LLVMBuildCall2(builder, sprintf_type, sprintf_func, &sprintf_args, 3, "sprintf_res");
-                            return buf;
+                            return try wrapStringWithHeader(ctx, mod, builder, buf, "int_str");
                         } else if (obj_base == .Bool) {
                             const true_str = llvm.LLVMBuildGlobalStringPtr(builder, "true", "bool_str_true");
                             const false_str = llvm.LLVMBuildGlobalStringPtr(builder, "false", "bool_str_false");
-                            return llvm.LLVMBuildSelect(builder, obj_val, true_str, false_str, "bool_tostr");
+                            const sel = llvm.LLVMBuildSelect(builder, obj_val, true_str, false_str, "bool_tostr");
+                            return try wrapStringWithHeader(ctx, mod, builder, sel, "bool_str");
                         } else if (obj_base == .Double) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
                             const gc_func = core.getHeapAllocFn(mod);
@@ -467,12 +514,13 @@ pub fn emitExpression(
                             const fmt = llvm.LLVMBuildGlobalStringPtr(builder, "%g", "double_fmt");
                             var sprintf_args = [_]llvm.LLVMValueRef{ buf, fmt, obj_val };
                             _ = llvm.LLVMBuildCall2(builder, sprintf_type, sprintf_func, &sprintf_args, 3, "sprintf_res");
-                            return buf;
+                            return try wrapStringWithHeader(ctx, mod, builder, buf, "double_str");
                         } else {
                             const fn_val = llvm.LLVMGetNamedFunction(mod, "eiwa_to_string") orelse return error.ToStringHelperNotFound;
                             const fn_type = llvm.LLVMGlobalGetValueType(fn_val);
                             var args = [_]llvm.LLVMValueRef{obj_val};
-                            return llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 1, "tostr_tmp");
+                            const tstr = llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 1, "tostr_tmp");
+                            return try wrapStringWithHeader(ctx, mod, builder, tstr, "str_tostr");
                         }
                     }
                 }
@@ -595,14 +643,17 @@ pub fn emitExpression(
                     else => false,
                 }) else true;
                 if (is_str) {
-                    const strlen_func = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
-                        const i8_ptr = llvm.LLVMPointerTypeInContext(ctx, 0);
-                        const fn_type = llvm.LLVMFunctionType(llvm.LLVMInt64TypeInContext(ctx), @constCast(&i8_ptr), 1, 0);
-                        break :blk llvm.LLVMAddFunction(mod, "strlen", fn_type);
-                    };
-                    const strlen_type = llvm.LLVMGlobalGetValueType(strlen_func);
-                    var str_args = [_]llvm.LLVMValueRef{obj_val};
-                    return llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &str_args, 1, "str_len");
+                    // TODO(emitter): WORKAROUND (Phase 70) — String values are length-prefixed
+                    // `[i64 len][data...]` with the String pointing AT the data (offset 8);
+                    // `.length` reads the header at `ptr - 8`. This REQUIRES every String
+                    // creation path in the emitter to emit a header; a missed path silently
+                    // reads garbage and corrupts memory. Consolidate String as `{ptr, len}`
+                    // (or centralize creation) so this can't happen.
+                    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                    const i8_type = llvm.LLVMInt8TypeInContext(ctx);
+                    var neg8_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), @bitCast(@as(i64, -8)), 0)};
+                    const hdr_ptr = llvm.LLVMBuildGEP2(builder, i8_type, obj_val, &neg8_idx, 1, "str_hdr");
+                    return llvm.LLVMBuildLoad2(builder, i64_type, hdr_ptr, "str_len");
                 }
             }
             if (get.object.resolved_type) |rt| {
@@ -1149,12 +1200,20 @@ pub fn emitExpression(
                 var sr_args = [_]llvm.LLVMValueRef{right_safe};
                 const len_b = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sr_args, 1, "strlen_b");
                 const total = llvm.LLVMBuildAdd(builder, len_a, len_b, "concat_len");
-                const total_plus_one = llvm.LLVMBuildAdd(builder, total, llvm.LLVMConstInt(i64_t, 1, 0), "concat_len1");
+                // Header (8 bytes) + data + NUL, padded so the union `is String`
+                // heuristic reads zeroed memory. Atomic: string data is not scanned.
+                const total_alloc = llvm.LLVMBuildAdd(builder, total, llvm.LLVMConstInt(i64_t, 24, 0), "concat_alloc");
 
                 const gc_func = core.getHeapAllocFn(mod);
                 const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
-                var gc_args = [_]llvm.LLVMValueRef{total_plus_one};
+                var gc_args = [_]llvm.LLVMValueRef{total_alloc};
                 const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "concat_buf");
+                var h_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 0, 0)};
+                const i8_t = llvm.LLVMInt8TypeInContext(ctx);
+                const hdr_ptr = llvm.LLVMBuildGEP2(builder, i8_t, buf, &h_idx, 1, "concat_hdr");
+                _ = llvm.LLVMBuildStore(builder, total, hdr_ptr);
+                var d_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 8, 0)};
+                const data_ptr = llvm.LLVMBuildGEP2(builder, i8_t, buf, &d_idx, 1, "concat_data");
 
                 const strcpy_fn = llvm.LLVMGetNamedFunction(mod, "strcpy") orelse blk: {
                     const p = llvm.LLVMPointerTypeInContext(ctx, 0);
@@ -1163,7 +1222,7 @@ pub fn emitExpression(
                     break :blk llvm.LLVMAddFunction(mod, "strcpy", ft);
                 };
                 const strcpy_type = llvm.LLVMGlobalGetValueType(strcpy_fn);
-                var sc_args = [_]llvm.LLVMValueRef{ buf, left_safe };
+                var sc_args = [_]llvm.LLVMValueRef{ data_ptr, left_safe };
                 _ = llvm.LLVMBuildCall2(builder, strcpy_type, strcpy_fn, &sc_args, 2, "concat_cpy");
 
                 const strcat_fn = llvm.LLVMGetNamedFunction(mod, "strcat") orelse blk: {
@@ -1173,10 +1232,10 @@ pub fn emitExpression(
                     break :blk llvm.LLVMAddFunction(mod, "strcat", ft);
                 };
                 const strcat_type = llvm.LLVMGlobalGetValueType(strcat_fn);
-                var cat_args = [_]llvm.LLVMValueRef{ buf, right_safe };
+                var cat_args = [_]llvm.LLVMValueRef{ data_ptr, right_safe };
                 _ = llvm.LLVMBuildCall2(builder, strcat_type, strcat_fn, &cat_args, 2, "concat_cat");
 
-                return buf;
+                return data_ptr;
             }
 
             if (!is_double) {
@@ -1741,11 +1800,55 @@ pub fn emitExpression(
                 const callee_z = try std.heap.page_allocator.dupeZ(u8, callee_name);
                 defer std.heap.page_allocator.free(callee_z);
 
-                // String constructor: in the LLVM model a String IS a char
-                // pointer, so `String(buf, len)` returns the buffer pointer.
+                // String constructor: `String(buf)` / `String(buf, len)` builds a
+                // length-prefixed string — `[i64 len][data...]` on the GC heap —
+                // and returns a char* pointing AT the data. `.length` reads the
+                // header at `ptr - 8`, so binary content keeps its true size.
                 if (std.mem.eql(u8, callee_name, "core_String") or std.mem.eql(u8, callee_name, "String")) {
                     if (call.arguments.len > 0) {
-                        return emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                        const i8_type = llvm.LLVMInt8TypeInContext(ctx);
+                        const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                        const src_buf = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                        var len_val: llvm.LLVMValueRef = undefined;
+                        if (call.arguments.len > 1) {
+                            len_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[1]);
+                        } else {
+                            const strlen_func = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
+                                const i8_ptr = llvm.LLVMPointerTypeInContext(ctx, 0);
+                                const fn_type = llvm.LLVMFunctionType(llvm.LLVMInt64TypeInContext(ctx), @constCast(&i8_ptr), 1, 0);
+                                break :blk llvm.LLVMAddFunction(mod, "strlen", fn_type);
+                            };
+                            const strlen_type = llvm.LLVMGlobalGetValueType(strlen_func);
+                            var sargs = [_]llvm.LLVMValueRef{src_buf};
+                            len_val = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sargs, 1, "str_ctor_len");
+                        }
+                        // size = max(len + 9, 24): 8-byte header + data + NUL, padded
+                        // so the union `is String` heuristic (which inspects
+                        // `[ptr + 8]`) always reads zeroed memory for short strings
+                        // instead of adjacent heap. Atomic: string data must not be
+                        // scanned by the GC as potential pointers.
+                        const gc_alloc = core.getHeapAllocFn(mod);
+                        const gc_type = llvm.LLVMGlobalGetValueType(gc_alloc);
+                        const alloc_size = llvm.LLVMBuildAdd(builder, len_val, llvm.LLVMConstInt(i64_type, 24, 0), "str_alloc_size");
+                        var ga = [_]llvm.LLVMValueRef{alloc_size};
+                        const raw = llvm.LLVMBuildCall2(builder, gc_type, gc_alloc, &ga, 1, "str_alloc");
+                        // store len at header (raw + 0)
+                        var hdr0_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+                        const hdr_ptr = llvm.LLVMBuildGEP2(builder, i8_type, raw, &hdr0_idx, 1, "hdr0");
+                        _ = llvm.LLVMBuildStore(builder, len_val, hdr_ptr);
+                        // memcpy data to raw+8
+                        var dst8_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 8, 0)};
+                        const dst = llvm.LLVMBuildGEP2(builder, i8_type, raw, &dst8_idx, 1, "str_dst");
+                        const memcpy_fn = llvm.LLVMGetNamedFunction(mod, "memcpy") orelse blk: {
+                            const p = llvm.LLVMPointerTypeInContext(ctx, 0);
+                            var mc_ps = [_]llvm.LLVMTypeRef{ p, p, i64_type };
+                            const ft = llvm.LLVMFunctionType(p, &mc_ps, 3, 0);
+                            break :blk llvm.LLVMAddFunction(mod, "memcpy", ft);
+                        };
+                        const memcpy_type = llvm.LLVMGlobalGetValueType(memcpy_fn);
+                        var mc = [_]llvm.LLVMValueRef{ dst, src_buf, len_val };
+                        _ = llvm.LLVMBuildCall2(builder, memcpy_type, memcpy_fn, &mc, 3, "str_cpy");
+                        return dst;
                     }
                 }
 
@@ -1923,7 +2026,8 @@ pub fn emitExpression(
                     for (provided_total..total_args) |idx| {
                         const expected_type = if (idx < param_count) func_param_types[idx] else llvm.LLVMPointerTypeInContext(ctx, 0);
                         if (llvm.LLVMGetTypeKind(expected_type) == llvm.LLVMPointerTypeKind) {
-                            arg_vals[idx] = llvm.LLVMBuildGlobalStringPtr(builder, "Assertion failed", "default_str");
+                            const def_str = llvm.LLVMBuildGlobalStringPtr(builder, "Assertion failed", "default_str");
+                            arg_vals[idx] = try wrapStringWithHeader(ctx, mod, builder, def_str, "assert_str");
                         } else {
                             arg_vals[idx] = llvm.LLVMConstNull(expected_type);
                         }
@@ -2016,7 +2120,8 @@ pub fn emitExpression(
                             const fn_val = llvm.LLVMGetNamedFunction(mod, "eiwa_str_replace") orelse return error.StrReplaceHelperNotFound;
                             const fn_type = llvm.LLVMGlobalGetValueType(fn_val);
                             var args = [_]llvm.LLVMValueRef{ s_val, old_val, new_val };
-                            return llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 3, "replace_tmp");
+                            const rep = llvm.LLVMBuildCall2(builder, fn_type, fn_val, &args, 3, "replace_tmp");
+                            return try wrapStringWithHeader(ctx, mod, builder, rep, "replace_str");
                         }
                     }
                 }
@@ -2221,12 +2326,23 @@ pub fn emitExpression(
                             var sr_args = [_]llvm.LLVMValueRef{right_val};
                             const len_b = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sr_args, 1, "strlen_b");
                             const total = llvm.LLVMBuildAdd(builder, len_a, len_b, "concat_len");
-                            const total_plus_one = llvm.LLVMBuildAdd(builder, total, llvm.LLVMConstInt(i64_type, 1, 0), "concat_len1");
+                            // 8-byte length header + data + NUL, padded to keep the
+                            // union `is String` heuristic (`[ptr + 8]`) in zeroed memory.
+                            const total_alloc = llvm.LLVMBuildAdd(builder, total, llvm.LLVMConstInt(i64_type, 24, 0), "concat_alloc");
 
                             const gc_func = core.getHeapAllocFn(mod);
                             const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
-                            var gc_args = [_]llvm.LLVMValueRef{total_plus_one};
+                            var gc_args = [_]llvm.LLVMValueRef{total_alloc};
                             const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "concat_buf");
+
+                            // length header at buf+0
+                            var hdr_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+                            const i8_type = llvm.LLVMInt8TypeInContext(ctx);
+                            const hdr_ptr = llvm.LLVMBuildGEP2(builder, i8_type, buf, &hdr_idx, 1, "concat_hdr");
+                            _ = llvm.LLVMBuildStore(builder, total, hdr_ptr);
+                            // data at buf+8
+                            var data_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 8, 0)};
+                            const data_ptr = llvm.LLVMBuildGEP2(builder, i8_type, buf, &data_idx, 1, "concat_data");
 
                             const strcpy_fn = llvm.LLVMGetNamedFunction(mod, "strcpy") orelse blk: {
                                 const p = llvm.LLVMPointerTypeInContext(ctx, 0);
@@ -2235,7 +2351,7 @@ pub fn emitExpression(
                                 break :blk llvm.LLVMAddFunction(mod, "strcpy", ft);
                             };
                             const strcpy_type = llvm.LLVMGlobalGetValueType(strcpy_fn);
-                            var sc_args = [_]llvm.LLVMValueRef{ buf, left_val };
+                            var sc_args = [_]llvm.LLVMValueRef{ data_ptr, left_val };
                             _ = llvm.LLVMBuildCall2(builder, strcpy_type, strcpy_fn, &sc_args, 2, "concat_cpy");
 
                             const strcat_fn = llvm.LLVMGetNamedFunction(mod, "strcat") orelse blk: {
@@ -2245,10 +2361,10 @@ pub fn emitExpression(
                                 break :blk llvm.LLVMAddFunction(mod, "strcat", ft);
                             };
                             const strcat_type = llvm.LLVMGlobalGetValueType(strcat_fn);
-                            var cat_args = [_]llvm.LLVMValueRef{ buf, right_val };
+                            var cat_args = [_]llvm.LLVMValueRef{ data_ptr, right_val };
                             _ = llvm.LLVMBuildCall2(builder, strcat_type, strcat_fn, &cat_args, 2, "concat_cat");
 
-                            return buf;
+                            return data_ptr;
                         }
                     }
                 }
@@ -2544,7 +2660,7 @@ pub fn emitExpression(
                             const term_ptr = llvm.LLVMBuildGEP2(builder, llvm.LLVMInt8TypeInContext(ctx), buf, &t_indices, 1, "sub_term");
                             _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(llvm.LLVMInt8TypeInContext(ctx), 0, 0), term_ptr);
 
-                            return buf;
+                            return try wrapStringWithHeader(ctx, mod, builder, buf, "sub_str");
                         }
                     }
 
@@ -2760,7 +2876,8 @@ pub fn emitExpression(
                                             }
                                             const ft2 = llvm.LLVMGlobalGetValueType(helper.?);
                                             var a = [_]llvm.LLVMValueRef{c_data_ptr};
-                                            null_val = llvm.LLVMBuildCall2(c_builder, ft2, helper.?, &a, 1, "vt_str_res");
+                                            const vt_str_raw = llvm.LLVMBuildCall2(c_builder, ft2, helper.?, &a, 1, "vt_str_res");
+                                            null_val = try wrapStringWithHeader(c_ctx, c_mod, c_builder, vt_str_raw, "vt_str");
                                         } else if (std.mem.eql(u8, m_name, "hashCode")) {
                                             var helper = llvm.LLVMGetNamedFunction(c_mod, "eiwa_hash_code");
                                             if (helper == null) {
@@ -3566,6 +3683,13 @@ pub fn emitExpression(
                                 if (subj_is_fat) {
                                     is_match = i1_false;
                                 } else {
+                                    // TODO(emitter): WORKAROUND — this `is String` check is a
+                                    // fragile pre-existing heuristic: it tells a String from a
+                                    // struct object by inspecting `[ptr + 8]` and the pointer
+                                    // value (> 0x1000000 = "heap"). The length-prefixed String
+                                    // model requires buffers padded to 24 bytes with zeros so
+                                    // `[ptr + 8]` stays clean. Replace with a real type tag on
+                                    // unions (Phase 70).
                                     const is_heap_ptr = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGT, subj_int, llvm.LLVMConstInt(i64_type, 0x1000000, 0), "is_heap");
                                     const dummy_arr_t = llvm.LLVMArrayType2(i64_type, 2);
                                     const dummy_alloc = llvm.LLVMBuildAlloca(builder, dummy_arr_t, "dummy_str_check");
@@ -4102,6 +4226,52 @@ pub fn emitExpression(
 /// checker's is_boxed decision directly; this LLVM coercion re-derives it from
 /// LLVM type kinds, which is the fragile part. Aligning both on the same
 /// type-checker flag removes the sniffing here.
+/// Wraps a null-terminated char* into a length-prefixed String value:
+/// allocates `[i64 len][data...][NUL]`, stores the length, copies the bytes and
+/// returns a char* pointing AT the data (so `.length` reads the header at
+/// `ptr - 8`). Used wherever a String result is produced from a raw C string.
+fn wrapStringWithHeader(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    src: llvm.LLVMValueRef,
+    name: [*:0]const u8,
+) !llvm.LLVMValueRef {
+    const i8_type = llvm.LLVMInt8TypeInContext(ctx);
+    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+    const strlen_func = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
+        const p = llvm.LLVMPointerTypeInContext(ctx, 0);
+        var ps = [_]llvm.LLVMTypeRef{p};
+        const ft = llvm.LLVMFunctionType(i64_type, &ps, 1, 0);
+        break :blk llvm.LLVMAddFunction(mod, "strlen", ft);
+    };
+    const strlen_type = llvm.LLVMGlobalGetValueType(strlen_func);
+    var sl_args = [_]llvm.LLVMValueRef{src};
+    const len = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sl_args, 1, "wrap_len");
+    // Pad so the union `is String` heuristic (`[ptr + 8]`) reads zeroed memory.
+    // Atomic: string data must not be scanned by the GC as potential pointers.
+    const alloc_size = llvm.LLVMBuildAdd(builder, len, llvm.LLVMConstInt(i64_type, 24, 0), "wrap_alloc");
+    const gc_alloc = core.getHeapAllocFn(mod);
+    const gc_type = llvm.LLVMGlobalGetValueType(gc_alloc);
+    var ga = [_]llvm.LLVMValueRef{alloc_size};
+    const raw = llvm.LLVMBuildCall2(builder, gc_type, gc_alloc, &ga, 1, name);
+    var h0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+    const hdr_ptr = llvm.LLVMBuildGEP2(builder, i8_type, raw, &h0, 1, "wrap_hdr");
+    _ = llvm.LLVMBuildStore(builder, len, hdr_ptr);
+    var h8 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 8, 0)};
+    const dst = llvm.LLVMBuildGEP2(builder, i8_type, raw, &h8, 1, "wrap_dst");
+    const strcpy_fn = llvm.LLVMGetNamedFunction(mod, "strcpy") orelse blk: {
+        const p = llvm.LLVMPointerTypeInContext(ctx, 0);
+        var ps = [_]llvm.LLVMTypeRef{ p, p };
+        const ft = llvm.LLVMFunctionType(p, &ps, 2, 0);
+        break :blk llvm.LLVMAddFunction(mod, "strcpy", ft);
+    };
+    const strcpy_type = llvm.LLVMGlobalGetValueType(strcpy_fn);
+    var sc = [_]llvm.LLVMValueRef{ dst, src };
+    _ = llvm.LLVMBuildCall2(builder, strcpy_type, strcpy_fn, &sc, 2, "wrap_cpy");
+    return dst;
+}
+
 pub fn coerceArg(
     builder: llvm.LLVMBuilderRef,
     arg_val: llvm.LLVMValueRef,

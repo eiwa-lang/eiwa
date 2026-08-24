@@ -44,7 +44,92 @@ fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 /// Main entry point for the Eiwa CLI.
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
 
+// --- Clean crash reporting --------------------------------------------------
+// When a compiled Eiwa program crashes (JIT), Zig's default handler dumps its
+// own runtime frames (main/run/start/callMain) which are just noise — the
+// error lives in the JIT'd program frames. Install a handler that reports the
+// fault address and only the non-toolchain frames (JIT code + C libraries),
+// keeping the crash actionable instead of a wall of Zig internals.
+
+const Dl_info = extern struct {
+    dli_fname: ?[*:0]const u8,
+    dli_fbase: ?*anyopaque,
+    dli_sname: ?[*:0]const u8,
+    dli_saddr: ?*anyopaque,
+};
+extern "c" fn dladdr(addr: *const anyopaque, info: *Dl_info) c_int;
+
+var eiwac_base: ?*anyopaque = null;
+
+fn crashWrite(s: []const u8) void {
+    _ = std.c.write(2, s.ptr, s.len);
+}
+
+fn crashWriteFrame(addr: usize) void {
+    var buf: [32]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "    0x{x}\n", .{addr}) catch return;
+    crashWrite(s);
+}
+
+fn crashHandler(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*anyopaque) callconv(.c) void {
+    const name = switch (sig) {
+        .SEGV => "Segmentation fault",
+        .ILL => "Illegal instruction",
+        .BUS => "Bus error",
+        .ABRT => "Aborted",
+        .TRAP => "Trap",
+        .FPE => "Arithmetic exception",
+        else => "Fatal signal",
+    };
+    crashWrite(name);
+    const fault_addr: ?usize = switch (builtin.os.tag) {
+        .macos => @intFromPtr(info.addr),
+        .linux => @intFromPtr(info.fields.sigfault.addr),
+        else => null,
+    };
+    if (fault_addr) |a| {
+        crashWrite(" at address ");
+        crashWriteFrame(a);
+    } else {
+        crashWrite("\n");
+    }
+    crashWrite("program frames (JIT):\n");
+    var addr_buf: [48]usize = undefined;
+    if (std.debug.cpu_context.fromPosixSignalContext(ctx_ptr)) |native_ctx| {
+        const stack = std.debug.captureCurrentStackTrace(.{ .context = &native_ctx, .allow_unsafe_unwind = true }, &addr_buf);
+        for (stack.return_addresses) |ra| {
+            var dli: Dl_info = undefined;
+            if (dladdr(@ptrFromInt(ra), &dli) != 0) {
+                // Skip frames inside the eiwac binary itself (main/run/start):
+                // they are the toolchain wrapper, not the failing program.
+                if (dli.dli_fbase != null and dli.dli_fbase == eiwac_base) continue;
+            }
+            crashWriteFrame(ra);
+        }
+    }
+    std.process.exit(@as(u8, @truncate(128 + @intFromEnum(sig))));
+}
+
+fn installCleanCrashHandler() void {
+    var self_info: Dl_info = undefined;
+    if (dladdr(@ptrFromInt(@returnAddress()), &self_info) != 0) {
+        eiwac_base = self_info.dli_fbase;
+    }
+    const act: std.posix.Sigaction = .{
+        .handler = .{ .sigaction = crashHandler },
+        .mask = std.posix.sigemptyset(),
+        .flags = (std.posix.SA.SIGINFO | std.posix.SA.RESTART | std.posix.SA.RESETHAND | std.posix.SA.ONSTACK),
+    };
+    std.posix.sigaction(.SEGV, &act, null);
+    std.posix.sigaction(.ILL, &act, null);
+    std.posix.sigaction(.BUS, &act, null);
+    std.posix.sigaction(.FPE, &act, null);
+    std.posix.sigaction(.TRAP, &act, null);
+    std.posix.sigaction(.ABRT, &act, null);
+}
+
 pub fn main(init: std.process.Init) !void {
+    installCleanCrashHandler();
     // Never let a Zig error value reach the runtime's default printer (which
     // dumps `error: <name>` + a native stack trace). Eiwa diagnostics are
     // reported inline (REPORT_ERROR with file:line:col) before the error

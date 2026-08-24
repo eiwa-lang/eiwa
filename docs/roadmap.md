@@ -947,6 +947,41 @@ Semântica alvo:
 
 ---
 
+### Phase 70: Modelo de `String` com comprimento + limpeza de heurísticas (PENDING)
+> **Contexto (2026-08):** o backend LLVM modelava `String` como `char*` puro, então
+> `String.length` era `strlen` — quebrava **dados binários** (ex.: `File.read` de um PNG
+> retornava só 8 bytes, o header, porque o conteúdo tinha NUL embutido). O fix introduziu uma
+> representação **com header de comprimento** (`[i64 len][data...]`), com `String.length`
+> lendo o header em `ptr-8`. Isso tornou o binário correto (PNG 134KB servido completo) e a
+> suíte verde (79/79), mas expôs/requereu duas coisas frágeis:
+>
+> 1. **Heurística `is String` em unions** (`when (x) is String` / dispatch de union): distingue
+>    String de struct-objeto inspecionando `[ptr+8]` + o valor do ponteiro (`> 0x1000000`).
+>    Para funcionar com o novo layout, os buffers de String precisam de **padding para 24 bytes
+>    com zeros** (senão `[ptr+8]` lê o próximo global/heap). É um **workaround** sobre uma
+>    heurística pré-existente e frágil — `TODO(emitter)`.
+> 2. **Fragilidade estrutural**: `.length` lê `ptr-8` assumindo que **toda** String tem header.
+>    Qualquer caminho de criação de String que o emitter deixe passar sem header causa
+>    corrupção de memória (foi o que derrubou o servidor `home` — auditado e corrigido:
+>    `eiwa_to_string` no dispatch de vtable, concat binário `+`, default do `assert`).
+>
+> **Objetivo:** substituir a heurística por um **tag de tipo real** nas unions e consolidar o
+> modelo de String (idealmente `{ptr, len}` como struct, igual ao backend C), eliminando o
+> padding/workaround e a fragilidade "toda criação de String precisa ser headed".
+
+- [ ] **Task 70.1:** Union com tag de tipo real — substituir a heurística `[ptr+8]`/`>0x1000000`
+      do `when ... is`/dispatch por um discriminante explícito (ex.: `{tag, data}`), removendo o
+      padding de 24 bytes das strings. (`TODO(emitter)` no código.)
+- [ ] **Task 70.2:** Consolidar `String` como `{ptr, len}` (struct) no modelo LLVM — `.length`/
+      `.ptr` como campos reais, FFI passando `.ptr`, eliminando o header `ptr-8` e a regra
+      "toda criação de String precisa ser headed".
+- [ ] **Task 70.3:** Centralizar a criação de String no emitter (um único helper de alloc+header
+      ou struct) para que novos caminhos não introduzam strings sem header silenciosamente.
+- [ ] **Verify:** PNG/binário servido completo; servidor `home` estável sob carga; suíte
+      79/79 + `zig build test`.
+
+---
+
 ## ✅ Definition of Done (Per Phase)
 * [x] **Security/Lint:** No memory leaks in tests (utilizing `std.testing.allocator` across internal Zig modules).
 * [x] **Build:** `zig build test` and `zig build run` execute successfully.
