@@ -1,8 +1,12 @@
 import { Client } from "std.http"
 
+// Live HTTP request tests against a public echo service. CI runners have
+// internet access. The curl Client now enforces a 5s connect / 15s total
+// timeout (see std/http.ei), so a stalled or unreachable endpoint fails fast
+// instead of hanging the whole suite for hours.
 test "http.ae: should perform HTTP GET request successfully" {
     val client = Client()
-    val response = client.get("https://httpbun.com/get")
+    val response = client.get("https://httpbin.org/get")
 
     assert(response != null)
     assert(response.status == 200)
@@ -11,7 +15,7 @@ test "http.ae: should perform HTTP GET request successfully" {
 
 test "http.ae: should perform HTTP POST request successfully" {
     val client = Client()
-    val response = client.post("https://httpbun.com/post", "name=Eiwa&speed=Fast")
+    val response = client.post("https://httpbin.org/post", "name=Eiwa&speed=Fast")
 
     assert(response != null)
     assert(response.status == 200)

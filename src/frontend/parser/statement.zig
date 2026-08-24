@@ -32,23 +32,45 @@ pub fn forStatement(self: *Parser) anyerror!*ASTNode {
     const line = self.previous.line;
     const col = self.previous.column;
     try self.consume(.l_paren, "Expected '(' after 'for'.");
-    try self.consume(.identifier, "Expected item name in for loop.");
-    const item_name = self.previous.lexeme;
-    try self.consume(.kw_in, "Expected 'in' after item name.");
     const iterable = try self.expression();
     try self.consume(.r_paren, "Expected ')' after iterable.");
-    
-    var body: *ASTNode = undefined;
-    if (self.match(.l_brace)) {
-        var stmts = ArrayList(*ASTNode).init(self.allocator);
-        while (!self.check(.r_brace) and !self.check(.eof)) {
-            try stmts.append(try self.declaration());
+
+    try self.consume(.l_brace, "Expected '{' for 'for' loop body.");
+
+    var item_name: []const u8 = "it";
+
+    var temp_lexer = self.lexer;
+    var has_arrow = false;
+    var brace_depth: usize = 0;
+    while (true) {
+        const tok = temp_lexer.scanToken();
+        if (tok.token_type == .eof) break;
+        if (tok.token_type == .l_brace) brace_depth += 1;
+        if (tok.token_type == .r_brace) {
+            if (brace_depth == 0) break;
+            brace_depth -= 1;
         }
-        try self.consume(.r_brace, "Expected '}'.");
-        body = try self.createNode(.{ .block = .{ .statements = try stmts.toOwnedSlice() } });
-    } else {
-        body = try self.expression();
+        if (tok.token_type == .arrow and brace_depth == 0) {
+            has_arrow = true;
+            break;
+        }
     }
+
+    if (has_arrow) {
+        try self.consume(.identifier, "Expected parameter name in for loop.");
+        item_name = self.previous.lexeme;
+        if (self.match(.colon)) {
+            _ = try self.parseType();
+        }
+        try self.consume(.arrow, "Expected '->' after parameter in for loop.");
+    }
+
+    var stmts = ArrayList(*ASTNode).init(self.allocator);
+    while (!self.check(.r_brace) and !self.check(.eof)) {
+        try stmts.append(try self.declaration());
+    }
+    try self.consume(.r_brace, "Expected '}'.");
+    const body = try self.createNode(.{ .block = .{ .statements = try stmts.toOwnedSlice() } });
 
     return try self.createNodeAt(.{ .for_stmt = .{ .item_name = item_name, .iterable = iterable, .body = body } }, line, col);
 }

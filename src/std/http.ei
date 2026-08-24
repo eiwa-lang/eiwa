@@ -49,12 +49,18 @@ type Client() {
         val CURLOPT_WRITEFUNCTION = 20011
         val CURLOPT_WRITEDATA = 10001
         val CURLOPT_FOLLOWLOCATION = 52
+        val CURLOPT_TIMEOUT_MS = 155
+        val CURLOPT_CONNECTTIMEOUT_MS = 156
         val CURLINFO_RESPONSE_CODE = 2097154
         
         NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)
         NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, funPointer { contents: Pointer, size: Int, nmemb: Int, userp: Pointer -> writeCallback(contents, size, nmemb, userp) })
         NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEDATA, buffer)
         NativeHttp.curlEasySetopt(curl, CURLOPT_FOLLOWLOCATION, 1)
+        // Never block the caller indefinitely: fail after a bounded connect
+        // and overall time instead of hanging on a stalled endpoint.
+        NativeHttp.curlEasySetopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_TIMEOUT_MS, 15000)
         
         val res = NativeHttp.curlEasyPerform(curl)
         
@@ -87,12 +93,18 @@ type Client() {
         val CURLOPT_POSTFIELDS = 10015
         val CURLOPT_POSTFIELDSIZE = 60
         val CURLOPT_FOLLOWLOCATION = 52
+        val CURLOPT_TIMEOUT_MS = 155
+        val CURLOPT_CONNECTTIMEOUT_MS = 156
         val CURLINFO_RESPONSE_CODE = 2097154
         
         NativeHttp.curlEasySetopt(curl, CURLOPT_URL, url.ptr)
         NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEFUNCTION, funPointer { contents: Pointer, size: Int, nmemb: Int, userp: Pointer -> writeCallback(contents, size, nmemb, userp) })
         NativeHttp.curlEasySetopt(curl, CURLOPT_WRITEDATA, buffer)
         NativeHttp.curlEasySetopt(curl, CURLOPT_FOLLOWLOCATION, 1)
+        // Never block the caller indefinitely: fail after a bounded connect
+        // and overall time instead of hanging on a stalled endpoint.
+        NativeHttp.curlEasySetopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000)
+        NativeHttp.curlEasySetopt(curl, CURLOPT_TIMEOUT_MS, 15000)
         
         NativeHttp.curlEasySetopt(curl, CURLOPT_POST, 1)
         NativeHttp.curlEasySetopt(curl, CURLOPT_POSTFIELDS, body.ptr)

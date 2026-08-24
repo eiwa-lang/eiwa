@@ -1,0 +1,69 @@
+import { assert } from "std.core"
+import { List, MutableList } from "std.collections"
+
+test "for loop with implicit it" {
+    val numbers = [10, 20, 30]
+    var sum = 0
+    for (numbers) {
+        sum = sum + it
+    }
+    assert(sum == 60)
+}
+
+test "for loop with explicit named parameter" {
+    val numbers = [1, 2, 3, 4]
+    var product = 1
+    for (numbers) { n ->
+        product = product * n
+    }
+    assert(product == 24)
+}
+
+test "for loop with explicit type annotation on parameter" {
+    val numbers = [5, 10, 15]
+    var sum = 0
+    for (numbers) { item: Int ->
+        sum = sum + item
+    }
+    assert(sum == 30)
+}
+
+test "for loop over mutable list" {
+    val m = MutableList<Int>()
+    m.add(100)
+    m.add(200)
+    var sum = 0
+    for (m) {
+        sum = sum + it
+    }
+    assert(sum == 300)
+}
+
+test "nested for loops with explicit and implicit variables" {
+    val outer = [1, 2]
+    val inner = [10, 20]
+    var total = 0
+    for (outer) { o ->
+        for (inner) {
+            total = total + (o * it)
+        }
+    }
+    // o=1: (1*10 + 1*20) = 30
+    // o=2: (2*10 + 2*20) = 60
+    // total = 90
+    assert(total == 90)
+}
+
+test "for loop inside coroutine task with await" {
+    val t = task {
+        val numbers = [1, 2, 3]
+        var total = 0
+        for (numbers) { n ->
+            val inner = task { n * 10 }
+            total = total + inner.await()
+        }
+        total
+    }
+    val res = t.await()
+    assert(res == 60)
+}

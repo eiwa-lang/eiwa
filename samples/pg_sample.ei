@@ -15,7 +15,7 @@ fun main() {
     
     val result = db.query("SELECT id, name FROM users", noParams)
     
-    for (row in result.rows()) {
+    for (result.rows()) { row ->
         println(row.int("id").toString() + ": " + row.string("name"))
     }
     
@@ -24,7 +24,7 @@ fun main() {
     val stmt = db.prepare("SELECT id, name FROM users WHERE id = $1")
     val found = stmt.query(["1"])
     
-    for (row in found.rows()) {
+    for (found.rows()) { row ->
         println("Found: " + row.string("name"))
     }
     

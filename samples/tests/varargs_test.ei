@@ -3,7 +3,9 @@ import { List, MutableList } from "std.collections"
 
 fun sum(numbers: Int...): Int {
     var total = 0
-    for (n in numbers) total = total + n
+    for (numbers) { n ->
+        total = total + n
+    }
     return total
 }
 

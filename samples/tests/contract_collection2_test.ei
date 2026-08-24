@@ -11,7 +11,7 @@ test "for-in over frozen List<Drawable> + contract dispatch" {
     shapes.add(Circle())
     val frozen = shapes.freeze()
     var total = 0
-    for (shape in frozen) {
+    for (frozen) { shape ->
         total = total + shape.draw()
     }
     assert(total == 84)

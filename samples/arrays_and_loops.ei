@@ -3,8 +3,8 @@ import { Person } from "person"
 
 fun sumArray(arr: List<Int>): Int {
     var sum = 0
-    for (item in arr) {
-        sum = sum + item
+    for (arr) {
+        sum = sum + it
     }
     return sum
 }
@@ -24,7 +24,7 @@ fun main() {
     val person2 = Person("Ana", 22)
     val people = [person1, person2]
 
-    for (person in people) {
+    for (people) { person ->
         echo(person.name)
         echo(person.age)
     }

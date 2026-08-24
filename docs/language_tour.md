@@ -76,27 +76,89 @@ Imported files must be "passive libraries", meaning they should only **declare**
 
 Eiwa features a native type system for dynamic arrays and full-featured generic **collections**, along with ergonomic `for` and `while` loops.
 
-The `[Type]` syntax is syntactic sugar for an immutable **`List<T>`**. Read elements with `[index]` or `.get(index)`, check size with `.size()`. For mutation, call `.mut()` on any immutable collection to get a `MutableList<T>` (see [Section 7.5](#75-mutability-conversion----mut-and-freeze)).
+### 3.1 Collections and `for` Loops
+
+The `[Type]` syntax is syntactic sugar for an immutable **`List<T>`**. Read elements with `[index]` or `.get(index)`, and check size with `.size()`. For mutation, call `.mut()` on any collection to get a `MutableList<T>` (see [Section 7.5](#75-mutability-conversion----mut-and-freeze)).
+
+Eiwa uses an ergonomic **lambda-style `for` block** to iterate over `List<T>`, `MutableList<T>`, and native arrays:
+- **Implicit parameter (`it`)**: When no parameter is specified, `it` is injected into the loop scope.
+- **Explicit parameter (`name ->`)**: Define a custom parameter name.
+- **Explicit typed parameter (`name: Type ->`)**: Optionally add type annotations.
 
 ```kotlin
 fun main() {
-    // Immutable list literal
     val numbers = [1, 2, 3, 4, 5]
     
-    // Index access
-    val first = numbers[0]
-    
-    // For-loops iterate seamlessly over lists
+    // Implicit 'it' parameter
     var sum = 0
-    for (item in numbers) {
-        sum = sum + item
+    for (numbers) {
+        sum = sum + it
     }
+    assert(sum == 15)
     
-    // While loops are also fully supported
+    // Explicit named parameter
+    var product = 1
+    for (numbers) { n ->
+        product = product * n
+    }
+    assert(product == 120)
+}
+```
+
+### 3.2 `while` Loops
+
+Classic condition-based loops are fully supported:
+
+```kotlin
+fun main() {
     var i = 0
     while (i < 5) {
-        // do something
         i = i + 1
+    }
+    assert(i == 5)
+}
+```
+
+### 3.3 Loop Utility Functions (`repeat`, `loop`, `retry`)
+
+Eiwa's standard library (`std.system`, implicitly imported into every program) provides higher-order loop helpers:
+
+#### `repeat(count) { ... }`
+Executes a block `count` times, passing the 0-indexed iteration count as `it` (or a named parameter):
+
+```kotlin
+fun main() {
+    // Passes 0, 1, 2 as 'it'
+    repeat(3) {
+        println("Iteration: " + it.toString())
+    }
+
+    // Explicit parameter name
+    repeat(4) { step ->
+        println("Step " + step.toString())
+    }
+}
+```
+
+#### `loop { ... }`
+Executes an infinite loop (convenient wrapper for continuous worker loops and server tasks):
+
+```kotlin
+fun main() {
+    loop {
+        println("Processing continuously...")
+    }
+}
+```
+
+#### `retry(times) { ... }`
+Executes a block up to `times` attempts, catching any `Throwable` exceptions before retrying:
+
+```kotlin
+fun main() {
+    retry(3) { attempt ->
+        println("Attempt: " + attempt.toString())
+        connectService()
     }
 }
 ```
@@ -986,13 +1048,13 @@ A function or method can accept a variable number of trailing arguments by marki
 ```kotlin
 fun sum(numbers: Int...): Int {
     var total = 0
-    for (n in numbers) total = total + n   // numbers: List<Int>
+    for (numbers) { n -> total = total + n }   // numbers: List<Int>
     return total
 }
 
 fun greet(greeting: String, names: String...): String {
     var out = greeting
-    for (name in names) out = out + ", " + name
+    for (names) { name -> out = out + ", " + name }
     return out + "!"
 }
 ```
@@ -1209,8 +1271,8 @@ import { Process } from "std.process"
 
 fun main() {
     val args = Process.args() // List<String>
-    for (arg in args) {
-        println(arg)
+    for (args) {
+        println(it)
     }
 }
 ```
@@ -1353,8 +1415,8 @@ fun main() {
 
     // Program arguments (argv)
     val args = Process.args()
-    for (arg in args) {
-        println(arg)
+    for (args) {
+        println(it)
     }
 
     // Working directory & path resolution
@@ -1958,7 +2020,7 @@ fun main() {
 
     // Execute queries transparently through the pool
     val res = pool.query("SELECT * FROM users WHERE id = $1", ["1"])
-    for (row in res.rows()) {
+    for (res.rows()) { row ->
         print(row.string("name"))
     }
 

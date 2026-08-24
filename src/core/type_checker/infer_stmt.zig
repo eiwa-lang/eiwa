@@ -64,16 +64,34 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     const f = node.data.for_stmt;
     var iter_type = try self.inferNode(f.iterable, scope);
     
+    var is_mutable_list = false;
     var is_list = false;
-    if (iter_type.* == .GenericInstance and (std.mem.eql(u8, iter_type.GenericInstance.base_name, "List") or std.mem.eql(u8, iter_type.GenericInstance.base_name, "MutableList"))) {
-        is_list = true;
+    if (iter_type.* == .GenericInstance) {
+        if (std.mem.eql(u8, iter_type.GenericInstance.base_name, "MutableList")) {
+            is_mutable_list = true;
+        } else if (std.mem.eql(u8, iter_type.GenericInstance.base_name, "List")) {
+            is_list = true;
+        }
     } else if (iter_type.* == .Custom) {
-        if (std.mem.indexOf(u8, iter_type.Custom, "List") != null) {
+        if (std.mem.indexOf(u8, iter_type.Custom, "MutableList") != null) {
+            is_mutable_list = true;
+        } else if (std.mem.indexOf(u8, iter_type.Custom, "List") != null) {
             is_list = true;
         }
     }
     
-    if (is_list) {
+    if (is_mutable_list) {
+        const get_list = try self.allocator.create(ASTNode);
+        get_list.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .get_expr = .{ .object = f.iterable, .name = "list", .is_safe = false } } };
+        _ = try self.inferNode(get_list, scope);
+
+        const get_items = try self.allocator.create(ASTNode);
+        get_items.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .get_expr = .{ .object = get_list, .name = "items", .is_safe = false } } };
+        _ = try self.inferNode(get_items, scope);
+
+        node.data.for_stmt.iterable = get_items;
+        iter_type = get_items.resolved_type.?;
+    } else if (is_list) {
         const get_expr = try self.allocator.create(ASTNode);
         get_expr.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .get_expr = .{ .object = f.iterable, .name = "items", .is_safe = false } } };
         

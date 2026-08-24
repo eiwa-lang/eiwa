@@ -980,6 +980,21 @@ Semântica alvo:
 - [ ] **Verify:** PNG/binário servido completo; servidor `home` estável sob carga; suíte
       79/79 + `zig build test`.
 
+### Phase 71: Sintaxe de `for` em Estilo Lambda & Desestruturação/Índice (COMPLETED / EXTENSION PLANNED)
+> **Contexto (2026-08):** O laço `for` migrou da sintaxe anterior `for (item in list)` para a
+> sintaxe estilo bloco lambda idiomática do Eiwa:
+> - `for (numbers) { n -> println(n) }` (parâmetro nomeado explícito)
+> - `for (numbers) { println(it) }` (parâmetro padrão implícito `it`)
+> Mantendo a emissão do loop de controle de fluxo de alto desempenho no backend LLVM e total
+> compatibilidade com coroutines stackless (`task {}` / `await()`).
+
+- [x] **Task 71.1:** Atualizar o parser (`forStatement`) para aceitar `for (iterable) { [n ->] ... }` com lookahead para `->` e suporte a `it` implícito por padrão.
+- [x] **Task 71.2:** Suportar iteração direta sobre `List<T>`, `MutableList<T>` e arrays nativos no `TypeChecker` (`inferForStmt`).
+- [x] **Task 71.3:** Atualizar `docs/language_tour.md`, `samples/` e testes com a nova sintaxe.
+- [ ] **Task 71.4 (Planned Extension):** Suporte a múltiplos parâmetros no loop para desestruturação e iteração com índice:
+      - `for (numbers) { index, item -> println(index.toString() + ": " + item) }`
+      - `for (map) { key, value -> ... }`
+
 ---
 
 ## ✅ Definition of Done (Per Phase)

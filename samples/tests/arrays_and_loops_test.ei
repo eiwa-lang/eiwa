@@ -2,8 +2,8 @@ import { List } from "std.collections"
 
 fun sumArray(arr: List<Int>): Int {
     var sum = 0
-    for (item in arr) {
-        sum = sum + item
+    for (arr) {
+        sum = sum + it
     }
     return sum
 }
