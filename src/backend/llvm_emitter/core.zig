@@ -2356,17 +2356,91 @@ pub const LLVMEmitter = struct {
         }
 
         // eiwa_socket_write(i64 fd, ptr data, i64 len) -> i64
+        // Writes all `len` bytes, polling for writability between chunks.
+        // The client socket is non-blocking, so a single `write()` may return a
+        // partial count (fewer bytes than requested) once the send buffer fills
+        // — a single call silently truncated HTTP responses and corrupted
+        // binary files (images). The loop polls POLLOUT (blocking, matching the
+        // existing waitWritable model) before each chunk until everything is
+        // sent.
         {
             var ps = [_]llvm.LLVMTypeRef{ i64_t, ptr_t, i64_t };
             const fn_t = llvm.LLVMFunctionType(i64_t, &ps, 3, 0);
             const func = llvm.LLVMGetNamedFunction(mod, "eiwa_socket_write") orelse llvm.LLVMAddFunction(mod, "eiwa_socket_write", fn_t);
             if (llvm.LLVMCountBasicBlocks(func) == 0) {
                 const entry = llvm.LLVMAppendBasicBlockInContext(ctx, func, "entry");
+                const cond_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func, "write.cond");
+                const poll_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func, "write.poll");
+                const body_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func, "write.body");
+                const adv_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func, "write.adv");
+                const exit_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func, "write.exit");
+                const fail_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func, "write.fail");
+
+                const c0_64 = llvm.LLVMConstInt(i64_t, 0, 0);
+                const c1_64 = llvm.LLVMConstInt(i64_t, 1, 0);
+                const neg1_32 = llvm.LLVMConstInt(i32_t, 0xffffffff, 1);
+
+                // int poll(struct pollfd *fds, nfds_t nfds, int timeout)
+                const poll_f = llvm.LLVMGetNamedFunction(mod, "poll") orelse blk: {
+                    var pps = [_]llvm.LLVMTypeRef{ ptr_t, i64_t, i32_t };
+                    break :blk llvm.LLVMAddFunction(mod, "poll", llvm.LLVMFunctionType(i32_t, &pps, 3, 0));
+                };
+                const poll_ft = llvm.LLVMGlobalGetValueType(poll_f);
+
                 llvm.LLVMPositionBuilderAtEnd(b, entry);
                 const fd32 = llvm.LLVMBuildTrunc(b, llvm.LLVMGetParam(func, 0), i32_t, "fd32");
-                var w_args = [_]llvm.LLVMValueRef{ fd32, llvm.LLVMGetParam(func, 1), llvm.LLVMGetParam(func, 2) };
+                const written_ptr = llvm.LLVMBuildAlloca(b, i64_t, "written");
+                const cur_ptr_slot = llvm.LLVMBuildAlloca(b, ptr_t, "cur_ptr");
+                const err_slot = llvm.LLVMBuildAlloca(b, i64_t, "err");
+                _ = llvm.LLVMBuildStore(b, c0_64, written_ptr);
+                _ = llvm.LLVMBuildStore(b, llvm.LLVMGetParam(func, 1), cur_ptr_slot);
+                _ = llvm.LLVMBuildBr(b, cond_bb);
+
+                // while (written < len)
+                llvm.LLVMPositionBuilderAtEnd(b, cond_bb);
+                const written_cur = llvm.LLVMBuildLoad2(b, i64_t, written_ptr, "written_cur");
+                const cur_ptr = llvm.LLVMBuildLoad2(b, ptr_t, cur_ptr_slot, "cur_ptr");
+                const remaining = llvm.LLVMBuildSub(b, llvm.LLVMGetParam(func, 2), written_cur, "remaining");
+                const has_rem = llvm.LLVMBuildICmp(b, llvm.LLVMIntSGT, remaining, c0_64, "has_rem");
+                _ = llvm.LLVMBuildCondBr(b, has_rem, poll_bb, exit_bb);
+
+                // pollfd: { int fd; short events; short revents } (8 bytes LE).
+                // POLLOUT = 0x004.
+                llvm.LLVMPositionBuilderAtEnd(b, poll_bb);
+                const pfd = llvm.LLVMBuildArrayAlloca(b, i8_t, llvm.LLVMConstInt(i64_t, 8, 0), "pfd");
+                var pfd_0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 0, 0)};
+                const pfd_fd = llvm.LLVMBuildGEP2(b, i8_t, pfd, &pfd_0, 1, "pfd_fd");
+                _ = llvm.LLVMBuildStore(b, fd32, llvm.LLVMBuildBitCast(b, pfd_fd, llvm.LLVMPointerType(i32_t, 0), "pfd_fd_i32"));
+                var pfd_4 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 4, 0)};
+                const pfd_ev = llvm.LLVMBuildGEP2(b, i8_t, pfd, &pfd_4, 1, "pfd_ev");
+                _ = llvm.LLVMBuildStore(b, llvm.LLVMConstInt(i32_t, 4, 0), llvm.LLVMBuildBitCast(b, pfd_ev, llvm.LLVMPointerType(i32_t, 0), "pfd_ev_i32"));
+                var poll_args = [_]llvm.LLVMValueRef{ pfd, c1_64, neg1_32 };
+                const pr = llvm.LLVMBuildCall2(b, poll_ft, poll_f, &poll_args, 3, "pollres");
+                const pr_neg = llvm.LLVMBuildICmp(b, llvm.LLVMIntSLT, pr, c0_32, "poll_neg");
+                _ = llvm.LLVMBuildStore(b, llvm.LLVMBuildSExt(b, pr, i64_t, "poll_err"), err_slot);
+                _ = llvm.LLVMBuildCondBr(b, pr_neg, fail_bb, body_bb);
+
+                llvm.LLVMPositionBuilderAtEnd(b, body_bb);
+                var w_args = [_]llvm.LLVMValueRef{ fd32, cur_ptr, remaining };
                 const res = llvm.LLVMBuildCall2(b, write_ft, write_f, &w_args, 3, "nwritten");
-                _ = llvm.LLVMBuildRet(b, res);
+                _ = llvm.LLVMBuildStore(b, res, err_slot);
+                const res_pos = llvm.LLVMBuildICmp(b, llvm.LLVMIntSGT, res, c0_64, "nwritten_pos");
+                _ = llvm.LLVMBuildCondBr(b, res_pos, adv_bb, fail_bb);
+
+                llvm.LLVMPositionBuilderAtEnd(b, adv_bb);
+                const new_written = llvm.LLVMBuildAdd(b, written_cur, res, "written_adv");
+                _ = llvm.LLVMBuildStore(b, new_written, written_ptr);
+                var adv_idx = [_]llvm.LLVMValueRef{res};
+                const next_ptr = llvm.LLVMBuildGEP2(b, i8_t, cur_ptr, &adv_idx, 1, "ptr_adv");
+                _ = llvm.LLVMBuildStore(b, next_ptr, cur_ptr_slot);
+                _ = llvm.LLVMBuildBr(b, cond_bb);
+
+                llvm.LLVMPositionBuilderAtEnd(b, exit_bb);
+                _ = llvm.LLVMBuildRet(b, written_cur);
+
+                llvm.LLVMPositionBuilderAtEnd(b, fail_bb);
+                const err_val = llvm.LLVMBuildLoad2(b, i64_t, err_slot, "err_val");
+                _ = llvm.LLVMBuildRet(b, err_val);
             }
         }
 
