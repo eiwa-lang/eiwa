@@ -3207,6 +3207,12 @@ pub const LLVMEmitter = struct {
     /// struct, or a return-type mismatch without raising an error). The stub
     /// keeps the module verifiable for the JIT/linker.
     fn emitFunctionBodyOrStub(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, fname: []const u8, is_object_method: bool) void {
+        // Record the lambda counter so lambdas emitted while building this
+        // body can be cleaned up if the emission fails: the partial body is
+        // discarded, so they are orphaned and often malformed (unterminated
+        // blocks) — leaving them in the module crashes LLVM codegen
+        // (prepareDwarfEH) instead of producing a stubbed binary.
+        const lam_counter_before = expression.currentLambdaCounter();
         var emitted_ok = true;
         self.emitFunctionBody(mod, func_node, is_object_method) catch |err| {
             if (verbose) std.debug.print("LLVM Emitter Error in {s}: {}\n", .{ fname, err });
@@ -3224,6 +3230,20 @@ pub const LLVMEmitter = struct {
             }
         }
         self.emitFunctionStub(mod, fname) catch {};
+        // Delete lambdas orphaned by the failed/invalid body emission. Stub
+        // emission already removed the parent's partial blocks, so the
+        // lambdas have no remaining uses. Forward order (outermost first):
+        // a nested lambda's only use lives in its parent's blocks, and
+        // deleting a function with live uses would assert in LLVM.
+        var lam_n = lam_counter_before;
+        const lam_counter_end = expression.currentLambdaCounter();
+        while (lam_n < lam_counter_end) : (lam_n += 1) {
+            const lam_name = std.fmt.allocPrint(self.allocator, "lambda_anon_{d}\x00", .{lam_n}) catch break;
+            defer self.allocator.free(lam_name);
+            if (llvm.LLVMGetNamedFunction(mod, lam_name.ptr)) |lam_f| {
+                llvm.LLVMDeleteFunction(lam_f);
+            }
+        }
     }
 
     /// Removes any partially-emitted basic blocks from a function whose body

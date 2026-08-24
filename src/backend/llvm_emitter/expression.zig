@@ -81,7 +81,20 @@ fn collectCapturesLLVM(
     switch (node.data) {
         .identifier => |i| {
             if (locals.contains(i.name)) return;
-            if (i.is_class_property) return;
+            if (i.is_class_property) {
+                // Class properties are reached through `this` at emission time
+                // (see the is_prop path in emitExpression). Capture the `this`
+                // pointer itself so lambdas inside methods can resolve them —
+                // otherwise body emission fails with `this` missing from the
+                // scope. Receiver lambdas already re-stack `this` from the
+                // receiver parameter, so it stays a local there.
+                if (locals.contains("this")) return;
+                for (captures.items) |cap| {
+                    if (std.mem.eql(u8, cap.name, "this")) return;
+                }
+                try captures.append(.{ .name = "this", .llvm_type = llvm.LLVMPointerTypeInContext(ctx, 0), .is_boxed = false });
+                return;
+            }
             const name = i.resolved_c_name orelse i.name;
             // Skip global functions and type names
             const name_z = try std.heap.page_allocator.dupeZ(u8, name);
@@ -202,6 +215,13 @@ fn lambdaCounter() usize {
     return c;
 }
 
+/// Current value of the lambda naming counter. Used by the stub fallback in
+/// core.zig to find (and delete) lambda functions orphaned by a failed body
+/// emission.
+pub fn currentLambdaCounter() usize {
+    return lambda_counter_val;
+}
+
 pub fn emitExpression(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -308,7 +328,10 @@ pub fn emitExpression(
             };
             var struct_idx = [_]llvm.LLVMValueRef{
                 llvm.LLVMConstInt(i64_type, 0, 0),
-                llvm.LLVMConstInt(i64_type, 1, 0),
+                // Struct field indices in a GEP must be i32 (LangRef) — an i64
+                // field index produces IR the verifier rejects ("invalid
+                // getelementptr indices").
+                llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(ctx), 1, 0),
             };
             const data_arr_ptr = llvm.LLVMConstGEP2(str_struct_t, g, &struct_idx, 2);
             var zero_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};

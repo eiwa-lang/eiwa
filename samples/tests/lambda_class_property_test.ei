@@ -1,0 +1,47 @@
+import { assert } from "std.core"
+
+type Greeter(val prefix: String) {
+    fun greet(name: String): String {
+        val build = { prefix + ", " + name }
+        return build()
+    }
+}
+
+type Counter(var count: Int = 0) {
+    fun snapshot(extra: Int): Int {
+        val read = { count + extra }
+        return read()
+    }
+}
+
+fun applyString(block: () -> String): String {
+    return block()
+}
+
+type Templater(val header: String) {
+    fun render(title: String): String {
+        return applyString { header + " | " + title }
+    }
+}
+
+test "lambdas: capture implicit this to access val class property" {
+    val g = Greeter("Hello")
+    assert(g.greet("Eiwa") == "Hello, Eiwa")
+}
+
+test "lambdas: capture implicit this to access var class property" {
+    val c = Counter(10)
+    assert(c.snapshot(5) == 15)
+}
+
+test "lambdas: access class property inside lambda passed to higher-order function" {
+    val t = Templater("Site")
+    assert(t.render("Home") == "Site | Home")
+}
+
+fun main(): Void {
+    val g = Greeter("Hello")
+    echo(g.greet("Eiwa"))
+    assert(g.greet("Eiwa") == "Hello, Eiwa")
+    echo("PASS: lambda implicit this capture test")
+}
