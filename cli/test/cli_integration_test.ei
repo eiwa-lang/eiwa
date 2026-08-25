@@ -143,7 +143,10 @@ test "cli: freeze, update, --frozen, build, run and test with a local git depend
     qexec("rm -rf " + dir + " " + repo)
 
     assert(qexec("mkdir -p " + repo + "/src") == 0)
-    assert(qexec("git -C " + repo + " init -q") == 0)
+    // --initial-branch=main: without it, `git init` uses the runner's default
+    // branch (Apple CLT git defaults to main, but stock Ubuntu git defaults to
+    // master) — and "add <repo> --branch main" would then resolve an empty ref.
+    assert(qexec("git -C " + repo + " init -q --initial-branch=main") == 0)
     File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.1.0\n")
     File.write(repo + "/src/dep.ei", "fun hello() {\n    println(\"dep\")\n}\n")
     assert(qexec("git -C " + repo + " add -A") == 0)
