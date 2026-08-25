@@ -33,7 +33,7 @@ type CliArgs(
 // Options that consume the next argument as their value.
 fun isValueOption(arg: String): Bool {
     return arg == "-o" || arg == "--branch" || arg == "--tag" || arg == "--commit" ||
-        arg == "--module-path"
+        arg == "--module-path" || arg == "--github" || arg == "--gitlab" || arg == "--git"
 }
 
 fun optionValue(args: CliArgs, key: String): String? {
@@ -567,29 +567,127 @@ fun initCommand() {
     println("Initialized project '" + name + "'")
 }
 
+fun extractRepoName(urlOrPath: String): String {
+    var s = urlOrPath
+    if (endsWith(s, ".git")) {
+        s = s.substring(0, s.length - 4)
+    }
+    var slash = -1
+    var i = 0
+    while (i < s.length) {
+        if (s.substring(i, i + 1) == "/") {
+            slash = i
+        }
+        i = i + 1
+    }
+    if (slash != -1) {
+        return s.substring(slash + 1, s.length)
+    }
+    return s
+}
+
+fun parseDepSpec(rawSpec: String, explicitName: String?): Dependency {
+    var spec = rawSpec
+    var ref = ""
+    val atIdx = spec.indexOf("@")
+    if (atIdx != -1) {
+        ref = spec.substring(atIdx + 1, spec.length)
+        spec = spec.substring(0, atIdx)
+    }
+
+    var depName = ""
+    var github = ""
+    var gitlab = ""
+    var gitUrl = ""
+
+    if (startsWith(spec, "github:")) {
+        github = spec.substring(7, spec.length)
+        depName = extractRepoName(github)
+    } else if (startsWith(spec, "gitlab:")) {
+        gitlab = spec.substring(7, spec.length)
+        depName = extractRepoName(gitlab)
+    } else if (startsWith(spec, "http://") || startsWith(spec, "https://") || startsWith(spec, "git@")) {
+        gitUrl = spec
+        depName = extractRepoName(gitUrl)
+    } else if (spec.indexOf("/") != -1) {
+        github = spec
+        depName = extractRepoName(github)
+    } else {
+        github = "eiwa-lang/" + spec
+        depName = spec
+    }
+
+    if (explicitName != null && explicitName != "") {
+        depName = explicitName!!
+    }
+
+    val dep = Dependency(depName, github, gitlab, gitUrl)
+    if (ref != "") {
+        if (startsWith(ref, "v") || startsWith(ref, "0") || startsWith(ref, "1") || startsWith(ref, "2") || startsWith(ref, "3") || startsWith(ref, "4") || startsWith(ref, "5") || startsWith(ref, "6") || startsWith(ref, "7") || startsWith(ref, "8") || startsWith(ref, "9")) {
+            dep.tag = ref
+        } else {
+            dep.branch = ref
+        }
+    } else {
+        dep.branch = "main"
+    }
+
+    return dep
+}
+
 fun addCommand() {
     val args = parseArgs()
-    val nameOpt = positional(args, 0)
-    val srcOpt = positional(args, 1)
-    if (nameOpt == null || srcOpt == null) {
-        println("Usage: eiwa add <name> <source> [--branch <b> | --tag <t> | --commit <c>]")
-        println("  source: github:<org>/<repo>, gitlab:<org>/<repo> or a full git URL")
+    val firstOpt = positional(args, 0)
+    if (firstOpt == null) {
+        println("Usage: eiwa add <package[@version]> [source] [--branch <b> | --tag <t> | --commit <c>]")
+        println("Examples:")
+        println("  eiwa add eiwa-lang/arest")
+        println("  eiwa add eiwa-lang/arest@v1.0.0")
+        println("  eiwa add eiwa-lang/arest@main")
+        println("  eiwa add gitlab:org/repo@v2.0")
+        println("  eiwa add custom_name eiwa-lang/arest@v1.0.0")
         exit(1)
     }
     if (File.exists("eiwa.yaml") == false) {
         println("Error: eiwa.yaml not found. Run 'eiwa init' first.")
         exit(1)
     }
-    val name = nameOpt!!
-    val src = srcOpt!!
 
-    val dep = Dependency(name)
-    if (startsWith(src, "github:")) {
-        dep.github = src.substring(7, src.length)
-    } else if (startsWith(src, "gitlab:")) {
-        dep.gitlab = src.substring(7, src.length)
+    val first = firstOpt!!
+    val secondOpt = positional(args, 1)
+
+    var dep = Dependency("")
+    if (secondOpt != null) {
+        dep = parseDepSpec(secondOpt!!, first)
     } else {
-        dep.git = src
+        val eqIdx = first.indexOf("=")
+        if (eqIdx != -1) {
+            val alias = first.substring(0, eqIdx)
+            val spec = first.substring(eqIdx + 1, first.length)
+            dep = parseDepSpec(spec, alias)
+        } else {
+            dep = parseDepSpec(first, null)
+        }
+    }
+
+    // Flag overrides if supplied
+    val githubOpt = optionValue(args, "--github")
+    val gitlabOpt = optionValue(args, "--gitlab")
+    val gitOpt = optionValue(args, "--git")
+    if (githubOpt != null) {
+        dep.github = githubOpt!!
+        dep.gitlab = ""
+        dep.git = ""
+    }
+    if (gitlabOpt != null) {
+        dep.gitlab = gitlabOpt!!
+        dep.github = ""
+        dep.git = ""
+    }
+    if (gitOpt != null) {
+        dep.git = gitOpt!!
+        dep.github = ""
+        dep.gitlab = ""
     }
 
     val branchOpt = optionValue(args, "--branch")
@@ -597,9 +695,11 @@ fun addCommand() {
     val commitOpt = optionValue(args, "--commit")
     if (branchOpt != null) {
         dep.branch = branchOpt!!
+        dep.tag = ""
     }
     if (tagOpt != null) {
         dep.tag = tagOpt!!
+        dep.branch = ""
     }
     if (commitOpt != null) {
         dep.commit = commitOpt!!
@@ -609,14 +709,14 @@ fun addCommand() {
     val existing = parseManifest(content)
     var j = 0
     while (j < existing.size()) {
-        if (existing[j].name == name) {
-            println("Error: dependency already exists: " + name)
+        if (existing[j].name == dep.name) {
+            println("Error: dependency already exists: " + dep.name)
             exit(1)
         }
         j = j + 1
     }
 
-    var entry = "  " + name + ":\n" + serializeSource(dep)
+    var entry = "  " + dep.name + ":\n" + serializeSource(dep)
     if (dep.branch != "") {
         entry = entry + "    branch: " + dep.branch + "\n"
     }
@@ -637,7 +737,7 @@ fun addCommand() {
         updated = updated + "\ndependencies:\n" + entry
     }
     File.write("eiwa.yaml", updated)
-    println("Added " + name)
+    println("Added " + dep.name)
 }
 
 fun removeCommand() {
