@@ -552,3 +552,36 @@ Elimina a classe inteira de bugs de raízes GC não escaneadas sem a complexidad
 **Razão:**
 Garante que todo erro de código do usuário seja diagnosticado no frontend com apontamento visual exato da linha e coluna, elimina crashes imprevisíveis por execução de IR inválido e eleva a qualidade da experiência do desenvolvedor (DX) aos padrões de compiladores de ponta.
 
+## ADR 50: Concatenação de `String` com Primitivos e Tipos `Stringable`
+**Status:** Aprovado / Implementado
+**Data:** Agosto 2026
+
+**Contexto:**
+1. A assinatura do operador de concatenação em `type String` (`src/std/core.ei`) estava restrita exclusivamente a `operator fun plus(other: String): String`.
+2. Como resultado, tentar concatenar uma `String` com tipos primitivos (`Int`, `Double`, `Bool`) ou objetos de domínio que implementam o contrato `Stringable` (ex.: `"Items: " + count`) resultava em erro de compilação ou exigia a chamada manual e verbosa de `.toString()` (ex.: `"Items: " + count.toString()`).
+
+**Decisão:**
+1. **Assinatura Baseada no Contrato `Stringable` na Stdlib (`src/std/core.ei`):**
+   - Atualizar a declaração do operador em `type String` para:
+     ```kotlin
+     operator fun plus(other: Stringable): String {
+         val totalLen = this.length + other.toString().length
+         val buf = Standard.gcMalloc(totalLen + 1)
+         Standard.sprintfInt(buf, "%s%s".ptr, this.ptr, other.toString().ptr)
+         return String(buf, totalLen)
+     }
+     ```
+   - Como `Int`, `Double`, `Bool`, `String` e tipos de usuário com `implement fun toString()` conformam ao contrato `Stringable`, a validação do TypeChecker aceita todos esses tipos naturalmente.
+2. **Emissão de Código e Coerção no Backend LLVM (`src/backend/llvm_emitter/expression.zig`):**
+   - Implementação de `emitValueToString` para tratar a conversão eficiente de operandos não-string em tempo de emissão:
+     - `Int`: formatação via `sprintf("%lld")` em buffer alocado pelo GC.
+     - `Bool`: seleção direta das constantes de string `"true"` e `"false"`.
+     - `Double`: formatação via `sprintf("%g")` em buffer alocado pelo GC.
+     - `Custom`: despacho para o método `{Type}_toString` correspondente.
+     - Fallback dinâmico: chamada de `eiwa_to_string`.
+   - Marcação de reachability em `collectCallees` (`src/backend/llvm_emitter/core.zig`) para garantir que os métodos `toString` dos operandos não sejam descartados pelo tree-shaking.
+
+**Razão:**
+Entrega ergonomia moderna de concatenação de strings (estilo Kotlin/Swift/TypeScript), mantendo a estrita segurança de tipos no frontend através do contrato `Stringable` e performance nativa otimizada no backend LLVM sem overhead desnecessário.
+
+

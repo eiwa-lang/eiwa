@@ -189,6 +189,32 @@ fun main() {
 
 The compiler's Type Checker automatically calculates the correct length of string literals in bytes after resolving these escape sequences, ensuring complete compatibility with standard library functions and C runtime operations.
 
+### 4.1 String Concatenation (`+`)
+
+Strings can be directly concatenated with other `String`s, any primitive type (`Int`, `Double`, `Bool`), or any custom `type`/`object` implementing the `Stringable` contract:
+
+```kotlin
+type User(val id: Int, val name: String) : Stringable {
+    implement fun toString(): String = "User(id=" + id + ", name=" + name + ")"
+}
+
+fun main() {
+    val count: Int = 10
+    val price: Double = 19.99
+    val inStock: Bool = true
+    val user = User(1, "Alice")
+
+    // Automatic string coercion via Stringable
+    val label = "Items: " + count
+    val msg = "Total: $" + price + " (Available: " + inStock + ")"
+    val info = "Customer: " + user
+    
+    assert(label == "Items: 10")
+    assert(msg == "Total: $19.99 (Available: true)")
+    assert(info == "Customer: User(id=1, name=Alice)")
+}
+```
+
 ---
 
 ## 5. Union Types & Compile-Time Null Safety

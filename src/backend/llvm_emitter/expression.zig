@@ -1197,19 +1197,17 @@ pub fn emitExpression(
             if (bin.op == .plus and (isStringOperand(bin.left) or isStringOperand(bin.right))) {
                 const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
                 const i64_t = llvm.LLVMInt64TypeInContext(ctx);
-                const to_str_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_to_string").?;
-                const to_str_type = llvm.LLVMGlobalGetValueType(to_str_fn);
 
-                left_val = coerceArg(builder, left_val, ptr_t);
                 if (!isStringOperand(bin.left)) {
-                    var ts_args = [_]llvm.LLVMValueRef{left_val};
-                    left_val = llvm.LLVMBuildCall2(builder, to_str_type, to_str_fn, &ts_args, 1, "l_str");
+                    left_val = try emitValueToString(ctx, mod, builder, left_val, bin.left.resolved_type);
+                } else {
+                    left_val = coerceArg(builder, left_val, ptr_t);
                 }
 
-                right_val = coerceArg(builder, right_val, ptr_t);
                 if (!isStringOperand(bin.right)) {
-                    var ts_args = [_]llvm.LLVMValueRef{right_val};
-                    right_val = llvm.LLVMBuildCall2(builder, to_str_type, to_str_fn, &ts_args, 1, "r_str");
+                    right_val = try emitValueToString(ctx, mod, builder, right_val, bin.right.resolved_type);
+                } else {
+                    right_val = coerceArg(builder, right_val, ptr_t);
                 }
 
                 const empty_str = llvm.LLVMBuildGlobalStringPtr(builder, "", "empty_str");
@@ -2338,12 +2336,10 @@ pub fn emitExpression(
                             left_val = coerceArg(builder, left_val, ptr_t);
 
                             var right_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
-                            right_val = coerceArg(builder, right_val, ptr_t);
                             if (!isStringOperand(call.arguments[0])) {
-                                const to_str_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_to_string").?;
-                                const to_str_type = llvm.LLVMGlobalGetValueType(to_str_fn);
-                                var ts_args = [_]llvm.LLVMValueRef{right_val};
-                                right_val = llvm.LLVMBuildCall2(builder, to_str_type, to_str_fn, &ts_args, 1, "r_str");
+                                right_val = try emitValueToString(ctx, mod, builder, right_val, call.arguments[0].resolved_type);
+                            } else {
+                                right_val = coerceArg(builder, right_val, ptr_t);
                             }
 
                             const empty_str = llvm.LLVMBuildGlobalStringPtr(builder, "", "empty_str");
@@ -4305,6 +4301,99 @@ fn wrapStringWithHeader(
     return dst;
 }
 
+pub fn emitValueToString(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    val: llvm.LLVMValueRef,
+    resolved_type: ?*const ts.EiwaType,
+) !llvm.LLVMValueRef {
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+
+    if (resolved_type) |rt| {
+        const base_rt = ts.extractBaseType(rt);
+        switch (base_rt.*) {
+            .Int => {
+                const gc_func = core.getHeapAllocFn(mod);
+                const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
+                const buf_size = llvm.LLVMConstInt(i64_t, 32, 0);
+                var gc_args = [_]llvm.LLVMValueRef{buf_size};
+                const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "int_str_buf");
+
+                const sprintf_func = llvm.LLVMGetNamedFunction(mod, "sprintf") orelse blk: {
+                    var ps = [_]llvm.LLVMTypeRef{ ptr_t, ptr_t };
+                    const ft = llvm.LLVMFunctionType(llvm.LLVMInt32TypeInContext(ctx), &ps, 2, 1);
+                    break :blk llvm.LLVMAddFunction(mod, "sprintf", ft);
+                };
+                const sprintf_type = llvm.LLVMGlobalGetValueType(sprintf_func);
+                const fmt = llvm.LLVMBuildGlobalStringPtr(builder, "%lld", "int_fmt");
+                const int_val = coerceArg(builder, val, i64_t);
+                var sprintf_args = [_]llvm.LLVMValueRef{ buf, fmt, int_val };
+                _ = llvm.LLVMBuildCall2(builder, sprintf_type, sprintf_func, &sprintf_args, 3, "sprintf_res");
+                return buf;
+            },
+            .Bool => {
+                const true_str = llvm.LLVMBuildGlobalStringPtr(builder, "true", "bool_str_true");
+                const false_str = llvm.LLVMBuildGlobalStringPtr(builder, "false", "bool_str_false");
+                const b_val = coerceArg(builder, val, llvm.LLVMInt1TypeInContext(ctx));
+                return llvm.LLVMBuildSelect(builder, b_val, true_str, false_str, "bool_tostr");
+            },
+            .Double => {
+                const gc_func = core.getHeapAllocFn(mod);
+                const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
+                const buf_size = llvm.LLVMConstInt(i64_t, 64, 0);
+                var gc_args = [_]llvm.LLVMValueRef{buf_size};
+                const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "double_str_buf");
+
+                const sprintf_func = llvm.LLVMGetNamedFunction(mod, "sprintf") orelse blk: {
+                    var ps = [_]llvm.LLVMTypeRef{ ptr_t, ptr_t };
+                    const ft = llvm.LLVMFunctionType(llvm.LLVMInt32TypeInContext(ctx), &ps, 2, 1);
+                    break :blk llvm.LLVMAddFunction(mod, "sprintf", ft);
+                };
+                const sprintf_type = llvm.LLVMGlobalGetValueType(sprintf_func);
+                const dfmt = llvm.LLVMBuildGlobalStringPtr(builder, "%g", "double_fmt");
+                const d_val = coerceArg(builder, val, llvm.LLVMDoubleTypeInContext(ctx));
+                var sprintf_args = [_]llvm.LLVMValueRef{ buf, dfmt, d_val };
+                _ = llvm.LLVMBuildCall2(builder, sprintf_type, sprintf_func, &sprintf_args, 3, "sprintf_res");
+                return buf;
+            },
+            .Custom => |name| {
+                var buf_name: [128]u8 = undefined;
+                var to_str_fn: ?llvm.LLVMValueRef = null;
+                const to_str_mangled = std.fmt.bufPrint(&buf_name, "{s}_toString\x00", .{name}) catch "";
+                if (to_str_mangled.len > 0) {
+                    to_str_fn = llvm.LLVMGetNamedFunction(mod, to_str_mangled.ptr);
+                }
+                if (to_str_fn == null) {
+                    var fn_it = llvm.LLVMGetFirstFunction(mod);
+                    while (fn_it) |curr_fn| : (fn_it = llvm.LLVMGetNextFunction(curr_fn)) {
+                        const fn_name_c = llvm.LLVMGetValueName(curr_fn);
+                        const fn_name_s = std.mem.span(fn_name_c);
+                        if (std.mem.endsWith(u8, fn_name_s, "_toString") and (std.mem.indexOf(u8, fn_name_s, name) != null or std.mem.eql(u8, fn_name_s, "toString"))) {
+                            to_str_fn = curr_fn;
+                            break;
+                        }
+                    }
+                }
+                if (to_str_fn) |fn_val| {
+                    const to_str_type = llvm.LLVMGlobalGetValueType(fn_val);
+                    const self_ptr = coerceArg(builder, val, ptr_t);
+                    var args = [_]llvm.LLVMValueRef{self_ptr};
+                    return llvm.LLVMBuildCall2(builder, to_str_type, fn_val, &args, 1, "to_str_call");
+                }
+            },
+            else => {},
+        }
+    }
+
+    const to_str_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_to_string").?;
+    const to_str_type = llvm.LLVMGlobalGetValueType(to_str_fn);
+    const p_val = coerceArg(builder, val, ptr_t);
+    var ts_args = [_]llvm.LLVMValueRef{p_val};
+    return llvm.LLVMBuildCall2(builder, to_str_type, to_str_fn, &ts_args, 1, "ts_fallback");
+}
+
 pub fn coerceArg(
     builder: llvm.LLVMBuilderRef,
     arg_val: llvm.LLVMValueRef,
@@ -4358,6 +4447,16 @@ pub fn coerceArg(
     }
     if (arg_kind == llvm.LLVMIntegerTypeKind and param_kind == llvm.LLVMPointerTypeKind) {
         return llvm.LLVMBuildIntToPtr(builder, arg_val, param_type, "box_arg");
+    }
+    if (arg_kind == llvm.LLVMDoubleTypeKind and param_kind == llvm.LLVMPointerTypeKind) {
+        const i64_t = llvm.LLVMInt64TypeInContext(llvm.LLVMGetTypeContext(param_type));
+        const bitcasted = llvm.LLVMBuildBitCast(builder, arg_val, i64_t, "dbl_to_i64");
+        return llvm.LLVMBuildIntToPtr(builder, bitcasted, param_type, "box_dbl");
+    }
+    if (arg_kind == llvm.LLVMPointerTypeKind and param_kind == llvm.LLVMDoubleTypeKind) {
+        const i64_t = llvm.LLVMInt64TypeInContext(llvm.LLVMGetTypeContext(param_type));
+        const int_val = llvm.LLVMBuildPtrToInt(builder, arg_val, i64_t, "unbox_dbl_i64");
+        return llvm.LLVMBuildBitCast(builder, int_val, param_type, "unbox_dbl");
     }
     if (arg_kind == llvm.LLVMPointerTypeKind and param_kind == llvm.LLVMIntegerTypeKind) {
         return llvm.LLVMBuildPtrToInt(builder, arg_val, param_type, "unbox_arg");

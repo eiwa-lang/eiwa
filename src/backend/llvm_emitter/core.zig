@@ -1452,6 +1452,24 @@ pub const LLVMEmitter = struct {
             .binary_expr => |b| {
                 try self.collectCallees(b.left, reachable, worklist);
                 try self.collectCallees(b.right, reachable, worklist);
+                if (b.op == .plus) {
+                    if (b.left.resolved_type) |lt| {
+                        const l_base = ts.extractBaseType(lt);
+                        if (l_base.* == .Custom) {
+                            const buf = try std.fmt.allocPrint(self.allocator, "{s}_toString", .{l_base.Custom});
+                            try self.markReachable(buf, reachable, worklist);
+                            self.allocator.free(buf);
+                        }
+                    }
+                    if (b.right.resolved_type) |rt| {
+                        const r_base = ts.extractBaseType(rt);
+                        if (r_base.* == .Custom) {
+                            const buf = try std.fmt.allocPrint(self.allocator, "{s}_toString", .{r_base.Custom});
+                            try self.markReachable(buf, reachable, worklist);
+                            self.allocator.free(buf);
+                        }
+                    }
+                }
             },
             .unary_expr => |u| try self.collectCallees(u.operand, reachable, worklist),
             .ternary_expr => |t| {

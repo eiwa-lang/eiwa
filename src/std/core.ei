@@ -166,10 +166,10 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
     operator fun equals(other: String): Bool {
         return NativeString.strcmp(this.ptr, other.ptr) == 0
     }
-    operator fun plus(other: String): String {
-        val totalLen = this.length + other.length
+    operator fun plus(other: Stringable): String {
+        val totalLen = this.length + other.toString().length
         val buf = Standard.gcMalloc(totalLen + 1)
-        Standard.sprintfInt(buf, "%s%s".ptr, this.ptr, other.ptr)
+        Standard.sprintfInt(buf, "%s%s".ptr, this.ptr, other.toString().ptr)
         return String(buf, totalLen)
     }
 

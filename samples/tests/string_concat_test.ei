@@ -1,0 +1,64 @@
+import { assert } from "std.core"
+
+type Item(val name: String, val price: Double) : Stringable {
+    implement fun toString(): String {
+        return name + " ($" + price + ")"
+    }
+}
+
+type User(val id: Int, val name: String, val active: Bool) : Stringable {
+    implement fun toString(): String {
+        return "User(id=" + id + ", name=" + name + ", active=" + active + ")"
+    }
+}
+
+test "should concatenate String with Int" {
+    val s = "Items: "
+    val count: Int = 10
+    val res = s + count
+    assert(res == "Items: 10")
+    
+    val resMethod = s.plus(42)
+    assert(resMethod == "Items: 42")
+}
+
+test "should concatenate String with Double" {
+    val s = "Temperature: "
+    val temp: Double = 36.6
+    val res = s + temp
+    assert(res == "Temperature: 36.6")
+
+    val resMethod = s.plus(0.5)
+    assert(resMethod == "Temperature: 0.5")
+}
+
+test "should concatenate String with Bool" {
+    val s = "Enabled: "
+    val isEnabled: Bool = true
+    val res = s + isEnabled
+    assert(res == "Enabled: true")
+
+    val resFalse = s + false
+    assert(resFalse == "Enabled: false")
+}
+
+test "should concatenate String with custom Stringable type" {
+    val item = Item("Apple", 1.5)
+    val user = User(1, "Bob", true)
+
+    val itemStr = "Product: " + item
+    assert(itemStr == "Product: Apple ($1.5)")
+
+    val userStr = "Account: " + user
+    assert(userStr == "Account: User(id=1, name=Bob, active=true)")
+}
+
+test "should support chained concatenation with multiple primitive and object types" {
+    val name = "Alice"
+    val age: Int = 28
+    val score: Double = 99.5
+    val isPro: Bool = true
+
+    val profile = "Name: " + name + " | Age: " + age + " | Score: " + score + " | Pro: " + isPro
+    assert(profile == "Name: Alice | Age: 28 | Score: 99.5 | Pro: true")
+}
