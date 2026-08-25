@@ -2332,21 +2332,33 @@ pub fn emitExpression(
                             (obj_base == .Custom and std.mem.eql(u8, obj_base.Custom, "core_String"));
                         if (is_string_plus and call.arguments.len >= 1) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                            const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
 
-                            const left_val = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
-                            const right_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                            var left_val = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            left_val = coerceArg(builder, left_val, ptr_t);
+
+                            var right_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                            right_val = coerceArg(builder, right_val, ptr_t);
+                            if (!isStringOperand(call.arguments[0])) {
+                                const to_str_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_to_string").?;
+                                const to_str_type = llvm.LLVMGlobalGetValueType(to_str_fn);
+                                var ts_args = [_]llvm.LLVMValueRef{right_val};
+                                right_val = llvm.LLVMBuildCall2(builder, to_str_type, to_str_fn, &ts_args, 1, "r_str");
+                            }
+
+                            const empty_str = llvm.LLVMBuildGlobalStringPtr(builder, "", "empty_str");
+                            const left_safe = llvm.LLVMBuildSelect(builder, llvm.LLVMBuildIsNull(builder, left_val, "l_null"), empty_str, left_val, "l_safe");
+                            const right_safe = llvm.LLVMBuildSelect(builder, llvm.LLVMBuildIsNull(builder, right_val, "r_null"), empty_str, right_val, "r_safe");
 
                             const strlen_func = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
-                                const p = llvm.LLVMPointerTypeInContext(ctx, 0);
-                                const i64_t = llvm.LLVMInt64TypeInContext(ctx);
-                                var ps = [_]llvm.LLVMTypeRef{p};
-                                const ft = llvm.LLVMFunctionType(i64_t, &ps, 1, 0);
+                                var ps = [_]llvm.LLVMTypeRef{ptr_t};
+                                const ft = llvm.LLVMFunctionType(i64_type, &ps, 1, 0);
                                 break :blk llvm.LLVMAddFunction(mod, "strlen", ft);
                             };
                             const strlen_type = llvm.LLVMGlobalGetValueType(strlen_func);
-                            var sl_args = [_]llvm.LLVMValueRef{left_val};
+                            var sl_args = [_]llvm.LLVMValueRef{left_safe};
                             const len_a = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sl_args, 1, "strlen_a");
-                            var sr_args = [_]llvm.LLVMValueRef{right_val};
+                            var sr_args = [_]llvm.LLVMValueRef{right_safe};
                             const len_b = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sr_args, 1, "strlen_b");
                             const total = llvm.LLVMBuildAdd(builder, len_a, len_b, "concat_len");
                             // 8-byte length header + data + NUL, padded to keep the
@@ -2368,23 +2380,21 @@ pub fn emitExpression(
                             const data_ptr = llvm.LLVMBuildGEP2(builder, i8_type, buf, &data_idx, 1, "concat_data");
 
                             const strcpy_fn = llvm.LLVMGetNamedFunction(mod, "strcpy") orelse blk: {
-                                const p = llvm.LLVMPointerTypeInContext(ctx, 0);
-                                var ps = [_]llvm.LLVMTypeRef{ p, p };
-                                const ft = llvm.LLVMFunctionType(p, &ps, 2, 0);
+                                var ps = [_]llvm.LLVMTypeRef{ ptr_t, ptr_t };
+                                const ft = llvm.LLVMFunctionType(ptr_t, &ps, 2, 0);
                                 break :blk llvm.LLVMAddFunction(mod, "strcpy", ft);
                             };
                             const strcpy_type = llvm.LLVMGlobalGetValueType(strcpy_fn);
-                            var sc_args = [_]llvm.LLVMValueRef{ data_ptr, left_val };
+                            var sc_args = [_]llvm.LLVMValueRef{ data_ptr, left_safe };
                             _ = llvm.LLVMBuildCall2(builder, strcpy_type, strcpy_fn, &sc_args, 2, "concat_cpy");
 
                             const strcat_fn = llvm.LLVMGetNamedFunction(mod, "strcat") orelse blk: {
-                                const p = llvm.LLVMPointerTypeInContext(ctx, 0);
-                                var ps = [_]llvm.LLVMTypeRef{ p, p };
-                                const ft = llvm.LLVMFunctionType(p, &ps, 2, 0);
+                                var ps = [_]llvm.LLVMTypeRef{ ptr_t, ptr_t };
+                                const ft = llvm.LLVMFunctionType(ptr_t, &ps, 2, 0);
                                 break :blk llvm.LLVMAddFunction(mod, "strcat", ft);
                             };
                             const strcat_type = llvm.LLVMGlobalGetValueType(strcat_fn);
-                            var cat_args = [_]llvm.LLVMValueRef{ data_ptr, right_val };
+                            var cat_args = [_]llvm.LLVMValueRef{ data_ptr, right_safe };
                             _ = llvm.LLVMBuildCall2(builder, strcat_type, strcat_fn, &cat_args, 2, "concat_cat");
 
                             return data_ptr;

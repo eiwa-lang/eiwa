@@ -4,6 +4,7 @@ const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const parser_mod = @import("../../frontend/parser/core.zig");
 const type_system = @import("../type_system.zig");
+const diagnostics = @import("../diagnostics.zig");
 
 pub const ASTNode = ast.ASTNode;
 pub const EiwaType = type_system.EiwaType;
@@ -271,33 +272,24 @@ fn core_makeListType(self: *TypeChecker, elem: *const EiwaType, line: usize, col
 }
 
 fn core_reportError(self: *TypeChecker, line: usize, column: usize, comptime message: []const u8, args: anytype) void {
-    std.debug.print("\n\x1b[31mError\x1b[0m in {s}:{}:{}:\n", .{ self.filename, line, column });
-    std.debug.print("REPORT_ERROR: " ++ message ++ "\n", args);
-
-    var current_line: usize = 1;
-    var start_idx: usize = 0;
-    var end_idx: usize = 0;
-
-    while (end_idx < self.source.len) : (end_idx += 1) {
-        if (self.source[end_idx] == '\n') {
-            if (current_line == line) break;
-            current_line += 1;
-            start_idx = end_idx + 1;
+    const cleaned_message = comptime blk: {
+        if (std.mem.startsWith(u8, message, "TypeError: ")) {
+            break :blk message["TypeError: ".len..];
+        } else if (std.mem.startsWith(u8, message, "Syntax Error: ")) {
+            break :blk message["Syntax Error: ".len..];
         }
-    }
-    if (end_idx > self.source.len) end_idx = self.source.len;
-
-    const line_str = self.source[start_idx..end_idx];
-    std.debug.print("    {s}\n", .{line_str});
-
-    std.debug.print("    ", .{});
-    var i: usize = 1;
-    while (i < column) : (i += 1) {
-        std.debug.print(" ", .{});
-    }
-    std.debug.print("\x1b[31m^-- ", .{});
-    std.debug.print(message, args);
-    std.debug.print("\x1b[0m\n\n", .{});
+        break :blk message;
+    };
+    diagnostics.printDiagnostic(
+        self.filename,
+        line,
+        column,
+        .err,
+        cleaned_message,
+        args,
+        self.source,
+        null,
+    );
 }
 
 fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!*EiwaType {

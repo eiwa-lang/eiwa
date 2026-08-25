@@ -3,6 +3,7 @@ const compat = @import("../../core/compat.zig");
 const ArrayList = compat.ArrayList;
 const ast = @import("../../core/ast.zig");
 const lexer = @import("../lexer.zig");
+const diagnostics = @import("../../core/diagnostics.zig");
 
 pub const Lexer = lexer.Lexer;
 pub const Token = ast.Token;
@@ -20,6 +21,7 @@ pub const Parser = struct {
     had_error: bool,
     suppress_errors: bool = false,
     last_r_brace_line: usize = 0,
+    filename: []const u8 = "input.ei",
 
     const expression_mod = @import("expression.zig");
     const statement_mod = @import("statement.zig");
@@ -314,33 +316,22 @@ fn core_advance(self: *Parser) void {
 
 fn core_reportLexerError(self: *Parser, line: usize, column: usize, comptime message: []const u8, args: anytype) void {
     if (!self.suppress_errors) {
-        std.debug.print("\n\x1b[31mError\x1b[0m at line {}, column {}:\n", .{ line, column });
-
-        var current_line: usize = 1;
-        var start_idx: usize = 0;
-        var end_idx: usize = 0;
-        const src = self.lexer.source;
-
-        while (end_idx < src.len) : (end_idx += 1) {
-            if (src[end_idx] == '\n') {
-                if (current_line == line) break;
-                current_line += 1;
-                start_idx = end_idx + 1;
+        const cleaned_message = comptime blk: {
+            if (std.mem.startsWith(u8, message, "Syntax Error: ")) {
+                break :blk message["Syntax Error: ".len..];
             }
-        }
-        if (end_idx > src.len) end_idx = src.len;
-
-        const line_str = src[start_idx..end_idx];
-        std.debug.print("    {s}\n", .{line_str});
-
-        std.debug.print("    ", .{});
-        var i: usize = 1;
-        while (i < column) : (i += 1) {
-            std.debug.print(" ", .{});
-        }
-        std.debug.print("\x1b[31m^-- ", .{});
-        std.debug.print(message, args);
-        std.debug.print("\x1b[0m\n\n", .{});
+            break :blk message;
+        };
+        diagnostics.printDiagnostic(
+            self.filename,
+            line,
+            column,
+            .err,
+            cleaned_message,
+            args,
+            self.lexer.source,
+            null,
+        );
     }
     self.had_error = true;
 }
@@ -372,7 +363,16 @@ fn core_consume(self: *Parser, token_type: TokenType, message: []const u8) anyer
 
 fn core_errorAtCurrent(self: *Parser, message: []const u8) void {
     if (!self.suppress_errors) {
-        std.debug.print("Error at line {}, column {}: {s}\n", .{self.current.line, self.current.column, message});
+        diagnostics.printDiagnostic(
+            self.filename,
+            self.current.line,
+            self.current.column,
+            .err,
+            "{s}",
+            .{message},
+            self.lexer.source,
+            null,
+        );
     }
     self.had_error = true;
 }

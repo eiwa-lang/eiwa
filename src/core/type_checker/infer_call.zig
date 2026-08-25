@@ -2049,19 +2049,31 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
 
                         for (c.arguments, 0..) |arg, arg_i| {
+                            var exp_t: ?*const EiwaType = null;
                             if (arg_i < f.params.len) {
                                 if (f.params[arg_i].is_varargs) {
                                     // The variadic List<T> gets the monomorphized List type.
                                     if (f.params[arg_i].type_ref) |tr| {
                                         if (self.resolveTypeRef(tr) catch null) |et| {
-                                            arg.expected_type = self.makeListType(et, node.line, node.column) catch null;
+                                            exp_t = self.makeListType(et, node.line, node.column) catch null;
                                         }
                                     }
                                 } else if (f.params[arg_i].type_ref) |tr| {
-                                    arg.expected_type = self.resolveTypeRef(tr) catch null;
+                                    exp_t = self.resolveTypeRef(tr) catch null;
                                 }
                             }
+                            arg.expected_type = exp_t;
                             _ = try self.inferNode(arg, scope);
+                            if (exp_t) |expected| {
+                                if (arg.resolved_type) |actual| {
+                                    if (!self.isCompatible(expected, actual)) {
+                                        var exp_buf: [128]u8 = undefined;
+                                        var act_buf: [128]u8 = undefined;
+                                        self.reportError(arg.line, arg.column, "TypeError: Expected '{s}' but found '{s}' for argument {}.", .{ expected.formatTypeName(&exp_buf), actual.formatTypeName(&act_buf), arg_i + 1 });
+                                        return error.TypeError;
+                                    }
+                                }
+                            }
                         }
 
                     }
@@ -2093,12 +2105,24 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 c.arguments = new_args;
                             }
                             for (c.arguments, 0..) |arg, arg_i| {
+                                var exp_t: ?*const EiwaType = null;
                                 if (arg_i < f.params.len) {
                                     if (f.params[arg_i].type_ref) |tr| {
-                                        arg.expected_type = self.resolveTypeRef(tr) catch null;
+                                        exp_t = self.resolveTypeRef(tr) catch null;
                                     }
                                 }
+                                arg.expected_type = exp_t;
                                 _ = try self.inferNode(arg, scope);
+                                if (exp_t) |expected| {
+                                    if (arg.resolved_type) |actual| {
+                                        if (!self.isCompatible(expected, actual)) {
+                                            var exp_buf: [128]u8 = undefined;
+                                            var act_buf: [128]u8 = undefined;
+                                            self.reportError(arg.line, arg.column, "TypeError: Expected '{s}' but found '{s}' for argument {}.", .{ expected.formatTypeName(&exp_buf), actual.formatTypeName(&act_buf), arg_i + 1 });
+                                            return error.TypeError;
+                                        }
+                                    }
+                                }
                             }
                             break;
                         }

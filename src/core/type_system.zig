@@ -29,8 +29,7 @@ pub const EiwaType = union(enum) {
         type_args: []const *const EiwaType,
     },
 
-    pub fn format(self: EiwaType, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
+    pub fn format(self: EiwaType, writer: anytype) !void {
         switch (self) {
             .Int => try writer.writeAll("Int"),
             .Double => try writer.writeAll("Double"),
@@ -41,7 +40,7 @@ pub const EiwaType = union(enum) {
                     try writer.writeAll("Pointer");
                 } else {
                     try writer.writeAll("Pointer<");
-                    try elem.format("", options, writer);
+                    try elem.format(writer);
                     try writer.writeAll(">");
                 }
             },
@@ -50,32 +49,32 @@ pub const EiwaType = union(enum) {
             .Unknown => try writer.writeAll("Unknown"),
             .Array => |elem| {
                 try writer.writeAll("NativeArray<");
-                try elem.format("", options, writer);
+                try elem.format(writer);
                 try writer.writeAll(">");
             },
             .Custom => |name| try writer.writeAll(name),
             .Function => |f| {
                 if (f.receiver) |r| {
-                    try r.format("", options, writer);
+                    try r.format(writer);
                     try writer.writeAll(".(");
                 } else {
                     try writer.writeAll("fun(");
                 }
                 for (f.params, 0..) |p, i| {
                     if (i > 0) try writer.writeAll(", ");
-                    try p.format("", options, writer);
+                    try p.format(writer);
                 }
                 try writer.writeAll("): ");
-                try f.return_type.format("", options, writer);
+                try f.return_type.format(writer);
             },
             .Union => |u| {
                 if (u.right.* == .Null) {
-                    try u.left.format("", options, writer);
+                    try u.left.format(writer);
                     try writer.writeAll("?");
                 } else {
-                    try u.left.format("", options, writer);
+                    try u.left.format(writer);
                     try writer.writeAll(" | ");
-                    try u.right.format("", options, writer);
+                    try u.right.format(writer);
                 }
             },
             .GenericParam => |name| try writer.writeAll(name),
@@ -84,12 +83,31 @@ pub const EiwaType = union(enum) {
                 try writer.writeAll("<");
                 for (g.type_args, 0..) |arg, i| {
                     if (i > 0) try writer.writeAll(", ");
-                    try arg.format("", options, writer);
+                    try arg.format(writer);
                 }
                 try writer.writeAll(">");
             },
         }
     }
+
+    pub fn formatTypeName(self: EiwaType, buf: []u8) []const u8 {
+        var w = FixedWriter{ .buffer = buf, .pos = 0 };
+        self.format(&w) catch return "Unknown";
+        return buf[0..w.pos];
+    }
+
+    const FixedWriter = struct {
+        buffer: []u8,
+        pos: usize = 0,
+
+        pub fn writeAll(self: *FixedWriter, bytes: []const u8) !void {
+            if (self.pos >= self.buffer.len) return;
+            const remaining = self.buffer.len - self.pos;
+            const to_copy = @min(remaining, bytes.len);
+            @memcpy(self.buffer[self.pos .. self.pos + to_copy], bytes[0..to_copy]);
+            self.pos += to_copy;
+        }
+    };
 
     pub fn formatSafe(self: EiwaType, writer: anytype) !void {
         switch (self) {

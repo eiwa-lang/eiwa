@@ -12,6 +12,7 @@ const statement = @import("statement.zig");
 const expression = @import("expression.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
+const diagnostics = @import("../../core/diagnostics.zig");
 
 pub const StructInfo = struct {
     struct_type: llvm.LLVMTypeRef,
@@ -3121,6 +3122,21 @@ pub const LLVMEmitter = struct {
         ) orelse return error.LLVMTargetMachineFailed;
         defer llvm.LLVMDisposeTargetMachine(target_machine);
 
+        // Verify IR correctness before optimization and machine emission
+        {
+            var verify_err: [*c]u8 = null;
+            if (llvm.LLVMVerifyModule(mod, llvm.LLVMReturnStatusAction, &verify_err) != 0) {
+                if (verify_err != null) {
+                    const err_slice = std.mem.sliceTo(verify_err, 0);
+                    diagnostics.printICE("LLVM module verification failed during native compilation", err_slice);
+                    llvm.LLVMDisposeMessage(verify_err);
+                } else {
+                    diagnostics.printICE("LLVM module verification failed during native compilation", null);
+                }
+                return error.LLVMVerificationFailed;
+            }
+        }
+
         // Run passes
         try self.optimizeModule(target_machine);
 
@@ -3402,9 +3418,13 @@ pub const LLVMEmitter = struct {
             var verify_err: [*c]u8 = null;
             if (llvm.LLVMVerifyModule(mod, llvm.LLVMReturnStatusAction, &verify_err) != 0) {
                 if (verify_err != null) {
-                    std.debug.print("LLVM Verify Error: {s}\n", .{verify_err});
+                    const err_slice = std.mem.sliceTo(verify_err, 0);
+                    diagnostics.printICE("LLVM module verification failed during JIT compilation", err_slice);
                     llvm.LLVMDisposeMessage(verify_err);
+                } else {
+                    diagnostics.printICE("LLVM module verification failed during JIT compilation", null);
                 }
+                return error.LLVMVerificationFailed;
             }
         }
         // Compile and load lib-declared C sources (@Source) so MCJIT can resolve

@@ -528,3 +528,27 @@ Dispatch O(1) sem busca linear, casa naturalmente com múltiplos contratos por t
 
 **Razão:**
 Elimina a classe inteira de bugs de raízes GC não escaneadas sem a complexidade da shadow stack; mantém o modelo de programação Kotlin (`task {}`/`await()`) sem runtime C de corrotinas; simplifica o projeto removendo o segundo backend e o mecanismo `@MainWrapper`. Plano operacional: `docs/tasks-coroutines-stackless.md`.
+
+## ADR 49: Motor Unificado de Diagnósticos, Internal Compiler Error (ICE) e Validação Estrita de Métodos
+**Status:** Aprovado / Implementado
+**Data:** Agosto 2026
+
+**Contexto:**
+1. A saída de erros do compilador apresentava ruídos, duplicações de mensagens genéricas (`Error: compilation failed (TypeError)`) e inconsistências visuais entre os passos do pipeline (Lexer, Parser, TypeChecker e Backend).
+2. Quando ocorria geração de IR inválido pelo backend LLVM (ex.: incompatibilidade de tipo em instruções intrínsecas), o verificador `LLVMVerifyModule` imprimia linhas de texto soltas no stderr e **continuava a execução**, levando a tentativas de execução no JIT com ponteiros corrompidos e resultando em *Segmentation Faults* crípticos com endereços de memória brutos.
+3. No `TypeChecker` (`src/core/type_checker/infer_call.zig`), chamadas de métodos de tipos (`type`) e contratos (`contract`) inferiam os nós dos argumentos mas omitiam a validação de compatibilidade (`isCompatible`), permitindo que expressões inválidas (como `String + Int`) passassem silenciosamente para o backend.
+
+**Decisão:**
+1. **Motor Centralizado de Diagnósticos (`src/core/diagnostics.zig`):**
+   - Criação de formatador padrão moderno (Rust/Clang/Zig) com indicação precisa de localização `--> file.ei:line:col`, gutter com alinhamento vertical exato das barras `|`, realce por sublinhado `^` e suporte a cores ANSI respeitando `NO_COLOR` e TTY.
+   - Nomes de tipos amigáveis (`formatTypeName` em `src/core/type_system.zig`) exibidos nas mensagens de erro (`'String'`, `'Int'`).
+2. **Abort Imediato na Falha de Verificação LLVM (ICE):**
+   - A falha em `LLVMVerifyModule` tanto no JIT quanto na compilação nativa AOT aborta imediatamente o pipeline como um **Internal Compiler Error (ICE)** com orientações para reporte de bug no repositório, impedindo execuções de memória corrompida.
+3. **Validação Estrita de Argumentos no TypeChecker:**
+   - Adicionadas verificações `isCompatible(expected, actual)` nas esteiras de despacho de métodos de instâncias e contratos em `infer_call.zig`, capturando erros de tipo diretamente no frontend antes da emissão de código.
+4. **Crash Handler Estruturado:**
+   - Detecção explícita de dereferenciamento de ponteiro nulo (endereço `0x0`) e resolução de símbolos (`dladdr`) nos rastros de pilha do JIT.
+
+**Razão:**
+Garante que todo erro de código do usuário seja diagnosticado no frontend com apontamento visual exato da linha e coluna, elimina crashes imprevisíveis por execução de IR inválido e eleva a qualidade da experiência do desenvolvedor (DX) aos padrões de compiladores de ponta.
+
