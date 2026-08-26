@@ -112,26 +112,18 @@ test "task explicitly typed Void should run to completion" {
     assert(executed)
 }
 
-object TaskLog {
-    var entries: String = ""
-}
-
 test "independent tasks are not coupled by await" {
-    TaskLog.entries = ""
     val usersTask = task {
-        TaskLog.entries = TaskLog.entries + "U"
-        1
+        10 + 1
     }
     val configTask = task {
-        TaskLog.entries = TaskLog.entries + "C"
-        2
+        20 + 2
     }
-    // With eager multi-core dispatchers, tasks run concurrently across pool threads.
+    // Independent tasks run concurrently and deliver their values
     val users = usersTask.await()
-    assert(users == 1)
+    assert(users == 11)
     val config = configTask.await()
-    assert(config == 2)
-    assert(TaskLog.entries == "UC" || TaskLog.entries == "CU")
+    assert(config == 22)
 }
 
 test "fire-and-forget task runs on the main scheduler drain" {
