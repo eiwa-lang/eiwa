@@ -244,19 +244,22 @@ pub const LLVMEmitter = struct {
         const void_type = llvm.LLVMVoidTypeInContext(self.context);
         const void_fn_type = llvm.LLVMFunctionType(void_type, null, 0, 0);
         _ = llvm.LLVMAddFunction(mod, "GC_init", void_fn_type);
+        _ = llvm.LLVMAddFunction(mod, "GC_allow_register_threads", void_fn_type);
 
         // Bloco B: native binaries (eiwac build) allocate via GC_malloc when
         // prefer_gc_alloc, so the Boehm GC must be initialized before main.
-        // Emit a global constructor that calls GC_init — covers every entry
-        // shape (plain main, eiwa_test_main) without touching each one. The
-        // JIT path does NOT rely on this (MCJIT never runs global ctors);
-        // executeJIT calls GC_init from the host side.
+        // Emit a global constructor that calls GC_init and GC_allow_register_threads —
+        // covers every entry shape (plain main, eiwa_test_main) without touching each one.
+        // The JIT path does NOT rely on this (MCJIT never runs global ctors);
+        // executeJIT calls GC_init and GC_allow_register_threads from the host side.
         if (prefer_gc_alloc) {
             const ctor_fn = llvm.LLVMAddFunction(mod, "__eiwa_gc_init_ctor", void_fn_type);
             const ctor_bb = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_fn, "entry");
             llvm.LLVMPositionBuilderAtEnd(self.builder, ctor_bb);
             const gc_init_fn = llvm.LLVMGetNamedFunction(mod, "GC_init").?;
             _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, gc_init_fn, null, 0, "");
+            const gc_allow_fn = llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads").?;
+            _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, gc_allow_fn, null, 0, "");
             _ = llvm.LLVMBuildRetVoid(self.builder);
 
             var ctor_entry_fields = [_]llvm.LLVMTypeRef{ i32_type, ptr_type, ptr_type };
@@ -841,6 +844,10 @@ pub const LLVMEmitter = struct {
                     const gci_type = llvm.LLVMGlobalGetValueType(gc_init);
                     _ = llvm.LLVMBuildCall2(self.builder, gci_type, gc_init, null, 0, "");
                 }
+                if (llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads")) |gc_allow| {
+                    const gca_type = llvm.LLVMGlobalGetValueType(gc_allow);
+                    _ = llvm.LLVMBuildCall2(self.builder, gca_type, gc_allow, null, 0, "");
+                }
 
                 try self.emitEnumInitializers(mod, &modules);
 
@@ -1003,6 +1010,7 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "GC_malloc") or
                     std.mem.eql(u8, fn_name_s, "GC_realloc") or
                     std.mem.eql(u8, fn_name_s, "GC_init") or
+                    std.mem.eql(u8, fn_name_s, "GC_allow_register_threads") or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
                     std.mem.eql(u8, fn_name_s, "_setjmp") or
                     std.mem.eql(u8, fn_name_s, "longjmp") or
@@ -1084,6 +1092,16 @@ pub const LLVMEmitter = struct {
         const shim = llvm.LLVMAddFunction(mod, "main", shim_type);
         const shim_entry = llvm.LLVMAppendBasicBlockInContext(self.context, shim, "entry");
         llvm.LLVMPositionBuilderAtEnd(self.builder, shim_entry);
+
+        if (llvm.LLVMGetNamedFunction(mod, "GC_init")) |gc_init| {
+            const gci_type = llvm.LLVMGlobalGetValueType(gc_init);
+            _ = llvm.LLVMBuildCall2(self.builder, gci_type, gc_init, null, 0, "");
+        }
+        if (llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads")) |gc_allow| {
+            const gca_type = llvm.LLVMGlobalGetValueType(gc_allow);
+            _ = llvm.LLVMBuildCall2(self.builder, gca_type, gc_allow, null, 0, "");
+        }
+
         const argc_val = llvm.LLVMGetParam(shim, 0);
         const argv_val = llvm.LLVMGetParam(shim, 1);
 
