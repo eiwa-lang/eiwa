@@ -1,0 +1,81 @@
+// std.atomic
+// Native atomic operations and primitives for Eiwa.
+// Built on GCC/Clang builtins and LLVM atomic intrinsics.
+
+import { Standard } from "std.core"
+
+lib NativeAtomic {
+    @Alias("eiwa_atomic_cas_bool")
+    fun syncBoolCompareAndSwap(ptr: Pointer, oldVal: Int, newVal: Int): Bool
+
+    @Alias("eiwa_atomic_cas_val")
+    fun syncValCompareAndSwap(ptr: Pointer, oldVal: Int, newVal: Int): Int
+
+    @Alias("eiwa_atomic_fetch_add")
+    fun syncFetchAndAdd(ptr: Pointer, delta: Int): Int
+
+    @Alias("eiwa_atomic_test_and_set")
+    fun syncLockTestAndSet(ptr: Pointer, value: Int): Int
+}
+
+type AtomicBool(val ptr: Pointer) {
+    fun get(): Bool {
+        // Atomic compare-and-swap with dummy unchanged value acts as full memory barrier load
+        return Standard.loadInt64(this.ptr) != 0
+    }
+
+    fun set(value: Bool) {
+        val intVal = if (value) 1 else 0
+        NativeAtomic.syncLockTestAndSet(this.ptr, intVal)
+    }
+
+    fun compareAndSet(expected: Bool, newValue: Bool): Bool {
+        val expInt = if (expected) 1 else 0
+        val newInt = if (newValue) 1 else 0
+        return NativeAtomic.syncBoolCompareAndSwap(this.ptr, expInt, newInt)
+    }
+} object {
+    fun create(initial: Bool): AtomicBool {
+        val p = Standard.gcMalloc(8)
+        Standard.storeInt64(p, if (initial) 1 else 0)
+        return AtomicBool(p)
+    }
+}
+
+type AtomicInt(val ptr: Pointer) {
+
+    fun get(): Int {
+        return Standard.loadInt64(this.ptr)
+    }
+
+    fun set(value: Int) {
+        NativeAtomic.syncLockTestAndSet(this.ptr, value)
+    }
+
+    fun addAndGet(delta: Int): Int {
+        val prev = NativeAtomic.syncFetchAndAdd(this.ptr, delta)
+        return prev + delta
+    }
+
+    fun getAndAdd(delta: Int): Int {
+        return NativeAtomic.syncFetchAndAdd(this.ptr, delta)
+    }
+
+    fun incrementAndGet(): Int {
+        return this.addAndGet(1)
+    }
+
+    fun decrementAndGet(): Int {
+        return this.addAndGet(-1)
+    }
+
+    fun compareAndSet(expected: Int, newValue: Int): Bool {
+        return NativeAtomic.syncBoolCompareAndSwap(this.ptr, expected, newValue)
+    }
+} object {
+    fun create(initial: Int): AtomicInt {
+        val p = Standard.gcMalloc(8)
+        Standard.storeInt64(p, initial)
+        return AtomicInt(p)
+    }
+}

@@ -1,0 +1,79 @@
+import { assert } from "std.core"
+import { Thread, Mutex, CondVar, Threads } from "std.thread"
+
+test "should detect available CPU cores" {
+    val cores = Threads.numCores()
+    assert(cores >= 1)
+}
+
+test "should lock and unlock mutex" {
+    val mutex = Mutex.create()
+    mutex.lock()
+    mutex.unlock()
+    mutex.destroy()
+}
+
+test "should spawn thread and join" {
+    var ran = false
+    val thread = Threads.spawn {
+        ran = true
+    }
+    thread.join()
+    assert(ran == true)
+}
+
+test "should synchronize counter across threads with mutex" {
+    val mutex = Mutex.create()
+    var counter = 0
+
+    val t1 = Threads.spawn {
+        var i = 0
+        while (i < 100) {
+            mutex.lock()
+            counter = counter + 1
+            mutex.unlock()
+            i = i + 1
+        }
+    }
+
+    val t2 = Threads.spawn {
+        var i = 0
+        while (i < 100) {
+            mutex.lock()
+            counter = counter + 1
+            mutex.unlock()
+            i = i + 1
+        }
+    }
+
+    t1.join()
+    t2.join()
+    mutex.destroy()
+
+    assert(counter == 200)
+}
+
+test "should signal condition variable between threads" {
+    val mutex = Mutex.create()
+    val cond = CondVar.create()
+    var ready = false
+
+    val t = Threads.spawn {
+        mutex.lock()
+        ready = true
+        cond.signal()
+        mutex.unlock()
+    }
+
+    mutex.lock()
+    while (!ready) {
+        cond.wait(mutex)
+    }
+    mutex.unlock()
+
+    t.join()
+    mutex.destroy()
+    cond.destroy()
+
+    assert(ready == true)
+}

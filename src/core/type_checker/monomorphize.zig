@@ -188,30 +188,52 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
 
 // Cross-module lookup for generic functions: same registry fallback
 // monomorphizeClass uses for classes, imported into the local map on first hit.
-pub fn lookupGenericFunction(self: *TypeChecker, name: []const u8) ?*ASTNode {
-    if (self.generic_functions_ast.get(name)) |n| return n;
+pub fn lookupGenericFunction(self: *TypeChecker, name: []const u8, arity: ?usize) ?*ASTNode {
+    if (self.generic_functions_ast.get(name)) |list| {
+        if (arity) |a| {
+            for (list.items) |n| {
+                if (n.data.fun_decl.params.len == a) return n;
+            }
+        } else if (list.items.len > 0) {
+            return list.items[0];
+        }
+    }
     if (self.registry) |reg| {
         var mod_it = reg.modules.iterator();
         while (mod_it.next()) |entry| {
-            if (entry.value_ptr.checker.generic_functions_ast.get(name)) |n| {
-                self.generic_functions_ast.put(name, n) catch {};
-                return n;
+            if (entry.value_ptr.checker.generic_functions_ast.get(name)) |list| {
+                if (arity) |a| {
+                    for (list.items) |n| {
+                        if (n.data.fun_decl.params.len == a) {
+                            const gop = self.generic_functions_ast.getOrPut(name) catch return n;
+                            if (!gop.found_existing) {
+                                gop.value_ptr.* = ArrayList(*ASTNode).init(self.allocator);
+                            }
+                            gop.value_ptr.append(n) catch {};
+                            return n;
+                        }
+                    }
+                } else if (list.items.len > 0) {
+                    const n = list.items[0];
+                    const gop = self.generic_functions_ast.getOrPut(name) catch return n;
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = ArrayList(*ASTNode).init(self.allocator);
+                    }
+                    gop.value_ptr.append(n) catch {};
+                    return n;
+                }
             }
         }
     }
     return null;
 }
 
-pub fn monomorphizeFunction(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8, receiver: ?*const EiwaType) !void {    if (self.functions_ast.get(mangled_name) != null) return;
-
-    const base_node = self.lookupGenericFunction(base_name) orelse {
-        self.reportError(0, 0, "TypeError: Generic function '{s}' not found.", .{base_name});
-        return error.TypeError;
-    };
+pub fn monomorphizeFunction(self: *TypeChecker, base_node: *ASTNode, type_args: []*const EiwaType, mangled_name: []const u8, receiver: ?*const EiwaType) !void {
+    if (self.functions_ast.get(mangled_name) != null) return;
 
     const fun_decl = base_node.data.fun_decl;
     if (fun_decl.generic_params.len != type_args.len) {
-        self.reportError(0, 0, "TypeError: Expected {} generic arguments for '{s}', got {}.", .{fun_decl.generic_params.len, base_name, type_args.len});
+        self.reportError(0, 0, "TypeError: Expected {} generic arguments for '{s}', got {}.", .{ fun_decl.generic_params.len, fun_decl.name, type_args.len });
         return error.TypeError;
     }
 

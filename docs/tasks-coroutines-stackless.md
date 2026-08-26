@@ -190,12 +190,10 @@ Casos em ordem:
       do `main` e de cada `test {}` — tasks agendados mas nunca awaitados ainda rodam antes do
       programa terminar. Validado: `task_test.ei` **16/16** (novos: `independent tasks are not
       coupled by await`, `fire-and-forget task runs on the main scheduler drain`).
-      TODO: **box de 16 bytes fixo** (`statement.zig` `cell_size = 16`) — o cell heap de vars
-      boxed tem tamanho fixo que cabe fat pointer/i64/ptr/double, mas pode estourar para tipos
-      custom grandes; alocar `LLVMStoreSizeOfType` (pré-existente nos closures, estender no P5).
-      TODO: **object static String concat crasha** (`"x" + Obj.v` onde `v: String`) — bug
-      pré-existente do emitter, não relacionado a coroutines; investigar emissão de get_expr
-      de campo String de object em concat.
+      **box alocado dinamicamente** (`statement.zig` `cell_size = llvm.LLVMSizeOf(llvm_type)`):
+      alocação do heap cell de boxed vars agora usa o tamanho exato do layout LLVM do tipo.
+      **object static String concat** (`"x" + Obj.v` onde `v: String`): **RESOLVIDO** (ADR 50,
+      `string_concat_test.ei`).
       TODO: **interleave de loops com sleep** — `samples/tests/interleave_test.ei` (dois
       `task { while { log+="A"; sleepMs(1) } }`/`"B"`), que falhava de propósito no modelo
       blocking-poll (`AAABBB`), **PASSA desde a Fase J** (`ABABAB` — switch(label) + timer
@@ -610,16 +608,14 @@ Eiwa puro; suspensão verdadeira (`switch(label)` + timer heap); `await()` coope
   `StackTask` o implementa em `src/std/coroutines.ei`.
 - Detecção de suspend (`src/core/coroutines.zig`) resolve por **receiver type + nome**
   (`isSuspendDecl`/`findMethodHasSuspend`), não por contrato.
-- Box de 16 bytes fixo para vars capturadas (`cell_size`) — TODO conhecido, alocar
-  `LLVMStoreSizeOfType` (pré-existente nos closures).
+- Box de vars capturadas alocado dinamicamente com `llvm.LLVMSizeOf(llvm_type)`.
 - Fase K: splice de monomorfizados antes das continuações; `.var_decl`/`.assignment`
   reescrevem o RHS antes de converter para `set_expr`.
 
 **Gaps conhecidos a corrigir:**
-`object static String concat crasha` (`"x" + Obj.v`), `toString` mangled de List/Map
-(pré-existente no emitter), `try/catch` como última expr de bloco de task, `for`/`try`/`return`
-com suspensão dentro do corpo do task, await como receiver de composite. (Server HTTP no LLVM:
-**resolvido** — ver nota do BRIDGE `Scheduler.run()` acima.)
+`toString` mangled de List/Map (pré-existente no emitter), `try/catch` como última expr de bloco
+de task, `for`/`try`/`return` com suspensão dentro do corpo do task, await como receiver de
+composite. (Server HTTP no LLVM e concat de static string de object: **resolvidos**.)
 
 ---
 

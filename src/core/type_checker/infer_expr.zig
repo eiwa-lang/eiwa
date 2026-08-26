@@ -353,11 +353,14 @@ pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
         // Reinterpret a raw pointer as a `type` (memory view): the value stays a
         // pointer, but field access reads/writes at the type's C layout offsets.
         // No runtime conversion.
+    } else if (base_val.* == .Custom and base_target.* == .Pointer) {
+        // Reinterpret an object instance pointer as a raw Pointer (for FFI pass-through)
     } else if (isNumericCast(base_val.*, base_target.*)) {
         // Numeric cast (Int <-> Double, etc.): a real runtime conversion.
     } else {
-        const is_zero_to_ptr = base_val.* == .Int and base_target.* == .Pointer;
-        const is_compat = is_zero_to_ptr or self.isCompatible(target_type, val_type) or (base_val.* == .Union and self.isCompatible(base_val, base_target));
+        const is_int_to_ptr = base_val.* == .Int and base_target.* == .Pointer;
+        const is_ptr_to_int = base_val.* == .Pointer and base_target.* == .Int;
+        const is_compat = is_int_to_ptr or is_ptr_to_int or self.isCompatible(target_type, val_type) or (base_val.* == .Union and self.isCompatible(base_val, base_target));
         if (!is_compat) {
             self.reportError(node.line, node.column, "TypeError: Cannot cast {} to {}.", .{ val_type.*, target_type.* });
             return error.TypeError;

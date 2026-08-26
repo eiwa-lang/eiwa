@@ -574,6 +574,7 @@ fn run(init: std.process.Init) !void {
     llvm_emitter.prefer_gc_alloc = is_build or llvm_emitter.has_gc;
     emitter.is_test_mode = is_test;
     emitter.contracts_ast = &global_contracts_ast;
+    emitter.classes_ast = &global_classes_ast;
     emitter.cli_c_flags = cli_c_flags.items;
     emitter.registry = &registry;
     emitter.host_argv = args;

@@ -6,7 +6,7 @@ contract Serializable {
 }
 
 type SerdeField(val name: String, val value: SerdeValue) {
-    fun toString(): String = this.name
+    implement fun toString(): String = this.name
 }
 
 contract SerdeValue

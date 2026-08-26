@@ -1,0 +1,53 @@
+import { assert } from "std.core"
+import { Thread, Threads } from "std.thread"
+import { AtomicInt } from "std.atomic"
+import { Dispatchers, Dispatcher } from "std.coroutines"
+
+test "should execute tasks in parallel on Dispatchers.Default" {
+    val counter = AtomicInt.create(0)
+    
+    val t1 = task {
+        counter.addAndGet(10)
+        10
+    }
+    val t2 = task {
+        counter.addAndGet(20)
+        20
+    }
+    val t3 = task {
+        counter.addAndGet(30)
+        30
+    }
+    
+    val r1 = t1.await()
+    val r2 = t2.await()
+    val r3 = t3.await()
+    
+    assert(r1 == 10)
+    assert(r2 == 20)
+    assert(r3 == 30)
+    assert(counter.get() == 60)
+}
+
+test "should create custom dispatcher with thread pool" {
+    val custom = Dispatchers.create("custom-pool", 4)
+    assert(custom.name == "custom-pool")
+    assert(custom.nThreads == 4)
+    assert(custom.isShutdown == false)
+    
+    val t = task(custom) {
+        100 * 2
+    }
+    val res = t.await()
+    assert(res == 200)
+    
+    custom.shutdown()
+    assert(custom.isShutdown == true)
+}
+
+test "should execute tasks on Dispatchers.Single" {
+    val t = task(Dispatchers.Single) {
+        "hello single"
+    }
+    assert(t.await() == "hello single")
+}

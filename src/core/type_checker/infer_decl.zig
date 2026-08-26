@@ -28,6 +28,8 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "yaml.ei", @embedFile("../../std/yaml.ei") },
     .{ "log.ei", @embedFile("../../std/log.ei") },
     .{ "coroutines.ei", @embedFile("../../std/coroutines.ei") },
+    .{ "thread.ei", @embedFile("../../std/thread.ei") },
+    .{ "atomic.ei", @embedFile("../../std/atomic.ei") },
     .{ "uuid.ei", @embedFile("../../std/uuid.ei") },
     .{ "ulid.ei", @embedFile("../../std/ulid.ei") },
     .{ "random.ei", @embedFile("../../std/random.ei") },
@@ -130,7 +132,11 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         var gen_fn_it = tc.generic_functions_ast.iterator();
         while (gen_fn_it.next()) |entry| {
             if (!tc.local_symbols.contains(entry.key_ptr.*)) continue;
-            try self.generic_functions_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+            const gop = try self.generic_functions_ast.getOrPut(entry.key_ptr.*);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = ArrayList(*ASTNode).init(self.allocator);
+            }
+            try gop.value_ptr.appendSlice(entry.value_ptr.items);
         }
         var class_ast_it = tc.classes_ast.iterator();
         while (class_ast_it.next()) |entry| {
@@ -167,10 +173,14 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             } else if (tc.global_scope.lookupVariable(sym)) |variable| {
                 try self.global_scope.define(sym, variable, false, false);
                 found = true;
-            } else if (tc.generic_functions_ast.get(sym)) |gen_decl| {
+            } else if (tc.generic_functions_ast.get(sym)) |list| {
                 // Generic functions are not in global_scope; importing one
                 // makes it visible to lookupGenericFunction locally.
-                try self.generic_functions_ast.put(sym, gen_decl);
+                const gop = try self.generic_functions_ast.getOrPut(sym);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = ArrayList(*ASTNode).init(self.allocator);
+                }
+                try gop.value_ptr.appendSlice(list.items);
                 found = true;
             }
 
@@ -754,26 +764,16 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
 
             const m = found.?;
             if (!from_skill) {
-                var is_auto_contract = false;
-                for (auto_injected_contracts) |aic| {
-                    const aic_actual = self.alias_map.get(aic) orelse aic;
-                    if (std.mem.eql(u8, contract_actual, aic_actual) or std.mem.eql(u8, cd.name, aic)) {
-                        is_auto_contract = true;
+                var has_implement = false;
+                for (m.data.fun_decl.modifiers) |mod| {
+                    if (mod == .kw_implement) {
+                        has_implement = true;
                         break;
                     }
                 }
-                if (!is_auto_contract) {
-                    var has_implement = false;
-                    for (m.data.fun_decl.modifiers) |mod| {
-                        if (mod == .kw_implement) {
-                            has_implement = true;
-                            break;
-                        }
-                    }
-                    if (!has_implement) {
-                        self.reportError(m.line, m.column, "TypeError: Method '{s}' in type '{s}' implements contract '{s}', but is missing the mandatory 'implement' modifier.", .{ cm_name, c_name_str, cd.name });
-                        return error.TypeError;
-                    }
+                if (!has_implement) {
+                    self.reportError(m.line, m.column, "TypeError: Method '{s}' in type '{s}' implements contract '{s}', but is missing the mandatory 'implement' modifier.", .{ cm_name, c_name_str, cd.name });
+                    return error.TypeError;
                 }
             }
 
@@ -950,7 +950,14 @@ pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var f = &node.data.fun_decl;
     if (f.generic_params.len > 0) {
-        try self.generic_functions_ast.put(f.name, node);
+        var my_list = self.generic_functions_ast.getPtr(f.name);
+        if (my_list == null) {
+            var new_list = ArrayList(*ASTNode).init(self.allocator);
+            try new_list.append(node);
+            try self.generic_functions_ast.put(f.name, new_list);
+        } else {
+            try my_list.?.append(node);
+        }
         t.* = .Void;
         return;
     }

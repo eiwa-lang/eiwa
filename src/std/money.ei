@@ -30,7 +30,7 @@ type Currency(
     val decimalSeparator: String = ".",
     val thousandSeparator: String = ""
 ) {
-    operator fun equals(other: Currency): Bool {
+    implement operator fun equals(other: Currency): Bool {
         return this.code == other.code
     }
 
@@ -140,7 +140,7 @@ type Money(val cents: Int, val currency: Currency) {
         return Money(this.cents * factor, this.currency)
     }
 
-    operator fun equals(other: Money): Bool {
+    implement operator fun equals(other: Money): Bool {
         return this.cents == other.cents && this.currency.code == other.currency.code
     }
 

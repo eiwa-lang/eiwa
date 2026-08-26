@@ -21,7 +21,7 @@ type PC(val name: String, var step: Int) : Continuation {
         if (this.step == 0) {
             Order.record(this.name + "A;")
             this.step = 1
-            Scheduler.schedule(this)
+            Dispatchers.Single.scheduler.schedule(this)
         } else {
             Order.record(this.name + "B;")
             this.step = 2
@@ -33,24 +33,24 @@ type PC(val name: String, var step: Int) : Continuation {
 
 test "scheduler runs a continuation to completion" {
     Order.reset()
-    Scheduler.schedule(PC("x", 0))
-    Scheduler.run()
+    Dispatchers.Single.scheduler.schedule(PC("x", 0))
+    Dispatchers.Single.scheduler.run()
     assert(Order.log == "xA;xB;")
 }
 
 test "scheduler interleaves continuations cooperatively (FIFO)" {
     Order.reset()
-    Scheduler.schedule(PC("1", 0))
-    Scheduler.schedule(PC("2", 0))
-    Scheduler.run()
+    Dispatchers.Single.scheduler.schedule(PC("1", 0))
+    Dispatchers.Single.scheduler.schedule(PC("2", 0))
+    Dispatchers.Single.scheduler.run()
     assert(Order.log == "1A;2A;1B;2B;")
 }
 
 test "scheduler drains a queue left non-empty from a prior run" {
     // Scheduler state is a singleton; ensure no leftover items leak between runs.
     Order.reset()
-    Scheduler.schedule(PC("a", 0))
-    Scheduler.run()
-    Scheduler.run()
+    Dispatchers.Single.scheduler.schedule(PC("a", 0))
+    Dispatchers.Single.scheduler.run()
+    Dispatchers.Single.scheduler.run()
     assert(Order.log == "aA;aB;")
 }

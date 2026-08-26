@@ -49,15 +49,21 @@ pub fn isContractType(resolved_type: types.EiwaType, contracts_ast: ?*std.String
         .GenericInstance => |gi| gi.base_name,
         else => return false,
     };
-    const base_type_name = if (std.mem.indexOf(u8, name, "_core_")) |idx|
-        name[0..idx]
-    else if (std.mem.indexOf(u8, name, "_collections_")) |idx|
-        name[0..idx]
-    else
-        name;
-
     const ca = contracts_ast orelse return false;
-    if (ca.contains(name) or ca.contains(base_type_name)) return true;
+    if (ca.contains(name)) return true;
+
+    // Check module-qualified contract (e.g. "core_Stringable" where "Stringable" is in ca)
+    if (std.mem.lastIndexOfScalar(u8, name, '_')) |idx| {
+        const prefix = name[0..idx];
+        if (std.mem.indexOfScalar(u8, prefix, '_') == null) {
+            if (ca.contains(name[idx + 1 ..])) return true;
+        }
+    }
+
+    // Check generic contract instantiation (e.g. "Comparable_core_Int" where "Comparable" is in ca)
+    if (std.mem.indexOfScalar(u8, name, '_')) |idx| {
+        if (ca.contains(name[0..idx])) return true;
+    }
 
     return false;
 }

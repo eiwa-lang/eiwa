@@ -1210,12 +1210,15 @@ fun main() {
 
 Eiwa compiles to native code through LLVM, so integrating with native C libraries is seamless. You can declare a `lib` block to map C functions into Eiwa without writing any wrapper code.
 
+### How FFI Works with LLVM
+In Eiwa's LLVM backend, you do not need to parse or include C header files for symbol declaration. The `lib` block itself defines the function signatures in pure Eiwa (parameter count, parameter types, and return type). The compiler maps these to native LLVM function declarations (`declare i64 @time(ptr)`). At runtime (JIT via `dlsym`) or link-time (`eiwac build` via the system linker), the symbols are resolved directly from the operating system's `libc` (or external libraries specified via `@Link`).
+
 Annotated `lib` blocks instruct the compiler and linker on how to process native C libraries:
-- **`@Header` (Compile-Time Includes)**: Instructs the compiler to inject the corresponding `#include` directives so the C toolchain knows about function signatures, structs, and constants.
+- **`@Header` (C Header Reference & Documentation)**: Documents the origin header for standard C/POSIX bindings and provides include context when compiling vendored C sources.
 - **`@Link` (Smart Linker Resolution via `pkg-config`)**: Instructs the Eiwa compiler to dynamically resolve library paths and flags using system `pkg-config` (e.g. `@Link("pq")` or `@Link("curl")`). The compiler automatically queries `pkg-config --cflags --libs` (searching standard OS and Homebrew `PKG_CONFIG_PATH` paths on macOS and Linux) and injects the appropriate `-I`, `-L`, and `-l` flags alongside preprocessor macros (`-DEIWA_USE_<NAME>`). If `pkg-config` is not available or doesn't find the package, it gracefully falls back to `-l<name>`.
-- **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag to the C compiler. Relative paths starting with `./` or `../` (e.g. `@Include("./native")`) are automatically resolved relative to the directory containing the `.ei` file.
+- **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag when compiling vendored C sources. Relative paths starting with `./` or `../` (e.g. `@Include("./native")`) are automatically resolved relative to the directory containing the `.ei` file.
 - **`@Source` (Vendored C Sources)**: Appends a C source file to the compilation, e.g. `@Source("src/runtime/third_party/mylib/mylib.c")`. Use for vendored C libraries compiled together with the program.
-- **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag to the C compiler, e.g. `@Define("MYLIB_BUFFER_SIZE=4096")`.
+- **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag when compiling vendored C sources, e.g. `@Define("MYLIB_BUFFER_SIZE=4096")`.
 - **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions.
 
 ### 16.1 Self-Contained Library Bindings
@@ -1532,20 +1535,21 @@ test "should add two numbers correctly" {
 
 Then, run `eiwa test` in your terminal. The compiler will automatically discover, group, and run all your tests in an isolated native binary.
 
-## 20. Concorrência Estruturada (`task` / `await`)
+## 20. Concorrência Estruturada & Paralelismo (`task`, `await` & `Dispatchers`)
 
-> **Nota:** Esta seção descreve a API pública de concorrência do Eiwa. O runtime subjacente é de
+> **Nota:** Esta seção descreve a API de concorrência e paralelismo do Eiwa. O runtime subjacente é de
 > **coroutines stackless** (estilo Kotlin): o compilador transforma corpos de `task { }` em **state
-> machines** (objetos heap `Continuation`) dirigidos por um `Scheduler` escrito em Eiwa puro (fila
-> FIFO + timer heap). Sem stack switching, sem threads expostas. Detalhes: ADR 48 e
-> `docs/tasks-coroutines-stackless.md`.
+> machines** (objetos heap `Continuation`) executados concorrentemente em um pool de threads nativas
+> (`Dispatchers.Default`), com gerenciamento seguro via Boehm GC e sincronização FIFO thread-safe.
+> Detalhes: ADR 48, ADR 51 e `docs/tasks-dispatchers-thread-pool.md`.
 
-Eiwa oferece concorrência leve e estruturada através de duas funções da stdlib: `task { }` e `.await()`. Não existem keywords especiais, threads expostas, ou callbacks — apenas lambdas e tipos genéricos.
+Eiwa oferece concorrência leve, paralelismo multi-core real e estruturado através das funções da stdlib: `task { }`, `task(dispatcher) { }` e `.await()`. Não existem keywords especiais ou callbacks — apenas lambdas, dispatchers e tipos genéricos.
 
 ### 20.1 Conceitos Básicos
 
-- `task { expr }` — função da stdlib que recebe uma lambda e retorna `StackTask<T>` (declarada como `Task<T>` na stdlib). A lambda é agendada no `Scheduler` cooperativo e executada de forma lazy (no primeiro `await()`).
-- `task.await()` — método em `StackTask<T>` que suspende a coroutine atual até o resultado da task estar disponível.
+- `task { expr }` — executa uma lambda de forma **eager** diretamente no pool de threads nativas `Dispatchers.Default` e retorna `StackTask<T>`. Não bloqueia a thread atual e executa concorrentemente em background.
+- `task(dispatcher) { expr }` — executa a tarefa em um dispatcher específico (ex.: `Dispatchers.Single` ou um pool customizado).
+- `task.await()` — método em `StackTask<T>` que suspende a coroutine atual até o resultado da task estar disponível e entrega o valor de retorno `T`.
 - `StackTask<T>` — tipo genérico declarado na stdlib (`src/std/coroutines.ei`), implementando o contrato `Awaitable<T>`.
 
 ```kotlin
@@ -1560,11 +1564,11 @@ fun fetchConfig(): String {
 }
 
 fun main() {
-    // Dispara duas tasks em paralelo
+    // Dispara duas tasks em paralelo nas threads do Dispatchers.Default
     val usersTask = task { fetchUsers() }
     val configTask = task { fetchConfig() }
 
-    // Aguarda ambas — a fibra atual é suspensa, não a thread OS
+    // Aguarda ambas — suspensão cooperativa/cross-thread sem travar o processamento
     val users = usersTask.await()
     val config = configTask.await()
 
@@ -1573,9 +1577,36 @@ fun main() {
 }
 ```
 
-### 20.2 Múltiplas Tasks
+### 20.2 Dispatchers e Pools de Threads
 
-Tasks são executadas cooperativamente. O scheduler alterna entre continuations quando uma delas suspende (via `await()`, `sleep`/`yield` ou I/O).
+O Eiwa adota o modelo de `Dispatchers` (estilo Kotlin) para controlar onde e como as tarefas executam:
+
+```kotlin
+import { Dispatchers, Threads } from "std.coroutines"
+
+// 1. Dispatchers.Default (Padrão):
+// Dimensionado automaticamente com N threads = Threads.numCores()
+val tDefault = task { 
+    // Executa em uma das threads do pool multi-core
+}
+
+// 2. Dispatchers.Single:
+// Executa em thread única de forma cooperativa
+val tSingle = task(Dispatchers.Single) {
+    // Executa na fila cooperativa single-thread
+}
+
+// 3. Pools Customizados:
+// Criação de pools dedicados para isolar tarefas pesadas ou I/O
+val dbPool = Dispatchers.create(name = "db-pool", threads = 4)
+val tDb = task(dbPool) {
+    // Executa exclusivamente no pool de 4 threads
+}
+```
+
+### 20.3 Múltiplas Tasks em Paralelo
+
+Tasks são distribuídas entre as threads do pool. A CPU executa as tarefas verdadeiramente em paralelo:
 
 ```kotlin
 fun main() {
@@ -1590,9 +1621,9 @@ fun main() {
 }
 ```
 
-### 20.3 Tasks Aninhadas
+### 20.4 Tasks Aninhadas
 
-Tasks podem conter outras tasks. O `await()` interno suspende apenas a continuação da task externa, não a thread principal.
+Tasks podem conter outras tasks. O `await()` interno suspende apenas a continuação da task externa, liberando o worker do pool para outras tarefas:
 
 ```kotlin
 fun main() {
@@ -1605,9 +1636,9 @@ fun main() {
 }
 ```
 
-### 20.4 Captura de Escopo
+### 20.5 Captura de Escopo & Atomics
 
-Assim como lambdas comuns, o bloco de `task { }` captura variáveis do escopo léxico externo.
+Assim como lambdas comuns, o bloco de `task { }` captura variáveis do escopo léxico externo. Variáveis mutáveis capturadas são promovidas para células compartilhadas no Heap:
 
 ```kotlin
 fun main() {
@@ -1617,36 +1648,13 @@ fun main() {
 }
 ```
 
-### 20.5 Task com Tipos Complexos
-
-`Task<T>` funciona com qualquer tipo, incluindo coleções:
-
-```kotlin
-fun main() {
-    val listTask = task { [1, 2, 3] }
-    val mapTask = task { ["a" of 1, "b" of 2] }
-
-    assert(listTask.await().size() == 3)
-    assert(mapTask.await()["a"] == 1)
-}
-```
-
 ### 20.6 Structured Concurrency
 
-O Eiwa segue o modelo de **structured concurrency**: uma função que cria tasks filhas só retorna quando todas as filhas completarem. Isso previne "tasks vazadas" que continuam rodando após o escopo pai terminar.
-
-```kotlin
-fun process() {
-    val t = task { fetchData() }
-    // process() só retorna quando t completar
-    val data = t.await()
-    // ...
-}
-```
+O Eiwa segue o modelo de **structured concurrency**: o runtime e os dispatchers garantem que tarefas agendadas completem ordenadamente no término do escopo principal (`main` / testes executam drain automático).
 
 ### 20.7 Objetos de Concorrência e I/O (`Coroutine` & `EventLoop`)
 
-A standard library expõe dois objetos estáticos em `std.coroutines` para operações de baixo nível de concorrência e I/O de forma agnóstica de engine:
+A standard library expõe utilitários em `std.coroutines`:
 
 ```kotlin
 import { Coroutine, EventLoop } from "std.coroutines"
@@ -1663,17 +1671,86 @@ fun example() {
 ```
 
 > **Dentro do corpo de um `task { }`**, `sleep`/`sleepMs`/`yield` viram **pontos de suspensão
-> cooperativos de verdade** (o transform os reescreve em `Scheduler.sleep(this, ...)`/
-> `Scheduler.yield(this)`): o corpo é compilado como state machine e o control volta ao scheduler,
-> que retoma a task quando o timer dispara — sem bloquear a thread. `await()` dentro de um corpo
-> state machine registra o caller como waiter da task aguardada e suspende (waiter-chain FIFO).
+> cooperativos de verdade** (state machine): o worker é liberado para outras tarefas enquanto o timer
+> não dispara. `await()` registra o caller na waiter-chain e retoma assim que o resultado estiver pronto.
 
-### 20.8 Limitações do MVP
+### 20.8 Primitivas de Sincronização & Threads (`Mutex`, `CondVar`, `AtomicInt`, `Threads`)
 
-- **Sem cancelamento** — `task.cancel()` fica para uma fase futura.
-- **Single-threaded** — todas as tasks rodam em uma única thread OS (scheduler cooperativo). Paralelismo real (Dispatchers / thread pool) é uma proposta adiada (Fase I do plano stackless).
-- **`await()` no root** (main/test/top-level) é blocking-poll — o root é o driver e não tem continuation; suspensão cooperativa acontece **dentro** dos corpos de task.
-- **Gaps do transform:** `for`/`try` com `sleep`/`yield` dentro do corpo do task, e `await` como operando dentro de `assignment`, ainda não suspendem cooperativamente (erro `file:line` ou chamada direta bloqueante).
+Para controle de baixo nível de sincronização e comunicação entre múltiplas threads paralelas, a biblioteca padrão oferece suporte direto através dos módulos `std.thread` e `std.atomic`:
+
+#### 1. `Mutex` (Exclusão Mútua)
+Garante que apenas uma thread por vez execute uma seção crítica de código (baseado em `pthread_mutex_t`):
+
+```kotlin
+import { Mutex } from "std.thread"
+
+val mutex = Mutex.create()
+var sharedCounter = 0
+
+// Dentro de tasks paralelas:
+mutex.lock()
+sharedCounter = sharedCounter + 1
+mutex.unlock()
+
+// Liberar recursos quando não for mais necessário:
+mutex.destroy()
+```
+
+#### 2. `CondVar` (Variáveis de Condição)
+Permite que threads aguardem notificações eficientes sem gastar ciclos de CPU (baseado em `pthread_cond_t`):
+
+```kotlin
+import { Mutex, CondVar } from "std.thread"
+
+val mutex = Mutex.create()
+val cond = CondVar.create()
+var ready = false
+
+// Thread produtora:
+mutex.lock()
+ready = true
+cond.signal() // ou cond.broadcast()
+mutex.unlock()
+
+// Thread consumidora:
+mutex.lock()
+while (!ready) {
+    cond.wait(mutex)
+}
+mutex.unlock()
+
+mutex.destroy()
+cond.destroy()
+```
+
+#### 3. `AtomicInt` & `AtomicBool` (Operações Atômicas sem Lock)
+Para contadores e flags simples, operações atômicas no nível de instrução de hardware são mais rápidas do que Mutex:
+
+```kotlin
+import { AtomicInt, AtomicBool } from "std.atomic"
+
+val counter = AtomicInt.create(0)
+counter.incrementAndGet()  // Incrementa atomicamente
+counter.addAndGet(10)       // Soma atômica
+val current = counter.get() // Leitura thread-safe
+
+val flag = AtomicBool.create(false)
+flag.set(true)
+```
+
+#### 4. `Threads` (Nativas de Baixo Nível)
+Além de coroutines leves (`task`), é possível disparar threads nativas de SO diretamente:
+
+```kotlin
+import { Threads } from "std.thread"
+
+val cores = Threads.numCores() // Número de núcleos da CPU
+
+val thread = Threads.spawn {
+    // Executa em uma pthread nativa isolada
+}
+thread.join() // Aguarda o término da thread
+```
 
 ---
 

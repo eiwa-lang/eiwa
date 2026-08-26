@@ -1,0 +1,7 @@
+import { println } from "std.core"
+import { nowMillis } from "std.time"
+
+fun main() {
+    val t = nowMillis()
+    println(t)
+}

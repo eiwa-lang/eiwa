@@ -73,8 +73,9 @@ test "await does not suspend when the task is already done" {
 
 test "multiple waiters all get resumed when the task completes" {
     val task = SpecIntTask(false, 0, null)
-    val m1 = SpecMainCont(0, task, 0)
-    val m2 = SpecMainCont(0, task, 0)
+    // Waiters are suspended at label 1 (await point)
+    val m1 = SpecMainCont(1, task, 0)
+    val m2 = SpecMainCont(1, task, 0)
     // register both waiters manually (simulating two awaiters), then complete
     task.waiters = SpecWaiterNode(m1, null)
     task.waiters = SpecWaiterNode(m2, task.waiters)

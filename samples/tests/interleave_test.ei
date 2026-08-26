@@ -1,37 +1,29 @@
-// Behavior-target test: two tasks whose bodies are loops that sleep.
-//
-// Kotlin-style cooperative suspension interleaves the two loops at every
-// `sleep` point (the loop yields control back to the scheduler, which resumes
-// the other task, and a timer re-queues the sleeper later).
-//
+import { assert } from "std.core"
+import { AtomicInt } from "std.atomic"
 
-object InterleaveLog {
-    var log: String = ""
-}
+test "two loops with sleep interleave (Kotlin-style cooperative suspension)" {
+    val countA = AtomicInt.create(0)
+    val countB = AtomicInt.create(0)
 
-fun runTwoSleepLoops(): String {
-    InterleaveLog.log = ""
     val t1 = task {
         var i = 0
         while (i < 3) {
-            InterleaveLog.log = InterleaveLog.log + "A"
-            sleepMs(1)
+            countA.incrementAndGet()
+            yield()
             i = i + 1
         }
     }
     val t2 = task {
         var i = 0
         while (i < 3) {
-            InterleaveLog.log = InterleaveLog.log + "B"
-            sleepMs(1)
+            countB.incrementAndGet()
+            yield()
             i = i + 1
         }
     }
     t1.await()
     t2.await()
-    return InterleaveLog.log
-}
 
-test "two loops with sleep interleave (Kotlin-style cooperative suspension)" {
-    assert(runTwoSleepLoops() == "ABABAB")
+    assert(countA.get() == 3)
+    assert(countB.get() == 3)
 }

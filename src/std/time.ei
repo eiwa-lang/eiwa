@@ -6,6 +6,13 @@ import { Yaml } from "std.yaml"
 @Header("<time.h>")
 lib NativeTime {
     fun time(tloc: Pointer): Int
+
+    @Alias("eiwa_now_millis")
+    fun nowMillis(): Int
+}
+
+fun nowMillis(): Int {
+    return NativeTime.nowMillis()
 }
 
 fun daysInMonth(m: Int, isLeap: Bool): Int {
@@ -144,7 +151,7 @@ type Time(val sec: Int) : Serializable {
         return [SerdeField("time", SerdeString(this.toString()))]
     }
 
-    fun toString() = this.format("YYYY-MM-DD HH:mm:ss")
+    implement fun toString(): String = this.format("YYYY-MM-DD HH:mm:ss")
 
 }
 

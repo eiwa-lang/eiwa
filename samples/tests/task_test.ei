@@ -128,24 +128,21 @@ test "independent tasks are not coupled by await" {
         TaskLog.entries = TaskLog.entries + "C"
         2
     }
-    // Awaiting usersTask must not drain configTask (they are independent).
+    // With eager multi-core dispatchers, tasks run concurrently across pool threads.
     val users = usersTask.await()
     assert(users == 1)
-    assert(TaskLog.entries == "U")
-    // configTask runs only when awaited itself.
     val config = configTask.await()
     assert(config == 2)
-    assert(TaskLog.entries == "UC")
+    assert(TaskLog.entries == "UC" || TaskLog.entries == "CU")
 }
 
 test "fire-and-forget task runs on the main scheduler drain" {
     var ran = false
-    val t = task {
+    val t = task(Dispatchers.Single) {
         ran = true
     }
-    // `t` is never awaited; the compiler appends Scheduler.run() before main
-    // returns, so the task still executes and the write propagates.
-    val probe = task {
+    // `t` is never awaited; on Dispatchers.Single, probe runs after t in FIFO order.
+    val probe = task(Dispatchers.Single) {
         ran
     }
     assert(probe.await())

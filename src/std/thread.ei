@@ -1,0 +1,157 @@
+// std.thread
+// Native threading and synchronization primitives for Eiwa.
+// Built on POSIX pthread without custom C wrappers.
+
+import { Standard } from "std.core"
+
+@Header("<pthread.h>", "<unistd.h>")
+lib NativeThread {
+    @Alias("pthread_create")
+    fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
+
+    @Alias("pthread_join")
+    fun pthreadJoin(thread: Pointer, retval: Pointer): Int
+
+    @Alias("pthread_self")
+    fun pthreadSelf(): Pointer
+
+    @Alias("pthread_mutex_init")
+    fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int
+
+    @Alias("pthread_mutex_lock")
+    fun pthreadMutexLock(mutex: Pointer): Int
+
+    @Alias("pthread_mutex_unlock")
+    fun pthreadMutexUnlock(mutex: Pointer): Int
+
+    @Alias("pthread_mutex_destroy")
+    fun pthreadMutexDestroy(mutex: Pointer): Int
+
+    @Alias("pthread_cond_init")
+    fun pthreadCondInit(cond: Pointer, attr: Pointer): Int
+
+    @Alias("pthread_cond_wait")
+    fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int
+
+    @Alias("pthread_cond_signal")
+    fun pthreadCondSignal(cond: Pointer): Int
+
+    @Alias("pthread_cond_broadcast")
+    fun pthreadCondBroadcast(cond: Pointer): Int
+
+    @Alias("pthread_cond_destroy")
+    fun pthreadCondDestroy(cond: Pointer): Int
+
+    @Alias("sysconf")
+    fun sysconf(name: Int): Int
+}
+
+type Mutex(val ptr: Pointer) {
+    fun lock() {
+        NativeThread.pthreadMutexLock(this.ptr)
+    }
+
+    fun unlock() {
+        NativeThread.pthreadMutexUnlock(this.ptr)
+    }
+
+    fun destroy() {
+        NativeThread.pthreadMutexDestroy(this.ptr)
+    }
+} object {
+    fun create(): Mutex {
+        // Allocate 128 bytes (sufficient for pthread_mutex_t on all platforms: macOS=64B, Linux=40B)
+        val mPtr = Standard.gcMalloc(128)
+        NativeThread.pthreadMutexInit(mPtr, null)
+        return Mutex(mPtr)
+    }
+}
+
+type CondVar(val ptr: Pointer) {
+    fun wait(mutex: Mutex) {
+        NativeThread.pthreadCondWait(this.ptr, mutex.ptr)
+    }
+
+    fun signal() {
+        NativeThread.pthreadCondSignal(this.ptr)
+    }
+
+    fun broadcast() {
+        NativeThread.pthreadCondBroadcast(this.ptr)
+    }
+
+    fun destroy() {
+        NativeThread.pthreadCondDestroy(this.ptr)
+    }
+} object {
+    fun create(): CondVar {
+        // Allocate 128 bytes (sufficient for pthread_cond_t on all platforms: macOS=48B, Linux=48B)
+        val cPtr = Standard.gcMalloc(128)
+        NativeThread.pthreadCondInit(cPtr, null)
+        return CondVar(cPtr)
+    }
+}
+
+type Thread(val handle: Pointer) {
+    fun join() {
+        NativeThread.pthreadJoin(this.handle, null)
+    }
+}
+
+lib NativeGC {
+    @Alias("GC_get_stack_base")
+    fun getStackBase(sb: Pointer): Int
+
+    @Alias("GC_register_my_thread")
+    fun registerMyThread(sb: Pointer): Int
+
+    @Alias("GC_unregister_my_thread")
+    fun unregisterMyThread(): Int
+}
+
+// Context wrapper to pass closure to the pthread worker trampoline
+type ThreadTask(var action: () -> Void)
+
+fun threadTrampoline(arg: Pointer): Pointer {
+    if (arg != null) {
+        val sb = Standard.gcMalloc(16)
+        NativeGC.getStackBase(sb)
+        NativeGC.registerMyThread(sb)
+
+        val task = arg as ThreadTask
+        task.action()
+
+        NativeGC.unregisterMyThread()
+    }
+    return null
+}
+
+object Threads {
+    fun numCores(): Int {
+        // _SC_NPROCESSORS_ONLN is 84 on Linux, 58 on macOS/BSD.
+        // Try macOS value (58) first; if invalid (<= 0), try Linux value (84).
+        var cores = NativeThread.sysconf(58)
+        if (cores <= 0) {
+            cores = NativeThread.sysconf(84)
+        }
+        if (cores <= 0) {
+            cores = 1
+        }
+        return cores
+    }
+
+    fun currentThread(): Pointer {
+        return NativeThread.pthreadSelf()
+    }
+
+    fun spawn(block: () -> Void): Thread {
+        val buf = Standard.gcMalloc(24)
+        val task = buf as ThreadTask
+        task.action = block
+        val threadBuf = Standard.gcMalloc(16)
+        val routine = funPointer { arg: Pointer -> threadTrampoline(arg) }
+        NativeThread.pthreadCreate(threadBuf, null, routine, buf)
+        val handle = Standard.loadInt64(threadBuf) as Pointer
+        return Thread(handle)
+    }
+}

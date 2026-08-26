@@ -1,9 +1,12 @@
 // std.coroutines
-// Stackless coroutines: task/await via generated state machines + a
-// cooperative FIFO scheduler, written in pure Eiwa. No neco (stackful).
+// Stackless coroutines with multi-core parallelism: task/await via generated state
+// machines + multi-threaded Dispatchers (Dispatchers.Default thread pool) and
+// cooperative FIFO schedulers, written in pure Eiwa.
 
 import { mod } from "std.math"
-import { NativeMemory } from "std.core"
+import { NativeMemory, Standard } from "std.core"
+import { Thread, Mutex, CondVar, Threads, NativeThread, NativeGC } from "std.thread"
+import { AtomicBool } from "std.atomic"
 
 // ============================================================================
 // System primitives via FFI (no neco). `nanosleep` for time, `poll` for I/O
@@ -29,14 +32,7 @@ lib NativePoll {
 }
 
 // ============================================================================
-// Cooperative scheduler (Eiwa puro, sem neco).
-//
-// O compilador transforma cada função suspend em uma state machine cujo estado
-// vive num objeto que implementa `Continuation` (label + locais salvos). Este
-// scheduler é o runtime cooperativo single-threaded: `schedule()` enfileira uma
-// continuation pronta e `run()` executa até a fila esvaziar. Uma continuation
-// que suspende NÃO é re-enfileirada por `run()` — ela se re-agenda sozinha
-// (timer/I/O) ou é agendada pela task que aguardava quando esta completa.
+// Continuations & Scheduler (Thread-Safe, Instantiable)
 // ============================================================================
 
 contract Continuation {
@@ -44,45 +40,47 @@ contract Continuation {
     fun isDone(): Bool
 }
 
-// Intrusive FIFO queue node (a contract field inside a self-referential struct
-// works; a generic `MutableList<Continuation>` does NOT — the LLVM backend
-// cannot store fat pointers in generic collections yet).
+// Intrusive FIFO queue node
 type ContNode(val cont: Continuation, var next: ContNode?)
 
 // Timer node for cooperative `sleep`: a continuation to re-schedule once the
 // virtual clock reaches `deadline`. Intrusive, kept in deadline order.
 type TimerNode(var deadline: Int, var cont: Continuation, var next: TimerNode?)
 
-object Scheduler {
+type TaskScheduler(
+    val mutex: Mutex,
+    val cond: CondVar
+) {
     var head: ContNode? = null
     var tail: ContNode? = null
     var timerHead: TimerNode? = null
-    // Virtual monotonic clock (ms). Advanced by the scheduler's own blocking
-    // waits (`waitMs`), so deadlines are relative to each other — no dependence
-    // on an OS clock.
     var now: Int = 0
+    var isShutdown: Bool = false
 
     fun schedule(cont: Continuation) {
         val node = ContNode(cont, null)
-        if (Scheduler.tail == null) {
-            Scheduler.head = node
-            Scheduler.tail = node
+        this.mutex.lock()
+        if (this.tail == null) {
+            this.head = node
+            this.tail = node
         } else {
-            Scheduler.tail!!.next = node
-            Scheduler.tail = node
+            this.tail!!.next = node
+            this.tail = node
         }
+        this.cond.signal()
+        this.mutex.unlock()
     }
 
     // Registers `cont` to be re-scheduled after `ms` virtual milliseconds.
-    // Returns true (the continuation has suspended; its resume must return).
     fun sleep(cont: Continuation, ms: Int): Bool {
-        val deadline = Scheduler.now + ms
+        this.mutex.lock()
+        val deadline = this.now + ms
         var node = TimerNode(deadline, cont, null)
-        if (Scheduler.timerHead == null || Scheduler.timerHead!!.deadline > deadline) {
-            node.next = Scheduler.timerHead
-            Scheduler.timerHead = node
+        if (this.timerHead == null || this.timerHead!!.deadline > deadline) {
+            node.next = this.timerHead
+            this.timerHead = node
         } else {
-            var cur = Scheduler.timerHead!!
+            var cur = this.timerHead!!
             var placed = false
             while (cur.next != null && !placed) {
                 if (cur.next!!.deadline <= deadline) {
@@ -94,46 +92,82 @@ object Scheduler {
             node.next = cur.next
             cur.next = node
         }
+        this.cond.signal()
+        this.mutex.unlock()
         return true
     }
 
     // Cooperative yield: re-queue `cont` at the end of the ready queue.
-    // Returns true (the continuation has suspended; its resume must return).
     fun yield(cont: Continuation): Bool {
-        Scheduler.schedule(cont)
+        this.schedule(cont)
         return true
     }
 
-    // Moves every expired timer (deadline <= now) into the ready queue,
-    // blocking (waitMs) until the earliest deadline when none are due yet.
-    // Returns true when at least one timer was fired.
-    fun fireTimers(): Bool {
-        if (Scheduler.timerHead == null) {
-            return false
+    // Blocking pop for worker threads in a thread pool
+    fun popBlocking(): ContNode? {
+        this.mutex.lock()
+        var waiting = this.head == null && !this.isShutdown
+        while (waiting) {
+            if (this.timerHead != null) {
+                val first = this.timerHead!!
+                val delta = first.deadline - this.now
+                if (delta <= 0) {
+                    this.fireTimersLocked()
+                }
+            }
+            if (this.head != null || this.isShutdown) {
+                waiting = false
+            } else {
+                this.cond.wait(this.mutex)
+                waiting = this.head == null && !this.isShutdown
+            }
         }
-        val first = Scheduler.timerHead!!
-        val delta = first.deadline - Scheduler.now
-        if (delta > 0) {
-            Scheduler.waitMs(delta)
-            Scheduler.now = first.deadline
+        if (this.head != null) {
+            val node = this.head!!
+            this.head = node.next
+            if (this.head == null) {
+                this.tail = null
+            }
+            this.mutex.unlock()
+            return node
+        }
+        this.mutex.unlock()
+        return null
+    }
+
+    fun fireTimersLocked(): Bool {
+        if (this.timerHead == null) {
+            return false
         }
         var fired = false
         var expired = true
-        while (Scheduler.timerHead != null && expired) {
-            val t = Scheduler.timerHead!!
-            if (t.deadline > Scheduler.now) {
+        while (this.timerHead != null && expired) {
+            val t = this.timerHead!!
+            if (t.deadline > this.now) {
                 expired = false
             } else {
-                Scheduler.schedule(t.cont)
-                Scheduler.timerHead = t.next
+                val node = ContNode(t.cont, null)
+                if (this.tail == null) {
+                    this.head = node
+                    this.tail = node
+                } else {
+                    this.tail!!.next = node
+                    this.tail = node
+                }
+                this.timerHead = t.next
                 fired = true
             }
         }
         return fired
     }
 
-    // Blocks the thread for `ms` (nanosleep). Only the scheduler calls this,
-    // when nothing else is ready — the root await/drain drives it.
+    fun fireTimers(): Bool {
+        this.mutex.lock()
+        val fired = this.fireTimersLocked()
+        this.mutex.unlock()
+        return fired
+    }
+
     fun waitMs(ms: Int) {
         val ts = Standard.gcMalloc(16)
         var sec = ms / 1000
@@ -150,38 +184,138 @@ object Scheduler {
     }
 
     fun run() {
-        while (Scheduler.runStep()) {}
+        while (this.runStep()) {}
     }
 
-    // Runs a single ready continuation, firing due timers first. Returns false
-    // when nothing at all is pending (queue empty and no timers). `await()`
-    // loops on this until the awaited task completes, so independent tasks
-    // queued behind it are NOT drained — they stay for their own await.
     fun runStep(): Bool {
-        if (Scheduler.head == null) {
-            if (!Scheduler.fireTimers()) {
-                return false
+        this.mutex.lock()
+        if (this.head == null) {
+            if (this.timerHead != null) {
+                val first = this.timerHead!!
+                val delta = first.deadline - this.now
+                if (delta > 0) {
+                    this.waitMs(delta)
+                    this.now = first.deadline
+                }
+                this.fireTimersLocked()
             }
         }
-        if (Scheduler.head == null) {
+        if (this.head == null) {
+            this.mutex.unlock()
             return false
         }
-        val node = Scheduler.head!!
-        Scheduler.head = node.next
-        if (Scheduler.head == null) {
-            Scheduler.tail = null
+        val node = this.head!!
+        this.head = node.next
+        if (this.head == null) {
+            this.tail = null
         }
+        this.mutex.unlock()
         node.cont.resume()
         return true
+    }
+
+    fun shutdown() {
+        this.mutex.lock()
+        this.isShutdown = true
+        this.cond.broadcast()
+        this.mutex.unlock()
+    }
+} object {
+    fun create(): TaskScheduler {
+        val m = Mutex.create()
+        val c = CondVar.create()
+        return TaskScheduler(m, c)
     }
 }
 
 // ============================================================================
-// Coroutine / EventLoop facade — the suspend surfaces users call. In the
-// current blocking-poll model a `sleep`/`yield` simply blocks the thread
-// (nanosleep / sched_yield) inside a task's resume; the scheduler is only
-// used by task/await. A future phase (switch(label)) will make these true
-// non-blocking suspension points.
+// Dispatchers & Multi-Threaded Workers
+// ============================================================================
+
+type WorkerTask(var dispatcher: Dispatcher)
+
+fun workerThreadTrampoline(arg: Pointer): Pointer {
+    if (arg != null) {
+        val sb = Standard.gcMalloc(16)
+        NativeGC.getStackBase(sb)
+        NativeGC.registerMyThread(sb)
+
+        val task = arg as WorkerTask
+        val disp = task.dispatcher
+        while (!disp.isShutdown) {
+            val node = disp.scheduler.popBlocking()
+            if (node != null) {
+                node!!.cont.resume()
+            }
+        }
+
+        NativeGC.unregisterMyThread()
+    }
+    return null
+}
+
+type Dispatcher(
+    val name: String,
+    val nThreads: Int,
+    val scheduler: TaskScheduler,
+    var isShutdown: Bool
+) {
+    fun shutdown() {
+        this.isShutdown = true
+        this.scheduler.shutdown()
+    }
+}
+
+object Dispatchers {
+    val Single: Dispatcher = Dispatchers.create("single", 1)
+    val Default: Dispatcher = Dispatchers.createDefault()
+
+    fun createDefault(): Dispatcher {
+        return Dispatchers.create("default", Threads.numCores())
+    }
+
+    fun create(name: String, threads: Int): Dispatcher {
+        val sched = TaskScheduler.create()
+        val disp = Dispatcher(name, threads, sched, false)
+        var i = 0
+        while (i < threads) {
+            val buf = Standard.gcMalloc(24)
+            val task = buf as WorkerTask
+            task.dispatcher = disp
+            val threadBuf = Standard.gcMalloc(16)
+            val routine = funPointer { arg: Pointer -> workerThreadTrampoline(arg) }
+            NativeThread.pthreadCreate(threadBuf, null, routine, buf)
+            i = i + 1
+        }
+        return disp
+    }
+}
+
+// Global facade for compiler-generated code and backward compatibility
+object Scheduler {
+    fun schedule(cont: Continuation) {
+        Dispatchers.Default.scheduler.schedule(cont)
+    }
+
+    fun sleep(cont: Continuation, ms: Int): Bool {
+        return Dispatchers.Default.scheduler.sleep(cont, ms)
+    }
+
+    fun yield(cont: Continuation): Bool {
+        return Dispatchers.Default.scheduler.yield(cont)
+    }
+
+    fun run() {
+        Dispatchers.Default.scheduler.run()
+    }
+
+    fun runStep(): Bool {
+        return Dispatchers.Default.scheduler.runStep()
+    }
+}
+
+// ============================================================================
+// Coroutine / EventLoop facade
 // ============================================================================
 
 object Coroutine {
@@ -195,7 +329,6 @@ object Coroutine {
         val ts = Standard.gcMalloc(16)
         var sec = nanosecs / 1000000000
         var nsec = mod(nanosecs, 1000000000)
-        // timespec: { time_t tv_sec (8B), long tv_nsec (8B) } — write little-endian.
         var i = 0
         while (i < 8) {
             NativeMemory.writeByte(ts, i, mod(sec, 256))
@@ -214,8 +347,6 @@ object Coroutine {
 }
 
 object EventLoop {
-    // pollfd: { int fd; short events; short revents } (8 bytes, little-endian).
-    // POLLIN=0x001, POLLOUT=0x004. Timeout -1 = wait indefinitely.
     @Suspend
     fun waitReadable(fd: Int): Int {
         val pfd = Standard.gcMalloc(8)
@@ -226,7 +357,7 @@ object EventLoop {
             v = v / 256
             i = i + 1
         }
-        NativeMemory.writeByte(pfd, 4, 1) // POLLIN low byte
+        NativeMemory.writeByte(pfd, 4, 1)
         NativeMemory.writeByte(pfd, 5, 0)
         return NativePoll.poll(pfd, 1, -1)
     }
@@ -241,23 +372,14 @@ object EventLoop {
             v = v / 256
             i = i + 1
         }
-        NativeMemory.writeByte(pfd, 4, 4) // POLLOUT low byte
+        NativeMemory.writeByte(pfd, 4, 4)
         NativeMemory.writeByte(pfd, 5, 0)
         return NativePoll.poll(pfd, 1, -1)
     }
 }
 
 // ============================================================================
-// Stackless task/await cell (Fase C — generated code).
-//
-// The compiler transform rewrites:
-//   `val t = task { block }`  ->  allocate a StackTask<T>, generate a
-//                                Continuation that runs `block`, schedule it.
-//   `t.await()`               ->  poll the task (run the scheduler until done),
-//                                then return `t.result`.
-//
-// Waiters are an intrusive linked list of structs (NOT a nullable contract
-// field, which the LLVM backend mishandles — silent no-op dispatch).
+// StackTask & task API
 // ============================================================================
 
 type WaiterNode(val cont: Continuation, var next: WaiterNode?)
@@ -270,24 +392,14 @@ type StackTask<T>(
 
     @Suspend
     implement fun await(): T {
-        if (!done) {
-            Scheduler.run()
+        while (!this.done) {
+            if (!Dispatchers.Default.scheduler.runStep()) {
+                Coroutine.sleepMs(1)
+            }
         }
-        return result!!
+        return this.result!!
     }
 
-    // Cooperative await used by the compiler transform inside a state-machine
-    // task body: registers `cont` (the caller's continuation) as a waiter and
-    // returns false so the caller can suspend; returns true on the fast path
-    // when this task already completed. Waiters are appended (FIFO) and
-    // re-scheduled by the done state of the awaited task.
-    //
-    // NOTE: this is a compiler-called runtime API. There are NO handwritten
-    // .ei call sites — the compiler emits `recv.awaitCoop(this)` in generated
-    // continuation resume() bodies (see machineBuildCoopAwait in
-    // src/core/coroutines_transform.zig). Do NOT remove: it is exercised by
-    // samples/tests/coop_await_test.ei and its removal breaks compilation of
-    // any state-machine task body that awaits another task.
     fun awaitCoop(cont: Continuation): Bool {
         if (this.done) {
             return true
@@ -304,8 +416,11 @@ type StackTask<T>(
         return false
     }
 
-    implement fun isDone(): Bool = done
+    implement fun isDone(): Bool = this.done
 }
 
 @Coroutine
 fun task<T>(block: () -> T) = StackTask<T>(false, null, null)
+
+@Coroutine
+fun task<T>(dispatcher: Dispatcher, block: () -> T) = StackTask<T>(false, null, null)

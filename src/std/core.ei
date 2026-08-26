@@ -36,6 +36,8 @@ lib NativeString {
 
     fun strncpy(dest: Pointer, src: Pointer, n: Int): Pointer
 
+    fun strncmp(s1: Pointer, s2: Pointer, n: Int): Int
+
     fun strlen(s: Pointer): Int
 }
 
@@ -163,9 +165,13 @@ object Memory {
 type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable {
     implement fun toString(): String = this
 
-    operator fun equals(other: String): Bool {
-        return NativeString.strcmp(this.ptr, other.ptr) == 0
+    implement operator fun equals(other: Equatable): Bool {
+        if (other is String) {
+            return NativeString.strcmp(this.ptr, other.ptr) == 0
+        }
+        return false
     }
+
     operator fun plus(other: Stringable): String {
         val totalLen = this.length + other.toString().length
         val buf = Standard.gcMalloc(totalLen + 1)
@@ -214,7 +220,6 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
             }
         }
 
-
         return String(res, newLen)
     }
 
@@ -232,34 +237,15 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
         if (prefix.length > this.length) {
             return false
         }
-    
-        var i = 0
-        while (i < prefix.length) {
-            if (NativeMemory.readByte(this.ptr, i) != NativeMemory.readByte(prefix.ptr, i)) {
-                return false
-            }
-            i = i + 1
-        }
-    
-        return true
+        return NativeString.strncmp(this.ptr, prefix.ptr, prefix.length) == 0
     }
-    
+
     fun endsWith(suffix: String): Bool {
         if (suffix.length > this.length) {
             return false
         }
-    
         val offset = this.length - suffix.length
-    
-        var i = 0
-        while (i < suffix.length) {
-            if (NativeMemory.readByte(this.ptr, offset + i) != NativeMemory.readByte(suffix.ptr, i)) {
-                return false
-            }
-            i = i + 1
-        }
-    
-        return true
+        return NativeString.strncmp(this.ptr + offset, suffix.ptr, suffix.length) == 0
     }
 
     fun substring(start: Int, end: Int): String {
@@ -277,7 +263,7 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
         return Standard.atof(this.ptr)
     }
 
-    fun hashCode(): Int {
+    implement fun hashCode(): Int {
         var hash = 5381
         var i = 0
         while (i < this.length) {

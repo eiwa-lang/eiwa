@@ -96,11 +96,10 @@ pub fn emitStatement(
                 // reads load ptr from alloca then load value from ptr;
                 // writes load ptr from alloca then store value into ptr.
                 const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
-                const i64_type = llvm.LLVMInt64TypeInContext(ctx);
                 const malloc_fn = core.getHeapAllocFn(mod);
                 const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
-                // Allocate 16 bytes (fits Fat Pointer {ptr, ptr}, i64, ptr, double) for the value cell
-                const cell_size = llvm.LLVMConstInt(i64_type, 16, 0);
+                // Allocate dynamic cell size matching the exact LLVM type layout
+                const cell_size = llvm.LLVMSizeOf(llvm_type);
                 var malloc_args = [_]llvm.LLVMValueRef{cell_size};
                 const box_ptr = llvm.LLVMBuildCall2(builder, malloc_type, malloc_fn, &malloc_args, 1, "box_ptr");
 

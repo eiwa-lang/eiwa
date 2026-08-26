@@ -67,7 +67,7 @@ pub const TypeChecker = struct {
     skills_ast: std.StringHashMap(*ASTNode),
     enums_ast: std.StringHashMap(*ASTNode),
     functions_ast: std.StringHashMap(*ASTNode),
-    generic_functions_ast: std.StringHashMap(*ASTNode),
+    generic_functions_ast: std.StringHashMap(ArrayList(*ASTNode)),
     /// `cFunctionPtr(fn)` trampolines: C name -> the fun_decl node it forwards to.
     trampolines: std.StringHashMap(*ASTNode),
     local_symbols: std.StringHashMap(void),
@@ -117,7 +117,7 @@ pub const TypeChecker = struct {
             .skills_ast = std.StringHashMap(*ASTNode).init(allocator),
             .enums_ast = std.StringHashMap(*ASTNode).init(allocator),
             .functions_ast = std.StringHashMap(*ASTNode).init(allocator),
-            .generic_functions_ast = std.StringHashMap(*ASTNode).init(allocator),
+            .generic_functions_ast = std.StringHashMap(ArrayList(*ASTNode)).init(allocator),
             .trampolines = std.StringHashMap(*ASTNode).init(allocator),
             .local_symbols = std.StringHashMap(void).init(allocator),
             .lib_symbols = std.StringHashMap(void).init(allocator),
@@ -140,6 +140,10 @@ pub const TypeChecker = struct {
         self.skills_ast.deinit();
         self.enums_ast.deinit();
         self.functions_ast.deinit();
+        var gen_it = self.generic_functions_ast.iterator();
+        while (gen_it.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
         self.generic_functions_ast.deinit();
         self.local_symbols.deinit();
         self.lib_symbols.deinit();

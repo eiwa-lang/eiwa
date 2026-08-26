@@ -1,0 +1,70 @@
+import { assert } from "std.core"
+import { AtomicBool, AtomicInt } from "std.atomic"
+import { Threads } from "std.thread"
+
+test "should get and set AtomicBool" {
+    val b = AtomicBool.create(false)
+    assert(b.get() == false)
+
+    b.set(true)
+    assert(b.get() == true)
+
+    val cas1 = b.compareAndSet(true, false)
+    assert(cas1 == true)
+    assert(b.get() == false)
+
+    val cas2 = b.compareAndSet(true, true)
+    assert(cas2 == false)
+    assert(b.get() == false)
+}
+
+test "should get, set and modify AtomicInt" {
+    val num = AtomicInt.create(10)
+    assert(num.get() == 10)
+
+    num.set(20)
+    assert(num.get() == 20)
+
+    val added = num.addAndGet(5)
+    assert(added == 25)
+    assert(num.get() == 25)
+
+    val inc = num.incrementAndGet()
+    assert(inc == 26)
+
+    val dec = num.decrementAndGet()
+    assert(dec == 25)
+
+    val cas1 = num.compareAndSet(25, 100)
+    assert(cas1 == true)
+    assert(num.get() == 100)
+
+    val cas2 = num.compareAndSet(50, 200)
+    assert(cas2 == false)
+    assert(num.get() == 100)
+}
+
+test "should atomically increment counter across threads" {
+    val counter = AtomicInt.create(0)
+
+    val t1 = Threads.spawn {
+        var i = 0
+        while (i < 100) {
+            counter.incrementAndGet()
+            i = i + 1
+        }
+    }
+
+    val t2 = Threads.spawn {
+        var i = 0
+        while (i < 100) {
+            counter.incrementAndGet()
+            i = i + 1
+        }
+    }
+
+    t1.join()
+    t2.join()
+
+    assert(counter.get() == 200)
+}

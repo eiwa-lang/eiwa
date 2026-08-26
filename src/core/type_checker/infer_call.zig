@@ -454,7 +454,7 @@ fn inferFunPointer(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
     // trampoline machinery handles it. It runs in the global scope, so any
     // capture of an outer variable surfaces as an unresolved-identifier error.
     const l = &arg.data.lambda_expr;
-    const fn_name = try std.fmt.allocPrint(self.allocator, "__cblambda_{d}_{d}", .{ arg.line, arg.column });
+    const fn_name = try std.fmt.allocPrint(self.allocator, "__cblambda_{d}_{d}_{d}", .{ arg.line, arg.column, self.trampolines.count() });
 
     const lambda_params = try self.allocator.alloc(ast.Param, l.params.len);
     @memcpy(lambda_params, l.params);
@@ -549,7 +549,7 @@ fn inferExplicitGenericMethodCall(self: *TypeChecker, node: *ASTNode, scope: *Sc
                         const final_mangled = try mangled.toOwnedSlice();
                         // Object methods are static: no receiver (unlike type methods).
                         const is_object = self.objects_ast.get(actual_class_name) != null;
-                        try self.monomorphizeFunction(g.name, type_args, final_mangled, if (is_object) null else base_type);
+                        try self.monomorphizeFunction(method, type_args, final_mangled, if (is_object) null else base_type);
 
                         const func_node = self.functions_ast.get(final_mangled) orelse {
                             self.reportError(node.line, node.column, "TypeError: Monomorphized function '{s}' not found (expected key: '{s}').", .{g.name, final_mangled});
@@ -615,7 +615,7 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
     const class_node = self.classes_ast.get(class_name);
     if (class_node == null) {
         // Try as a generic function
-        if (self.lookupGenericFunction(name) != null) {
+        if (self.lookupGenericFunction(name, c.arguments.len)) |gen_node| {
             var type_args = try self.allocator.alloc(*const EiwaType, c.type_args.len);
             for (c.type_args, 0..) |type_ref, i| {
                 type_args[i] = try self.resolveTypeRef(type_ref);
@@ -629,7 +629,7 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
             }
             const final_mangled = try mangled.toOwnedSlice();
 
-            try self.monomorphizeFunction(name, type_args, final_mangled, null);
+            try self.monomorphizeFunction(gen_node, type_args, final_mangled, null);
 
             const actual_c_name_3 = blk_3: {
                 if (self.functions_ast.get(final_mangled)) |fn_node| {
@@ -958,7 +958,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
         // Check for generic functions (not in regular scope because inferFunDecl returns early)
         if (c.type_args.len == 0) {
-            if (self.lookupGenericFunction(name)) |gen_node| {
+            if (self.lookupGenericFunction(name, c.arguments.len)) |gen_node| {
             const gen_decl = gen_node.data.fun_decl;
             if (gen_decl.generic_params.len > 0) {
                 var type_args = try self.allocator.alloc(*const EiwaType, gen_decl.generic_params.len);
@@ -978,8 +978,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
                     }
                 }
-                for (c.arguments, gen_decl.params, 0..) |arg, p, arg_i| {
-                    if (arg_i < c.arguments.len and arg.data == .lambda_expr and arg.resolved_type == null) {
+                const min_len = @min(c.arguments.len, gen_decl.params.len);
+                for (c.arguments[0..min_len], gen_decl.params[0..min_len]) |arg, p| {
+                    if (arg.data == .lambda_expr and arg.resolved_type == null) {
                         if (p.type_ref) |tr| {
                             if (tr.is_function) {
                                 // Bind the lambda's expected type with concrete params and an
@@ -1054,13 +1055,16 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
                 var mangled = ArrayList(u8).init(self.allocator);
                 try mangled.appendSlice(name);
+                if (gen_decl.params.len != 1) {
+                    try mangled.writer().print("_{d}", .{gen_decl.params.len});
+                }
                 for (type_args) |type_arg| {
                     try mangled.appendSlice("_");
                     try type_arg.formatSafe(mangled.writer());
                 }
                 const final_mangled = try mangled.toOwnedSlice();
 
-                try self.monomorphizeFunction(name, type_args, final_mangled, null);
+                try self.monomorphizeFunction(gen_node, type_args, final_mangled, null);
 
                 const actual_c_name_2 = blk_2: {
                     if (self.functions_ast.get(final_mangled)) |fn_node| {
@@ -1693,15 +1697,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 self.current_class_name = obj_name;
                 defer self.current_class_name = old_class_name;
 
-                const old_gen_entry = self.generic_functions_ast.get(g.name);
-                try self.generic_functions_ast.put(g.name, matched_method);
-                const mono_result = self.monomorphizeFunction(g.name, type_args, final_mangled, null);
-                if (old_gen_entry) |old| {
-                    try self.generic_functions_ast.put(g.name, old);
-                } else {
-                    _ = self.generic_functions_ast.remove(g.name);
-                }
-                try mono_result;
+                try self.monomorphizeFunction(matched_method, type_args, final_mangled, null);
 
                 const func_node = self.functions_ast.get(final_mangled) orelse {
                     self.reportError(node.line, node.column, "TypeError: Monomorphized static method '{s}.{s}' not found.", .{ obj_name, g.name });
@@ -1974,18 +1970,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             }
                             const final_mangled = try mangled.toOwnedSlice();
 
-                            // Scope the generic base node lookup to THIS class's method:
-                            // generic_functions_ast is keyed by bare name and collides
-                            // across classes (e.g. every type has a composed `let<R>`).
-                            const old_gen_entry = self.generic_functions_ast.get(g.name);
-                            try self.generic_functions_ast.put(g.name, m);
-                            const mono_result = self.monomorphizeFunction(g.name, type_args, final_mangled, base_type);
-                            if (old_gen_entry) |old| {
-                                try self.generic_functions_ast.put(g.name, old);
-                            } else {
-                                _ = self.generic_functions_ast.remove(g.name);
-                            }
-                            try mono_result;
+                            try self.monomorphizeFunction(m, type_args, final_mangled, base_type);
 
                             var call_args = try self.allocator.alloc(*ASTNode, c.arguments.len + 1);
                             call_args[0] = g.object;

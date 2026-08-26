@@ -1993,7 +1993,9 @@ fn rewriteTaskCall(
     generated: *ArrayList(*ASTNode),
 ) ![]*ASTNode {
     const v = &stmt.data.var_decl;
-    const lambda = task_call.data.call_expr.arguments[0];
+    const has_disp = task_call.data.call_expr.arguments.len > 1;
+    const disp_node = if (has_disp) task_call.data.call_expr.arguments[0] else null;
+    const lambda = if (has_disp) task_call.data.call_expr.arguments[1] else task_call.data.call_expr.arguments[0];
     if (lambda.data != .lambda_expr) return error.InvalidTaskCall;
     const body = lambda.data.lambda_expr.body;
 
@@ -2032,7 +2034,10 @@ fn rewriteTaskCall(
         try ctor_args.append(arg);
     }
     const block_ctor_call = mkCall(mkIdent(block_type.data.type_decl.name), ctor_args.items);
-    const schedule_call = mkCall(mkGetExpr(mkIdent("Scheduler"), "schedule"), &.{block_ctor_call});
+    const schedule_call = if (disp_node) |dn|
+        mkCall(mkGetExpr(mkGetExpr(dn, "scheduler"), "schedule"), &.{block_ctor_call})
+    else
+        mkCall(mkGetExpr(mkIdent("Scheduler"), "schedule"), &.{block_ctor_call});
     try out.append(mkExprStmt(schedule_call));
 
     // `val t = __taskN`
@@ -2112,9 +2117,37 @@ fn rewriteTaskAwaitCall(
     const result_val = mkUnary(.bang_bang, mkGetExpr(mkIdent(task_name), "result"));
     const bind = mkVarDecl(v.name, result_val);
     bind.data.var_decl.is_mut = v.is_mut;
+    const res_type = resolveAwaitBindingType(stmt, await_call, recv, v);
+    if (res_type) |t| {
+        if (t.* != .Void) {
+            bind.data.var_decl.type_ref = try typeRefForEiwaType(allocator, t);
+            bind.resolved_type = t;
+            result_val.resolved_type = t;
+        }
+    } else if (v.type_ref) |tr| {
+        bind.data.var_decl.type_ref = tr;
+    }
     try out.append(bind);
 
     return out.toOwnedSlice();
+}
+
+fn resolveAwaitBindingType(stmt: *ASTNode, await_call: *ASTNode, recv: *ASTNode, v: anytype) ?*const EiwaType {
+    if (await_call.resolved_type) |at| {
+        if (at.* != .Void) return at;
+    }
+    if (stmt.resolved_type) |st| {
+        if (st.* != .Void) return st;
+    }
+    if (recv_result_type(recv)) |rt| {
+        if (rt.* != .Void) return rt;
+    }
+    if (v.type_ref) |tr| {
+        if (tr.resolved_type) |trt| {
+            if (trt.* != .Void) return trt;
+        }
+    }
+    return stmt.resolved_type orelse await_call.resolved_type orelse recv_result_type(recv);
 }
 
 /// `val x = <recv>.await()` -> poll + `val x = <recv>.result!!`
@@ -2134,7 +2167,7 @@ fn rewriteAwaitCall(
     defer out.deinit();
 
     if (coop) {
-        const result_type = stmt.resolved_type orelse recv_result_type(recv);
+        const result_type = resolveAwaitBindingType(stmt, await_call, recv, v);
         try out.append(try mkCoopAwaitMarker(allocator, recv, v.name, v.is_mut, result_type));
         return out.toOwnedSlice();
     }
@@ -2143,6 +2176,16 @@ fn rewriteAwaitCall(
     const result_val = mkUnary(.bang_bang, mkGetExpr(recv, "result"));
     const bind = mkVarDecl(v.name, result_val);
     bind.data.var_decl.is_mut = v.is_mut;
+    const res_type = resolveAwaitBindingType(stmt, await_call, recv, v);
+    if (res_type) |t| {
+        if (t.* != .Void) {
+            bind.data.var_decl.type_ref = try typeRefForEiwaType(allocator, t);
+            bind.resolved_type = t;
+            result_val.resolved_type = t;
+        }
+    } else if (v.type_ref) |tr| {
+        bind.data.var_decl.type_ref = tr;
+    }
     try out.append(bind);
     return out.toOwnedSlice();
 }
@@ -2200,17 +2243,15 @@ fn rewriteReturnTaskAwait(
     return out.toOwnedSlice();
 }
 
-/// `if (!<recv>.done) { Scheduler.run() }`
+/// `while (!<recv>.done) { if (!Scheduler.runStep()) { Coroutine.sleepMs(1) } }`
 fn buildPollStmt(recv: *ASTNode) *ASTNode {
-    // Run the scheduler until the awaited task is done — but NOT past it:
-    // `while (!recv.done && Scheduler.runStep()) {}` drains only what is
-    // needed to complete `recv`, leaving independent queued tasks for their
-    // own await (they are not spuriously coupled to this one).
     const not_done = mkUnary(.bang, mkGetExpr(recv, "done"));
     const step_call = mkCall(mkGetExpr(mkIdent("Scheduler"), "runStep"), &.{});
-    const cond = mkBinary(.and_and, not_done, step_call);
-    const body = mkBlock(&.{});
-    return mkWhile(cond, body);
+    const not_step = mkUnary(.bang, step_call);
+    const sleep_call = mkCall(mkGetExpr(mkIdent("Coroutine"), "sleepMs"), &.{mkIntLit(1)});
+    const if_stmt = mkIf(not_step, mkBlock(&.{mkExprStmt(sleep_call)}));
+    const body = mkBlock(&.{if_stmt});
+    return mkWhile(not_done, body);
 }
 
 // ---------------------------------------------------------------------------

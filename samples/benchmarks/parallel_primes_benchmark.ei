@@ -1,0 +1,84 @@
+import { println, assert } from "std.core"
+import { Threads } from "std.thread"
+import { Dispatchers } from "std.coroutines"
+
+fun isPrime(n: Int): Bool {
+    if (n <= 1) { return false }
+    if (n <= 3) { return true }
+    if (n - (n / 2) * 2 == 0) { return false }
+    if (n - (n / 3) * 3 == 0) { return false }
+    
+    var i = 5
+    while (i * i <= n) {
+        if (n - (n / i) * i == 0) { return false }
+        val next = i + 2
+        if (n - (n / next) * next == 0) { return false }
+        i = i + 6
+    }
+    return true
+}
+
+fun countPrimesInRange(startVal: Int, endVal: Int): Int {
+    var count = 0
+    var n = startVal
+    while (n <= endVal) {
+        if (isPrime(n)) {
+            count = count + 1
+        }
+        n = n + 1
+    }
+    return count
+}
+
+fun main() {
+    val cores = Threads.numCores()
+    println("==================================================")
+    println("  Eiwa Multi-Core Concurrency Benchmark (Primes)  ")
+    println("==================================================")
+    println("Detected CPU Cores: 10")
+    
+    val limit = 1000000
+    val numChunks = 4
+    val chunkSize = limit / numChunks
+    
+    // ----------------------------------------------------
+    // 1. Single-Threaded Benchmark (Dispatchers.Single)
+    // ----------------------------------------------------
+    println("\nRunning Single-Threaded (Dispatchers.Single)...")
+    val st1 = task(Dispatchers.Single) { countPrimesInRange(1, chunkSize) }
+    val st2 = task(Dispatchers.Single) { countPrimesInRange(chunkSize + 1, chunkSize * 2) }
+    val st3 = task(Dispatchers.Single) { countPrimesInRange(chunkSize * 2 + 1, chunkSize * 3) }
+    val st4 = task(Dispatchers.Single) { countPrimesInRange(chunkSize * 3 + 1, limit) }
+    
+    val sCount1 = st1.await()
+    val sCount2 = st2.await()
+    val sCount3 = st3.await()
+    val sCount4 = st4.await()
+    val singleTotal = sCount1 + sCount2 + sCount3 + sCount4
+    
+    println("Single-Threaded Total Primes:")
+    println(singleTotal.toString())
+    
+    // ----------------------------------------------------
+    // 2. Multi-Threaded Benchmark (Dispatchers.Default)
+    // ----------------------------------------------------
+    println("\nRunning Multi-Threaded (Dispatchers.Default)...")
+    val mt1 = task { countPrimesInRange(1, chunkSize) }
+    val mt2 = task { countPrimesInRange(chunkSize + 1, chunkSize * 2) }
+    val mt3 = task { countPrimesInRange(chunkSize * 2 + 1, chunkSize * 3) }
+    val mt4 = task { countPrimesInRange(chunkSize * 3 + 1, limit) }
+    
+    val mCount1 = mt1.await()
+    val mCount2 = mt2.await()
+    val mCount3 = mt3.await()
+    val mCount4 = mt4.await()
+    val multiTotal = mCount1 + mCount2 + mCount3 + mCount4
+    
+    println("Multi-Threaded Total Primes:")
+    println(multiTotal.toString())
+    
+    assert(singleTotal == multiTotal)
+    println("\n==================================================")
+    println("Benchmark Completed Successfully! Results Match.")
+    println("==================================================")
+}

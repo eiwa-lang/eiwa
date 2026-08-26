@@ -39,7 +39,7 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
     }
 }
 
-type List<T>(val items: NativeArray<T> = []) : Serializable + Json {
+type List<T>(val items: NativeArray<T> = []) : Equatable, Serializable + Json {
     operator fun get(index: Int): T {
         return this.items[index]
     }
@@ -52,13 +52,31 @@ type List<T>(val items: NativeArray<T> = []) : Serializable + Json {
 
     fun isNotEmpty(): Bool = this.size() > 0
 
+    implement operator fun equals(other: Equatable): Bool {
+        if (other is List<T>) {
+            val otherList = other as List<T>
+            if (this.size() != otherList.size()) {
+                return false
+            }
+            var i = 0
+            while (i < this.size()) {
+                if (this.get(i) != otherList.get(i)) {
+                    return false
+                }
+                i = i + 1
+            }
+            return true
+        }
+        return false
+    }
+
     fun mut(): MutableList<T> {
         return MutableList(this)
     }
 }
 
 type Node<K, V>(val key: K, var value: V, var next: Node<K, V>?) {
-    fun toString(): String = ""
+    implement fun toString(): String = ""
 }
 
 type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {

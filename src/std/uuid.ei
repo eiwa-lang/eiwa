@@ -33,7 +33,7 @@ type Uuid(val bytes: List<Int>) : Identifier {
         return mod(this.bytes[6] / 16, 16)
     }
 
-    operator fun equals(other: Stringable): Bool {
+    implement operator fun equals(other: Stringable): Bool {
         if (other is Uuid) {
             var i = 0
             while (i < 16) {

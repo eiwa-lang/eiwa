@@ -584,4 +584,33 @@ Garante que todo erro de código do usuário seja diagnosticado no frontend com 
 **Razão:**
 Entrega ergonomia moderna de concatenação de strings (estilo Kotlin/Swift/TypeScript), mantendo a estrita segurança de tipos no frontend através do contrato `Stringable` e performance nativa otimizada no backend LLVM sem overhead desnecessário.
 
+## ADR 51: Dispatchers & Thread Pool para Concorrência Multi-Core Real (Phase 69)
+**Status:** Aprovado (Em Implementação)
+**Data:** Agosto 2026
+
+**Contexto:**
+1. O Eiwa implementou com sucesso coroutines stackless (ADR 48), eliminando o neco e a necessidade de shadow stack. No entanto, a execução operava em modo cooperativo single-thread (`Dispatcher.Single`).
+2. Para cargas de trabalho CPU-bound reais e servidores concorrentes de alto desempenho (como o framework `arest`), a execução em thread única exigia workarounds (como chamar `Scheduler.run()` no loop de accept) e não utilizava múltiplos núcleos da CPU.
+3. Precisamos de um modelo de paralelismo multi-thread limpo, seguro para o Boehm GC, sem arquivos C adicionais e ergonomicamente espelhado no modelo de `Dispatchers` do Kotlin.
+
+**Decisão:**
+1. **`Dispatcher.Default` como Padrão Global Eager:**
+   - Todo bloco `task { ... }` agora executa por padrão em `Dispatchers.Default`, sendo despachado e executado imediatamente (*eager*) em uma thread trabalhadora do pool, sem a necessidade de chamadas manuais a `.await()` ou `Scheduler.run()`.
+2. **Arquitetura do Pool de Threads:**
+   - O pool é dimensionado com $N = \text{max}(1, \text{Threads.numCores()})$ threads OS nativas (`pthread_create`).
+   - Cada thread de worker executa um loop consumindo continuações de uma fila protegida por `Mutex` e `CondVar` em Eiwa puro (`src/std/thread.ei`), dormindo em `cond_wait` quando a fila está vazia (consumo zero de CPU).
+3. **Dispatchers Customizados:**
+   - `Dispatcher` é um `type` padrão em Eiwa. Usuários e bibliotecas podem instanciar pools dedicados com `Dispatchers.create(name, threads)` (ex.: pool de banco de dados ou `Dispatchers.IO` para FFI bloqueante) e executar tarefas neles via `task(dispatcher) { ... }`.
+4. **Sincronização de Estado & Await Cross-Thread:**
+   - O estado de término de `StackTask` utiliza operações atômicas (`AtomicBool` em `src/std/atomic.ei`).
+   - Quando uma tarefa é concluída em uma thread do pool, os waiters registrados na waiter-chain são notificados e re-enfileirados no scheduler de seu dispatcher de origem, mantendo a ordem FIFO.
+5. **Integração Multithread com Boehm GC:**
+   - Cada thread criada no pool registra sua stack base via `GC_register_my_thread(&stack_base)` e desregistra na finalização, garantindo rastreamento conservador seguro de raízes GC entre múltiplas threads.
+6. **Zero Runtime em C:**
+   - Todas as primitivas de threading e sincronização residem na biblioteca padrão em Eiwa puro (`src/std/thread.ei`, `src/std/atomic.ei`), usando blocos FFI `lib NativeThread` e `lib NativeAtomic`.
+
+**Razão:**
+Entrega paralelismo real multi-core com speedup proporcional ao número de núcleos para tarefas CPU-bound, elimina o acoplamento do loop de eventos em servidores web e mantém total elegância idiomática no padrão Kotlin/Eiwa.
+
+
 
