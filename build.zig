@@ -72,12 +72,24 @@ fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
     if (fileExists(b, "/usr/local/lib/libgc.dylib")) {
         return .{ .lib_path = "/usr/local/lib" };
     }
-    // Ubuntu/Debian
+    // Ubuntu/Debian x86_64
     if (fileExists(b, "/usr/lib/x86_64-linux-gnu/libgc.so")) {
         return .{ .lib_path = "/usr/lib/x86_64-linux-gnu" };
     }
-    // Linux generic (/usr/lib) and /usr/local — linker default search paths
-    if (fileExists(b, "/usr/lib/libgc.so")) {
+    // Ubuntu/Debian arm64 / aarch64
+    if (fileExists(b, "/usr/lib/aarch64-linux-gnu/libgc.so")) {
+        return .{ .lib_path = "/usr/lib/aarch64-linux-gnu" };
+    }
+    // Linux armhf
+    if (fileExists(b, "/usr/lib/arm-linux-gnueabihf/libgc.so")) {
+        return .{ .lib_path = "/usr/lib/arm-linux-gnueabihf" };
+    }
+    // Linux riscv64
+    if (fileExists(b, "/usr/lib/riscv64-linux-gnu/libgc.so")) {
+        return .{ .lib_path = "/usr/lib/riscv64-linux-gnu" };
+    }
+    // Linux generic (/usr/lib, /usr/lib64) and /usr/local — linker default search paths
+    if (fileExists(b, "/usr/lib/libgc.so") or fileExists(b, "/usr/lib64/libgc.so")) {
         return .{ .lib_path = null };
     }
     if (fileExists(b, "/usr/local/lib/libgc.so")) {
