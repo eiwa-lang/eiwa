@@ -26,7 +26,7 @@ type SpecBlockCont(val task: SpecIntTask) : Continuation {
         this.task.done = true
         var node = this.task.waiters
         while (node != null) {
-            Scheduler.schedule(node!!.cont)
+            Dispatchers.Single.scheduler.schedule(node!!.cont)
             node = node!!.next
         }
         this.task.waiters = null
@@ -38,7 +38,7 @@ type SpecBlockCont(val task: SpecIntTask) : Continuation {
 type SpecMainCont(var label: Int, val task: SpecIntTask, var result: Int) : Continuation {
     implement fun resume() {
         if (this.label == 0) {
-            Scheduler.schedule(SpecBlockCont(this.task))
+            Dispatchers.Single.scheduler.schedule(SpecBlockCont(this.task))
             this.label = 1
             if (!this.task.done) {
                 this.task.waiters = SpecWaiterNode(this, this.task.waiters)
@@ -57,30 +57,37 @@ type SpecMainCont(var label: Int, val task: SpecIntTask, var result: Int) : Cont
 test "stackless task + await delivers the block result to the suspended main" {
     val task = SpecIntTask(false, 0, null)
     val main = SpecMainCont(0, task, 0)
-    Scheduler.schedule(main)
-    Scheduler.run()
+    Dispatchers.Single.scheduler.schedule(main)
+    Dispatchers.Single.scheduler.run()
     assert(main.result == 42)
 }
 
 test "await does not suspend when the task is already done" {
     val task = SpecIntTask(true, 7, null)
     val main = SpecMainCont(0, task, 0)
-    Scheduler.schedule(main)
-    Scheduler.run()
+    Dispatchers.Single.scheduler.schedule(main)
+    Dispatchers.Single.scheduler.run()
     assert(main.result == 7)
     assert(main.label == 2)
 }
 
+type SpecWaiterCont(val name: String, val task: SpecIntTask, var observed: Int) : Continuation {
+    implement fun resume() {
+        this.observed = this.task.result
+    }
+
+    implement fun isDone(): Bool = this.observed == this.task.result
+}
+
 test "multiple waiters all get resumed when the task completes" {
     val task = SpecIntTask(false, 0, null)
-    // Waiters are suspended at label 1 (await point)
-    val m1 = SpecMainCont(1, task, 0)
-    val m2 = SpecMainCont(1, task, 0)
-    // register both waiters manually (simulating two awaiters), then complete
-    task.waiters = SpecWaiterNode(m1, null)
-    task.waiters = SpecWaiterNode(m2, task.waiters)
-    Scheduler.schedule(SpecBlockCont(task))
-    Scheduler.run()
-    assert(m1.result == 42)
-    assert(m2.result == 42)
+    val w1 = SpecWaiterCont("w1", task, 0)
+    val w2 = SpecWaiterCont("w2", task, 0)
+    task.waiters = SpecWaiterNode(w1, SpecWaiterNode(w2, null))
+
+    Dispatchers.Single.scheduler.schedule(SpecBlockCont(task))
+    Dispatchers.Single.scheduler.run()
+
+    assert(w1.observed == 42)
+    assert(w2.observed == 42)
 }

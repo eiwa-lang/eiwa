@@ -2034,6 +2034,9 @@ fn rewriteTaskCall(
         try ctor_args.append(arg);
     }
     const block_ctor_call = mkCall(mkIdent(block_type.data.type_decl.name), ctor_args.items);
+    if (disp_node) |dn| {
+        try out.append(mkExprStmt(mkCall(mkGetExpr(dn, "ensureStarted"), &.{})));
+    }
     const schedule_call = if (disp_node) |dn|
         mkCall(mkGetExpr(mkGetExpr(dn, "scheduler"), "schedule"), &.{block_ctor_call})
     else

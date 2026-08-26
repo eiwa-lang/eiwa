@@ -258,8 +258,25 @@ type Dispatcher(
     val name: String,
     val nThreads: Int,
     val scheduler: TaskScheduler,
-    var isShutdown: Bool
+    var isShutdown: Bool,
+    var isStarted: Bool = false
 ) {
+    fun ensureStarted() {
+        if (!this.isStarted && !this.isShutdown && this.nThreads > 0) {
+            this.isStarted = true
+            var i = 0
+            while (i < this.nThreads) {
+                val buf = Standard.gcMalloc(24)
+                val task = buf as WorkerTask
+                task.dispatcher = this
+                val threadBuf = Standard.gcMalloc(16)
+                val routine = funPointer { arg: Pointer -> workerThreadTrampoline(arg) }
+                NativeThread.pthreadCreate(threadBuf, null, routine, buf)
+                i = i + 1
+            }
+        }
+    }
+
     fun shutdown() {
         this.isShutdown = true
         this.scheduler.shutdown()
@@ -276,32 +293,24 @@ object Dispatchers {
 
     fun create(name: String, threads: Int): Dispatcher {
         val sched = TaskScheduler.create()
-        val disp = Dispatcher(name, threads, sched, false)
-        var i = 0
-        while (i < threads) {
-            val buf = Standard.gcMalloc(24)
-            val task = buf as WorkerTask
-            task.dispatcher = disp
-            val threadBuf = Standard.gcMalloc(16)
-            val routine = funPointer { arg: Pointer -> workerThreadTrampoline(arg) }
-            NativeThread.pthreadCreate(threadBuf, null, routine, buf)
-            i = i + 1
-        }
-        return disp
+        return Dispatcher(name, threads, sched, false, false)
     }
 }
 
 // Global facade for compiler-generated code and backward compatibility
 object Scheduler {
     fun schedule(cont: Continuation) {
+        Dispatchers.Default.ensureStarted()
         Dispatchers.Default.scheduler.schedule(cont)
     }
 
     fun sleep(cont: Continuation, ms: Int): Bool {
+        Dispatchers.Default.ensureStarted()
         return Dispatchers.Default.scheduler.sleep(cont, ms)
     }
 
     fun yield(cont: Continuation): Bool {
+        Dispatchers.Default.ensureStarted()
         return Dispatchers.Default.scheduler.yield(cont)
     }
 
