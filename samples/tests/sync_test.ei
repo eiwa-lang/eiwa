@@ -1,0 +1,99 @@
+import { assert } from "std.core"
+import { Thread, Threads, RawMutex, Mutex, sync } from "std.thread"
+
+test "should return value from sync { }" {
+    val result = sync {
+        10 + 32
+    }
+    assert(result == 42)
+}
+
+test "should return value from sync(lock) { }" {
+    val lock = Mutex()
+    val result = sync(lock) {
+        "hello " + "world"
+    }
+    assert(result == "hello world")
+}
+
+test "should return value from lock.withLock { }" {
+    val lock = Mutex()
+    val result = lock.withLock {
+        true
+    }
+    assert(result == true)
+}
+
+test "should synchronize counter across threads with sync { }" {
+    val lock = Mutex()
+    var counter = 0
+
+    val t1 = Threads.spawn {
+        var i = 0
+        while (i < 100) {
+            sync(lock) {
+                counter = counter + 1
+            }
+            i = i + 1
+        }
+    }
+
+    val t2 = Threads.spawn {
+        var i = 0
+        while (i < 100) {
+            sync(lock) {
+                counter = counter + 1
+            }
+            i = i + 1
+        }
+    }
+
+    t1.join()
+    t2.join()
+
+    assert(counter == 200)
+}
+
+test "should synchronize string concat across threads with sync { }" {
+    var log = ""
+
+    val t1 = Threads.spawn {
+        sync {
+            log = log + "AAA"
+        }
+    }
+    val t2 = Threads.spawn {
+        sync {
+            log = log + "BBB"
+        }
+    }
+    t1.join()
+    t2.join()
+
+    assert(log.length == 6)
+    assert(log.contains("AAA"))
+    assert(log.contains("BBB"))
+}
+
+test "should synchronize independent resources using dedicated Mutex instances" {
+    val lockA = Mutex()
+    val lockB = Mutex()
+    var countA = 0
+    var countB = 0
+
+    val t1 = Threads.spawn {
+        sync(lockA) {
+            countA = countA + 10
+        }
+    }
+    val t2 = Threads.spawn {
+        sync(lockB) {
+            countB = countB + 20
+        }
+    }
+    t1.join()
+    t2.join()
+
+    assert(countA == 10)
+    assert(countB == 20)
+}

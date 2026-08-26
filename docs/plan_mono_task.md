@@ -2,7 +2,7 @@
 
 > **⚠️ OBSOLETO (2026-08):** este plano levou o `Task<T>` ao modelo **neco (stackful)** da
 > Phase 51. O neco foi **removido** — o modelo atual é **coroutines stackless** (Phase 68 /
-> ADR 48 / `docs/tasks-coroutines-stackless.md`): `task {}`/`await()` viram state machines
+> ADR 48): `task {}`/`await()` viram state machines
 > geradas pelo compilador + Scheduler em Eiwa puro. Mantido apenas como histórico.
 
 ## Etapa 2 — Refatoração de `Task<T>` (Remover Special Cases) (Phase 51)

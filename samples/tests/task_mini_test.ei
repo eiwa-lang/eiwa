@@ -1,7 +1,7 @@
-import { println } from "std.core"
+import { assert } from "std.core"
 
 test "task single" {
     val t = task { 42 }
     val r = t.await()
-    println(r)
+    assert(r == 42)
 }

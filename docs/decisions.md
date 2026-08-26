@@ -526,8 +526,7 @@ Dispatch O(1) sem busca linear, casa naturalmente com múltiplos contratos por t
 4. **Scheduler em Eiwa puro:** o runtime de corrotinas é escrito em Eiwa (`src/std/coroutines.ei`); as únicas primitivas de sistema (`nanosleep`/`sched_yield`/`poll`) vêm do FFI (`lib` + `@Header`/`@Alias`). Nenhum `eiwa_scheduler.c`.
 5. **Paralelismo real (thread pool / dispatchers) é PROPOSTA adiada:** requer espera cross-thread, sincronização de estado e GC multithread — redesign, não o modelo atual.
 
-**Razão:**
-Elimina a classe inteira de bugs de raízes GC não escaneadas sem a complexidade da shadow stack; mantém o modelo de programação Kotlin (`task {}`/`await()`) sem runtime C de corrotinas; simplifica o projeto removendo o segundo backend e o mecanismo `@MainWrapper`. Plano operacional: `docs/tasks-coroutines-stackless.md`.
+Elimina a classe inteira de bugs de raízes GC não escaneadas sem a complexidade da shadow stack; mantém o modelo de programação Kotlin (`task {}`/`await()`) sem runtime C de corrotinas; simplifica o projeto removendo o segundo backend e o mecanismo `@MainWrapper`.
 
 ## ADR 49: Motor Unificado de Diagnósticos, Internal Compiler Error (ICE) e Validação Estrita de Métodos
 **Status:** Aprovado / Implementado

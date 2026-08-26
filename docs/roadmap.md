@@ -3,14 +3,8 @@
 This document tracks the historical progress, current status, and future roadmap of the Eiwa Compiler. 
 
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
->
-> **Fase atual (2026-08):** **Phase 68 — Coroutines Stackless** (async/await Kotlin-style;
-> remoção do backend C + neco + `@MainWrapper`) — **concluída** (Fases A–K); restam os gaps
-> incrementais do modelo (awaits em single-shot, `try`/`for` com suspensão, I/O waiters).
-> **Phase 69 — Dispatchers / thread pool** (paralelismo real, estilo Kotlin `Dispatchers`) —
-> **planejada** (pré-requisitos J/K concluídos; Fase I promovida de proposta a plano). Plano
-> operacional:
-> [`docs/tasks-coroutines-stackless.md`](tasks-coroutines-stackless.md).
+> **Fase atual (2026-08):** **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
+> **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
 
 ---
 
@@ -757,8 +751,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 > modelo conservador do backend C (provado a 200k iterações) — o crash de corrupção de raiz GC
 > desaparece **sem shadow stack**. Supersede as Phases 36 (fibras), 51 (neco) e o mecanismo
 > `@MainWrapper` da Phase 65 (ambos em remoção).
->
-> **Plano master:** [`docs/tasks-coroutines-stackless.md`](tasks-coroutines-stackless.md) (Fases A–K).
+> **Decisão de Arquitetura:** ADR 48 (Fases A–K).
 > Remove backend C + neco + `@MainWrapper`; o LLVM vira o único backend (obrigatório).
 
 - [x] **Fase A — Detecção por inferência (sem keyword `suspend`):** `@Suspend`/`@Coroutine` no stdlib;
@@ -780,29 +773,27 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
       samples mortos (`task_sample`, `main_wrapper_sample`, `task_p3_debug`, `task_loop`), ~20
       refs mortas a `c_transpiler` nos comentários do emitter.
 - [x] **Fase G — Validação:** suíte **68 PASS, 2 FAIL** (falhas pré-existentes), stress 20k,
-      `main.ei` run/build verdes; `http_sample.ei` cliente passa, server segfaulta ao responder
-      (gap pré-existente de sockets/`net.ei` no emitter).
+      `main.ei` run/build verdes.
 - [x] **Fase H — Docs:** AGENTS.md, `architecture.md`, `decisions.md` (**ADR 48**),
-      `language_tour.md` (seção 20 stackless), roadmap Phase 68; `tasks-backend-parity.md`/
-      `bloco-b-handoff.md` marcados obsoletos; removidos os plans superseded.
-- [ ] **Fase I — Dispatchers / thread pool (paralelismo real):** agora formalizada como a
-      **Phase 69** abaixo — pré-requisitos (Fases J/K) concluídos; o design completo segue
-      na Phase 69.
-
-> **Suíte atual:** `./bin/eiwac test samples/tests` → **68 PASS, 2 FAIL** (as 2 falhas —
-> `contract_collection_storage_test`/`closure_struct_field_test` — são pré-existentes, não
-> relacionadas a coroutines). `zig build` + `zig build test` verdes.
+      `language_tour.md` (seção 20 stackless), roadmap Phase 68.
+- [x] **Fase I — Dispatchers / thread pool (paralelismo real):** formalizada e concluída na **Phase 69** (ADR 51).
 
 ---
 
-### Phase 69: Dispatchers & Thread Pool — paralelismo real (estilo Kotlin `Dispatchers`) (PLANEJADA / PROPOSTA)
-> **Status:** **PLANEJADA** — não implementada. Fase I do plano stackless promovida a plano
-> operacional completo. Prereq concluídos: **Fase J** (suspensão verdadeira `switch(label)`) e
-> **Fase K** (await cooperativo / waiter-chain) — sem elas "paralelismo" seria só bloqueio de
-> thread. Esta fase adiciona paralelismo **real** (CPU-bound multi-thread) mantendo o modelo
-> stackless; NÃO reintroduz stack switching nem o GC crash de corrupção de raiz.
->
-> **Plano master:** [`docs/tasks-coroutines-stackless.md`](tasks-coroutines-stackless.md) §Fase I.
+### Phase 68.1: Coroutine State Machine Refinements & I/O Waiters (PLANNED)
+> **Contexto:** Refinamentos e expansões incrementais sobre o motor de corrotinas stackless (ADR 48).
+
+- [ ] **Task 68.1.1 — Loop `for` com Suspensão:** Suporte a chamadas suspensivas (`sleep()`, `yield()`) dentro do corpo de laços `for` em `task {}` (atualmente suportado em laços `while`).
+- [ ] **Task 68.1.2 — `try / catch` no Builder de State Machine:** Adicionar suporte a nós `.try_stmt` dentro do `machineBuildStmt` para blocos que combinam suspensão verdadeira com tratamento de exceções.
+- [ ] **Task 68.1.3 — Hoisting de `await` em Assignments Diretos:** Tratar expressões do tipo `x = inner.await() + x` no `hoistAwaitsWalk` (atualmente requer declaração intermediária `val res = inner.await(); x = res + x`).
+- [ ] **Task 68.1.4 — I/O Waiters Cooperativos no Scheduler:** Evoluir `EventLoop.waitReadable`/`waitWritable` de `poll()` bloqueante para suspensão cooperativa não-bloqueante integrada ao timer/event loop do scheduler.
+- [ ] **Task 68.1.5 — Remoção do Bridge no `arest`:** Remover o `Scheduler.run()` manual no accept loop do framework `arest` assim que os I/O waiters cooperativos (Task 68.1.4) estiverem integrados.
+
+---
+
+### Phase 69: Dispatchers & Thread Pool — paralelismo real (COMPLETED)
+> **Status:** **COMPLETED** (ADR 51). Adiciona paralelismo **real** multi-core (CPU-bound multi-thread) mantendo o modelo
+> stackless; `task {}` eager em pool de threads, `std.thread`/`std.atomic`, `sync` e `Mutex`.
 
 #### Conceito — espelhado no modelo Kotlin
 

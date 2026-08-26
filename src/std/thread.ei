@@ -46,7 +46,7 @@ lib NativeThread {
     fun sysconf(name: Int): Int
 }
 
-type Mutex(val ptr: Pointer) {
+type RawMutex(val ptr: Pointer) {
     fun lock() {
         NativeThread.pthreadMutexLock(this.ptr)
     }
@@ -59,16 +59,37 @@ type Mutex(val ptr: Pointer) {
         NativeThread.pthreadMutexDestroy(this.ptr)
     }
 } object {
-    fun create(): Mutex {
+    fun create(): RawMutex {
         // Allocate 128 bytes (sufficient for pthread_mutex_t on all platforms: macOS=64B, Linux=40B)
         val mPtr = Standard.gcMalloc(128)
         NativeThread.pthreadMutexInit(mPtr, null)
-        return Mutex(mPtr)
+        return RawMutex(mPtr)
     }
 }
 
+type Mutex(val raw: RawMutex = RawMutex.create()) {
+    fun withLock<T>(action: () -> T): T {
+        this.raw.lock()
+        val result = action()
+        this.raw.unlock()
+        return result
+    }
+}
+
+object GlobalSync {
+    val defaultLock: Mutex = Mutex()
+}
+
+fun sync<T>(action: () -> T): T {
+    return GlobalSync.defaultLock.withLock(action)
+}
+
+fun sync<T>(lock: Mutex, action: () -> T): T {
+    return lock.withLock(action)
+}
+
 type CondVar(val ptr: Pointer) {
-    fun wait(mutex: Mutex) {
+    fun wait(mutex: RawMutex) {
         NativeThread.pthreadCondWait(this.ptr, mutex.ptr)
     }
 

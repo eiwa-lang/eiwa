@@ -1,16 +1,21 @@
 import { assert } from "std.core"
-import { Thread, Mutex, CondVar, Threads } from "std.thread"
+import { Thread, RawMutex, Mutex, CondVar, Threads } from "std.thread"
+
+object ThreadCounter {
+    var counter: Int = 0
+}
 
 test "should detect available CPU cores" {
     val cores = Threads.numCores()
     assert(cores >= 1)
 }
 
-test "should lock and unlock mutex" {
-    val mutex = Mutex.create()
-    mutex.lock()
-    mutex.unlock()
-    mutex.destroy()
+test "should synchronize block using withLock" {
+    val mutex = Mutex()
+    val res = mutex.withLock {
+        10 + 20
+    }
+    assert(res == 30)
 }
 
 test "should spawn thread and join" {
@@ -23,7 +28,7 @@ test "should spawn thread and join" {
 }
 
 test "should synchronize counter across threads with mutex" {
-    val mutex = Mutex.create()
+    val mutex = RawMutex.create()
     var counter = 0
 
     val t1 = Threads.spawn {
@@ -54,7 +59,7 @@ test "should synchronize counter across threads with mutex" {
 }
 
 test "should signal condition variable between threads" {
-    val mutex = Mutex.create()
+    val mutex = RawMutex.create()
     val cond = CondVar.create()
     var ready = false
 

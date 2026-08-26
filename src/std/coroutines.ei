@@ -5,7 +5,7 @@
 
 import { mod } from "std.math"
 import { NativeMemory, Standard } from "std.core"
-import { Thread, Mutex, CondVar, Threads, NativeThread, NativeGC } from "std.thread"
+import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, sync } from "std.thread"
 import { AtomicBool } from "std.atomic"
 
 // ============================================================================
@@ -48,7 +48,7 @@ type ContNode(val cont: Continuation, var next: ContNode?)
 type TimerNode(var deadline: Int, var cont: Continuation, var next: TimerNode?)
 
 type TaskScheduler(
-    val mutex: Mutex,
+    val mutex: RawMutex,
     val cond: CondVar
 ) {
     var head: ContNode? = null
@@ -222,7 +222,7 @@ type TaskScheduler(
     }
 } object {
     fun create(): TaskScheduler {
-        val m = Mutex.create()
+        val m = RawMutex.create()
         val c = CondVar.create()
         return TaskScheduler(m, c)
     }

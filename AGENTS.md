@@ -5,8 +5,7 @@ Welcome, AI Agent! This guide outlines the project context, technical stack, arc
 ## 🌌 Project Overview
 Eiwa is a pragmatic, statically typed, natively compiled systems language with a Kotlin-inspired syntax. 
 * **The Compiler** is built from scratch in **Zig (0.16.0)**.
-* **The Backend** compiles Eiwa code (`.ei`) into **LLVM IR** via the LLVM C API — executed through a JIT for development loops and optimized with `-O3` for production binaries. LLVM is the **only** backend (the C transpiler was removed, 2026-08).
-* **Concurrency:** cooperative **stackless coroutines** (Kotlin-style `task {}`/`await()`). The compiler transforms suspending task bodies into **state machines** (heap `Continuation` objects) and an Eiwa-pure `Scheduler` (FIFO queue + timer heap) drives them — no stack switching, no C coroutine runtime. Plan: `docs/tasks-coroutines-stackless.md`.
+* **Concurrency:** cooperative **stackless coroutines** (Kotlin-style `task {}`/`await()`). The compiler transforms suspending task bodies into **state machines** (heap `Continuation` objects) and an Eiwa-pure `Scheduler` (FIFO queue + timer heap) drives them across multi-core `Dispatchers` — no stack switching, no C coroutine runtime.
 * **Memory Management:** Driven by a conservative Garbage Collector (**Boehm GC**).
 
 ---
@@ -72,7 +71,6 @@ zig build test
 * [docs/decisions.md](docs/decisions.md): ADRs (Architecture Decision Records). **Read before introducing new patterns or changing existing decisions** to avoid rework.
 * [docs/language_tour.md](docs/language_tour.md): Full Eiwa syntax reference. Use when writing samples, tests, or `.ei` code examples.
 * [docs/roadmap.md](docs/roadmap.md): Phase history, completed tasks, and pending features. Read to identify the current project state.
-* [docs/tasks-coroutines-stackless.md](docs/tasks-coroutines-stackless.md): **Plano operacional atual** — coroutines stackless (task/await, state machines, Scheduler/timer heap, remoção C/neco). Read before touching anything concurrency/coroutine related.
 * [docs/tasks-backend-parity.md](docs/tasks-backend-parity.md): Operacional index of every remaining `TODO(emitter)` in the LLVM backend (GAPs, SPECIAL CASEs, WORKAROUNDs, runtime duplicates) with file:line references. Read before working on LLVM emitter cleanup.
 * [docs/setup.md](docs/setup.md): Dependency installation and environment setup. Only needed during initial setup.
 

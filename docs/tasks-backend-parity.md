@@ -1,8 +1,8 @@
 # Tasks de Paridade Backend (LLVM vs C)
 
-> **⚠️ SUPERSEDED (2026-08):** o backend C foi **removido** (coroutines stackless, ADR 48 /
-> `docs/tasks-coroutines-stackless.md`). Não há mais "paridade LLVM vs C". Este arquivo foi
-> renomeado de propósito para permanecer como **índice operacional dos `TODO(emitter)`**
+> **⚠️ SUPERSEDED (2026-08):** o backend C foi **removido** (coroutines stackless, ADR 48).
+> Não há mais "paridade LLVM vs C". Este arquivo foi renomeado de propósito para permanecer como
+> **índice operacional dos `TODO(emitter)`**
 > restantes no backend LLVM (GAPs, SPECIAL CASEs, WORKAROUNDs, duplicações do runtime) — use-o
 > para caçar dívidas técnicas do emissor. O trabalho estrutural (modelo de valor de `String`,
 > dispatch via vtable real) continua valendo, referenciado pelo `docs/roadmap.md` (Task 61.5 /
@@ -26,6 +26,8 @@
 
 | Item | Local | O que era | Como foi resolvido |
 |---|---|---|---|
+| C1 / C2 | `core.zig` | `emitLoadInt64`/`emitStoreInt64` duplicavam funções C em IR | **Removido** — substituído por chamadas nativas de stdlib (`Standard.loadInt64`/`Standard.storeInt64`) |
+| Bloco B (GC no JIT) | `core.zig`, `expression.zig` | JIT usava `malloc` cru em vez de `GC_malloc` | **Resolvido** — `__eiwa_gc_init_ctor`, `GC_allow_register_threads()`, `registerJITGlobalsAsRoots()` e `prefer_gc_alloc` garantem alocações gerenciadas pelo Boehm GC no JIT e nativo |
 | Comment obsoleto (map_literal) | `expression.zig` (~3747) | TODO descrevendo fix já aplicado ("PREVIOUSLY returned null") | **Deletado** — o código já constrói o `Map` real |
 | Comment obsoleto (field heuristic) | `expression.zig` (~274) | TODO sobre fallback `scope.get(name)==null` | **Deletado** — fallback removido via `owner_type_c_name` (`is_class_property`) |
 | Tolerância skip-stub | `core.zig:555` | Comentário dizia "remove once Phase 61 lands" | **Comentário reescrito** — verificado que a tolerância ainda é necessária (detalhes no próprio TODO) |
@@ -51,29 +53,14 @@ os itens deste bloco.
 | A7 | `expression.zig:2884` | COUPLING | Pass-through get_expr↔call_expr de `toString`/`hashCode` (coupling sutil, ordem-dependente) — o pass-through de `hashCode` foi adicionado em AGO/2026 espelhando o de `toString`; colapsar num único path | médio |
 | A8 | `expression.zig:381` | SPECIAL CASE | `push`/`get`/`set`/`length` de `.Array` inline (em vez de helpers `EiwaArray_*` como o C) | médio |
 | A9 | `expression.zig:2935` | LAYOUT | `.length` sobre layout raw de buffer array (slot 0 = size, 1 = cap, 2.. = elems) | baixo-médio |
-| A10 | `core.zig:1484` | DUP | `emitToStringHelper` reimplementa a heurística `eiwa_to_string` do runtime (`0→"null"`, `1→"true"`, `<0x10000→int`, senão String) | médio |
-| A11 | `core.zig:1730` | DUP | `emitHashStringHelper` copia manual `String.hashCode` (redundante se String for materializada) | médio |
-| A12 | `core.zig:1795` | SPECIAL CASE | Helper hand-emitido de `String.replace` | médio |
+| A10 | `core.zig:1884` | DUP | `emitToStringHelper` reimplementa a heurística `eiwa_to_string` do runtime (`0→"null"`, `1→"true"`, `<0x10000→int`, senão String) | médio |
+| A11 | `core.zig:1959` | DUP | `emitHashStringHelper` copia manual `String.hashCode` (redundante se String for materializada) | médio |
+| A12 | `core.zig:2024` | SPECIAL CASE | Helper hand-emitido de `String.replace` | médio |
 
 ---
 
-## 🟡 B. WORKAROUNDs de libgc no JIT
-
-> **⚠️ IMPORTANTE (2026-08):** "linkar libgc no host" **não é suficiente** para usar `GC_malloc`
-> no JIT — foi tentado e quebrou 11 testes (SIGABRT) porque programas sem neco não chamam
-> `GC_init()` e o JIT não registra raízes. O handoff completo está em
-> **[`docs/bloco-b-handoff.md`](bloco-b-handoff.md)** (causa raiz, checklist, special-cases a remover).
-
-> **Causa raiz única:** o binário host `eiwac` não linka libgc, então código JIT que chama
-> `GC_malloc` resolve para null/garbage e pendura. O emitter prefere `malloc` (leaks, sem GC)
-> até o host linkar libgc **e o GC ser inicializado/registrar raízes no JIT**.
-
-| ID | Local | Tipo | Descrição | Esforço |
-|---|---|---|---|---|
-| B1 | `core.zig:2252` | WORKAROUND | `malloc` em vez de `GC_malloc` na alocação de `type`/objetos | estrutural (build/link host) |
-| B2 | `core.zig:1693` | WORKAROUND | `malloc` first no `core_Int_toString` (buf 32) | idem |
-| B3 | `expression.zig:800` | WORKAROUND | `malloc` first na alocação de array | idem |
-| B4 | `expression.zig:4417` | WORKAROUND | `realloc` first no `EiwaArray_push` (C usa `GC_REALLOC`) | idem |
+## 🟡 B. WORKAROUNDs de libgc no JIT (CONCLUÍDO)
+> **Resolvido:** O JIT e o build nativo alocam via `GC_malloc`/`GC_REALLOC` com registro de raízes globais e de threads (`prefer_gc_alloc`).
 
 ---
 
@@ -81,42 +68,29 @@ os itens deste bloco.
 
 | ID | Local | Tipo | Descrição | Esforço |
 |---|---|---|---|---|
-| C1 | `core.zig:1554` | DUP | `emitLoadInt64` emite IR inline que duplica `eiwa_load_int64` do runtime | **baixo** — linkar o helper em vez de re-emitir |
-| C2 | `core.zig:1571` | DUP | `emitStoreInt64` idem para `eiwa_store_int64` | **baixo** — idem |
-| C3 | `expression.zig:401` | DUP/HEURISTIC | Teste "Stringable-ness" duplicado (get_expr vs call_expr) e stringly-typed (`"Stringable"`/`"core_Stringable"` + lista hardcoded) | **médio** — centralizar helper `isStringable(resolved_type)` |
-| C4 | `core.zig:2057` | DUP/WORKAROUND | `emitSocketHelpers` hand-emite em IR os 6 helpers POSIX (`eiwa_tcp_bind/accept`, `eiwa_socket_read/write`, `eiwa_tcp_set_nonblocking`, `eiwa_socket_close`), duplicando `net_helpers.h` (`static inline`). O backend C `#include` o header no `.c` gerado; o LLVM não tem C pra injetar e o JIT dylib nunca compila o header, então os externs resolveriam pra null (crash). Constantes hardcoded por plataforma (macOS vs Linux). **Torna-se redundante se/bloco B** (linkar runtime no host) for feito. | **médio** — só resolve com o runtime linkado no host |
+| C3 | `expression.zig:477` | DUP/HEURISTIC | Teste "Stringable-ness" duplicado (get_expr vs call_expr) e stringly-typed (`"Stringable"`/`"core_Stringable"` + lista hardcoded) | **médio** — centralizar helper `isStringable(resolved_type)` |
+| C4 | `core.zig:2275` | DUP/WORKAROUND | `emitSocketHelpers` hand-emite em IR os 6 helpers POSIX (`eiwa_tcp_bind/accept`, `eiwa_socket_read/write`, `eiwa_tcp_set_nonblocking`, `eiwa_socket_close`), duplicando `net_helpers.h` (`static inline`). Constantes hardcoded por plataforma (macOS vs Linux). | **médio** — compilar e linkar o wrapper C real |
 
 ---
 
-## 🔴 D. GAPs reais (bugs potenciais / paridade)
+## 🔴 D. GAPs reais (bugs potenciais / robustez)
 
 | ID | Local | Tipo | Descrição | Esforço |
 |---|---|---|---|---|
-| D1 | `expression.zig:3249` | HEURISTIC | `when (x) is T` por heurística de range de ponteiro: `< 0x10000 → Int/Double`, `<= 1 → Bool`, `>= 0x10000 → custom`. **Espelhado no C** em `c_transpiler/expression.zig:1120` | estrutural |
+| D1 | `expression.zig:3249` | HEURISTIC | `when (x) is T` por heurística de range de ponteiro: `< 0x10000 → Int/Double`, `<= 1 → Bool`, `>= 0x10000 → custom`. | estrutural |
 | D2 | `expression.zig:3856` | VALUE-MODEL | `coerceArg` box/unbox/extends em toda chamada (primitivas = ints crus, Union/contract = ponteiros). "Symptom, not a fix" | estrutural |
-| D3 | `core.zig:217` | FRAGILE | `jmp_buf` modelado como `[64 × i64]` fixo; o tamanho real é plataforma/arch-específico. Fix: frame com `jmp_buf` real (ou incluir `eiwa_runtime.h` como o C) | médio |
-| D4 | `c_transpiler/statement.zig:197` | PARITY GAP | **LLVM só trata `catches[0]`** em `try/catch`; o C trata multi-catch tipado + else-rethrow. Se um Eiwa usar 2+ catches, o LLVM falha silenciosamente | médio |
-
----
-
-## 🟢 E. Referências cruzadas no C (não são TODO do C, apontam para o LLVM)
-
-| Local | O que é |
-|---|---|
-| `c_transpiler/statement.zig:197` | Comentário apontando que o LLVM só lida com `catches[0]` → item D4 |
-| `c_transpiler/expression.zig:1120` | Comentário apontando que o LLVM herdou a heurística `when (x) is T` → item D1 |
+| D3 | `core.zig:306` | FRAGILE | `jmp_buf` modelado como `[64 × i64]` fixo; o tamanho real é plataforma/arch-específico. Fix: frame com `jmp_buf` real dependente do target. | médio |
+| D4 | `statement.zig:537` | GAP | **LLVM só trata `catches[0]`** em `try/catch`. Se um código Eiwa usar 2+ catches (`catch (e: TypeA) ... catch (e: TypeB)`), o LLVM ignora os blocos subsequentes. | médio |
 
 ---
 
 ## 📌 Sugestão de ordem de execução
 
-1. **C1/C2** (duplicação `eiwa_load/store_int64`) — mecânico, baixo risco, elimina duplicação.
-2. **C3** (helper `isStringable` único) — reduz drift entre get_expr/call_expr.
-3. **D3** (jmp_buf) — fragilidade pontual de plataforma.
-4. **D4** (multi-catch LLVM) — gap de paridade real, teste dedicado.
-5. **Bloco A** — após D4; destrava a remoção da tolerância `core.zig:555`.
-6. **Bloco B** — depende de `GC_init()` no JIT + registro de raízes + flip `malloc→GC_malloc`.
-   Handoff completo em **[`docs/bloco-b-handoff.md`](bloco-b-handoff.md)**.
+1. **C3** (helper `isStringable` único) — reduz drift entre get_expr/call_expr.
+2. **D3** (`jmp_buf`) — fragilidade pontual de plataforma no frame de exceção.
+3. **D4** (multi-catch LLVM) — suporte completo a múltiplos blocos catch tipados.
+4. **C4** (`emitSocketHelpers`) — linkar runtime/helpers em vez de gerar IR manual.
+5. **Bloco A** — modelo de valor de `String` (`{i8*, i64}`) e vtables reais (elimina A1–A12).
 
 ---
 

@@ -1317,7 +1317,7 @@ eiwac run app.ei -x 1 --verbose   # Process.args() -> ["-x", "1", "--verbose"]
 ### 16.4 Custom Main Wrappers (`@MainWrapper`) — REMOVIDO (2026-08)
 
 > O mecanismo `@MainWrapper` foi **removido** junto com o runtime stackful (neco) — ver
-> ADR 48 / `docs/tasks-coroutines-stackless.md`. Com coroutines stackless o entry point é
+> ADR 48. Com coroutines stackless o entry point é
 > sempre `main`/`eiwa_test_main` direto: o `Scheduler` de tasks é inicializado e drenado pelo
 > próprio `main` (via `Scheduler.run()` no final), sem shims de entry. O uso de `@MainWrapper`
 > no código agora é ignorado (annotation desconhecida é metadado inerte).
@@ -1541,7 +1541,7 @@ Then, run `eiwa test` in your terminal. The compiler will automatically discover
 > **coroutines stackless** (estilo Kotlin): o compilador transforma corpos de `task { }` em **state
 > machines** (objetos heap `Continuation`) executados concorrentemente em um pool de threads nativas
 > (`Dispatchers.Default`), com gerenciamento seguro via Boehm GC e sincronização FIFO thread-safe.
-> Detalhes: ADR 48, ADR 51 e `docs/tasks-dispatchers-thread-pool.md`.
+> Detalhes: ADR 48 e ADR 51.
 
 Eiwa oferece concorrência leve, paralelismo multi-core real e estruturado através das funções da stdlib: `task { }`, `task(dispatcher) { }` e `.await()`. Não existem keywords especiais ou callbacks — apenas lambdas, dispatchers e tipos genéricos.
 
@@ -1674,57 +1674,37 @@ fun example() {
 > cooperativos de verdade** (state machine): o worker é liberado para outras tarefas enquanto o timer
 > não dispara. `await()` registra o caller na waiter-chain e retoma assim que o resultado estiver pronto.
 
-### 20.8 Primitivas de Sincronização & Threads (`Mutex`, `CondVar`, `AtomicInt`, `Threads`)
+### 20.8 Primitivas de Sincronização & Atomicidade (`sync`, `Mutex`, `AtomicInt`)
 
-Para controle de baixo nível de sincronização e comunicação entre múltiplas threads paralelas, a biblioteca padrão oferece suporte direto através dos módulos `std.thread` e `std.atomic`:
+Para sincronização e comunicação segura entre múltiplas threads paralelas e corrotinas concorrentes, a biblioteca padrão oferece suporte de alto nível via `sync` (`std.thread`) e operações atômicas sem lock (`std.atomic`):
 
-#### 1. `Mutex` (Exclusão Mútua)
-Garante que apenas uma thread por vez execute uma seção crítica de código (baseado em `pthread_mutex_t`):
-
-```kotlin
-import { Mutex } from "std.thread"
-
-val mutex = Mutex.create()
-var sharedCounter = 0
-
-// Dentro de tasks paralelas:
-mutex.lock()
-sharedCounter = sharedCounter + 1
-mutex.unlock()
-
-// Liberar recursos quando não for mais necessário:
-mutex.destroy()
-```
-
-#### 2. `CondVar` (Variáveis de Condição)
-Permite que threads aguardem notificações eficientes sem gastar ciclos de CPU (baseado em `pthread_cond_t`):
+#### 1. `sync { ... }` e `sync(lock) { ... }` (Sincronização Idiomática)
+Garante exclusão mútua em blocos de código com sintaxe de lambda limpa. Você pode usar o lock global padrão ou instâncias dedicadas de `Mutex()`:
 
 ```kotlin
-import { Mutex, CondVar } from "std.thread"
+import { sync, Mutex } from "std.thread"
 
-val mutex = Mutex.create()
-val cond = CondVar.create()
-var ready = false
+var globalCounter = 0
+val userLock = Mutex()
 
-// Thread produtora:
-mutex.lock()
-ready = true
-cond.signal() // ou cond.broadcast()
-mutex.unlock()
-
-// Thread consumidora:
-mutex.lock()
-while (!ready) {
-    cond.wait(mutex)
+// Sincronização usando o lock global padrão:
+sync {
+    globalCounter = globalCounter + 1
 }
-mutex.unlock()
 
-mutex.destroy()
-cond.destroy()
+// Sincronização com lock dedicado para recursos independentes:
+sync(userLock) {
+    // seção crítica isolada apenas para userLock
+}
+
+// Ou via método direto withLock:
+userLock.withLock {
+    // seção crítica
+}
 ```
 
-#### 3. `AtomicInt` & `AtomicBool` (Operações Atômicas sem Lock)
-Para contadores e flags simples, operações atômicas no nível de instrução de hardware são mais rápidas do que Mutex:
+#### 2. `AtomicInt` & `AtomicBool` (Operações Atômicas sem Lock)
+Para contadores e flags simples, operações atômicas no nível de instrução de hardware são mais rápidas do que locks:
 
 ```kotlin
 import { AtomicInt, AtomicBool } from "std.atomic"
