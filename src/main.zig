@@ -100,31 +100,33 @@ fn crashHandler(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?
     }
     crashWrite("\x1b[1;36mStack Trace (JIT):\x1b[0m\n");
     var addr_buf: [48]usize = undefined;
-    if (std.debug.cpu_context.fromPosixSignalContext(ctx_ptr)) |native_ctx| {
-        const stack = std.debug.captureCurrentStackTrace(.{ .context = &native_ctx, .allow_unsafe_unwind = true }, &addr_buf);
-        var frame_idx: usize = 0;
-        for (stack.return_addresses) |ra| {
-            var dli: Dl_info = undefined;
-            if (dladdr(@ptrFromInt(ra), &dli) != 0) {
-                // Skip frames inside the eiwac binary itself (main/run/start):
-                // they are the toolchain wrapper, not the failing program.
-                if (dli.dli_fbase != null and dli.dli_fbase == eiwac_base) continue;
+    if (ctx_ptr != null and (fault_addr == null or fault_addr.? >= 4096)) {
+        if (std.debug.cpu_context.fromPosixSignalContext(ctx_ptr)) |native_ctx| {
+            const stack = std.debug.captureCurrentStackTrace(.{ .context = &native_ctx, .allow_unsafe_unwind = true }, &addr_buf);
+            var frame_idx: usize = 0;
+            for (stack.return_addresses) |ra| {
+                var dli: Dl_info = undefined;
+                if (dladdr(@ptrFromInt(ra), &dli) != 0) {
+                    // Skip frames inside the eiwac binary itself (main/run/start):
+                    // they are the toolchain wrapper, not the failing program.
+                    if (dli.dli_fbase != null and dli.dli_fbase == eiwac_base) continue;
 
-                var frame_buf: [256]u8 = undefined;
-                if (dli.dli_sname) |sname| {
-                    const sym = std.mem.sliceTo(sname, 0);
-                    const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x} in {s}\n", .{ frame_idx, ra, sym }) catch continue;
-                    crashWrite(line_str);
+                    var frame_buf: [256]u8 = undefined;
+                    if (dli.dli_sname) |sname| {
+                        const sym = std.mem.sliceTo(sname, 0);
+                        const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x} in {s}\n", .{ frame_idx, ra, sym }) catch continue;
+                        crashWrite(line_str);
+                    } else {
+                        const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x}\n", .{ frame_idx, ra }) catch continue;
+                        crashWrite(line_str);
+                    }
                 } else {
+                    var frame_buf: [64]u8 = undefined;
                     const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x}\n", .{ frame_idx, ra }) catch continue;
                     crashWrite(line_str);
                 }
-            } else {
-                var frame_buf: [64]u8 = undefined;
-                const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x}\n", .{ frame_idx, ra }) catch continue;
-                crashWrite(line_str);
+                frame_idx += 1;
             }
-            frame_idx += 1;
         }
     }
     crashWrite("\n");

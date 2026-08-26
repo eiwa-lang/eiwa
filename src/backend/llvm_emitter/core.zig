@@ -118,9 +118,11 @@ pub const LLVMEmitter = struct {
     registry: ?*tc_core.ModuleRegistry = null,
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
+        llvm.LLVMLinkInMCJIT();
         _ = llvm.LLVMInitializeNativeTarget();
         _ = llvm.LLVMInitializeNativeAsmPrinter();
         _ = llvm.LLVMInitializeNativeAsmParser();
+        _ = llvm.LLVMInitializeNativeDisassembler();
 
         const verbose_z = "EIWA_LLVM_VERBOSE";
         if (std.c.getenv(verbose_z)) |v| verbose = std.mem.eql(u8, std.mem.span(v), "1");
@@ -3766,7 +3768,11 @@ pub const LLVMEmitter = struct {
         // The entry is always the shim `main(i32 argc, ptr argv)` (emitted by
         // emitEntryShim), which stores argv and forwards to the program main.
         const main_func = llvm.LLVMGetNamedFunction(mod, "main") orelse return error.MainNotFound;
-        const main_fn_ptr = llvm.LLVMGetPointerToGlobal(engine, main_func);
+        const fn_addr = llvm.LLVMGetFunctionAddress(engine, "main");
+        const main_fn_ptr: *anyopaque = if (fn_addr != 0)
+            @ptrFromInt(fn_addr)
+        else
+            (llvm.LLVMGetPointerToGlobal(engine, main_func) orelse return error.MainJITCompilationFailed);
         const main_type = llvm.LLVMGlobalGetValueType(main_func);
         const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type));
 
