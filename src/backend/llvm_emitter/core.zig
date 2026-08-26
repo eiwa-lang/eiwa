@@ -3552,7 +3552,8 @@ pub const LLVMEmitter = struct {
         while (link_it.next()) |l| h.update(l.*);
         const key = h.final();
 
-        const lib_filename = try std.fmt.allocPrint(self.allocator, "/tmp/eiwa_llvm_libs_{x}.dylib", .{key});
+        const ext = if (builtin.target.os.tag == .macos) ".dylib" else ".so";
+        const lib_filename = try std.fmt.allocPrint(self.allocator, "/tmp/eiwa_llvm_libs_{x}{s}", .{ key, ext });
         defer self.allocator.free(lib_filename);
 
         const cached = blk: {
@@ -3566,7 +3567,7 @@ pub const LLVMEmitter = struct {
 
             const link_driver = self.pickLinkDriver(io);
             try appendLinkDriverPrefix(&cc_argv, link_driver);
-            try cc_argv.appendSlice(&[_][]const u8{ "-shared", "-O0", "-fwrapv" });
+            try cc_argv.appendSlice(&[_][]const u8{ "-shared", "-fPIC", "-O0", "-fwrapv" });
             if (builtin.target.os.tag == .macos) {
                 const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
                 try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });

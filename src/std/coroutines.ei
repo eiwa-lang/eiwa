@@ -7,6 +7,7 @@ import { mod } from "std.math"
 import { NativeMemory, Standard } from "std.core"
 import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, sync } from "std.thread"
 import { AtomicBool } from "std.atomic"
+import { MutableList } from "std.collections"
 
 // ============================================================================
 // System primitives via FFI (no neco). `nanosleep` for time, `poll` for I/O
@@ -261,6 +262,8 @@ type Dispatcher(
     var isShutdown: Bool,
     var isStarted: Bool = false
 ) {
+    val threads: MutableList<Thread?> = MutableList<Thread?>()
+
     fun ensureStarted() {
         if (!this.isStarted && !this.isShutdown && this.nThreads > 0) {
             this.isStarted = true
@@ -272,6 +275,8 @@ type Dispatcher(
                 val threadBuf = Standard.gcMalloc(16)
                 val routine = funPointer { arg: Pointer -> workerThreadTrampoline(arg) }
                 NativeThread.pthreadCreate(threadBuf, null, routine, buf)
+                val handle = Standard.loadInt64(threadBuf) as Pointer
+                this.threads.add(Thread(handle))
                 i = i + 1
             }
         }
@@ -280,6 +285,14 @@ type Dispatcher(
     fun shutdown() {
         this.isShutdown = true
         this.scheduler.shutdown()
+        var i = 0
+        while (i < this.threads.size()) {
+            val t = this.threads.get(i)
+            if (t != null) {
+                t!!.join()
+            }
+            i = i + 1
+        }
     }
 }
 

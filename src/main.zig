@@ -100,8 +100,8 @@ fn crashHandler(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?
     }
     crashWrite("\x1b[1;36mStack Trace (JIT):\x1b[0m\n");
     var addr_buf: [48]usize = undefined;
-    if (ctx_ptr != null and (fault_addr == null or fault_addr.? >= 4096)) {
-        if (std.debug.cpu_context.fromPosixSignalContext(ctx_ptr)) |native_ctx| {
+    if (ctx_ptr) |raw_ctx| {
+        if (std.debug.cpu_context.fromPosixSignalContext(raw_ctx)) |native_ctx| {
             const stack = std.debug.captureCurrentStackTrace(.{ .context = &native_ctx, .allow_unsafe_unwind = true }, &addr_buf);
             var frame_idx: usize = 0;
             for (stack.return_addresses) |ra| {
