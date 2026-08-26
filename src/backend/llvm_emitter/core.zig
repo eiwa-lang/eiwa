@@ -3576,10 +3576,16 @@ pub const LLVMEmitter = struct {
             for (self.cli_c_flags) |flag| try cc_argv.append(flag);
             try self.appendLibRequirements(&cc_argv);
 
+            if (self.c_sources.count() == 0) {
+                try cc_argv.appendSlice(&[_][]const u8{ "-x", "c", "/dev/null" });
+            }
+
             var child = try std.process.spawn(io, .{ .argv = cc_argv.items });
             const term = try child.wait(io);
             if (term != .exited or term.exited != 0) {
-                std.debug.print("Compiling lib C sources for JIT failed.\n", .{});
+                std.debug.print("Compiling lib C sources for JIT failed. Term: {any}, Command:", .{term});
+                for (cc_argv.items) |arg| std.debug.print(" {s}", .{arg});
+                std.debug.print("\n", .{});
                 return error.LibSourceCompileFailed;
             }
         }

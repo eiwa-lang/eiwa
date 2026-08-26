@@ -100,8 +100,8 @@ fn crashHandler(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?
     }
     crashWrite("\x1b[1;36mStack Trace (JIT):\x1b[0m\n");
     var addr_buf: [48]usize = undefined;
-    if (ctx_ptr) |raw_ctx| {
-        if (std.debug.cpu_context.fromPosixSignalContext(raw_ctx)) |native_ctx| {
+    if (builtin.os.tag != .linux and ctx_ptr != null) {
+        if (std.debug.cpu_context.fromPosixSignalContext(ctx_ptr.?)) |native_ctx| {
             const stack = std.debug.captureCurrentStackTrace(.{ .context = &native_ctx, .allow_unsafe_unwind = true }, &addr_buf);
             var frame_idx: usize = 0;
             for (stack.return_addresses) |ra| {
@@ -291,6 +291,12 @@ fn run(init: std.process.Init) !void {
                 std.debug.print("No tests found in '{s}'.\n", .{search_path});
                 std.process.exit(0);
             }
+
+            std.mem.sort([]const u8, test_files.items, {}, struct {
+                fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                    return std.mem.order(u8, a, b) == .lt;
+                }
+            }.lessThan);
 
             const CTimeSpec = extern struct {
                 tv_sec: i64,
