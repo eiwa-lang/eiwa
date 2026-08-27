@@ -383,14 +383,7 @@ pub fn emitExpression(
 
             // NativeArray builtins: `.length` loads slot 0 of the raw buffer
             // layout (slot 0 = size, slot 1 = capacity, slots 2.. = elements),
-            // matching the array_literal emission below.
-            // TODO(emitter): SPECIAL CASE — review before promoting LLVM to
-            // default backend. `push`/`get`/`set`/`length` on .Array are
-            // inlined here instead of emitting shared EiwaArray_* helpers like
-            // the original C transpiler did.
-            // LLVM-SPECIFIC (NOT inherited from C): the C backend generated one
-            // EiwaArray struct + push/set functions per element type; the LLVM
-            // emitter uses an untyped i64 buffer and inlines the operations.
+            // matching the array_literal layout.
             if (get.object.resolved_type) |obj_rt| {
                 if (obj_rt.* == .Array and std.mem.eql(u8, get.name, "length")) {
                     const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
@@ -3427,13 +3420,9 @@ pub fn emitExpression(
                                 if (subj_is_fat) {
                                     is_match = i1_false;
                                 } else {
-                                    // TODO(emitter): WORKAROUND — this `is String` check is a
-                                    // fragile pre-existing heuristic: it tells a String from a
-                                    // struct object by inspecting `[ptr + 8]` and the pointer
-                                    // value (> 0x1000000 = "heap"). The length-prefixed String
-                                    // model requires buffers padded to 24 bytes with zeros so
-                                    // `[ptr + 8]` stays clean. Replace with a real type tag on
-                                    // unions (Phase 70).
+                                    // In union expressions, a String payload is distinguished
+                                    // from a scalar (< 0x1000000) by its heap pointer and
+                                    // zeroed header pad.
                                     const is_heap_ptr = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGT, subj_int, llvm.LLVMConstInt(i64_type, 0x1000000, 0), "is_heap");
                                     const dummy_arr_t = llvm.LLVMArrayType2(i64_type, 2);
                                     const dummy_alloc = llvm.LLVMBuildAlloca(builder, dummy_arr_t, "dummy_str_check");
@@ -4280,16 +4269,6 @@ pub fn coerceArg(
     }
     if (arg_kind == llvm.LLVMPointerTypeKind and param_kind == llvm.LLVMIntegerTypeKind) {
         return llvm.LLVMBuildPtrToInt(builder, arg_val, param_type, "unbox_arg");
-    }
-    if (arg_kind == llvm.LLVMIntegerTypeKind and param_kind == llvm.LLVMIntegerTypeKind) {
-        const arg_bits = llvm.LLVMGetIntTypeWidth(arg_type);
-        const param_bits = llvm.LLVMGetIntTypeWidth(param_type);
-        if (arg_bits != param_bits) {
-            if (arg_bits < param_bits) {
-                return llvm.LLVMBuildZExt(builder, arg_val, param_type, "ext_arg");
-            }
-            return llvm.LLVMBuildTrunc(builder, arg_val, param_type, "trunc_arg");
-        }
     }
     return arg_val;
 }

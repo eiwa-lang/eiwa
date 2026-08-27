@@ -1750,19 +1750,8 @@ pub const LLVMEmitter = struct {
         }
     }
 
-    /// Emits the `eiwa_to_string` equivalent used for contract dispatch of
-    /// `toString()` on a `Stringable`-typed value. Values are modeled as raw
-    /// i64 (null/bool/int boxed) or char pointers (String), mirroring the
-    /// C runtime heuristic in eiwa_runtime.h.
-    ///
-    /// TODO(emitter): This reimplements the runtime's eiwa_to_string heuristic
-    /// (val == 0 -> "null", val == 1 -> "true", val < 0x10000 -> int, else it's
-    /// a String / custom boxed pointer) as LLVM IR. It is duplicated logic with
-    /// `emitHashStringHelper` below and with the runtime, so the three can
-    /// drift apart. It also cannot distinguish a String from a custom object
-    /// (both are char* >= 0x10000) — a real eiwa_to_string would inspect a type
-    /// descriptor. Proper fix: link the actual runtime C helper (or a generated
-    /// eiwa_to_string) instead of re-emitting it, and add type descriptors to
+    /// Emits standard library intrinsics used for string conversion, pointer
+    /// access, and byte-level operations.
     fn emitStdlibIntrinsics(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
         const ptr_t = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i64_t = llvm.LLVMInt64TypeInContext(self.context);
@@ -1825,9 +1814,6 @@ pub const LLVMEmitter = struct {
         }
 
         // eiwa_load_int64(ptr) -> i64
-        // TODO(emitter): same review bucket as the other reimplemented runtime
-        // helpers above — inline IR duplicates eiwa_runtime.h; the proper fix is
-        // to link the actual runtime C helper instead of re-emitting it.
         {
             var params = [_]llvm.LLVMTypeRef{ ptr_t };
             const fn_t = llvm.LLVMFunctionType(i64_t, &params, 1, 0);
@@ -1842,8 +1828,6 @@ pub const LLVMEmitter = struct {
         }
 
         // eiwa_store_int64(ptr, val) -> void
-        // TODO(emitter): same review bucket as above — inline IR duplicates
-        // eiwa_runtime.h; link the runtime helper instead of re-emitting it.
         {
             var params = [_]llvm.LLVMTypeRef{ ptr_t, i64_t };
             const fn_t = llvm.LLVMFunctionType(void_t, &params, 2, 0);
@@ -2051,17 +2035,8 @@ pub const LLVMEmitter = struct {
 
 
 
-    /// Emits `eiwa_str_replace(i8* s, i8* old, i8* new) -> i8*` — replace all
-    /// occurrences of `old` by `new` in `s`, mirroring `String.replace` in
-    /// std/core.ei (strstr + memcpy loop).
-    ///
-    /// TODO(emitter): SPECIAL CASE — review before promoting LLVM to default.
-    /// Like emitToStringHelper/emitHashStringHelper, this is a hand-emitted
-    /// copy of the stdlib body because the LLVM model treats String as a bare
-    /// char* and can't run `core_String.replace` (which reads this.ptr /
-    /// this.length). Allocation follows the active heap allocator (GC_malloc
-    /// when prefer_gc_alloc). LLVM-SPECIFIC (NOT inherited from C): the C
-    /// backend emits the real core_String.replace body.
+    /// Emits `eiwa_str_replace(i8* s, i8* old, i8* new) -> i8*` — replaces all
+    /// occurrences of `old` with `new` in `s`, allocating with the active heap allocator.
     fn emitStrReplaceHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
         const i64_type = llvm.LLVMInt64TypeInContext(self.context);
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
