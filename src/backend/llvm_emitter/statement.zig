@@ -183,12 +183,36 @@ pub fn emitStatement(
                     }
                 }
 
+                if (selected_struct == null and target_type_name != null) {
+                    const t_name = target_type_name.?;
+                    const suffix = try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{t_name});
+                    defer std.heap.page_allocator.free(suffix);
+                    const suffix_type = try std.fmt.allocPrint(std.heap.page_allocator, "_{s}_type", .{t_name});
+                    defer std.heap.page_allocator.free(suffix_type);
+                    const type_suffix = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_type", .{t_name});
+                    defer std.heap.page_allocator.free(type_suffix);
+                    var it = structs.iterator();
+                    while (it.next()) |entry| {
+                        const k = entry.key_ptr.*;
+                        if (std.mem.endsWith(u8, k, suffix) or std.mem.endsWith(u8, k, suffix_type) or std.mem.eql(u8, k, type_suffix) or std.mem.endsWith(u8, k, t_name) or std.mem.eql(u8, k, t_name)) {
+                            const s_info = entry.value_ptr.*;
+                            for (s_info.field_names, 0..) |f_name, f_idx| {
+                                if (std.mem.eql(u8, f_name, assign.name)) {
+                                    selected_struct = s_info;
+                                    selected_f_idx = f_idx;
+                                    break;
+                                }
+                            }
+                            if (selected_struct != null) break;
+                        }
+                    }
+                }
+
                 if (selected_struct == null) {
                     var s_it = structs.iterator();
                     while (s_it.next()) |e| {
                         const s_name = e.key_ptr.*;
                         const s_info = e.value_ptr.*;
-                        if (std.mem.startsWith(u8, s_name, "json_") or std.mem.startsWith(u8, s_name, "core_") or std.mem.startsWith(u8, s_name, "std_")) continue;
                         if (std.mem.startsWith(u8, cur_fn_name, s_name)) {
                             for (s_info.field_names, 0..) |f_name, f_idx| {
                                 if (std.mem.eql(u8, f_name, assign.name)) {

@@ -7,6 +7,12 @@ lib Standard {
     fun sprintfDouble(buffer: Pointer, format: Pointer, value: Double): Int
 
     fun atof(nptr: Pointer): Double
+ 
+    @Alias("malloc")
+    fun malloc(size: Int): Pointer
+
+    @Alias("free")
+    fun free(ptr: Pointer): Void
 
     @Alias("GC_MALLOC")
     fun gcMalloc(size: Int): Pointer

@@ -797,10 +797,31 @@ pub fn emitExpression(
                 var type_name: []const u8 = "";
                 if (base_rt.* == .Custom) {
                     type_name = base_rt.Custom;
+                } else if (base_rt.* == .GenericInstance) {
+                    type_name = base_rt.GenericInstance.base_name;
                 } else if (base_rt.* == .Pointer and base_rt.Pointer.* == .Custom) {
                     type_name = base_rt.Pointer.Custom;
+                } else if (base_rt.* == .Pointer and base_rt.Pointer.* == .GenericInstance) {
+                    type_name = base_rt.Pointer.GenericInstance.base_name;
                 }
-                if (structs.get(type_name)) |s_info| {
+                var s_info_opt = structs.get(type_name);
+                if (s_info_opt == null and type_name.len > 0) {
+                    const suffix = try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{type_name});
+                    defer std.heap.page_allocator.free(suffix);
+                    const suffix_type = try std.fmt.allocPrint(std.heap.page_allocator, "_{s}_type", .{type_name});
+                    defer std.heap.page_allocator.free(suffix_type);
+                    const type_suffix = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_type", .{type_name});
+                    defer std.heap.page_allocator.free(type_suffix);
+                    var it = structs.iterator();
+                    while (it.next()) |entry| {
+                        const k = entry.key_ptr.*;
+                        if (std.mem.endsWith(u8, k, suffix) or std.mem.endsWith(u8, k, suffix_type) or std.mem.eql(u8, k, type_suffix) or std.mem.endsWith(u8, k, type_name) or std.mem.eql(u8, k, type_name)) {
+                            s_info_opt = entry.value_ptr.*;
+                            break;
+                        }
+                    }
+                }
+                if (s_info_opt) |s_info| {
                     for (s_info.field_names, 0..) |f_name, f_idx| {
                         if (std.mem.eql(u8, f_name, set.name)) {
                             const field_name_z = try std.heap.page_allocator.dupeZ(u8, f_name);

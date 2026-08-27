@@ -237,9 +237,10 @@ type WorkerTask(var dispatcher: Dispatcher)
 
 fun workerThreadTrampoline(arg: Pointer): Pointer {
     if (arg != null) {
-        val sb = Standard.gcMalloc(16)
+        val sb = Standard.malloc(16)
         NativeGC.getStackBase(sb)
         NativeGC.registerMyThread(sb)
+        Standard.free(sb)
 
         val task = arg as WorkerTask
         val disp = task.dispatcher

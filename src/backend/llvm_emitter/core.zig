@@ -53,6 +53,12 @@ pub var prefer_gc_alloc: bool = false;
 const gc = struct {
     pub extern "c" fn GC_init() void;
     pub extern "c" fn GC_allow_register_threads() void;
+    pub extern "c" fn GC_malloc(size: usize) ?*anyopaque;
+    pub extern "c" fn GC_malloc_uncollectable(size: usize) ?*anyopaque;
+    pub extern "c" fn GC_realloc(ptr: ?*anyopaque, size: usize) ?*anyopaque;
+    pub extern "c" fn GC_get_stack_base(sb: ?*anyopaque) c_int;
+    pub extern "c" fn GC_register_my_thread(sb: ?*anyopaque) c_int;
+    pub extern "c" fn GC_unregister_my_thread() c_int;
     /// Registers [low, high_plus_1) as a root segment scanned by the collector.
     pub extern "c" fn GC_add_roots(low: *anyopaque, high_plus_1: *anyopaque) void;
 };
@@ -64,6 +70,14 @@ const gc = struct {
 pub fn getHeapAllocFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
     const primary: [*:0]const u8 = if (prefer_gc_alloc) "GC_malloc" else "malloc";
     const fallback: [*:0]const u8 = if (prefer_gc_alloc) "malloc" else "GC_malloc";
+    return llvm.LLVMGetNamedFunction(mod, primary) orelse llvm.LLVMGetNamedFunction(mod, fallback).?;
+}
+
+/// Returns the heap allocation function for uncollectable permanent roots (enums/static data):
+/// GC_malloc_uncollectable-first when `prefer_gc_alloc`, malloc-first otherwise.
+pub fn getHeapUncollectableAllocFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
+    const primary: [*:0]const u8 = if (prefer_gc_alloc) "GC_malloc_uncollectable" else "malloc";
+    const fallback: [*:0]const u8 = if (prefer_gc_alloc) "malloc" else "GC_malloc_uncollectable";
     return llvm.LLVMGetNamedFunction(mod, primary) orelse llvm.LLVMGetNamedFunction(mod, fallback).?;
 }
 
@@ -210,6 +224,7 @@ pub const LLVMEmitter = struct {
         var gc_params = [_]llvm.LLVMTypeRef{size_t_type};
         const gc_type = llvm.LLVMFunctionType(ptr_type, &gc_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "GC_malloc", gc_type);
+        _ = llvm.LLVMAddFunction(mod, "GC_malloc_uncollectable", gc_type);
         _ = llvm.LLVMAddFunction(mod, "malloc", gc_type);
         {
             var realloc_params = [_]llvm.LLVMTypeRef{ ptr_type, size_t_type };
@@ -1004,9 +1019,13 @@ pub const LLVMEmitter = struct {
                     // stub pass would rewrite GC_init to a no-op and
                     // GC_realloc to `ret null`, silently breaking GC mode.
                     std.mem.eql(u8, fn_name_s, "GC_malloc") or
+                    std.mem.eql(u8, fn_name_s, "GC_malloc_uncollectable") or
                     std.mem.eql(u8, fn_name_s, "GC_realloc") or
                     std.mem.eql(u8, fn_name_s, "GC_init") or
                     std.mem.eql(u8, fn_name_s, "GC_allow_register_threads") or
+                    std.mem.eql(u8, fn_name_s, "GC_get_stack_base") or
+                    std.mem.eql(u8, fn_name_s, "GC_register_my_thread") or
+                    std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread") or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
                     std.mem.eql(u8, fn_name_s, "_setjmp") or
                     std.mem.eql(u8, fn_name_s, "longjmp") or
@@ -1251,7 +1270,7 @@ pub const LLVMEmitter = struct {
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i64_type = llvm.LLVMInt64TypeInContext(self.context);
 
-        const gc_func = getHeapAllocFn(mod);
+        const gc_func = getHeapUncollectableAllocFn(mod);
         const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
 
         for (modules.items) |m| {
@@ -1319,6 +1338,35 @@ pub const LLVMEmitter = struct {
         modules: *ArrayList(*ast.ASTNode),
         scope: *std.StringHashMap(llvm.LLVMValueRef),
     ) !void {
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
+        const gc_uncoll = getHeapUncollectableAllocFn(mod);
+        const gc_uncoll_type = llvm.LLVMGlobalGetValueType(gc_uncoll);
+
+        var total_vars: usize = 0;
+        for (modules.items) |m| {
+            if (m.data != .program) continue;
+            for (m.data.program.statements) |stmt| {
+                if (stmt.data != .object_decl) continue;
+                for (stmt.data.object_decl.members) |member| {
+                    if (member.data == .var_decl and member.data.var_decl.initializer != null) {
+                        total_vars += 1;
+                    }
+                }
+            }
+        }
+
+        var roots_table: ?llvm.LLVMValueRef = null;
+        if (total_vars > 0) {
+            const table_size = llvm.LLVMConstInt(i64_type, @intCast(total_vars * 16), 0);
+            var alloc_args = [_]llvm.LLVMValueRef{table_size};
+            roots_table = llvm.LLVMBuildCall2(self.builder, gc_uncoll_type, gc_uncoll, &alloc_args, 1, "gc_roots_table");
+            const roots_global = llvm.LLVMAddGlobal(mod, ptr_type, "__eiwa_gc_roots_table");
+            llvm.LLVMSetInitializer(roots_global, llvm.LLVMConstNull(ptr_type));
+            _ = llvm.LLVMBuildStore(self.builder, roots_table.?, roots_global);
+        }
+
+        var var_idx: usize = 0;
         for (modules.items) |m| {
             if (m.data != .program) continue;
             for (m.data.program.statements) |stmt| {
@@ -1356,6 +1404,17 @@ pub const LLVMEmitter = struct {
                             }
                         }
                         _ = llvm.LLVMBuildStore(self.builder, val, global);
+                        if (roots_table) |rt_val| {
+                            var elem_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(var_idx), 0)};
+                            const slot_ptr = llvm.LLVMBuildGEP2(self.builder, ptr_type, rt_val, &elem_idx, 1, "root_slot");
+                            var ptr_val = val;
+                            if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(ptr_val)) == llvm.LLVMStructTypeKind) {
+                                ptr_val = llvm.LLVMBuildExtractValue(self.builder, ptr_val, 0, "root_data_ptr");
+                            }
+                            ptr_val = expression.coerceArg(self.builder, ptr_val, ptr_type);
+                            _ = llvm.LLVMBuildStore(self.builder, ptr_val, slot_ptr);
+                            var_idx += 1;
+                        }
                     } else {
                         if (verbose) std.debug.print("LLVM Debug: Object global NOT FOUND for {s}\n", .{var_name});
                     }
@@ -3498,9 +3557,23 @@ pub const LLVMEmitter = struct {
         // unmaps JIT'd memory pages while host unwinder runs, causing segfaults.
         // defer llvm.LLVMDisposeExecutionEngine(engine);
 
-        // Bloco B: with the engine materialized, register JIT globals as GC
-        // roots before any GC_malloc from the program can trigger a collection.
-        if (has_gc) registerJITGlobalsAsRoots(engine, mod);
+        if (has_gc) {
+            const gc_syms = [_]struct { name: [:0]const u8, ptr: *const anyopaque }{
+                .{ .name = "GC_init", .ptr = @ptrCast(&gc.GC_init) },
+                .{ .name = "GC_allow_register_threads", .ptr = @ptrCast(&gc.GC_allow_register_threads) },
+                .{ .name = "GC_malloc", .ptr = @ptrCast(&gc.GC_malloc) },
+                .{ .name = "GC_malloc_uncollectable", .ptr = @ptrCast(&gc.GC_malloc_uncollectable) },
+                .{ .name = "GC_realloc", .ptr = @ptrCast(&gc.GC_realloc) },
+                .{ .name = "GC_get_stack_base", .ptr = @ptrCast(&gc.GC_get_stack_base) },
+                .{ .name = "GC_register_my_thread", .ptr = @ptrCast(&gc.GC_register_my_thread) },
+                .{ .name = "GC_unregister_my_thread", .ptr = @ptrCast(&gc.GC_unregister_my_thread) },
+            };
+            for (gc_syms) |sym| {
+                if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
+                    llvm.LLVMAddGlobalMapping(engine, f, @constCast(sym.ptr));
+                }
+            }
+        }
 
         // The entry is always the shim `main(i32 argc, ptr argv)` (emitted by
         // emitEntryShim), which stores argv and forwards to the program main.
@@ -3512,6 +3585,10 @@ pub const LLVMEmitter = struct {
             (llvm.LLVMGetPointerToGlobal(engine, main_func) orelse return error.MainJITCompilationFailed);
         const main_type = llvm.LLVMGlobalGetValueType(main_func);
         const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type));
+
+        // Bloco B: with the engine materialized and compiled, register JIT globals as GC
+        // roots before any GC_malloc from the program can trigger a collection.
+        if (has_gc) registerJITGlobalsAsRoots(engine, mod);
 
         // Pass the host process's real argv so Process.args()/argAt() see the
         // actual command line. host_argv (set by main.zig) is argv[0..]; the
