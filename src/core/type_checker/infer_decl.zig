@@ -3,6 +3,7 @@ const compat = @import("../compat.zig");
 const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const parser_mod = @import("../../frontend/parser/core.zig");
+const case_checker = @import("../case_checker.zig");
 const core = @import("core.zig");
 
 const ASTNode = core.ASTNode;
@@ -75,6 +76,14 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         }
     } else {
         mod_path = try core.resolveModulePath(self.allocator, dir_path, actual_module_path);
+        const case_check = case_checker.checkPathCasing(self.io, self.allocator, mod_path) catch .ok;
+        switch (case_check) {
+            .mismatch => |m| {
+                self.reportError(node.line, node.column, "ImportError: Case mismatch in module import '{s}'. Actual file on disk is '{s}'.", .{ i.module_path, m.actual });
+                return error.ImportError;
+            },
+            else => {},
+        }
         if (self.registry == null) {
             mod_source = std.Io.Dir.cwd().readFileAlloc(self.io, mod_path, self.allocator, .limited(1024 * 1024)) catch |err| {
                 self.reportError(node.line, node.column, "ImportError: Failed to read module file '{s}': {}", .{ mod_path, err });

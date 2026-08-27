@@ -9,6 +9,7 @@ const type_checker = @import("core/type_checker/core.zig");
 const coroutines = @import("core/coroutines.zig");
 const coroutines_transform = @import("core/coroutines_transform.zig");
 const eiwa_home = @import("core/eiwa_home.zig");
+const case_checker = @import("core/case_checker.zig");
 const build_options = @import("build_options");
 const llvm_emitter = if (build_options.has_llvm) @import("backend/llvm_emitter/core.zig") else struct {};
 
@@ -457,6 +458,19 @@ fn run(init: std.process.Init) !void {
                         std.debug.print("Use '.' separators (e.g. \"mcp.mcp_builder\") and a leading '.' for the project root (e.g. \".arest_builder\").\n", .{});
                         std.process.exit(1);
                     };
+
+                    const case_check = case_checker.checkPathCasing(io, arena.allocator(), import_resolved_path) catch .ok;
+                    switch (case_check) {
+                        .mismatch => |m| {
+                            std.debug.print("\n\x1b[31mError\x1b[0m in {s}:{}:{}:\n", .{ cur_path, stmt.line, stmt.column });
+                            std.debug.print("ImportError: Case mismatch in module import '{s}'.\n", .{i.module_path});
+                            std.debug.print("Actual file on disk is '{s}'.\n", .{m.actual});
+                            std.debug.print("Eiwa requires exact case-sensitive import paths across all operating systems.\n", .{});
+                            std.process.exit(1);
+                        },
+                        else => {},
+                    }
+
                     try queue.append(import_resolved_path);
                 }
             }

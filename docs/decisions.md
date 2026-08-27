@@ -611,5 +611,27 @@ Entrega ergonomia moderna de concatenação de strings (estilo Kotlin/Swift/Type
 **Razão:**
 Entrega paralelismo real multi-core com speedup proporcional ao número de núcleos para tarefas CPU-bound, elimina o acoplamento do loop de eventos em servidores web e mantém total elegância idiomática no padrão Kotlin/Eiwa.
 
+## ADR 52: Case-Sensitive Module Imports & Cross-Platform Filesystem Safety
+**Status:** Aprovado
+**Data:** Agosto 2026
+
+**Contexto:**
+1. O macOS (APFS) e o Windows (NTFS) são sistemas de arquivos *case-insensitive* por padrão, enquanto o Linux (ext4/btrfs) é estritamente *case-sensitive*.
+2. Isso causava bugs em que desenvolvedores no macOS importavam módulos com maiúsculas/minúsculas divergentes do nome real no disco (ex.: `import { Person } from ".samples.Person"` quando o arquivo era `samples/person.ei`). O código funcionava localmente no Mac, mas quebrava com `FileNotFound` no Linux/CI.
+3. Compiladores modernos (como Go com validação de pacotes e TypeScript com `forceConsistentCasingInFileNames`) impõem verificação estrita de casing em todos os sistemas operacionais.
+
+**Decisão:**
+1. **Verificação Estrita de Casing em Tempo de Compilação (`case_checker.zig`):**
+   - Durante a resolução de cada módulo (`import` statement e carregamento de dependências), o `eiwac` inspeciona a listagem de entradas do diretório pai no disco via `std.Io.Dir.iterate()`.
+   - O compilador compara o nome do arquivo solicitado com o nome exato retornado pelo sistema de arquivos.
+   - Caso haja divergência de maiúsculas/minúsculas (ex.: importou `.Person` mas o arquivo é `person.ei`), a compilação é **rejeitada imediatamente**, mesmo no macOS e Windows, com mensagem descritiva apontando o arquivo real no disco.
+2. **Convenção Canônica de Nomenclatura:**
+   - Nomes de arquivos e caminhos de módulos em Eiwa devem ser em `snake_case` / `lowercase` (ex.: `person.ei`, `http_client.ei`).
+   - Nomes de tipos, contratos e skills são em `PascalCase` (`type Person`, `contract Drawable`), mantendo clara a separação entre o tipo exportado e o arquivo de origem.
+
+**Razão:**
+Garante paridade total entre ambientes de desenvolvimento locais (macOS/Windows) e ambientes de produção/CI (Linux), prevenindo falhas silenciosas de importação e impondo consistência arquitetural na base de código.
+
+
 
 

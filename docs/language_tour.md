@@ -41,6 +41,7 @@ fun main() {
 - Filesystem separators (`/`) and parent-relative prefixes (`./`, `../`, `..`) are **compile errors**. If you need a file in a parent directory, import it from the project root: `import { ArestBuilder } from ".arest_builder"`.
 - The project root is the directory containing the entry file passed to `eiwa run`/`build` (or the tested directory for `eiwa test`). This keeps module paths canonical, so moving a file never silently breaks imports, and circular imports resolve to the same path instead of growing `../../..` chains.
 - The `.ei` extension is optional and inferred automatically.
+- **Strict Case Sensitivity:** Module paths are strictly **case-sensitive across all operating systems** (macOS, Linux, Windows). Even on case-insensitive filesystems like macOS APFS or Windows NTFS, `eiwac` actively verifies the exact casing on disk to prevent "works on Mac, breaks in CI" errors. File names and module paths should always be `snake_case` / `lowercase` (e.g. `import { Person } from ".samples.person"`).
 
 **The Implicit Standard Library**
 Eiwa comes with a core module named `system.ei` which contains fundamental types, C-bindings, and intrinsic functions (like `print`). The compiler automatically injects an `import {} from "system"` at the top of every file, making all standard functions globally available without explicitly requiring an import statement.
