@@ -463,10 +463,8 @@ pub fn emitExpression(
                 }
             }
 
-            // Primitive method: Double.toInt() and Int.toDouble()
-            // TODO(emitter): SPECIAL CASE — review before promoting LLVM to default
-            // backend. Primitive type conversions (Double <-> Int) bypass standard
-            // method dispatch and emit direct LLVM cast instructions (FPToSI / SIToFP).
+            // Primitive numeric conversions: Double.toInt() and Int.toDouble().
+            // Emits direct CPU cast instructions (FPToSI / SIToFP).
             if (std.mem.eql(u8, get.name, "toInt")) {
                 if (get.object.resolved_type) |obj_rt| {
                     if (obj_rt.* == .Double) {
@@ -3003,37 +3001,14 @@ pub fn emitExpression(
                 }
             }
 
-            // Contract/primitive method pass-through: `value.toString()` on a Stringable
-            // value (or .toInt()/.toDouble() on numbers). The get_expr emission
-            // already produced the result string or cast — pass it through directly.
-            if (call.callee.data == .get_expr) {
+            // Direct builtin/contract method pass-through: when callee is a 0-argument
+            // `get_expr` on a builtin or contract property (.toString(), .toInt(), .toDouble(),
+            // .hashCode()), `get_expr` already emitted the cast or helper call. Pass it through.
+            if (call.callee.data == .get_expr and call.arguments.len == 0) {
                 const g = call.callee.data.get_expr;
-                if (std.mem.eql(u8, g.name, "toString") and call.arguments.len == 0) {
-                    if (g.object.resolved_type) |obj_rt| {
-                        if (types_mapping.isStringable(obj_rt.*)) {
-                            return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
-                        }
-                    }
-                }
-                if ((std.mem.eql(u8, g.name, "toInt") or std.mem.eql(u8, g.name, "toDouble")) and call.arguments.len == 0) {
-                    if (g.object.resolved_type) |obj_rt| {
-                        if (obj_rt.* == .Double or obj_rt.* == .Int) {
-                            return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
-                        }
-                    }
-                }
-                if (std.mem.eql(u8, g.name, "hashCode") and call.arguments.len == 0) {
-                    const obj_base_rt: ?*const ts.EiwaType = if (g.object.resolved_type) |ort| ort else null;
-                    if (obj_base_rt) |obr| {
-                        const base = obr.*;
-                        const obj_is_string = base == .String or
-                            (base == .Custom and (std.mem.eql(u8, base.Custom, "String") or std.mem.eql(u8, base.Custom, "core_String")));
-                        if (obj_is_string or base == .Pointer or base == .Int or base == .Bool or base == .Double) {
-                            return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
-                        }
-                    } else if (g.object.data == .string_literal) {
-                        return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
-                    }
+                const obj_rt: ?ts.EiwaType = if (g.object.resolved_type) |ort| ort.* else null;
+                if (types_mapping.isDirectBuiltinMethod(g.name, obj_rt) or (std.mem.eql(u8, g.name, "hashCode") and g.object.data == .string_literal)) {
+                    return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
                 }
             }
 

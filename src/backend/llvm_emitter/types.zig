@@ -97,3 +97,27 @@ pub fn isStringable(resolved_type: types.EiwaType) bool {
     };
 }
 
+/// Returns true if method `name` on `resolved_type` is an inlined primitive or
+/// contract method emitted directly during get_expr (e.g. toString on Stringable,
+/// toInt/toDouble on numbers, or hashCode on primitive scalars/strings).
+pub fn isDirectBuiltinMethod(name: []const u8, resolved_type: ?types.EiwaType) bool {
+    const rt = resolved_type orelse return false;
+    if (std.mem.eql(u8, name, "toString")) {
+        return isStringable(rt);
+    }
+    if (std.mem.eql(u8, name, "toInt") or std.mem.eql(u8, name, "toDouble")) {
+        const base = types.extractBaseType(&rt).*;
+        return base == .Int or base == .Double;
+    }
+    if (std.mem.eql(u8, name, "hashCode")) {
+        const base = types.extractBaseType(&rt).*;
+        return switch (base) {
+            .Int, .Bool, .Double, .Pointer, .String => true,
+            .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String") or std.mem.eql(u8, n, "std_core_String") or std.mem.endsWith(u8, n, "_String"),
+            else => false,
+        };
+    }
+    return false;
+}
+
+
