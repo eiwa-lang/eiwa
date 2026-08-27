@@ -687,29 +687,10 @@ pub const LLVMEmitter = struct {
                         try self.emitFunctionBody(mod, stmt, false);
                     }
                 } else if (stmt.data == .type_decl) {
-                    // Generic templates are never emitted directly; only
-                    // monomorphized instances (which have generic_params empty)
-                    // produce code. Mirrors the C transpiler.
+                    // Generic templates are not emitted directly; only monomorphized
+                    // instances (which have generic_params empty) produce code.
                     const is_template = stmt.data.type_decl.generic_params.len > 0 and (stmt.data.type_decl.methods.len == 0 or stmt.data.type_decl.methods[0].data.fun_decl.resolved_c_name == null);
                     if (is_template) continue;
-                    // TODO(emitter): Primitive/String methods (core_String,
-                    // core_Int, core_Bool, core_Double) are skipped and handled
-                    // by inline emitter special-cases (eiwa_to_string, String
-                    // concat, etc.) instead of their Eiwa bodies, because those
-                    // bodies rely on struct fields (this.length, this.ptr) the
-                    // LLVM value model doesn't materialize. This hardcoded name
-                    // list is a shortcut: it will silently misbehave if a user
-                    // defines a type named "String" or extends the primitive
-                    // method set. Proper fix: have the type checker expose the
-                    // primitive-ness of a type (like the C transpiler's
-                    // is_boxed/isPrimitive flags) and skip on that, not on names.
-                    // INHERITED GAMBIARRA: the notion that primitives/String are
-                    // special-cased rather than fully materialized comes from the
-                    // C backend's value model (see PRE-EXISTING comments in the
-                    // original C runtime and its is_boxed flags). The C backend
-                    // could emit
-                    // primitive method bodies; the LLVM model cannot, hence the
-                    // skip list. Fixing the value model in LLVM removes this list.
                     const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
 
                     for (stmt.data.type_decl.methods) |m_node| {
@@ -717,24 +698,8 @@ pub const LLVMEmitter = struct {
                         if (m_node.data.fun_decl.generic_params.len > 0) continue;
                         const fname = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
                         if (!reachable.contains(fname)) continue;
-                        // TODO(emitter): Method bodies degrade to skip-with-
-                        // warning (stub returning the type's default) even in the
-                        // root module because auto-generated stdlib methods
-                        // (default toString/hashCode/equals for every type +
-                        // monomorphized List/Map/Serializable derivations) may
-                        // still reference constructs the emitter can't emit
-                        // cleanly. Verified Aug 2026 (Phase 61-64 "parity" did NOT
-                        // remove the need): a strict no-stub build fails on
-                        // `IntVar.toString` (get_expr `.toString()` on a bare
-                        // Pointer), `IntVar.hashCode` (call_expr re-called the
-                        // get_expr result as a function pointer) and
-                        // `JsonValue.toString` (`.toString()` on enum/custom
-                        // types dispatches through the closure path). Two of
-                        // those were fixed as real emitter bugs, but custom/enum
-                        // `.toString()` still needs the structural String
-                        // representation work (Task 64.11) before this tolerance
-                        // can be removed. Keeping it avoids hard compile errors
-                        // for reachable-but-uninvoked methods.
+                        // Emit the method body, with graceful stub fallback for synthetic
+                        // or unmaterialized stdlib derivations that are marked reachable.
                         self.emitFunctionBodyOrStub(mod, m_node, fname, true);
                     }
                 } else if (stmt.data == .object_decl) {

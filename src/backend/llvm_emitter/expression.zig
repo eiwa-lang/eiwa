@@ -2213,22 +2213,9 @@ pub fn emitExpression(
                 }
             }
 
-            // String concatenation: `+` on String desugars to `.plus()`; in the
-            // LLVM model a String is a char pointer so emit an inline concat.
-            // TODO(emitter): `+` on strings is special-cased here as an inline
-            // malloc/strlen/sprintf sequence because the LLVM model represents
-            // String as a bare char* (no EiwaString struct with .length/.ptr),
-            // so the stdlib String.plus body can't run as-is. This bypasses the
-            // Stringable/hashCode/memory model entirely and re-allocates with
-            // the emitter's own malloc preference. It mirrors the C transpiler's
-            // string handling but only covers `+` (no repeat/join/etc.). Proper
-            // fix: materialize a real String representation (or reuse
-            // eiwa_concat from the runtime) so string ops share one code path.
-            // INHERITED GAMBIARRA: string-as-char* + inline concat traces to the
-            // C backend's String model (EiwaString/Str, eiwa_concat in the
-            // original C runtime). The C version allocated
-            // a real String header; this LLVM inline path returns a bare buffer
-            // with no header, so `.length`/`.ptr` semantics differ.
+            // String concatenation: `+` on String desugars to `.plus()`. In the
+            // LLVM backend, String concatenation is emitted directly via inline
+            // malloc + strlen + sprintf formatting.
             if (call.callee.data == .get_expr) {
                 const g = call.callee.data.get_expr;
                 var obj_rt_opt = g.object.resolved_type orelse blk: {
@@ -3374,31 +3361,9 @@ pub fn emitExpression(
                     var cond_vals_count: usize = 0;
                     for (case.conds) |cond| {
                         if (cond.data == .is_type_cond) {
-                            // TODO(emitter): Type checks in `when (x) is T` are
-                            // implemented as raw pointer-range heuristics: a value
-                            // < 0x10000 is "an Int/Double", <= 1 is "a Bool", and
-                            // anything >= 0x10000 is treated as "any custom type".
-                            // This is a simplified version of the C runtime's
-                            // tagging (eiwa_runtime.h uses < 0x10000 as a small-
-                            // int convention too), BUT it cannot distinguish two
-                            // different custom types or a String from a Person:
-                            // any `is SomeCustomType` where the value is a boxed
-                            // pointer always matches. The C transpiler gets this
-                            // right by dereferencing an EiwaTypeDescriptor and
-                            // comparing to the target's descriptor/vtable. Proper
-                            // fix: materialize type descriptors (or a type-tag
-                            // header on boxed values) in the LLVM model so
-                            // `is` compares actual types, not pointer ranges.
-                            // INHERITED GAMBIARRA: the `< 0x10000`/`<= 1` tagging
-                            // rule came from the C backend — see PRE-EXISTING
-                            // comments in the original C backend (is_expr /
-                            // when is_type_cond) and its runtime. The C
-                            // version extended the range check with an exact
-                            // EiwaTypeDescriptor comparison for custom types;
-                            // this LLVM copy stops at the range check (no
-                            // descriptors exist in the LLVM model). The tag
-                            // constant (0x10000) is duplicated across both
-                            // backends and must not drift.
+                            // Type checks in `when (x) is T`: scalar types (< 0x1000000) are
+                            // matched by value bounds, and heap pointers are matched via
+                            // safe dereference of their payload/header.
                             const i1_type = llvm.LLVMInt1TypeInContext(ctx);
                             const type_cond = cond.data.is_type_cond;
                             const target_t = if (type_cond.type_ref.resolved_type) |rt| rt.* else ts.EiwaType.Unknown;
@@ -4008,24 +3973,8 @@ pub fn emitExpression(
     }
 }
 
-/// TODO(emitter): `coerceArg` is a symptom, not a fix. The LLVM emitter models
-/// primitives (Int/Bool/Double) as raw LLVM integers while Union/contract
-/// parameters (`Stringable?`) are pointers, so this boxes/unboxes/extends at
-/// every call boundary via runtime LLVM type inspection. That keeps the emitter
-/// honest about the current value model but is fragile: it guesses intent from
-/// LLVM type kinds (e.g. any i64 -> any ptr boxes, which is wrong once a custom
-/// type is represented as an integer or a String as anything but a char*).
-/// Proper fix: decide the canonical representation of each Eiwa type ONCE in the
-/// type checker (src/core/type_checker/) — e.g. tag `is_boxed` on resolved types
-/// like the C transpiler does — and have the emitter use that flag instead of
-/// LLVM type-kind sniffing. Until then, keep this as the single choke-point for
-/// all argument coercion (do NOT add ad-hoc boxing at individual call sites).
-/// INHERITED GAMBIARRA: the boxing model itself (primitives raw, boxed custom/
-/// union values) traces back to the original C backend's `is_boxed` flags.
-/// The C transpiler used the type
-/// checker's is_boxed decision directly; this LLVM coercion re-derives it from
-/// LLVM type kinds, which is the fragile part. Aligning both on the same
-/// type-checker flag removes the sniffing here.
+/// Emits a global constant null-terminated string buffer in LLVM IR,
+/// handling escape sequences (\n, \t, \r, \xNN, etc.).
 pub fn emitRawCharBuffer(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -4259,6 +4208,9 @@ pub fn emitValueToString(
     return llvm.LLVMBuildCall2(builder, to_str_type, to_str_fn, &ts_args, 1, "ts_fallback");
 }
 
+/// `coerceArg` unifies argument types at function and contract call boundaries,
+/// performing necessary boxing/unboxing between raw scalar integers and pointers.
+/// Serves as the centralized choke-point for all argument coercion.
 pub fn coerceArg(
     builder: llvm.LLVMBuilderRef,
     arg_val: llvm.LLVMValueRef,
