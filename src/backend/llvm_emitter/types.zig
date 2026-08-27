@@ -74,3 +74,26 @@ pub fn getFatPointerType(ctx: llvm.LLVMContextRef) llvm.LLVMTypeRef {
     var fields = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
     return llvm.LLVMStructTypeInContext(ctx, &fields, 2, 0);
 }
+
+/// Returns true if `resolved_type` represents a Stringable type
+/// (primitives, pointers, unions, or Stringable contracts).
+pub fn isStringable(resolved_type: types.EiwaType) bool {
+    var base = types.extractBaseType(&resolved_type);
+    while (base.* == .Union or base.* == .Pointer) {
+        if (base.* == .Union) {
+            if (base.Union.left.* != .Null) {
+                base = types.extractBaseType(base.Union.left);
+            } else {
+                base = types.extractBaseType(base.Union.right);
+            }
+        } else if (base.* == .Pointer) {
+            base = types.extractBaseType(base.Pointer);
+        }
+    }
+    return switch (base.*) {
+        .Int, .Bool, .Double, .String, .Pointer, .Union => true,
+        .Custom => |n| std.mem.eql(u8, n, "Stringable") or std.mem.eql(u8, n, "core_Stringable") or std.mem.eql(u8, n, "std_core_Stringable") or std.mem.endsWith(u8, n, "_Stringable"),
+        else => false,
+    };
+}
+

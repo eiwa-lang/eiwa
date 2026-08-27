@@ -13,6 +13,12 @@ type AnotherException(val text: String) : Throwable {
     }
 }
 
+type ThirdException(val text: String) : Throwable {
+    implement fun message(): String {
+        return this.text
+    }
+}
+
 fun throwError(shouldThrow: Bool) {
     if (shouldThrow) {
         throw CustomException("Custom error thrown")
@@ -118,3 +124,77 @@ test "exception: catching failed assertions" {
     }
     assert(caught == true)
 }
+
+test "exception: multiple typed catch blocks dispatch correctly" {
+    var branchTaken = 0
+
+    // 1. Should be caught by the 1st catch block
+    try {
+        throw CustomException("first")
+    } catch (e: CustomException) {
+        branchTaken = 1
+        assert(e.message() == "first")
+    } catch (e: AnotherException) {
+        branchTaken = 2
+    } catch (e: ThirdException) {
+        branchTaken = 3
+    }
+    assert(branchTaken == 1)
+
+    // 2. Should skip 1st and be caught by 2nd catch block
+    try {
+        throw AnotherException("second")
+    } catch (e: CustomException) {
+        branchTaken = 1
+    } catch (e: AnotherException) {
+        branchTaken = 2
+        assert(e.message() == "second")
+    } catch (e: ThirdException) {
+        branchTaken = 3
+    }
+    assert(branchTaken == 2)
+
+    // 3. Should skip 1st and 2nd, caught by 3rd catch block
+    try {
+        throw ThirdException("third")
+    } catch (e: CustomException) {
+        branchTaken = 1
+    } catch (e: AnotherException) {
+        branchTaken = 2
+    } catch (e: ThirdException) {
+        branchTaken = 3
+        assert(e.message() == "third")
+    }
+    assert(branchTaken == 3)
+}
+
+test "exception: multiple catch blocks with union types and generic fallback" {
+    var step = 0
+
+    // Matched by union in 1st block
+    try {
+        throw AnotherException("union match")
+    } catch (e: CustomException | AnotherException) {
+        step = 1
+        assert(e.message() == "union match")
+    } catch (e: ThirdException) {
+        step = 2
+    } catch {
+        step = 3
+    }
+    assert(step == 1)
+
+    // Matched by 2nd block
+    try {
+        throw ThirdException("second block match")
+    } catch (e: CustomException | AnotherException) {
+        step = 1
+    } catch (e: ThirdException) {
+        step = 2
+        assert(e.message() == "second block match")
+    } catch {
+        step = 3
+    }
+    assert(step == 2)
+}
+

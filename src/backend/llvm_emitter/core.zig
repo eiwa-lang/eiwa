@@ -83,6 +83,34 @@ pub fn getHeapReallocFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
         });
 }
 
+/// Returns the size in 64-bit words for `jmp_buf` in `EiwaExceptionFrame`
+/// based on target OS and CPU architecture.
+pub fn getJmpBufWords(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) usize {
+    return switch (os) {
+        .macos, .ios, .watchos, .tvos, .visionos => switch (arch) {
+            .aarch64 => 24, // 192 bytes (_JBLEN = 48 ints)
+            .x86_64 => 19,  // 152 bytes (_JBLEN = 37 ints + 4-byte pad)
+            else => 32,
+        },
+        .linux => switch (arch) {
+            .x86_64 => 25,  // 200 bytes (glibc __jmp_buf + __sigset_t)
+            .aarch64 => 39, // 312 bytes (glibc __jmp_buf + __sigset_t)
+            .arm, .armeb => 33, // 264 bytes
+            .riscv64 => 25,
+            .x86 => 20,
+            else => 32,
+        },
+        .windows => switch (arch) {
+            .x86_64 => 32, // 256 bytes (SETJMP_FLOAT128[16])
+            .aarch64 => 24, // 192 bytes
+            .x86 => 8,     // 64 bytes
+            else => 32,
+        },
+        .freebsd, .openbsd, .netbsd => 32,
+        else => 64, // conservative fallback for unlisted targets
+    };
+}
+
 pub const LLVMEmitter = struct {
     allocator: std.mem.Allocator,
     context: llvm.LLVMContextRef,
@@ -307,21 +335,10 @@ pub const LLVMEmitter = struct {
         llvm.LLVMSetInitializer(active_exc_global, llvm.LLVMConstNull(fat_type));
 
         // struct EiwaExceptionFrame { jmp_buf buf; EiwaExceptionFrame* next; }
-        // jmp_buf is modeled as a 512-byte buffer ([64 x i64]) to be safe across platforms.
-        // TODO(emitter): Modeling jmp_buf as a fixed [64 x i64] works on the
-        // platforms LLVM 21 targets here but is fragile: the real jmp_buf size
-        // is platform/arch-specific, and setjmp/longjmp are used via raw symbol
-        // linkage without knowing the actual target layout. Proper fix: emit the
-        // frame with the real `jmp_buf` size for the target (or follow the C
-        // transpiler, which included eiwa_runtime.h and let the C compiler
-        // size it), instead of hardcoding 512 bytes.
-        // INHERITED GAMBIARRA: the EiwaExceptionFrame + setjmp/longjmp model came
-        // from the C backend — see the PRE-EXISTING try_stmt comment and the
-        // frame struct in the original C runtime. The C version
-        // declared the frame as real C types (`jmp_buf`); this LLVM copy
-        // hardcodes the buffer size because it has no C header to include.
+        // jmp_buf size is target-dependent (OS/architecture).
         const frame_struct = llvm.LLVMStructCreateNamed(self.context, "EiwaExceptionFrame");
-        const buf_type = llvm.LLVMArrayType(llvm.LLVMInt64TypeInContext(self.context), 64);
+        const jmp_buf_words = getJmpBufWords(builtin.target.os.tag, builtin.target.cpu.arch);
+        const buf_type = llvm.LLVMArrayType(llvm.LLVMInt64TypeInContext(self.context), @intCast(jmp_buf_words));
         var frame_fields = [_]llvm.LLVMTypeRef{ buf_type, ptr_type };
         llvm.LLVMStructSetBody(frame_struct, &frame_fields, 2, 0);
 

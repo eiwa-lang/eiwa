@@ -487,14 +487,8 @@ pub fn emitExpression(
             // toString comment in the original C backend.
             if (std.mem.eql(u8, get.name, "toString")) {
                 if (get.object.resolved_type) |obj_rt| {
-                    const obj_base = obj_rt.*;
-                    const is_stringable = switch (obj_base) {
-                        .Int, .Bool, .Double, .String, .Union => true,
-                        .Custom => |n| std.mem.eql(u8, n, "Stringable") or std.mem.eql(u8, n, "core_Stringable"),
-                        .Pointer => true,
-                        else => false,
-                    };
-                    if (is_stringable) {
+                    if (types_mapping.isStringable(obj_rt.*)) {
+                        const obj_base = obj_rt.*;
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                         if (obj_base == .Int) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
@@ -3350,11 +3344,7 @@ pub fn emitExpression(
                 const g = call.callee.data.get_expr;
                 if (std.mem.eql(u8, g.name, "toString") and call.arguments.len == 0) {
                     if (g.object.resolved_type) |obj_rt| {
-                        const obj_base = obj_rt.*;
-                        const is_stringable = obj_base == .Int or obj_base == .Bool or obj_base == .Double or
-                            obj_base == .String or obj_base == .Pointer or obj_base == .Union or
-                            (obj_base == .Custom and (std.mem.eql(u8, obj_base.Custom, "Stringable") or std.mem.eql(u8, obj_base.Custom, "core_Stringable")));
-                        if (is_stringable) {
+                        if (types_mapping.isStringable(obj_rt.*)) {
                             return emitExpression(ctx, mod, builder, scope, structs, libs, call.callee);
                         }
                     }

@@ -33,6 +33,9 @@
 | Tolerância skip-stub | `core.zig:555` | Comentário dizia "remove once Phase 61 lands" | **Comentário reescrito** — verificado que a tolerância ainda é necessária (detalhes no próprio TODO) |
 | Reachability O(n²) | `core.zig` (~400) | `drainReachableWorklist` varria todos os statements por função do worklist | **Indexado** — `buildFuncIndex` + lookup O(1) |
 | Method-scan por prefixo | `expression.zig` (~2750) | Fallback que varria todas as funções por `{tipo}_{metodo}` | **Removido** — provado que nunca encontrava match (só disparava para enum `toString`/`hashCode`); os lookups exatos (`c_name` → `resolved_c_name` → `{tipo}_{metodo}`) já cobrem |
+| C3 (isStringable) | `types.zig`, `expression.zig` | Teste "Stringable-ness" duplicado e stringly-typed entre `get_expr` e `call_expr` | **Centralizado** — helper único `types.isStringable(resolved_type)` cobrindo unificação de tipos base/union/primitivas e contratos `Stringable` |
+| D3 (jmp_buf) | `core.zig` (~310) | `jmp_buf` com tamanho fixo `[64 x i64]` frágil para diferentes SOs/arquiteturas | **Target-dependent** — `getJmpBufWords(os, arch)` calcula o tamanho exato de palavras `i64` para o frame `EiwaExceptionFrame` conforme o target (macOS/Darwin x86_64/arm64, Linux x86_64/arm64/etc, Windows, etc.) |
+| D4 (multi-catch) | `statement.zig:537` | LLVM só tratava `catches[0]` em `try/catch`, ignorando catches subsequentes | **Cascata de blocos** — `try_stmt` no LLVM agora itera todos os `ts.catches`, encadeando blocos de verificação (`catch.check_i`), dispatch tipado por vtable, união de tipos (`TypeA | TypeB`) e rethrow seguro |
 
 ---
 
@@ -68,7 +71,6 @@ os itens deste bloco.
 
 | ID | Local | Tipo | Descrição | Esforço |
 |---|---|---|---|---|
-| C3 | `expression.zig:477` | DUP/HEURISTIC | Teste "Stringable-ness" duplicado (get_expr vs call_expr) e stringly-typed (`"Stringable"`/`"core_Stringable"` + lista hardcoded) | **médio** — centralizar helper `isStringable(resolved_type)` |
 | C4 | `core.zig:2275` | DUP/WORKAROUND | `emitSocketHelpers` hand-emite em IR os 6 helpers POSIX (`eiwa_tcp_bind/accept`, `eiwa_socket_read/write`, `eiwa_tcp_set_nonblocking`, `eiwa_socket_close`), duplicando `net_helpers.h` (`static inline`). Constantes hardcoded por plataforma (macOS vs Linux). | **médio** — compilar e linkar o wrapper C real |
 
 ---
@@ -79,8 +81,6 @@ os itens deste bloco.
 |---|---|---|---|---|
 | D1 | `expression.zig:3249` | HEURISTIC | `when (x) is T` por heurística de range de ponteiro: `< 0x10000 → Int/Double`, `<= 1 → Bool`, `>= 0x10000 → custom`. | estrutural |
 | D2 | `expression.zig:3856` | VALUE-MODEL | `coerceArg` box/unbox/extends em toda chamada (primitivas = ints crus, Union/contract = ponteiros). "Symptom, not a fix" | estrutural |
-| D3 | `core.zig:306` | FRAGILE | `jmp_buf` modelado como `[64 × i64]` fixo; o tamanho real é plataforma/arch-específico. Fix: frame com `jmp_buf` real dependente do target. | médio |
-| D4 | `statement.zig:537` | GAP | **LLVM só trata `catches[0]`** em `try/catch`. Se um código Eiwa usar 2+ catches (`catch (e: TypeA) ... catch (e: TypeB)`), o LLVM ignora os blocos subsequentes. | médio |
 
 ---
 

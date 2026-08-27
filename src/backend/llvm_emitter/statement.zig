@@ -534,45 +534,57 @@ pub fn emitStatement(
             _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
 
             if (ts.catches.len > 0) {
-                const c = ts.catches[0];
-                const catch_body_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.body");
                 const rethrow_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.rethrow");
+                var cur_check_bb = catch_bb;
 
-                if (c.types.len > 0) {
-                    const exc_vtable = llvm.LLVMBuildExtractValue(builder, exc_val, 1, "exc_vtable");
-                    var is_matched = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
-                    for (c.types) |tr| {
-                        if (tr.resolved_type) |rt| {
-                            const sub_m = try checkVtableMatch(ctx, mod, builder, ptr_type, exc_vtable, rt.*);
-                            is_matched = llvm.LLVMBuildOr(builder, is_matched, sub_m, "is_matched_or");
-                        } else {
-                            if (try expression.findVtableGlobal(ctx, mod, tr.name, "Throwable")) |target_vt| {
-                                const vt_cast = llvm.LLVMBuildPointerCast(builder, target_vt, ptr_type, "target_vt_cast");
-                                const matches_type = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, exc_vtable, vt_cast, "matches_type");
-                                is_matched = llvm.LLVMBuildOr(builder, is_matched, matches_type, "is_matched_or");
+                for (ts.catches, 0..) |c, idx| {
+                    llvm.LLVMPositionBuilderAtEnd(builder, cur_check_bb);
+
+                    const catch_body_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.body");
+                    const is_last_catch = (idx + 1 == ts.catches.len);
+                    const next_check_bb = if (!is_last_catch)
+                        llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.check")
+                    else
+                        rethrow_bb;
+
+                    if (c.types.len > 0) {
+                        const exc_vtable = llvm.LLVMBuildExtractValue(builder, exc_val, 1, "exc_vtable");
+                        var is_matched = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
+                        for (c.types) |tr| {
+                            if (tr.resolved_type) |rt| {
+                                const sub_m = try checkVtableMatch(ctx, mod, builder, ptr_type, exc_vtable, rt.*);
+                                is_matched = llvm.LLVMBuildOr(builder, is_matched, sub_m, "is_matched_or");
                             } else {
-                                is_matched = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 1, 0);
+                                if (try expression.findVtableGlobal(ctx, mod, tr.name, "Throwable")) |target_vt| {
+                                    const vt_cast = llvm.LLVMBuildPointerCast(builder, target_vt, ptr_type, "target_vt_cast");
+                                    const matches_type = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, exc_vtable, vt_cast, "matches_type");
+                                    is_matched = llvm.LLVMBuildOr(builder, is_matched, matches_type, "is_matched_or");
+                                } else {
+                                    is_matched = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 1, 0);
+                                }
                             }
                         }
+                        _ = llvm.LLVMBuildCondBr(builder, is_matched, catch_body_bb, next_check_bb);
+                    } else {
+                        _ = llvm.LLVMBuildBr(builder, catch_body_bb);
                     }
-                    _ = llvm.LLVMBuildCondBr(builder, is_matched, catch_body_bb, rethrow_bb);
-                } else {
-                    _ = llvm.LLVMBuildBr(builder, catch_body_bb);
-                }
 
-                // --- Catch Body ---
-                llvm.LLVMPositionBuilderAtEnd(builder, catch_body_bb);
-                if (c.var_name) |var_name| {
-                    const v_z = try std.heap.page_allocator.dupeZ(u8, var_name);
-                    defer std.heap.page_allocator.free(v_z);
+                    // --- Catch Body ---
+                    llvm.LLVMPositionBuilderAtEnd(builder, catch_body_bb);
+                    if (c.var_name) |var_name| {
+                        const v_z = try std.heap.page_allocator.dupeZ(u8, var_name);
+                        defer std.heap.page_allocator.free(v_z);
 
-                    const var_alloca = llvm.LLVMBuildAlloca(builder, fat_type, v_z.ptr);
-                    _ = llvm.LLVMBuildStore(builder, exc_val, var_alloca);
-                    try scope.put(var_name, var_alloca);
-                }
-                try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, c.body, declared_ret);
-                if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
-                    _ = llvm.LLVMBuildBr(builder, after_bb);
+                        const var_alloca = llvm.LLVMBuildAlloca(builder, fat_type, v_z.ptr);
+                        _ = llvm.LLVMBuildStore(builder, exc_val, var_alloca);
+                        try scope.put(var_name, var_alloca);
+                    }
+                    try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, c.body, declared_ret);
+                    if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
+                        _ = llvm.LLVMBuildBr(builder, after_bb);
+                    }
+
+                    cur_check_bb = next_check_bb;
                 }
 
                 // --- Rethrow Block ---
