@@ -1,4 +1,4 @@
-//! Fase C (P1/P2): stackless coroutine AST transform.
+//! Stackless coroutine AST transform.
 //!
 //! Rewrites Eiwa suspension points into the stackless machinery declared in
 //! `src/std/coroutines.ei` (Scheduler + StackTask + generated Continuation).
@@ -1252,7 +1252,7 @@ fn isValueStatement(node: *ASTNode) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Fase J — true suspension state machines (sleep/yield inside task bodies)
+// Suspension state machines (sleep/yield inside task bodies)
 //
 // A task body containing a cooperative suspension primitive (`sleep`/`sleepMs`/
 // `yield`) cannot run in a single `resume()` shot: it must suspend and be

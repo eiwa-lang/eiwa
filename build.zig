@@ -57,7 +57,7 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
 }
 
 /// Locates the Boehm GC (libgc) installation. When found, the `eiwac` host
-/// links libgc and the LLVM JIT can use real GC_malloc/GC_realloc (Bloco B).
+/// links libgc and the LLVM JIT can use real GC_malloc/GC_realloc.
 /// When absent, the JIT keeps the malloc-first
 /// fallback and everything behaves as before.
 fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {

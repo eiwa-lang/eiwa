@@ -576,7 +576,7 @@ fn run(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
-    // Fase C (P1): rewrite `val x = task { ... }` / `val x = r.await()` into the
+    // Rewrite `val x = task { ... }` / `val x = r.await()` into the
     // stackless machinery (generated Continuation + Scheduler) before emission.
     coroutines_transform.transformProgram(arena.allocator(), &registry) catch |err| {
         std.debug.print("Error: coroutine transform failed: {s}\n", .{@errorName(err)});
@@ -589,7 +589,7 @@ fn run(init: std.process.Init) !void {
     }
     const emitter = try allocator.create(llvm_emitter.LLVMEmitter);
     emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
-    // Bloco B: allocate via real GC_malloc/
+    // Allocate via real GC_malloc/
     // GC_realloc (zeroed, GC-managed) instead of raw malloc. Always for
     // native builds (the binary links -lgc); for the JIT only when the
     // host eiwac links libgc. Must be set before emitModule.

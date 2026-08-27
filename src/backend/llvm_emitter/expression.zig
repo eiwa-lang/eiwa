@@ -402,19 +402,8 @@ pub fn emitExpression(
             }
 
             // Contract method dispatch: `value.toString()` where the static type
-            // is a contract (e.g. `Stringable`). In the LLVM model the object is
-            // a raw boxed value, so call the eiwa_to_string runtime helper.
-            // TODO(emitter): The "Stringable-ness" test below is duplicated with
-            // the one in the call_expr `.toString()` dispatch further down, and
-            // both are stringly-typed (`"Stringable"`/`"core_Stringable"` name
-            // matches) plus a hardcoded primitive list. It mirrors the C
-            // transpiler's eiwa_to_string fallback, but the duplication risks
-            // drift. Proper fix: centralize an `isStringable(resolved_type)`
-            // helper (single source of truth) and prefer a resolved-type flag
-            // from the type checker over name matching.
-            // INHERITED GAMBIARRA: the name-based toString + eiwa_to_string
-            // fallback came from the C backend — see the PRE-EXISTING get_expr
-            // toString comment in the original C backend.
+            // is Stringable (primitives, pointers, unions, or Stringable contracts).
+            // Handled via centralized `types_mapping.isStringable`.
             if (std.mem.eql(u8, get.name, "toString")) {
                 if (get.object.resolved_type) |obj_rt| {
                     if (types_mapping.isStringable(obj_rt.*)) {
@@ -3014,23 +3003,9 @@ pub fn emitExpression(
                 }
             }
 
-            // Contract method dispatch call: `value.toString()` on a Stringable
-            // value. The get_expr emission already produces the final string
-            // pointer via eiwa_to_string — pass it through, do NOT call it.
-            // TODO(emitter): This pass-through exists because the get_expr
-            // `.toString()` branch above ALREADY emitted the eiwa_to_string call,
-            // so re-dispatching here would double-call it. That coupling is
-            // subtle and order-dependent; the is_stringable check is a second,
-            // looser copy of the get_expr one (see the TODO there). Proper fix:
-            // collapse get_expr/call_expr toString handling into a single code
-            // path (e.g. only handle `toString` at the call_expr level and make
-            // get_expr return the boxed value).
-            // INHERITED GAMBIARRA: name-based toString dispatch traces back to
-            // the C backend — see the PRE-EXISTING get_expr toString comment in
-            // the original C backend. This
-            // pass-through layer is LLVM-specific (a consequence of emitting the
-            // call at get_expr time), but the underlying stringly-typed dispatch
-            // is the inherited part.
+            // Contract/primitive method pass-through: `value.toString()` on a Stringable
+            // value (or .toInt()/.toDouble() on numbers). The get_expr emission
+            // already produced the result string or cast — pass it through directly.
             if (call.callee.data == .get_expr) {
                 const g = call.callee.data.get_expr;
                 if (std.mem.eql(u8, g.name, "toString") and call.arguments.len == 0) {

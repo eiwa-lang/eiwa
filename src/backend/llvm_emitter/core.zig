@@ -37,7 +37,7 @@ pub var verbose: bool = false;
 
 /// True when the host `eiwac` binary itself links libgc (build option set by
 /// build.zig's findLibgcPath). Only then can JIT'd code resolve GC_* symbols
-/// from the host process (Bloco B).
+/// from the host process.
 pub const has_gc = build_options.has_gc;
 
 /// When true, emitted code allocates via GC_malloc/GC_realloc (zeroed,
@@ -291,7 +291,7 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMAddFunction(mod, "GC_init", void_fn_type);
         _ = llvm.LLVMAddFunction(mod, "GC_allow_register_threads", void_fn_type);
 
-        // Bloco B: native binaries (eiwac build) allocate via GC_malloc when
+        // Native binaries (eiwac build) allocate via GC_malloc when
         // prefer_gc_alloc, so the Boehm GC must be initialized before main.
         // Emit a global constructor that calls GC_init and GC_allow_register_threads —
         // covers every entry shape (plain main, eiwa_test_main) without touching each one.
@@ -1015,7 +1015,7 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "malloc") or
                     std.mem.eql(u8, fn_name_s, "realloc") or
                     // libgc symbols resolved from the host process when the
-                    // host links libgc (Bloco B). Without the allowlist the
+                    // host links libgc. Without the allowlist the
                     // stub pass would rewrite GC_init to a no-op and
                     // GC_realloc to `ret null`, silently breaking GC mode.
                     std.mem.eql(u8, fn_name_s, "GC_malloc") or
@@ -2790,13 +2790,10 @@ pub const LLVMEmitter = struct {
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
         // Allocate the instance via the active heap allocator (GC_malloc when
-        // prefer_gc_alloc, malloc otherwise).
-        // TODO(emitter): the fixed 128-byte allocation below should be the
-        // struct's actual byte size (LLVMStoreSizeOfType), not a hardcoded
-        // upper bound.
+        // prefer_gc_alloc, malloc otherwise) sized to the struct's actual byte size.
         const gc_func = getHeapAllocFn(mod);
         const gc_func_type = llvm.LLVMGlobalGetValueType(gc_func);
-        const size_val = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(self.context), 128, 0);
+        const size_val = llvm.LLVMSizeOf(struct_type);
         var gc_args = [_]llvm.LLVMValueRef{size_val};
         const raw_ptr = llvm.LLVMBuildCall2(self.builder, gc_func_type, gc_func, &gc_args, 1, "raw_inst");
 
@@ -3487,8 +3484,8 @@ pub const LLVMEmitter = struct {
         }
     }
 
-    /// Registers every JIT'd module global as a Boehm GC root segment
-    /// (Bloco B). JIT globals live in MCJIT-mmap'd memory, which the
+    /// Registers every JIT'd module global as a Boehm GC root segment.
+    /// JIT globals live in MCJIT-mmap'd memory, which the
     /// collector does NOT scan by default — unlike a native binary's
     /// .data/.bss. Without this, objects only reachable from globals
     /// (object/enum singletons, eiwa_exception_stack, eiwa_active_exception)
@@ -3516,7 +3513,7 @@ pub const LLVMEmitter = struct {
     /// Executes the in-memory LLVM module via JIT (for `eiwa run --backend=llvm`).
     pub fn executeJIT(self: *LLVMEmitter, io: std.Io) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
-        // Bloco B: initialize the Boehm GC before any JIT'd code can call
+        // Initialize the Boehm GC before any JIT'd code can call
         // GC_malloc. executeJIT is the sole GC_init caller for programs
         // without neco, so GC_malloc would SIGABRT without it. Idempotent.
         // has_gc is comptime: hosts without libgc compile this out entirely.
@@ -3586,7 +3583,7 @@ pub const LLVMEmitter = struct {
         const main_type = llvm.LLVMGlobalGetValueType(main_func);
         const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type));
 
-        // Bloco B: with the engine materialized and compiled, register JIT globals as GC
+        // With the engine materialized and compiled, register JIT globals as GC
         // roots before any GC_malloc from the program can trigger a collection.
         if (has_gc) registerJITGlobalsAsRoots(engine, mod);
 
