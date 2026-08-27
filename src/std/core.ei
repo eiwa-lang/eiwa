@@ -259,6 +259,17 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
         return String(buf, len)
     }
 
+    fun charAt(index: Int): String {
+        if (index < 0 || index >= this.length) {
+            return ""
+        }
+        val buf = Standard.gcMalloc(2)
+        val b = NativeMemory.readByte(this.ptr, index)
+        NativeMemory.writeByte(buf, 0, b)
+        NativeMemory.writeByte(buf, 1, 0)
+        return String(buf, 1)
+    }
+
     fun toDouble(): Double {
         return Standard.atof(this.ptr)
     }

@@ -930,68 +930,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .identifier => try infer_expr_mod.inferIdentifier(self, node, scope, t),
         .int_literal => t.* = .Int,
         .double_literal => t.* = .Double,
-        .string_literal => {
-            const literal_str = node.data.string_literal;
-
-            // Calculate correct string length in bytes, accounting for escape sequences
-            var len: usize = 0;
-            var i: usize = 0;
-            while (i < literal_str.len) {
-                if (literal_str[i] == '\\' and i + 1 < literal_str.len) {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-                len += 1;
-            }
-
-            const ptr_node = try self.allocator.create(ASTNode);
-            ptr_node.* = .{
-                .line = node.line,
-                .column = node.column,
-                .resolved_type = null,
-                .data = .{ .string_literal = literal_str },
-            };
-            const ptr_type = try self.allocator.create(EiwaType);
-            ptr_type.* = .{ .Pointer = try self.allocator.create(EiwaType) };
-            @constCast(ptr_type.Pointer).* = .Void;
-            ptr_node.resolved_type = ptr_type;
-
-            const len_node = try self.allocator.create(ASTNode);
-            len_node.* = .{
-                .line = node.line,
-                .column = node.column,
-                .resolved_type = null,
-                .data = .{ .int_literal = @as(i64, @intCast(len)) },
-            };
-            const int_type = try self.allocator.create(EiwaType);
-            int_type.* = .Int;
-            len_node.resolved_type = int_type;
-
-            const callee_node = try self.allocator.create(ASTNode);
-            const resolved_c_name = self.alias_map.get("String");
-            const actual_c_name = if (resolved_c_name) |rcn|
-                (if (std.mem.eql(u8, rcn, "String")) "core_String" else rcn)
-            else
-                "core_String";
-
-            callee_node.* = .{
-                .line = node.line,
-                .column = node.column,
-                .resolved_type = null,
-                .data = .{ .identifier = .{ .name = "String", .resolved_c_name = actual_c_name, .is_class_property = true } },
-            };
-            const callee_type = try self.allocator.create(EiwaType);
-            callee_type.* = .String;
-            callee_node.resolved_type = callee_type;
-
-            var args = try self.allocator.alloc(*ASTNode, 2);
-            args[0] = ptr_node;
-            args[1] = len_node;
-
-            node.data = .{ .call_expr = .{ .callee = callee_node, .arguments = args } };
-            t.* = .String;
-        },
+        .string_literal => t.* = .String,
         .bool_literal => t.* = .Bool,
         .null_literal => t.* = .Null,
         .array_literal => try infer_expr_mod.inferArrayLiteral(self, node, scope, t),

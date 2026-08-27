@@ -240,7 +240,13 @@ pub fn emitStatement(
             }
         },
         .if_expr => |if_node| {
-            const cond_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, if_node.condition);
+            var cond_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, if_node.condition);
+            const cond_type = llvm.LLVMTypeOf(cond_val);
+            if (llvm.LLVMGetTypeKind(cond_type) == llvm.LLVMPointerTypeKind) {
+                cond_val = llvm.LLVMBuildIsNotNull(builder, cond_val, "cond_ptr_bool");
+            } else if (llvm.LLVMGetTypeKind(cond_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetIntTypeWidth(cond_type) != 1) {
+                cond_val = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cond_val, llvm.LLVMConstNull(cond_type), "cond_int_bool");
+            }
 
             const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "if.then");
             const else_bb = if (if_node.else_branch != null) llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "if.else") else null;
@@ -277,7 +283,13 @@ pub fn emitStatement(
 
             // Condition block
             llvm.LLVMPositionBuilderAtEnd(builder, cond_bb);
-            const cond_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, w.condition);
+            var cond_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, w.condition);
+            const cond_type = llvm.LLVMTypeOf(cond_val);
+            if (llvm.LLVMGetTypeKind(cond_type) == llvm.LLVMPointerTypeKind) {
+                cond_val = llvm.LLVMBuildIsNotNull(builder, cond_val, "cond_ptr_bool");
+            } else if (llvm.LLVMGetTypeKind(cond_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetIntTypeWidth(cond_type) != 1) {
+                cond_val = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cond_val, llvm.LLVMConstNull(cond_type), "cond_int_bool");
+            }
             _ = llvm.LLVMBuildCondBr(builder, cond_val, body_bb, after_bb);
 
             // Body block

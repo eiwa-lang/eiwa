@@ -362,7 +362,6 @@ pub const LLVMEmitter = struct {
         // eiwa_to_string(i64) -> i8* — mirrors the eiwa_runtime.h heuristic:
         //   val == 0 -> "null"; val == 1 -> "true"; val < 0x10000 -> int via sprintf; else it's a String (char*) as-is.
         try self.emitToStringHelper(mod);
-        try self.emitHashStringHelper(mod);
         try self.emitStrReplaceHelper(mod);
         try self.emitStringEqualsHelper(mod);
         try self.emitCharAtHelper(mod);
@@ -697,29 +696,7 @@ pub const LLVMEmitter = struct {
                     // primitive method bodies; the LLVM model cannot, hence the
                     // skip list. Fixing the value model in LLVM removes this list.
                     const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
-                    const is_inline = std.mem.eql(u8, t_name, "core_String") or
-                        std.mem.eql(u8, t_name, "String") or
-                        std.mem.eql(u8, t_name, "core_Int") or
-                        std.mem.eql(u8, t_name, "core_Bool") or
-                        std.mem.eql(u8, t_name, "core_Double");
-                    if (is_inline) {
-                        // Primitives are skipped wholesale because their intrinsic
-                        // method bodies reference struct fields (this.ptr,
-                        // this.length) the LLVM value model never materializes
-                        // (String == char pointer here). Skill-injected methods
-                        // (flagged `from_skill` by the type checker) only touch
-                        // `this` and their block parameter, so their real bodies
-                        // ARE emitted.
-                        for (stmt.data.type_decl.methods) |m_node| {
-                            if (m_node.data != .fun_decl) continue;
-                            if (m_node.data.fun_decl.generic_params.len > 0) continue;
-                            if (!m_node.data.fun_decl.from_skill) continue;
-                            const fname = m_node.data.fun_decl.resolved_c_name orelse try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
-                            if (!reachable.contains(fname)) continue;
-                            self.emitFunctionBodyOrStub(mod, m_node, fname, true);
-                        }
-                        continue;
-                    }
+
                     for (stmt.data.type_decl.methods) |m_node| {
                         if (m_node.data != .fun_decl) continue;
                         if (m_node.data.fun_decl.generic_params.len > 0) continue;
@@ -1304,15 +1281,30 @@ pub const LLVMEmitter = struct {
                         const ord_ptr = llvm.LLVMBuildStructGEP2(self.builder, s_info.struct_type, inst_ptr, 1, "enum_ord");
                         _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, @intCast(idx), 0), ord_ptr);
 
-                        // Field 2: name (string ptr). variant.name is a
-                        // bundled []const u8 into the source buffer, so it must
-                        // be null-terminated before BuildGlobalStringPtr or the
-                        // whole remaining source leaks into the global.
-                        const name_z = try self.allocator.dupeZ(u8, variant.name);
-                        defer self.allocator.free(name_z);
+                        // Field 2: name (%core_String { ptr, length })
+                        var name_buf_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, variant.name.len + 1, 0)};
+                        const name_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &name_buf_args, 1, "enum_name_buf");
+                        const i8_type = llvm.LLVMInt8TypeInContext(self.context);
+                        for (variant.name, 0..) |c, ci| {
+                            var b_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(ci), 0)};
+                            const b_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, name_buf, &b_idx, 1, "b_ptr");
+                            _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i8_type, c, 0), b_ptr);
+                        }
+                        var nul_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, variant.name.len, 0)};
+                        const nul_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, name_buf, &nul_idx, 1, "nul_ptr");
+                        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i8_type, 0, 0), nul_ptr);
+
+                        var str_inst_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
+                        const str_inst = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &str_inst_args, 1, "enum_str_inst");
+                        var inst_fields = [_]llvm.LLVMTypeRef{ ptr_type, i64_type };
+                        const inst_struct_t = llvm.LLVMStructTypeInContext(self.context, &inst_fields, 2, 0);
+                        const f0_ptr = llvm.LLVMBuildStructGEP2(self.builder, inst_struct_t, str_inst, 0, "f0_ptr");
+                        _ = llvm.LLVMBuildStore(self.builder, name_buf, f0_ptr);
+                        const f1_ptr = llvm.LLVMBuildStructGEP2(self.builder, inst_struct_t, str_inst, 1, "f1_ptr");
+                        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, variant.name.len, 0), f1_ptr);
+
                         const name_ptr = llvm.LLVMBuildStructGEP2(self.builder, s_info.struct_type, inst_ptr, 2, "enum_name");
-                        const str_val = llvm.LLVMBuildGlobalStringPtr(self.builder, name_z.ptr, "enum_str");
-                        _ = llvm.LLVMBuildStore(self.builder, str_val, name_ptr);
+                        _ = llvm.LLVMBuildStore(self.builder, str_inst, name_ptr);
 
                         _ = llvm.LLVMBuildStore(self.builder, inst_ptr, global);
                     }
@@ -1668,10 +1660,7 @@ pub const LLVMEmitter = struct {
                 if (c.callee.data == .identifier) {
                     const ident = c.callee.data.identifier;
                     const name = ident.resolved_c_name orelse ident.name;
-                    const is_string_ctor = std.mem.eql(u8, name, "core_String") or std.mem.eql(u8, name, "String");
-                    if (!is_string_ctor) {
-                        try self.markReachable(name, reachable, worklist);
-                    }
+                    try self.markReachable(name, reachable, worklist);
                 } else if (c.callee.data == .get_expr) {
                     const g = c.callee.data.get_expr;
                     // FFI lib method call: object is an identifier naming a lib.
@@ -1921,9 +1910,20 @@ pub const LLVMEmitter = struct {
         const null_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_null");
         const bool_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_bool");
         const true_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_true");
+        const false_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_false");
         const small_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_small");
         const int_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_int");
         const str_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_str");
+
+        var inst_fields = [_]llvm.LLVMTypeRef{ ptr_type, i64_type };
+        const inst_struct_t = llvm.LLVMStructTypeInContext(self.context, &inst_fields, 2, 0);
+        const i32_type = llvm.LLVMInt32TypeInContext(self.context);
+
+        var idx0 = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i64_type, 0, 0), llvm.LLVMConstInt(i32_type, 0, 0) };
+        var idx1 = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i64_type, 0, 0), llvm.LLVMConstInt(i32_type, 1, 0) };
+
+        const gc_func = getHeapAllocFn(mod);
+        const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
         const val = llvm.LLVMGetParam(fn_val, 0);
@@ -1931,31 +1931,70 @@ pub const LLVMEmitter = struct {
         const is_null = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, val, null_ptr, "ts_null");
         _ = llvm.LLVMBuildCondBr(self.builder, is_null, null_bb, bool_bb);
 
+        const i8_type = llvm.LLVMInt8TypeInContext(self.context);
+
         llvm.LLVMPositionBuilderAtEnd(self.builder, null_bb);
-        const null_str = llvm.LLVMBuildGlobalStringPtr(self.builder, "null", "ts_null_str");
-        _ = llvm.LLVMBuildRet(self.builder, null_str);
+        var ga5 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 5, 0)};
+        const null_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga5, 1, "null_buf");
+        for ("null\x00", 0..) |c, i| {
+            var b_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(i), 0)};
+            const b_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, null_buf, &b_idx, 1, "nb_ptr");
+            _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i8_type, c, 0), b_ptr);
+        }
+        var ga16 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
+        const raw_null = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga16, 1, "raw_null");
+        const f0_null = llvm.LLVMBuildGEP2(self.builder, inst_struct_t, raw_null, &idx0, 2, "f0_null");
+        _ = llvm.LLVMBuildStore(self.builder, null_buf, f0_null);
+        const f1_null = llvm.LLVMBuildGEP2(self.builder, inst_struct_t, raw_null, &idx1, 2, "f1_null");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, 4, 0), f1_null);
+        _ = llvm.LLVMBuildRet(self.builder, raw_null);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, bool_bb);
         const int_val = llvm.LLVMBuildPtrToInt(self.builder, val, i64_type, "ts_int");
         const one = llvm.LLVMConstInt(i64_type, 1, 0);
         const is_one = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, int_val, one, "ts_one");
-        _ = llvm.LLVMBuildCondBr(self.builder, is_one, true_bb, small_bb);
+        const is_zero = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, int_val, llvm.LLVMConstInt(i64_type, 0, 0), "ts_zero");
+        const not_one_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "ts_not_one");
+        _ = llvm.LLVMBuildCondBr(self.builder, is_one, true_bb, not_one_bb);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, not_one_bb);
+        _ = llvm.LLVMBuildCondBr(self.builder, is_zero, false_bb, small_bb);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, true_bb);
-        const true_str = llvm.LLVMBuildGlobalStringPtr(self.builder, "true", "ts_true_str");
-        _ = llvm.LLVMBuildRet(self.builder, true_str);
+        const true_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga5, 1, "true_buf");
+        for ("true\x00", 0..) |c, i| {
+            var b_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(i), 0)};
+            const b_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, true_buf, &b_idx, 1, "tb_ptr");
+            _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i8_type, c, 0), b_ptr);
+        }
+        const raw_true = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga16, 1, "raw_true");
+        const f0_true = llvm.LLVMBuildGEP2(self.builder, inst_struct_t, raw_true, &idx0, 2, "f0_true");
+        _ = llvm.LLVMBuildStore(self.builder, true_buf, f0_true);
+        const f1_true = llvm.LLVMBuildGEP2(self.builder, inst_struct_t, raw_true, &idx1, 2, "f1_true");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, 4, 0), f1_true);
+        _ = llvm.LLVMBuildRet(self.builder, raw_true);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, false_bb);
+        var ga6 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 6, 0)};
+        const false_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga6, 1, "false_buf");
+        for ("false\x00", 0..) |c, i| {
+            var b_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(i), 0)};
+            const b_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, false_buf, &b_idx, 1, "fb_ptr");
+            _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i8_type, c, 0), b_ptr);
+        }
+        const raw_false = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga16, 1, "raw_false");
+        const f0_false = llvm.LLVMBuildGEP2(self.builder, inst_struct_t, raw_false, &idx0, 2, "f0_false");
+        _ = llvm.LLVMBuildStore(self.builder, false_buf, f0_false);
+        const f1_false = llvm.LLVMBuildGEP2(self.builder, inst_struct_t, raw_false, &idx1, 2, "f1_false");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, 5, 0), f1_false);
+        _ = llvm.LLVMBuildRet(self.builder, raw_false);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, small_bb);
         const max_small = llvm.LLVMConstInt(i64_type, 0x10000, 0);
         const is_small = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntULT, int_val, max_small, "ts_small");
-        const double_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "is_double");
         _ = llvm.LLVMBuildCondBr(self.builder, is_small, int_bb, str_bb);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, int_bb);
-        // buf = alloc(32); sprintf(buf, "%lld", val); ret buf. buf is capped
-        // at 32 bytes, matching the runtime's core_Int_toString bound.
-        const gc_func = getHeapAllocFn(mod);
-        const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
         const buf_size = llvm.LLVMConstInt(i64_type, 32, 0);
         var gc_args = [_]llvm.LLVMValueRef{buf_size};
         const buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &gc_args, 1, "ts_buf");
@@ -1965,85 +2004,28 @@ pub const LLVMEmitter = struct {
         const fmt = llvm.LLVMBuildGlobalStringPtr(self.builder, "%lld", "ts_fmt");
         var sp_args = [_]llvm.LLVMValueRef{ buf, fmt, int_val };
         _ = llvm.LLVMBuildCall2(self.builder, sprintf_type, sprintf_func, &sp_args, 3, "ts_sprintf");
-        _ = llvm.LLVMBuildRet(self.builder, buf);
 
-        llvm.LLVMPositionBuilderAtEnd(self.builder, double_bb);
-        // Check if value looks like a Double (bitcast val to double, then formatted) vs char pointer (> 0x10000 pointer)
-        // If val >= 0x10000 and < 0x7FFFFFFFFFFFFFFF, or if formatted via %g:
-        const d_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &gc_args, 1, "ts_dbuf");
-        const d_i64 = llvm.LLVMBuildPtrToInt(self.builder, val, i64_type, "ts_di64");
-        const d_val = llvm.LLVMBuildBitCast(self.builder, d_i64, llvm.LLVMDoubleTypeInContext(self.context), "ts_dval");
-        const dfmt = llvm.LLVMBuildGlobalStringPtr(self.builder, "%g", "ts_dfmt");
-        var dsp_args = [_]llvm.LLVMValueRef{ d_buf, dfmt, d_val };
-        _ = llvm.LLVMBuildCall2(self.builder, sprintf_type, sprintf_func, &dsp_args, 3, "ts_dsprintf");
-        _ = llvm.LLVMBuildRet(self.builder, d_buf);
+        const strlen_func = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
+            var ps = [_]llvm.LLVMTypeRef{ptr_type};
+            const ft = llvm.LLVMFunctionType(i64_type, &ps, 1, 0);
+            break :blk llvm.LLVMAddFunction(mod, "strlen", ft);
+        };
+        const strlen_type = llvm.LLVMGlobalGetValueType(strlen_func);
+        var sl_args = [_]llvm.LLVMValueRef{buf};
+        const int_len = llvm.LLVMBuildCall2(self.builder, strlen_type, strlen_func, &sl_args, 1, "int_len");
+
+        const raw_int = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga16, 1, "raw_int");
+        const f0_int = llvm.LLVMBuildGEP2(self.builder, inst_struct_t, raw_int, &idx0, 2, "f0_int");
+        _ = llvm.LLVMBuildStore(self.builder, buf, f0_int);
+        const f1_int = llvm.LLVMBuildGEP2(self.builder, inst_struct_t, raw_int, &idx1, 2, "f1_int");
+        _ = llvm.LLVMBuildStore(self.builder, int_len, f1_int);
+        _ = llvm.LLVMBuildRet(self.builder, raw_int);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, str_bb);
         _ = llvm.LLVMBuildRet(self.builder, val);
     }
 
-    /// Emits `eiwa_hash_string(i8*) -> i64` — the djb2 hash over a char buffer,
-    /// equivalent to `String.hashCode()` in core.ei (`hash = hash * 33 + c`).
-    ///
-    /// TODO(emitter): Like emitToStringHelper, this is a hand-emitted copy of
-    /// runtime/stdlib behavior (String.hashCode) because the LLVM model treats
-    /// String as a bare char* and can't run the stdlib body (which reads
-    /// this.length/this.ptr). If the String representation is ever materialized
-    /// (see the String-concat TODO), this helper becomes redundant with the
-    /// stdlib body and should be deleted.
-    /// INHERITED GAMBIARRA: the name-based hashCode dispatch + small-int tagging
-    /// came from the C backend — see PRE-EXISTING comments in the original C
-    /// backend (get_expr hashCode) and its runtime (eiwa_hash_code). The C
-    /// version dispatches through the Hashable vtable for custom types; this
-    /// LLVM copy only handles char* strings and boxes ints.
-    fn emitHashStringHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
-        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
-        const i8_type = llvm.LLVMInt8TypeInContext(self.context);
-        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
 
-        var params = [_]llvm.LLVMTypeRef{ptr_type};
-        const fn_type = llvm.LLVMFunctionType(i64_type, &params, 1, 0);
-        const fn_val = llvm.LLVMAddFunction(mod, "eiwa_hash_string", fn_type);
-        const entry = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
-        const loop_head = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_head");
-        const loop_body_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_body");
-        const done_bb = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
-        llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
-
-        const str = llvm.LLVMGetParam(fn_val, 0);
-        const hash_ptr = llvm.LLVMBuildAlloca(self.builder, i64_type, "hash");
-        const seed = llvm.LLVMConstInt(i64_type, 5381, 0);
-        _ = llvm.LLVMBuildStore(self.builder, seed, hash_ptr);
-        const idx_ptr = llvm.LLVMBuildAlloca(self.builder, i64_type, "i");
-        const zero = llvm.LLVMConstInt(i64_type, 0, 0);
-        _ = llvm.LLVMBuildStore(self.builder, zero, idx_ptr);
-        const null_ptr = llvm.LLVMConstNull(ptr_type);
-        const is_null = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, str, null_ptr, "hs_null");
-        _ = llvm.LLVMBuildCondBr(self.builder, is_null, done_bb, loop_head);
-
-        llvm.LLVMPositionBuilderAtEnd(self.builder, loop_head);
-        const idx = llvm.LLVMBuildLoad2(self.builder, i64_type, idx_ptr, "hs_i");
-        var hs_idx = [_]llvm.LLVMValueRef{idx};
-        const char_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, str, &hs_idx, 1, "hs_char_ptr");
-        const char_val = llvm.LLVMBuildLoad2(self.builder, i8_type, char_ptr, "hs_char");
-        const zero_i8 = llvm.LLVMConstInt(i8_type, 0, 0);
-        const not_end = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntNE, char_val, zero_i8, "hs_cond");
-        _ = llvm.LLVMBuildCondBr(self.builder, not_end, loop_body_bb, done_bb);
-
-        llvm.LLVMPositionBuilderAtEnd(self.builder, loop_body_bb);
-        const hash_val = llvm.LLVMBuildLoad2(self.builder, i64_type, hash_ptr, "hs_hash");
-        const mul = llvm.LLVMBuildMul(self.builder, hash_val, llvm.LLVMConstInt(i64_type, 33, 0), "hs_mul");
-        const char_ext = llvm.LLVMBuildSExt(self.builder, char_val, i64_type, "hs_ext");
-        const add = llvm.LLVMBuildAdd(self.builder, mul, char_ext, "hs_add");
-        _ = llvm.LLVMBuildStore(self.builder, add, hash_ptr);
-        const next = llvm.LLVMBuildAdd(self.builder, idx, llvm.LLVMConstInt(i64_type, 1, 0), "hs_next");
-        _ = llvm.LLVMBuildStore(self.builder, next, idx_ptr);
-        _ = llvm.LLVMBuildBr(self.builder, loop_head);
-
-        llvm.LLVMPositionBuilderAtEnd(self.builder, done_bb);
-        const final_hash = llvm.LLVMBuildLoad2(self.builder, i64_type, hash_ptr, "hs_final");
-        _ = llvm.LLVMBuildRet(self.builder, final_hash);
-    }
 
     /// Emits `eiwa_str_replace(i8* s, i8* old, i8* new) -> i8*` — replace all
     /// occurrences of `old` by `new` in `s`, mirroring `String.replace` in
@@ -2178,6 +2160,10 @@ pub const LLVMEmitter = struct {
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i1_type = llvm.LLVMInt1TypeInContext(self.context);
         const i32_type = llvm.LLVMInt32TypeInContext(self.context);
+        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
+
+        var inst_fields = [_]llvm.LLVMTypeRef{ ptr_type, i64_type };
+        const inst_struct_t = llvm.LLVMStructTypeInContext(self.context, &inst_fields, 2, 0);
 
         var params = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
         const fn_type = llvm.LLVMFunctionType(i1_type, &params, 2, 0);
@@ -2185,6 +2171,7 @@ pub const LLVMEmitter = struct {
 
         const entry = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
         const ptr_diff = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "ptr_diff");
+        const check_len = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "check_len");
         const do_strcmp = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "do_strcmp");
         const ret_false = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "ret_false");
         const ret_true = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "ret_true");
@@ -2196,23 +2183,32 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMBuildCondBr(self.builder, is_same, ret_true, ptr_diff);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, ptr_diff);
-        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
-        const a_int = llvm.LLVMBuildPtrToInt(self.builder, a, i64_type, "seq_aint");
-        const b_int = llvm.LLVMBuildPtrToInt(self.builder, b, i64_type, "seq_bint");
-        const threshold = llvm.LLVMConstInt(i64_type, 0x1000000, 0);
-        const a_invalid = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntULT, a_int, threshold, "seq_ainvalid");
-        const b_invalid = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntULT, b_int, threshold, "seq_binvalid");
-        const any_invalid = llvm.LLVMBuildOr(self.builder, a_invalid, b_invalid, "seq_anyinvalid");
-        _ = llvm.LLVMBuildCondBr(self.builder, any_invalid, ret_false, do_strcmp);
+        const a_null = llvm.LLVMBuildIsNull(self.builder, a, "a_null");
+        const b_null = llvm.LLVMBuildIsNull(self.builder, b, "b_null");
+        const any_null = llvm.LLVMBuildOr(self.builder, a_null, b_null, "any_null");
+        _ = llvm.LLVMBuildCondBr(self.builder, any_null, ret_false, check_len);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, check_len);
+        const a_len_ptr = llvm.LLVMBuildStructGEP2(self.builder, inst_struct_t, a, 1, "a_len_ptr");
+        const b_len_ptr = llvm.LLVMBuildStructGEP2(self.builder, inst_struct_t, b, 1, "b_len_ptr");
+        const a_len = llvm.LLVMBuildLoad2(self.builder, i64_type, a_len_ptr, "a_len");
+        const b_len = llvm.LLVMBuildLoad2(self.builder, i64_type, b_len_ptr, "b_len");
+        const len_eq = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, a_len, b_len, "len_eq");
+        _ = llvm.LLVMBuildCondBr(self.builder, len_eq, do_strcmp, ret_false);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, do_strcmp);
+        const a_data_ptr = llvm.LLVMBuildStructGEP2(self.builder, inst_struct_t, a, 0, "a_data_ptr");
+        const b_data_ptr = llvm.LLVMBuildStructGEP2(self.builder, inst_struct_t, b, 0, "b_data_ptr");
+        const a_data = llvm.LLVMBuildLoad2(self.builder, ptr_type, a_data_ptr, "a_data");
+        const b_data = llvm.LLVMBuildLoad2(self.builder, ptr_type, b_data_ptr, "b_data");
+
         const strcmp_fn = llvm.LLVMGetNamedFunction(mod, "strcmp") orelse blk: {
             var ps = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
             const ft = llvm.LLVMFunctionType(i32_type, &ps, 2, 0);
             break :blk llvm.LLVMAddFunction(mod, "strcmp", ft);
         };
         const strcmp_ft = llvm.LLVMGlobalGetValueType(strcmp_fn);
-        var args = [_]llvm.LLVMValueRef{ a, b };
+        var args = [_]llvm.LLVMValueRef{ a_data, b_data };
         const cmp = llvm.LLVMBuildCall2(self.builder, strcmp_ft, strcmp_fn, &args, 2, "seq_cmp");
         const zero = llvm.LLVMConstInt(i32_type, 0, 0);
         const is_eq = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, cmp, zero, "seq_eq");
@@ -3482,6 +3478,7 @@ pub const LLVMEmitter = struct {
                 return error.LLVMVerificationFailed;
             }
         }
+        if (verbose) llvm.LLVMDumpModule(mod);
         // Compile and load lib-declared C sources (@Source) so MCJIT can resolve
         // the FFI externs (e.g. neco/curl). Phase 65.
         try self.loadLibSourcesIntoJIT(io);

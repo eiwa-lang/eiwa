@@ -71,7 +71,6 @@ zig build test
 * [docs/decisions.md](docs/decisions.md): ADRs (Architecture Decision Records). **Read before introducing new patterns or changing existing decisions** to avoid rework.
 * [docs/language_tour.md](docs/language_tour.md): Full Eiwa syntax reference. Use when writing samples, tests, or `.ei` code examples.
 * [docs/roadmap.md](docs/roadmap.md): Phase history, completed tasks, and pending features. Read to identify the current project state.
-* [docs/tasks-backend-parity.md](docs/tasks-backend-parity.md): Operacional index of every remaining `TODO(emitter)` in the LLVM backend (GAPs, SPECIAL CASEs, WORKAROUNDs, runtime duplicates) with file:line references. Read before working on LLVM emitter cleanup.
 * [docs/setup.md](docs/setup.md): Dependency installation and environment setup. Only needed during initial setup.
 
 ---
