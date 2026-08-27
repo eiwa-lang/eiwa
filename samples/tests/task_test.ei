@@ -1,4 +1,4 @@
-import { Person } from ".samples.Person"
+import { Person } from ".samples.person"
 
 test "task should execute and return a value" {
     val t = task { 42 }

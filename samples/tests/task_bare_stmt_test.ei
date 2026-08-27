@@ -1,12 +1,13 @@
-import { Scheduler } from "std.coroutines"
+import { Scheduler, Dispatchers } from "std.coroutines"
+import { AtomicBool } from "std.atomic"
 
 test "bare task statement is scheduled and runs" {
-    var ran = false
-    task {
-        ran = true
+    val ran = AtomicBool.create(false)
+    task(Dispatchers.Single) {
+        ran.set(true)
     }
-    Scheduler.run()
-    assert(ran)
+    Dispatchers.Single.scheduler.run()
+    assert(ran.get())
 }
 
 test "task with await returns its value" {
