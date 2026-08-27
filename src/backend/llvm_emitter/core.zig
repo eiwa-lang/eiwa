@@ -3542,14 +3542,16 @@ pub const LLVMEmitter = struct {
         if (self.c_sources.count() == 0 and self.c_includes.count() == 0 and self.c_defines.count() == 0 and self.link_libraries.count() == 0) return;
 
         var h = std.hash.Wyhash.init(0);
-        var src_it = self.c_sources.keyIterator();
-        while (src_it.next()) |s| h.update(s.*);
-        var def_it = self.c_defines.keyIterator();
-        while (def_it.next()) |d| h.update(d.*);
-        var inc_it = self.c_includes.keyIterator();
-        while (inc_it.next()) |i| h.update(i.*);
-        var link_it = self.link_libraries.keyIterator();
-        while (link_it.next()) |l| h.update(l.*);
+        {
+            var src_it = self.c_sources.keyIterator();
+            while (src_it.next()) |s| h.update(s.*);
+            var def_it = self.c_defines.keyIterator();
+            while (def_it.next()) |d| h.update(d.*);
+            var inc_it = self.c_includes.keyIterator();
+            while (inc_it.next()) |i| h.update(i.*);
+            var link_it = self.link_libraries.keyIterator();
+            while (link_it.next()) |l| h.update(l.*);
+        }
         const key = h.final();
 
         const ext = if (builtin.target.os.tag == .macos) ".dylib" else ".so";
@@ -3568,16 +3570,44 @@ pub const LLVMEmitter = struct {
             const link_driver = self.pickLinkDriver(io);
             try appendLinkDriverPrefix(&cc_argv, link_driver);
             try cc_argv.appendSlice(&[_][]const u8{ "-shared", "-fPIC", "-O0", "-fwrapv" });
+            if (builtin.target.os.tag == .linux) {
+                try cc_argv.appendSlice(&[_][]const u8{ "-Wl,--no-as-needed" });
+            }
             if (builtin.target.os.tag == .macos) {
                 const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
                 try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
             }
-            try cc_argv.appendSlice(&[_][]const u8{ "-o", lib_filename, "-lgc" });
+            try cc_argv.appendSlice(&[_][]const u8{ "-o", lib_filename });
             for (self.cli_c_flags) |flag| try cc_argv.append(flag);
-            try self.appendLibRequirements(&cc_argv);
 
+            const src_dir = eiwa_home.resolve(self.allocator);
+            const repo_root = std.fs.path.dirname(src_dir) orelse ".";
+            const inc_third_party = try std.fs.path.join(self.allocator, &.{ repo_root, "src/runtime/third_party" });
+            try cc_argv.appendSlice(&[_][]const u8{ "-I", inc_third_party });
+
+            var inc_it = self.c_includes.keyIterator();
+            while (inc_it.next()) |dir| {
+                try cc_argv.append(try std.fmt.allocPrint(self.allocator, "-I{s}", .{dir.*}));
+            }
+            var def_it = self.c_defines.keyIterator();
+            while (def_it.next()) |def| {
+                try cc_argv.append(try std.fmt.allocPrint(self.allocator, "-D{s}", .{def.*}));
+            }
+            var src_it = self.c_sources.keyIterator();
+            while (src_it.next()) |src| {
+                try cc_argv.append(src.*);
+            }
             if (self.c_sources.count() == 0) {
                 try cc_argv.appendSlice(&[_][]const u8{ "-x", "c", "/dev/null" });
+            }
+
+            try cc_argv.append("-lgc");
+            var lib_it = self.link_libraries.keyIterator();
+            while (lib_it.next()) |lib_name| {
+                try cc_argv.append(try std.fmt.allocPrint(self.allocator, "-l{s}", .{lib_name.*}));
+                const macro = try std.fmt.allocPrint(self.allocator, "-DEIWA_USE_{s}", .{lib_name.*});
+                for (macro) |*c| c.* = std.ascii.toUpper(c.*);
+                try cc_argv.append(macro);
             }
 
             var child = try std.process.spawn(io, .{ .argv = cc_argv.items });
