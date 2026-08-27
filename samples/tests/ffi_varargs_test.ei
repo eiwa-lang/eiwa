@@ -1,5 +1,5 @@
-@Header("src/runtime/third_party/eiwa_varargs_test/varargs_helpers.h")
-@Source("src/runtime/third_party/eiwa_varargs_test/varargs_helpers.c")
+@Header("samples/tests/fixtures/varargs_helpers.h")
+@Source("samples/tests/fixtures/varargs_helpers.c")
 lib NativeVarargsTest {
     @Alias("eiwa_va_sum")
     fun vaSum(count: Int, values: Int...): Int

@@ -1,7 +1,6 @@
 // C helpers used by samples/tests/ffi_varargs_test.ei to exercise the
-// variadic FFI (`T...` in lib blocks, Phase 66). Compiled via @Source so the
-// LLVM backend can resolve the externs, and declared in varargs_helpers.h so
-// the C backend sees the `...` prototypes.
+// variadic FFI (`T...` in lib blocks, Phase 66).
+#include "varargs_helpers.h"
 #include <stdarg.h>
 
 int eiwa_va_sum(int count, ...) {

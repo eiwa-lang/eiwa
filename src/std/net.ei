@@ -1,6 +1,7 @@
 import { EventLoop } from "std.coroutines"
 
-@Header("runtime/net_helpers.h")
+@Header("src/runtime/third_party/eiwa_net/net_helpers.h")
+@Source("src/runtime/third_party/eiwa_net/net_helpers.c")
 lib NativeNet {
     @Alias("eiwa_tcp_bind")
     fun tcpBind(port: Int): Int

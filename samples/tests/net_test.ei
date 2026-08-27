@@ -1,0 +1,18 @@
+import { TCPServer, NativeNet } from "std.net"
+
+test "net: TCPServer bind and close" {
+    val server = TCPServer()
+    val ok = server.bind(18092)
+    assert(ok)
+    assert(server.fd >= 0)
+    server.close()
+    assert(server.fd == -1)
+}
+
+test "net: NativeNet direct helper calls" {
+    val fd = NativeNet.tcpBind(18093)
+    assert(fd >= 0)
+    val nb = NativeNet.setNonblocking(fd)
+    assert(nb >= 0)
+    NativeNet.socketClose(fd)
+}

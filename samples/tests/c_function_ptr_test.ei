@@ -1,5 +1,5 @@
-@Header("src/runtime/third_party/eiwa_cb_test/cb_helpers.h")
-@Source("src/runtime/third_party/eiwa_cb_test/cb_helpers.c")
+@Header("samples/tests/fixtures/cb_helpers.h")
+@Source("samples/tests/fixtures/cb_helpers.c")
 lib NativeCbTest {
     @Alias("eiwa_apply_cb")
     fun applyCb(cb: Pointer, x: Int): Int

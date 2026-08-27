@@ -36,6 +36,7 @@
 | C3 (isStringable) | `types.zig`, `expression.zig` | Teste "Stringable-ness" duplicado e stringly-typed entre `get_expr` e `call_expr` | **Centralizado** — helper único `types.isStringable(resolved_type)` cobrindo unificação de tipos base/union/primitivas e contratos `Stringable` |
 | D3 (jmp_buf) | `core.zig` (~310) | `jmp_buf` com tamanho fixo `[64 x i64]` frágil para diferentes SOs/arquiteturas | **Target-dependent** — `getJmpBufWords(os, arch)` calcula o tamanho exato de palavras `i64` para o frame `EiwaExceptionFrame` conforme o target (macOS/Darwin x86_64/arm64, Linux x86_64/arm64/etc, Windows, etc.) |
 | D4 (multi-catch) | `statement.zig:537` | LLVM só tratava `catches[0]` em `try/catch`, ignorando catches subsequentes | **Cascata de blocos** — `try_stmt` no LLVM agora itera todos os `ts.catches`, encadeando blocos de verificação (`catch.check_i`), dispatch tipado por vtable, união de tipos (`TypeA | TypeB`) e rethrow seguro |
+| C4 (emitSocketHelpers) | `core.zig:2275`, `std/net.ei` | `emitSocketHelpers` gerava 300+ linhas de IR manual com constantes hardcoded de SO | **Wrapper C real linkado** — extraído para `src/runtime/third_party/eiwa_net/` (`net_helpers.h`/`net_helpers.c`) com anotações `@Header`/`@Source` em `std/net.ei`, compilando e linkando de forma nativa e portável no JIT e AOT |
 
 ---
 
@@ -67,11 +68,8 @@ os itens deste bloco.
 
 ---
 
-## 🔵 C. Duplicações de runtime (independem do modelo de String)
-
-| ID | Local | Tipo | Descrição | Esforço |
-|---|---|---|---|---|
-| C4 | `core.zig:2275` | DUP/WORKAROUND | `emitSocketHelpers` hand-emite em IR os 6 helpers POSIX (`eiwa_tcp_bind/accept`, `eiwa_socket_read/write`, `eiwa_tcp_set_nonblocking`, `eiwa_socket_close`), duplicando `net_helpers.h` (`static inline`). Constantes hardcoded por plataforma (macOS vs Linux). | **médio** — compilar e linkar o wrapper C real |
+## 🔵 C. Duplicações de runtime (CONCLUÍDO)
+> **Resolvido:** C3 e C4 centralizados e resolvidos via wrappers C reais e helpers unificados no backend.
 
 ---
 
