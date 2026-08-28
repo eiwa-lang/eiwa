@@ -116,6 +116,23 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
 }
 
 pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
+    var curr: ?*const Scope = scope;
+    var inside_lambda = false;
+    while (curr) |s| {
+        if (s.is_lambda_boundary) {
+            inside_lambda = true;
+            break;
+        }
+        if (s.is_function_boundary) {
+            break;
+        }
+        curr = s.parent;
+    }
+    if (inside_lambda) {
+        self.reportError(node.line, node.column, "TypeError: 'return' is not allowed inside a lambda or task block. Use the trailing expression to return a value.", .{});
+        return error.TypeError;
+    }
+
     const r = node.data.return_stmt;
     if (r.value) |v| {
         const ret_type = try self.inferNode(v, scope);

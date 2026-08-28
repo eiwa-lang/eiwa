@@ -223,6 +223,7 @@ pub const Scope = struct {
     parent: ?*Scope,
     symbols: std.StringHashMap(*Symbol),
     is_function_boundary: bool = false,
+    is_lambda_boundary: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, parent: ?*Scope) Scope {
         return Scope{
@@ -230,6 +231,7 @@ pub const Scope = struct {
             .parent = parent,
             .symbols = std.StringHashMap(*Symbol).init(allocator),
             .is_function_boundary = false,
+            .is_lambda_boundary = false,
         };
     }
 

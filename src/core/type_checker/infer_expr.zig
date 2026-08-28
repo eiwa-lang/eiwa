@@ -494,6 +494,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     
     var lambda_scope = Scope.init(self.allocator, parent_scope);
     lambda_scope.is_function_boundary = true;
+    lambda_scope.is_lambda_boundary = true;
     defer lambda_scope.deinit();
     defer {
         if (receiver_scope) |*rs| {

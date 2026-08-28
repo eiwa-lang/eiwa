@@ -1,0 +1,80 @@
+test "root direct await assignment" {
+    val t = task {
+        sleepMs(5)
+        42
+    }
+    var x = 10
+    x = t.await()
+    assert(x == 42, "x should be 42 after direct await assignment")
+}
+
+test "root composite await expression assignment" {
+    val t = task {
+        sleepMs(5)
+        15
+    }
+    var total = 100
+    total = t.await() + total
+    assert(total == 115, "total should be 115 after composite await expression")
+}
+
+test "root multiple awaits in assignment expression" {
+    val t1 = task {
+        sleepMs(5)
+        20
+    }
+    val t2 = task {
+        sleepMs(5)
+        30
+    }
+    var sum = 0
+    sum = t1.await() + t2.await() + 5
+    assert(sum == 55, "sum should be 55")
+}
+
+test "root direct task assignment to variable" {
+    val t1 = task {
+        sleepMs(5)
+        99
+    }
+    var t2 = task {
+        sleepMs(5)
+        10
+    }
+    t2 = t1
+    var res = 0
+    res = t2.await()
+    assert(res == 99, "res should be 99")
+}
+
+test "cooperative await assignment inside task body" {
+    val outer = task {
+        val inner = task {
+            sleepMs(5)
+            50
+        }
+        var count = 10
+        count = inner.await() + count
+        count
+    }
+    val result = outer.await()
+    assert(result == 60, "result should be 60")
+}
+
+test "cooperative multiple await assignments in loop inside task body" {
+    val compute = task {
+        var acc = 0
+        var i = 0
+        while (i < 3) {
+            val step = task {
+                sleepMs(5)
+                10
+            }
+            acc = acc + step.await()
+            i = i + 1
+        }
+        acc
+    }
+    val total = compute.await()
+    assert(total == 30, "total should be 30")
+}

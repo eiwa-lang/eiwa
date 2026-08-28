@@ -1205,6 +1205,26 @@ fun main() {
 }
 ```
 
+### 15.5 Return Values & Static Prohibition of `return`
+In Eiwa, the return value of a lambda expression is **always the value of its trailing expression**:
+
+```kotlin
+val addTen = { x: Int ->
+    val base = 10
+    base + x // The trailing expression is the return value
+}
+```
+
+Using a bare `return` inside a lambda or `task { ... }` block is **statically forbidden** by the compiler:
+
+```kotlin
+val invalid = { x: Int ->
+    return x * 2 // Compile-time error: 'return' is not allowed inside a lambda or task block
+}
+```
+
+To return a value from a lambda, simply use the trailing expression.
+
 ---
 
 ## 16. C Interoperability & Annotations
@@ -1577,6 +1597,22 @@ fun main() {
     println(config)
 }
 ```
+
+#### Retorno de Tarefas e Hoisting de `await` em Atribuições
+O valor resultante de um bloco `task { ... }` é definido pela sua **expressão final**:
+```kotlin
+val t = task {
+    sleepMs(10)
+    42 // Expressão de retorno
+}
+```
+
+Chamadas `.await()` podem ser usadas diretamente em expressões compostas e em instruções de reatribuição de variáveis, sem a necessidade de variáveis temporárias intermediárias manuais:
+```kotlin
+var total = 100
+total = t.await() + total // Hoisting automático: total vira 142
+```
+
 
 ### 20.2 Dispatchers e Pools de Threads
 

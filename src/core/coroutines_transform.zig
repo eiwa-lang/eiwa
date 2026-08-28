@@ -357,6 +357,36 @@ fn rewriteStatement(
             }
             return false;
         },
+        .assignment => |*a| {
+            if (isTaskCall(a.value)) {
+                var temp_stmts = ArrayList(*ASTNode).init(allocator);
+                defer temp_stmts.deinit();
+                const temp_name = try std.fmt.allocPrint(allocator, "__task_tmp{d}", .{counter.*});
+                counter.* += 1;
+                const temp_decl = mkVarDecl(temp_name, null);
+                try temp_stmts.append(temp_decl);
+                const gen = try rewriteTaskCall(allocator, checker, temp_stmts.items[0], a.value, counter, generated);
+                try out.appendSlice(gen);
+                const task_name = gen[gen.len - 1].data.var_decl.initializer.?.data.identifier.name;
+                const assign = mkAssign(a.name, mkIdent(task_name));
+                assign.data.assignment.is_boxed = a.is_boxed;
+                assign.data.assignment.is_class_property = a.is_class_property;
+                assign.data.assignment.owner_type_c_name = a.owner_type_c_name;
+                assign.resolved_type = stmt.resolved_type;
+                try out.append(assign);
+                return true;
+            }
+            if (isAwaitCall(a.value) or containsAwait(a.value)) {
+                var preamble = ArrayList(*ASTNode).init(allocator);
+                defer preamble.deinit();
+                if (try hoistAwaitsFromExpr(allocator, checker, a.value, counter, &preamble)) {
+                    try rewritePreamble(allocator, checker, &preamble, counter, generated, out, coop);
+                    try out.append(stmt);
+                    return true;
+                }
+            }
+            return false;
+        },
         .return_stmt => |*r| {
             if (r.value) |val| {
                 if (isAwaitCall(val)) {
@@ -1002,6 +1032,7 @@ fn hoistAwaitsWalk(
             }
         },
         .named_arg => |*na| try hoistAwaitsWalk(allocator, checker, na.value, counter, preamble, hoisted),
+        .assignment => |*a| try hoistAwaitsWalk(allocator, checker, a.value, counter, preamble, hoisted),
         .var_decl => |*v| if (v.initializer) |init| try hoistAwaitsWalk(allocator, checker, init, counter, preamble, hoisted),
         else => {},
     }
@@ -2043,8 +2074,9 @@ fn rewriteTaskCall(
         mkCall(mkGetExpr(mkIdent("Scheduler"), "schedule"), &.{block_ctor_call});
     try out.append(mkExprStmt(schedule_call));
 
-    // `val t = __taskN`
+    // `val/var t = __taskN`
     const bind = mkVarDecl(v.name, mkIdent(task_name));
+    bind.data.var_decl.is_mut = v.is_mut;
     bind.data.var_decl.type_ref = stack_task_ref;
     try out.append(bind);
 

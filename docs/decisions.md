@@ -632,6 +632,29 @@ Entrega paralelismo real multi-core com speedup proporcional ao número de núcl
 **Razão:**
 Garante paridade total entre ambientes de desenvolvimento locais (macOS/Windows) e ambientes de produção/CI (Linux), prevenindo falhas silenciosas de importação e impondo consistência arquitetural na base de código.
 
+## ADR 53: Hoisting de `await` em Atribuições e Proibição Estática de `return` em Lambdas / Tasks
+**Status:** Aprovado
+**Data:** Agosto 2026
+
+**Contexto:**
+1. **Atribuições com `await`:** O transformador de corotinas stackless (`coroutines_transform.zig`) suportava hoisting de expressões com `.await()` em `var_decl`, `return_stmt`, `if_expr` e `while_stmt`. No entanto, expressões de reatribuição (`assignment`, ex.: `x = inner.await() + x` ou `x = t.await()`) não realizavam o hoisting, forçando a criação de variáveis temporárias intermediárias manuais (`val res = inner.await(); x = res + x`).
+2. **`return` dentro de Lambdas e Tasks:** No Eiwa, o valor de retorno de lambdas e blocos `task { ... }` é definido estritamente pela sua expressão final (*trailing expression*). No entanto, o `TypeChecker` não validava o uso de instruções `return` dentro de lambdas, permitindo que um `return value` compilasse silenciosamente em corotinas e causasse saída prematura da função de máquina de estados `resume()` sem assinalar `done = true`, travando `.await()` indefinidamente.
+
+**Decisão:**
+1. **Hoisting Automático em Nós `.assignment`:**
+   - O `hoistAwaitsWalk` e o `rewriteStatement` passam a cobrir o nó `.assignment`.
+   - Expressões contendo `.await()` à direita de uma atribuição são desaçucaradas em variáveis temporárias no preâmbulo (`val __awaitN = expr.await()`), e a atribuição final é reescrita para consumir o valor resolvido (`x = __awaitN + x`).
+   - Atribuições diretas de tarefas (`t2 = task { ... }`) preservam corretamente a mutabilidade do identificador alvo (`is_mut`).
+2. **Proibição Estática de `return` em Lambdas e Tasks (`Scope.is_lambda_boundary`):**
+   - O `Scope` do compilador agora registra a flag `is_lambda_boundary = true` em lambdas e closures.
+   - Em `inferReturnStmt` (`infer_stmt.zig`), o compilador inspeciona a hierarquia de escopos. Caso um `return` seja detectado dentro de uma lambda ou bloco `task {}` antes de uma fronteira de função real (`fun`), a compilação é **rejeitada imediatamente com erro estático**:
+     ```
+     error: 'return' is not allowed inside a lambda or task block. Use the trailing expression to return a value.
+     ```
+
+**Razão:**
+Elimina comportamentos indefinidos e travamentos sutis de corotinas em runtime através de garantias estáticas no TypeChecker, ao mesmo tempo em que aprimora a ergonomia da linguagem ao permitir atribuições assíncronas naturais e diretas.
+
 
 
 
