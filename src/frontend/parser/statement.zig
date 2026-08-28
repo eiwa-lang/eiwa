@@ -37,6 +37,7 @@ pub fn forStatement(self: *Parser) anyerror!*ASTNode {
 
     try self.consume(.l_brace, "Expected '{' for 'for' loop body.");
 
+    var index_name: ?[]const u8 = null;
     var item_name: []const u8 = "it";
 
     var temp_lexer = self.lexer;
@@ -58,9 +59,20 @@ pub fn forStatement(self: *Parser) anyerror!*ASTNode {
 
     if (has_arrow) {
         try self.consume(.identifier, "Expected parameter name in for loop.");
-        item_name = self.previous.lexeme;
+        const p1 = self.previous.lexeme;
         if (self.match(.colon)) {
             _ = try self.parseType();
+        }
+        if (self.match(.comma)) {
+            try self.consume(.identifier, "Expected second parameter name in for loop.");
+            const p2 = self.previous.lexeme;
+            if (self.match(.colon)) {
+                _ = try self.parseType();
+            }
+            index_name = p1;
+            item_name = p2;
+        } else {
+            item_name = p1;
         }
         try self.consume(.arrow, "Expected '->' after parameter in for loop.");
     }
@@ -72,7 +84,7 @@ pub fn forStatement(self: *Parser) anyerror!*ASTNode {
     try self.consume(.r_brace, "Expected '}'.");
     const body = try self.createNode(.{ .block = .{ .statements = try stmts.toOwnedSlice() } });
 
-    return try self.createNodeAt(.{ .for_stmt = .{ .item_name = item_name, .iterable = iterable, .body = body } }, line, col);
+    return try self.createNodeAt(.{ .for_stmt = .{ .index_name = index_name, .item_name = item_name, .iterable = iterable, .body = body } }, line, col);
 }
 
 pub fn returnStatement(self: *Parser) anyerror!*ASTNode {

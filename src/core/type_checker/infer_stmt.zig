@@ -109,6 +109,11 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     var for_scope = Scope.init(self.allocator, scope);
     defer for_scope.deinit();
     
+    if (f.index_name) |idx_name| {
+        const int_type = try self.allocator.create(EiwaType);
+        int_type.* = .Int;
+        try for_scope.define(idx_name, int_type, false, false);
+    }
     try for_scope.define(f.item_name, iter_type.Array, false, false);
     
     _ = try self.inferNode(f.body, &for_scope);

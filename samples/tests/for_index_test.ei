@@ -1,0 +1,72 @@
+import { assert } from "std.core"
+import { MutableList } from "std.collections"
+
+test "for loop with index and item parameters over List" {
+    val items = ["zero", "one", "two", "three"]
+    var indexSum = 0
+    var concat = ""
+
+    for (items) { i, item ->
+        indexSum = indexSum + i
+        concat = concat + i.toString() + ":" + item + ","
+    }
+
+    assert(indexSum == 6, "indexSum should be 0+1+2+3 = 6")
+    assert(concat == "0:zero,1:one,2:two,3:three,", "concat should contain indexed items")
+}
+
+test "for loop without space for(items) with index and item parameters" {
+    val numbers = [10, 20, 30]
+    var sum = 0
+
+    for(numbers) { idx, num ->
+        sum = sum + (idx * num)
+    }
+
+    // 0*10 + 1*20 + 2*30 = 0 + 20 + 60 = 80
+    assert(sum == 80, "sum should equal 80")
+}
+
+test "for loop with index over MutableList" {
+    val list = MutableList<String>()
+    list.add("apple")
+    list.add("banana")
+    list.add("cherry")
+
+    var formatted = ""
+    for (list) { i, fruit ->
+        formatted = formatted + "#" + i.toString() + "=" + fruit + " "
+    }
+
+    assert(formatted == "#0=apple #1=banana #2=cherry ", "mutable list with index formatted properly")
+}
+
+test "for loop with index and suspension inside coroutine task" {
+    val t = task {
+        val words = ["alpha", "beta", "gamma"]
+        var log = ""
+        for (words) { i, w ->
+            sleepMs(1)
+            log = log + i.toString() + "-" + w + ";"
+        }
+        log
+    }
+
+    val res = t.await()
+    assert(res == "0-alpha;1-beta;2-gamma;", "coroutine for loop with index works cleanly")
+}
+
+test "for loop single parameter and implicit it backward compatibility" {
+    val nums = [1, 2, 3]
+    var s1 = 0
+    for (nums) { n ->
+        s1 = s1 + n
+    }
+    assert(s1 == 6, "single parameter for loop works")
+
+    var s2 = 0
+    for (nums) {
+        s2 = s2 + it
+    }
+    assert(s2 == 6, "implicit it for loop works")
+}

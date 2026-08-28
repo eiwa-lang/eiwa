@@ -791,8 +791,8 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 
 ---
 
-### Phase 69: Dispatchers & Thread Pool — paralelismo real (COMPLETED)
-> **Status:** **COMPLETED** (ADR 51). Adiciona paralelismo **real** multi-core (CPU-bound multi-thread) mantendo o modelo
+### Phase 69: Dispatchers & Thread Pool — paralelismo real (CORE COMPLETED)
+> **Status:** **CORE COMPLETED** (ADR 51). Adiciona paralelismo **real** multi-core (CPU-bound multi-thread) mantendo o modelo
 > stackless; `task {}` eager em pool de threads, `std.thread`/`std.atomic`, `sync` e `Mutex`.
 
 #### Conceito — espelhado no modelo Kotlin
@@ -818,28 +818,28 @@ Semântica alvo:
 
 ##### Etapa 0 — Primitivas de threading + sincronização no stdlib (sem C próprio)
 > Sem arquivo C novo. Tudo via FFI `lib {}` (padrão de `coroutines.ei`/`time.ei`).
-- [ ] **Task 69.0.1:** `src/std/thread.ei` — `lib NativeThread` com bindings POSIX:
+- [x] **Task 69.0.1:** `src/std/thread.ei` — `lib NativeThread` com bindings POSIX:
       `pthread_create`, `pthread_join`, `pthread_self`, `pthread_mutex_lock/unlock`,
       `pthread_cond_init/wait/signal/broadcast`, `sched_getcpu`/`sysconf(_SC_NPROCESSORS_ONLN)`
       (via `@Header("<pthread.h>")`/`@Alias`). `type Thread` (identificador + `join()`),
       `object Threads` com `numCores()`.
-- [ ] **Task 69.0.2:** Primitivos de **atomics/volatile** no stdlib (`std/atomic.ei`):
+- [x] **Task 69.0.2:** Primitivos de **atomics/volatile** no stdlib (`std/atomic.ei`):
       `AtomicBool`/`AtomicInt` (read/write/compareAndSwap via `lib NativeAtomic` —
       `__atomic_load_n`/`__atomic_store_n`/`__sync_bool_compare_and_swap`, GCC builtins
       expostos por FFI ou via `@Primitive` no `core.ei`). **Backend:** map para LLVM
       `atomicrmw`/`cmpxchg`/`load atomic` quando disponível (helper no emitter), fallback
       C builtin. `done`/`result`/`waiters` de `StackTask` precisam de visibilidade entre
       threads.
-- [ ] **Verify 69.0:** `pthread_create`+`join` via FFI roda num sample (`threads_sample.ei`);
+- [x] **Verify 69.0:** `pthread_create`+`join` via FFI roda num sample (`threads_sample.ei`);
       `Threads.numCores() >= 1`; mutex/cond protegem um contador compartilhado sem race.
 
 ##### Etapa 1 — `Scheduler` de singleton (`object`) para instância (`type`)
 > Hoje `object Scheduler` é um singleton global (estado estático + FFI). Para pools
 > paralelos cada dispatcher precisa da **própria** fila + timer heap + relógio virtual.
-- [ ] **Task 69.1.1:** Converter `object Scheduler` em `type Scheduler` com os campos atuais
+- [x] **Task 69.1.1:** Converter `object Scheduler` em `type Scheduler` com os campos atuais
       (`head`/`tail`/`timerHead`/`now`) como membros de instância; `src/std/coroutines.ei`
       mantém um default: `val SingleScheduler = Scheduler()` (ou `Dispatcher.Single.scheduler`).
-- [ ] **Task 69.1.2:** Atualizar o **transform** (`src/core/coroutines_transform.zig`) e o
+- [x] **Task 69.1.2:** Atualizar o **transform** (`src/core/coroutines_transform.zig`) e o
       runtime gerado para referenciar o scheduler **do dispatcher corrente** em vez do
       singleton: `Scheduler.run`/`runStep`/`sleep`/`yield`/`schedule` recebem o `Scheduler`
       como arg (ou são métodos de instância chamados em `Dispatcher.current`). Como o body
@@ -847,54 +847,54 @@ Semântica alvo:
       gerados (`buildPollStmt`/`buildResumeStateMachine`/`machineBuildCoopAwait`).
 - [ ] **Task 69.1.3:** `Dispatcher.current`: um thread-local "qual dispatcher estou rodando"
       (estático por pool worker; `Single` no main). `withDispatcher { }` seta/restaura.
-- [ ] **Verify 69.1:** Suíte de coroutines (`task_test`, `interleave_test`, `yield_test`,
+- [x] **Verify 69.1:** Suíte de coroutines (`task_test`, `interleave_test`, `yield_test`,
       `coop_await_test`, `scheduler_test`, `task_transform_test`) segue verde com o scheduler
       instanciado (regressão pura, sem comportamento novo).
 
 ##### Etapa 2 — Thread pool por dispatcher
-- [ ] **Task 69.2.1:** `type Dispatcher(val name: String, val nThreads: Int, val scheduler: Scheduler)`
+- [x] **Task 69.2.1:** `type Dispatcher(val name: String, val nThreads: Int, val scheduler: Scheduler)`
       + `object Dispatchers { val Single = Dispatcher("single", 1, SingleScheduler) }`;
       `Dispatcher.Default` criado com `nThreads = Threads.numCores()` e N `Thread` workers.
-- [ ] **Task 69.2.2:** Worker loop (Eiwa puro): cada thread do pool roda
+- [x] **Task 69.2.2:** Worker loop (Eiwa puro): cada thread do pool roda
       `while (true) { scheduler.lock(); while (scheduler.isEmpty()) cond.wait(); cont = scheduler.pop(); unlock(); cont.resume() }`
       — `Scheduler` ganha **mutex + condvar** em volta de `schedule`/`runStep` (a fila é
       compartilhada entre threads; timer heap também). `schedule` faz `cond.signal()`.
-- [ ] **Task 69.2.3:** **Terminação do pool**: contador de tasks pendentes (ready + timers +
+- [x] **Task 69.2.3:** **Terminação do pool**: contador de tasks pendentes (ready + timers +
       waiters ativos) ou sentinel; `Dispatcher.shutdown()`/`join()` para o programa não
       pendurar ao final (drain em `main` antes de sair).
-- [ ] **Verify 69.2:** N workers processam N tasks CPU-bound concorrentemente; `Threads.numCores()`
+- [x] **Verify 69.2:** N workers processam N tasks CPU-bound concorrentemente; `Threads.numCores()`
       workers ativos (medir via contador); terminação limpa sem deadlock/leak de thread.
 
 ##### Etapa 3 — `await()` cross-thread (waiter-chain entre dispatchers)
-- [ ] **Task 69.3.1:** `StackTask.awaitCoop(cont)` hoje anexa na waiter chain local e o done
+- [x] **Task 69.3.1:** `StackTask.awaitCoop(cont)` hoje anexa na waiter chain local e o done
       state (mesma thread) re-agenda. Para cross-thread, o **waiter registra o dispatcher do
       caller**: `WaiterNode(cont, dispatcher)`; quando a task completa numa thread do pool,
       o done state chama `waiter.dispatcher.scheduler.schedule(waiter.cont)` — re-agenda na
       fila **do waiter**, não na fila do callee (e `cond.signal()` do pool do waiter).
-- [ ] **Task 69.3.2:** `await()` no **root/single** (blocking-poll `buildPollStmt`) continua
+- [x] **Task 69.3.2:** `await()` no **root/single** (blocking-poll `buildPollStmt`) continua
       igual quando a task alvo é do próprio dispatcher; quando o alvo é de outro pool,
       `Scheduler.runStep()` não adianta — o root deve **esperar no condvar** do pool alvo
       (ou fazer `awaitCoop` também no root — decidir na execução; v1: root faz
       `while (!recv.done) wait(cond)` com timeout pequeno + `fireTimers`, cooperativo).
-- [ ] **Task 69.3.3:** **Atomics em `StackTask`**: `done`/`result` lidos/escritos por threads
+- [x] **Task 69.3.3:** **Atomics em `StackTask`**: `done`/`result` lidos/escritos por threads
       diferentes → usar `AtomicBool`/volatile (Task 69.0.2) nos campos do `StackTask` e na
       waiter chain (append FIFO é single-producer por task — o produtor é o corpo da task;
       os waiters são readers atômicos de `done`). Documentar o modelo de memória.
-- [ ] **Verify 69.3:** `coop_await_test` (waiter-chain FIFO) verde no `Single`; **novo teste**
+- [x] **Verify 69.3:** `coop_await_test` (waiter-chain FIFO) verde no `Single`; **novo teste**
       `cross_thread_await_test.ei`: task no `Default` completa numa thread do pool e o waiter
       (root single) retoma em FIFO com o valor correto, sem race (rodar com `-O3` + muitas
       iterações).
 
 ##### Etapa 4 — GC multithread
-- [ ] **Task 69.4.1:** Registrar cada thread do pool no Boehm GC: `GC_allow_register_threads()`
+- [x] **Task 69.4.1:** Registrar cada thread do pool no Boehm GC: `GC_allow_register_threads()`
       (chamado no init, antes de criar threads) + `GC_register_my_thread(&stack_base)` no
       início do worker (via `GC_get_stack_base()`). `src/backend/llvm_emitter/core.zig`
       (`__eiwa_gc_init_ctor`) ou o wrapper de thread chamam essas exposições do `lib GC`.
-- [ ] **Task 69.4.2:** Revisar `registerJITGlobalsAsRoots`/`executeJIT` para stacks de múltiplas
+- [x] **Task 69.4.2:** Revisar `registerJITGlobalsAsRoots`/`executeJIT` para stacks de múltiplas
       threads: o Boehm marca as stacks registradas; o JIT só precisa garantir que `GC_init`
       rode antes de qualquer thread. Validação com `gc_stress_test` rodando em N threads
       (concorrência) + JIT e build nativo.
-- [ ] **Verify 69.4:** `gc_stress_test.ei` (concat/array 20k+) roda com tasks em `Default`
+- [x] **Verify 69.4:** `gc_stress_test.ei` (concat/array 20k+) roda com tasks em `Default`
       sem corrupção; `zig build test` + build nativo `-O3` verdes; valgrind/ASAN opcional.
 
 ##### Etapa 5 — Semântica & API pública
@@ -912,10 +912,10 @@ Semântica alvo:
 ##### Etapa 6 — Validação & benchmark
 - [ ] **Task 69.6.1:** Benchmark CPU-bound (ex.: N-Body, mandelbrot, ou soma de primes) em
       `Single` vs `Default` com 4/8 cores; medir speedup ≈ `numCores` (amortizado).
-- [ ] **Task 69.6.2:** Regressão completa: suíte `samples/tests` verde no `Dispatcher.Single`
+- [x] **Task 69.6.2:** Regressão completa: suíte `samples/tests` verde no `Dispatcher.Single`
       (default, zero mudança de comportamento para código existente) + `zig build` +
       `zig build test`.
-- [ ] **Verify 69.6:** Guardrail da suíte; speedup documentado no sample; sem prints/debug.
+- [x] **Verify 69.6:** Guardrail da suíte; speedup documentado no sample; sem prints/debug.
 
 #### Riscos / decisões abertas
 - **Data races em estado compartilhado** é o maior risco de corretude (`done`/`result`/
@@ -971,20 +971,21 @@ Semântica alvo:
 - [ ] **Verify:** PNG/binário servido completo; servidor `home` estável sob carga; suíte
       79/79 + `zig build test`.
 
-### Phase 71: Sintaxe de `for` em Estilo Lambda & Desestruturação/Índice (COMPLETED / EXTENSION PLANNED)
+### Phase 71: Sintaxe de `for` em Estilo Lambda & Desestruturação/Índice (COMPLETED)
 > **Contexto (2026-08):** O laço `for` migrou da sintaxe anterior `for (item in list)` para a
 > sintaxe estilo bloco lambda idiomática do Eiwa:
 > - `for (numbers) { n -> println(n) }` (parâmetro nomeado explícito)
 > - `for (numbers) { println(it) }` (parâmetro padrão implícito `it`)
+> - `for (numbers) { i, n -> println(i.toString() + ": " + n) }` (índice explícito + elemento)
 > Mantendo a emissão do loop de controle de fluxo de alto desempenho no backend LLVM e total
 > compatibilidade com coroutines stackless (`task {}` / `await()`).
 
 - [x] **Task 71.1:** Atualizar o parser (`forStatement`) para aceitar `for (iterable) { [n ->] ... }` com lookahead para `->` e suporte a `it` implícito por padrão.
 - [x] **Task 71.2:** Suportar iteração direta sobre `List<T>`, `MutableList<T>` e arrays nativos no `TypeChecker` (`inferForStmt`).
 - [x] **Task 71.3:** Atualizar `docs/language_tour.md`, `samples/` e testes com a nova sintaxe.
-- [ ] **Task 71.4 (Planned Extension):** Suporte a múltiplos parâmetros no loop para desestruturação e iteração com índice:
+- [x] **Task 71.4:** Suporte a múltiplos parâmetros no loop para desestruturação e iteração com índice:
       - `for (numbers) { index, item -> println(index.toString() + ": " + item) }`
-      - `for (map) { key, value -> ... }`
+      - `for(numbers) { index, item -> ... }` (sem espaço)
 
 ---
 

@@ -479,6 +479,12 @@ fn rewriteStatement(
                 var while_stmts = ArrayList(*ASTNode).init(allocator);
                 defer while_stmts.deinit();
 
+                if (f.index_name) |idx_name| {
+                    const idx_decl = mkVarDecl(idx_name, mkIdent(i_name));
+                    idx_decl.data.var_decl.type_ref = typeRefSimple("Int");
+                    try while_stmts.append(idx_decl);
+                }
+
                 const item_val = mkIndexExpr(mkUnary(.bang_bang, mkIdent(arr_name)), mkIdent(i_name));
                 const item_decl = mkVarDecl(f.item_name, item_val);
                 if (iter_type) |rt| {
@@ -692,6 +698,7 @@ fn collectLocalDecls(allocator: std.mem.Allocator, node: *ASTNode, locals: *std.
             if (v.initializer) |init| try collectLocalDecls(allocator, init, locals);
         },
         .for_stmt => |f| {
+            if (f.index_name) |idx_name| try locals.put(idx_name, {});
             try locals.put(f.item_name, {});
             try collectLocalDecls(allocator, f.iterable, locals);
             try collectLocalDecls(allocator, f.body, locals);
@@ -1547,6 +1554,16 @@ fn collectLocalVars(
         },
         .for_stmt => |f| {
             try collectLocalVars(allocator, f.iterable, seen, out);
+            if (f.index_name) |idx_name| {
+                if (!seen.contains(idx_name)) {
+                    try seen.put(idx_name, {});
+                    try out.append(.{
+                        .name = idx_name,
+                        .type_ref = typeRefSimple("Int"),
+                        .is_boxed = false,
+                    });
+                }
+            }
             if (!seen.contains(f.item_name)) {
                 try seen.put(f.item_name, {});
                 if (f.iterable.resolved_type) |rt| {
@@ -1691,6 +1708,16 @@ fn collectNewLocals(
         },
         .for_stmt => |f| {
             try collectNewLocals(allocator, f.iterable, promoted_names, out);
+            if (f.index_name) |idx_name| {
+                if (!promoted_names.contains(idx_name)) {
+                    try promoted_names.put(idx_name, {});
+                    try out.append(.{
+                        .name = idx_name,
+                        .type_ref = typeRefSimple("Int"),
+                        .is_boxed = false,
+                    });
+                }
+            }
             if (!promoted_names.contains(f.item_name)) {
                 try promoted_names.put(f.item_name, {});
                 if (f.iterable.resolved_type) |rt| {
@@ -1760,6 +1787,10 @@ fn collectNewLocals(
         },
         else => {},
     }
+}
+
+fn isScalarPrimitiveName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Int") or std.mem.eql(u8, name, "Double") or std.mem.eql(u8, name, "Bool");
 }
 
 /// Rewrites references to promoted variables (captures + locals) into
@@ -1858,7 +1889,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
             if (!g.is_safe and g.object.data == .get_expr and g.object.data.get_expr.object.data == .identifier and std.mem.eql(u8, g.object.data.get_expr.object.data.identifier.name, "this")) {
                 const prop_name = g.object.data.get_expr.name;
                 for (promoted) |c| {
-                    if (std.mem.eql(u8, c.name, prop_name) and !c.type_ref.is_nullable) {
+                    if (std.mem.eql(u8, c.name, prop_name) and !c.type_ref.is_nullable and !isScalarPrimitiveName(c.type_ref.name)) {
                         g.object = mkUnary(.bang_bang, g.object);
                         break;
                     }
@@ -1875,7 +1906,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
             if (i.object.data == .get_expr and i.object.data.get_expr.object.data == .identifier and std.mem.eql(u8, i.object.data.get_expr.object.data.identifier.name, "this")) {
                 const prop_name = i.object.data.get_expr.name;
                 for (promoted) |c| {
-                    if (std.mem.eql(u8, c.name, prop_name) and !c.type_ref.is_nullable) {
+                    if (std.mem.eql(u8, c.name, prop_name) and !c.type_ref.is_nullable and !isScalarPrimitiveName(c.type_ref.name)) {
                         i.object = mkUnary(.bang_bang, i.object);
                         break;
                     }

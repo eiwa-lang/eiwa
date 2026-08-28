@@ -103,6 +103,13 @@ fun main() {
         product = product * n
     }
     assert(product == 120)
+
+    // With explicit 0-based index and element parameter
+    var formatted = ""
+    for (numbers) { idx, n ->
+        formatted = formatted + idx.toString() + ":" + n.toString() + " "
+    }
+    assert(formatted == "0:1 1:2 2:3 3:4 4:5 ")
 }
 ```
 

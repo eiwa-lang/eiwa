@@ -153,6 +153,7 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
         },
         .for_stmt => |f| {
             new_node.data = .{ .for_stmt = .{
+                .index_name = f.index_name,
                 .item_name = f.item_name,
                 .iterable = try self.cloneNode(f.iterable),
                 .body = try self.cloneNode(f.body),

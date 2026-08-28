@@ -338,6 +338,7 @@ pub const ASTNodeType = union(enum) {
         body: *ASTNode,
     },
     for_stmt: struct {
+        index_name: ?[]const u8 = null,
         item_name: []const u8,
         iterable: *ASTNode,
         body: *ASTNode,

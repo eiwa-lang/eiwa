@@ -387,6 +387,14 @@ pub fn emitStatement(
             // The item lives in an alloca (like function params and var decls)
             // so the identifier path loads it correctly instead of treating a
             // direct pointer value as an alloca address.
+            if (f.index_name) |idx_name| {
+                const idx_name_z = try std.heap.page_allocator.dupeZ(u8, idx_name);
+                defer std.heap.page_allocator.free(idx_name_z);
+                const idx_alloca = llvm.LLVMBuildAlloca(builder, i64_type, idx_name_z.ptr);
+                _ = llvm.LLVMBuildStore(builder, i_body, idx_alloca);
+                try loop_scope.put(idx_name, idx_alloca);
+            }
+
             const item_type = llvm.LLVMTypeOf(item_val);
             const item_name_z = try std.heap.page_allocator.dupeZ(u8, f.item_name);
             defer std.heap.page_allocator.free(item_name_z);
