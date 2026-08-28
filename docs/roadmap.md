@@ -783,7 +783,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 ### Phase 68.1: Coroutine State Machine Refinements & I/O Waiters (PLANNED)
 > **Contexto:** Refinamentos e expansões incrementais sobre o motor de corrotinas stackless (ADR 48).
 
-- [ ] **Task 68.1.1 — Loop `for` com Suspensão:** Suporte a chamadas suspensivas (`sleep()`, `yield()`) dentro do corpo de laços `for` em `task {}` (atualmente suportado em laços `while`).
+- [x] **Task 68.1.1 — Loop `for` com Suspensão:** Suporte a chamadas suspensivas (`sleep()`, `yield()`) dentro do corpo de laços `for` em `task {}` (atualmente suportado em laços `while`).
 - [ ] **Task 68.1.2 — `try / catch` no Builder de State Machine:** Adicionar suporte a nós `.try_stmt` dentro do `machineBuildStmt` para blocos que combinam suspensão verdadeira com tratamento de exceções.
 - [x] **Task 68.1.3 — Hoisting de `await` em Assignments Diretos:** Tratar expressões do tipo `x = inner.await() + x` no `hoistAwaitsWalk` (atualmente requer declaração intermediária `val res = inner.await(); x = res + x`).
 - [ ] **Task 68.1.4 — I/O Waiters Cooperativos no Scheduler:** Evoluir `EventLoop.waitReadable`/`waitWritable` de `poll()` bloqueante para suspensão cooperativa não-bloqueante integrada ao timer/event loop do scheduler.

@@ -1,0 +1,114 @@
+import { List, MutableList } from "std.collections"
+
+test "for loop with sleepMs suspension and implicit it inside task" {
+    val t = task {
+        val numbers = [1, 2, 3, 4]
+        var sum = 0
+        for (numbers) {
+            sleepMs(2)
+            sum = sum + it
+        }
+        sum
+    }
+    val result = t.await()
+    assert(result == 10, "sum of 1..4 with sleep should be 10")
+}
+
+test "for loop with yield suspension and explicit parameter inside task" {
+    val t = task {
+        val numbers = [10, 20, 30]
+        var count = 0
+        for (numbers) { v ->
+            yield()
+            count = count + v
+        }
+        count
+    }
+    val result = t.await()
+    assert(result == 60, "count of 10,20,30 with yield should be 60")
+}
+
+test "for loop with inner task await inside outer task" {
+    val t = task {
+        val multipliers = [1, 2, 3]
+        var total = 0
+        for (multipliers) { multiplier ->
+            val step = task {
+                sleepMs(2)
+                multiplier * 10
+            }
+            total = total + step.await()
+        }
+        total
+    }
+    val result = t.await()
+    assert(result == 60, "total should be 60")
+}
+
+test "multiple sequential for loops with suspensions inside task" {
+    val t = task {
+        val l1 = [1, 2, 3]
+        val l2 = [10, 20]
+        var sum1 = 0
+        for (l1) { a ->
+            sleepMs(1)
+            sum1 = sum1 + a
+        }
+        var sum2 = 0
+        for (l2) { b ->
+            sleepMs(1)
+            sum2 = sum2 + b
+        }
+        sum1 + sum2
+    }
+    val result = t.await()
+    assert(result == 36, "sum1 + sum2 should be 36")
+}
+
+test "nested for loop with suspension inside task" {
+    val t = task {
+        val outer = [1, 2]
+        val inner = [10, 20]
+        var pairs = 0
+        for (outer) { i ->
+            for (inner) { j ->
+                yield()
+                pairs = pairs + (i + j)
+            }
+        }
+        pairs
+    }
+    val result = t.await()
+    // (1+10) + (1+20) + (2+10) + (2+20) = 11 + 21 + 12 + 22 = 66
+    assert(result == 66, "pairs should be 66")
+}
+
+test "for loop with MutableList and suspension inside task" {
+    val t = task {
+        val m = MutableList<Int>()
+        m.add(5)
+        m.add(15)
+        m.add(25)
+        var sum = 0
+        for (m) { item ->
+            sleepMs(1)
+            sum = sum + item
+        }
+        sum
+    }
+    val result = t.await()
+    assert(result == 45, "MutableList sum should be 45")
+}
+
+test "for loop directly over literal with suspension" {
+    val t = task {
+        var acc = 0
+        for ([100, 200, 300]) {
+            sleepMs(1)
+            acc = acc + it
+        }
+        acc
+    }
+    val result = t.await()
+    assert(result == 600, "literal array sum should be 600")
+}

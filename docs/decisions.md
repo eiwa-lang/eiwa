@@ -652,8 +652,36 @@ Garante paridade total entre ambientes de desenvolvimento locais (macOS/Windows)
      error: 'return' is not allowed inside a lambda or task block. Use the trailing expression to return a value.
      ```
 
+## ADR 54: Suspensão em Laços `for` e Inicialização Universal de Campos na State Machine
+**Status:** Aprovado
+**Data:** Agosto 2026
+
+**Contexto:**
+1. **Laços `for` com Suspensão:** Anteriormente, o motor de corrotinas stackless (`coroutines_transform.zig`) suportava pontos de suspensão verdadeira (`sleepMs`, `yield`, `await`) dentro de laços `while`, mas laços `for` contendo suspensão falhavam porque não eram divididos em estados independentes da máquina de estados (`MachineState`).
+2. **Campos da Continuação (`body_fields`):** Para sobreviver a suspensões entre estados, variáveis locais de uma tarefa são promovidas a campos de propriedade da classe gerada `__TaskBlockN`. Tipos primitivos (`Int`, `Double`, `Bool`, `String`) possuem valores zero padrão (`0`, `0.0`, `false`, `""`), mas tipos por referência (`NativeArray`, `List`, `Map`, classes de usuário) não possuíam inicializadores estáticos conhecidos a priori, o que gerava incompatibilidades no TypeChecker ou demandava checagens hardcoded e frágeis por nome de classe.
+
+**Decisão:**
+1. **Desaçucaramento Automático de `for` Suspensivo para `while`:**
+   - Quando um laço `for` dentro de uma tarefa contém chamadas de suspensão verdadeira ou `await`, o transformador converte o laço estruturalmente para:
+     ```
+     val __for_arr = iterable.items // ou iterable
+     var __for_i = 0
+     val __for_len = __for_arr.length
+     while (__for_i < __for_len) {
+         val item = __for_arr[__for_i]
+         ... corpo com sleep/yield/await ...
+         __for_i = __for_i + 1
+     }
+     ```
+   - O `while` gerado é então dividido naturalmente pela máquina de estados em estados de transição (`label = cond`, `label = body`, `label = increment`).
+2. **Modelo Universal de Inicialização de Campos de Referência (`T? = null`):**
+   - Elimina qualquer caso especial hardcoded para classes específicas da biblioteca padrão (como `List` ou `StackTask`).
+   - Qualquer variável local promovida cujo tipo seja por referência é registrada na classe de continuação como um campo anulável (`T?`) com inicializador padrão `null` (`body_fields: is_nullable = true, init = null`).
+3. **Desembrulho Automático em Leituras Promovidas:**
+   - No `rewritePromotedRefs`, ao reescrever acessos a membros em receptores promovidos (`this.<campo>`), o compilador gera o desembrulho seguro (`this.<campo>!!.<membro>`) sempre que a variável original era não-nula, garantindo plena segurança estática no TypeChecker sem necessidade de código defensivo em user-space.
+
 **Razão:**
-Elimina comportamentos indefinidos e travamentos sutis de corotinas em runtime através de garantias estáticas no TypeChecker, ao mesmo tempo em que aprimora a ergonomia da linguagem ao permitir atribuições assíncronas naturais e diretas.
+Elimina casos especiais e suposições frágeis do compilador, unificando a promoção de variáveis locais na State Machine de forma matemática e consistente com o sistema de tipos anuláveis do Eiwa, além de permitir o uso livre de laços `for` idiomáticos com qualquer chamada assíncrona ou suspensiva.
 
 
 

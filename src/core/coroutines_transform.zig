@@ -445,6 +445,69 @@ fn rewriteStatement(
             return false;
         },
         .for_stmt => |*f| {
+            if (containsTrueSuspend(f.body) or containsAwait(f.body) or containsTrueSuspend(f.iterable) or containsAwait(f.iterable)) {
+                const n = counter.*;
+                counter.* += 1;
+                const arr_name = try std.fmt.allocPrint(allocator, "__for_arr{d}", .{n});
+                const i_name = try std.fmt.allocPrint(allocator, "__for_i{d}", .{n});
+                const len_name = try std.fmt.allocPrint(allocator, "__for_len{d}", .{n});
+
+                const iter_type = f.iterable.resolved_type orelse (checker.inferNode(f.iterable, &checker.global_scope) catch null);
+
+                const arr_decl = mkVarDecl(arr_name, f.iterable);
+                arr_decl.resolved_type = iter_type;
+                if (iter_type) |rt| {
+                    arr_decl.data.var_decl.type_ref = try typeRefForEiwaType(allocator, rt);
+                }
+                if (!try rewriteStatement(allocator, checker, arr_decl, counter, generated, out, coop)) {
+                    try out.append(arr_decl);
+                }
+
+                const i_decl = mkVarDecl(i_name, mkIntLit(0));
+                i_decl.data.var_decl.is_mut = true;
+                i_decl.data.var_decl.type_ref = typeRefSimple("Int");
+                try out.append(i_decl);
+
+                const len_expr = mkGetExpr(mkUnary(.bang_bang, mkIdent(arr_name)), "length");
+
+                const len_decl = mkVarDecl(len_name, len_expr);
+                len_decl.data.var_decl.type_ref = typeRefSimple("Int");
+                try out.append(len_decl);
+
+                const cond = mkBinary(.less, mkIdent(i_name), mkIdent(len_name));
+
+                var while_stmts = ArrayList(*ASTNode).init(allocator);
+                defer while_stmts.deinit();
+
+                const item_val = mkIndexExpr(mkUnary(.bang_bang, mkIdent(arr_name)), mkIdent(i_name));
+                const item_decl = mkVarDecl(f.item_name, item_val);
+                if (iter_type) |rt| {
+                    if (rt.* == .Array) {
+                        item_decl.resolved_type = rt.Array;
+                        item_decl.data.var_decl.type_ref = try typeRefForEiwaType(allocator, rt.Array);
+                    }
+                }
+                try while_stmts.append(item_decl);
+
+                if (f.body.data == .block) {
+                    for (f.body.data.block.statements) |bs| {
+                        try while_stmts.append(bs);
+                    }
+                } else {
+                    try while_stmts.append(f.body);
+                }
+
+                const inc = mkAssign(i_name, mkBinary(.plus, mkIdent(i_name), mkIntLit(1)));
+                try while_stmts.append(inc);
+
+                const while_body = mkBlock(try while_stmts.toOwnedSlice());
+                const while_node = mkWhile(cond, while_body);
+
+                if (!try rewriteStatement(allocator, checker, while_node, counter, generated, out, coop)) {
+                    try out.append(while_node);
+                }
+                return true;
+            }
             try rewriteBranch(allocator, checker, f.iterable, counter, generated, coop);
             try rewriteBranch(allocator, checker, f.body, counter, generated, coop);
             return false;
@@ -1108,14 +1171,19 @@ fn buildTaskBlockType(
         const locals = try collectLocals(allocator, body);
         defer allocator.free(locals);
         for (locals) |l| {
-            const default_init = defaultInitializerForTypeRef(allocator, l.type_ref) orelse
-                return error.UnsupportedStateMachineLocal;
+            var prop_type_ref = l.type_ref;
+            var default_init = defaultInitializerForTypeRef(allocator, l.type_ref);
+            if (default_init == null) {
+                const nullable_ref = try makeNullableTypeRef(allocator, l.type_ref);
+                prop_type_ref = nullable_ref;
+                default_init = mkNullLit();
+            }
             try body_fields.append(.{
                 .is_mut = true,
                 .name = l.name,
-                .type_ref = l.type_ref,
+                .type_ref = prop_type_ref,
                 .is_property = true,
-                .initializer = default_init,
+                .initializer = default_init.?,
             });
         }
         // The state-machine dispatch reads `this.label`; its default is the
@@ -1448,6 +1516,18 @@ fn collectLocalVars(
         },
         .for_stmt => |f| {
             try collectLocalVars(allocator, f.iterable, seen, out);
+            if (!seen.contains(f.item_name)) {
+                try seen.put(f.item_name, {});
+                if (f.iterable.resolved_type) |rt| {
+                    if (rt.* == .Array) {
+                        try out.append(.{
+                            .name = f.item_name,
+                            .type_ref = try typeRefForEiwaType(allocator, rt.Array),
+                            .is_boxed = false,
+                        });
+                    }
+                }
+            }
             try collectLocalVars(allocator, f.body, seen, out);
         },
         .return_stmt => |r| if (r.value) |v| try collectLocalVars(allocator, v, seen, out),
@@ -1497,6 +1577,14 @@ fn collectLocalVars(
 /// A default initializer for a promoted local's continuation field. Only
 /// primitive/nullable types have a sensible zero-value; anything else means the
 /// state-machine path cannot promote the local (unsupported for now).
+fn makeNullableTypeRef(allocator: std.mem.Allocator, ref: *const ASTTypeRef) !*const ASTTypeRef {
+    const copy = try allocator.create(ASTTypeRef);
+    copy.* = ref.*;
+    copy.is_nullable = true;
+    copy.resolved_type = null;
+    return copy;
+}
+
 fn defaultInitializerForTypeRef(allocator: std.mem.Allocator, ref: *const ASTTypeRef) ?*ASTNode {
     _ = allocator;
     if (ref.is_nullable or ref.union_types.len > 0) return mkNullLit();
@@ -1507,23 +1595,7 @@ fn defaultInitializerForTypeRef(allocator: std.mem.Allocator, ref: *const ASTTyp
     return null;
 }
 
-/// A default initializer for a continuation body field generated by the
-/// machinery rewrite. Falls back to `StackTask<T>(false, null, null)` for
-/// task-valued fields (they are always assigned before being read; the
-/// initializer only needs to be type-correct). Null when unsupported.
-fn fieldInitializerForTypeRef(allocator: std.mem.Allocator, ref: *const ASTTypeRef) !?*ASTNode {
-    if (defaultInitializerForTypeRef(allocator, ref)) |d| return d;
-    if (std.mem.eql(u8, ref.name, "StackTask")) {
-        const ctor = mkCall(mkIdent("StackTask"), &.{ mkBoolLit(false), mkNullLit(), mkNullLit() });
-        if (ref.generic_args.len > 0) {
-            const type_args = try allocator.alloc(*const ASTTypeRef, ref.generic_args.len);
-            @memcpy(type_args, ref.generic_args);
-            ctor.data.call_expr.type_args = type_args;
-        }
-        return ctor;
-    }
-    return null;
-}
+
 
 /// Collects locals declared by the machinery rewrite (var_decls whose names are
 /// not already promoted) so they can be promoted to continuation body fields.
@@ -1575,6 +1647,18 @@ fn collectNewLocals(
         },
         .for_stmt => |f| {
             try collectNewLocals(allocator, f.iterable, promoted_names, out);
+            if (!promoted_names.contains(f.item_name)) {
+                try promoted_names.put(f.item_name, {});
+                if (f.iterable.resolved_type) |rt| {
+                    if (rt.* == .Array) {
+                        try out.append(.{
+                            .name = f.item_name,
+                            .type_ref = try typeRefForEiwaType(allocator, rt.Array),
+                            .is_boxed = false,
+                        });
+                    }
+                }
+            }
             try collectNewLocals(allocator, f.body, promoted_names, out);
         },
         .return_stmt => |r| if (r.value) |v| try collectNewLocals(allocator, v, promoted_names, out),
@@ -1712,10 +1796,34 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
             try rewritePromotedRefs(allocator, promoted, b.right);
         },
         .unary_expr => |u| try rewritePromotedRefs(allocator, promoted, u.operand),
-        .get_expr => |g| try rewritePromotedRefs(allocator, promoted, g.object),
+        .get_expr => |*g| {
+            try rewritePromotedRefs(allocator, promoted, g.object);
+            if (!g.is_safe and g.object.data == .get_expr and g.object.data.get_expr.object.data == .identifier and std.mem.eql(u8, g.object.data.get_expr.object.data.identifier.name, "this")) {
+                const prop_name = g.object.data.get_expr.name;
+                for (promoted) |c| {
+                    if (std.mem.eql(u8, c.name, prop_name) and !c.type_ref.is_nullable) {
+                        g.object = mkUnary(.bang_bang, g.object);
+                        break;
+                    }
+                }
+            }
+        },
         .set_expr => |s| {
             try rewritePromotedRefs(allocator, promoted, s.object);
             try rewritePromotedRefs(allocator, promoted, s.value);
+        },
+        .index_expr => |*i| {
+            try rewritePromotedRefs(allocator, promoted, i.object);
+            try rewritePromotedRefs(allocator, promoted, i.index);
+            if (i.object.data == .get_expr and i.object.data.get_expr.object.data == .identifier and std.mem.eql(u8, i.object.data.get_expr.object.data.identifier.name, "this")) {
+                const prop_name = i.object.data.get_expr.name;
+                for (promoted) |c| {
+                    if (std.mem.eql(u8, c.name, prop_name) and !c.type_ref.is_nullable) {
+                        i.object = mkUnary(.bang_bang, i.object);
+                        break;
+                    }
+                }
+            }
         },
         .if_expr => |i| {
             try rewritePromotedRefs(allocator, promoted, i.condition);
@@ -1738,10 +1846,6 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
             }
         },
         .throw_stmt => |t| try rewritePromotedRefs(allocator, promoted, t.expr),
-        .index_expr => |i| {
-            try rewritePromotedRefs(allocator, promoted, i.object);
-            try rewritePromotedRefs(allocator, promoted, i.index);
-        },
         .index_set_expr => |i| {
             try rewritePromotedRefs(allocator, promoted, i.object);
             try rewritePromotedRefs(allocator, promoted, i.index);
@@ -1941,14 +2045,19 @@ fn buildResumeStateMachine(
     defer new_locals.deinit();
     for (rewritten.items) |s| try collectNewLocals(allocator, s, &promoted_names, &new_locals);
     for (new_locals.items) |nl| {
-        const default_init = try fieldInitializerForTypeRef(allocator, nl.type_ref) orelse
-            return error.UnsupportedStateMachineLocal;
+        var prop_type_ref = nl.type_ref;
+        var default_init = defaultInitializerForTypeRef(allocator, nl.type_ref);
+        if (default_init == null) {
+            const nullable_ref = try makeNullableTypeRef(allocator, nl.type_ref);
+            prop_type_ref = nullable_ref;
+            default_init = mkNullLit();
+        }
         try body_fields.append(.{
             .is_mut = true,
             .name = nl.name,
-            .type_ref = nl.type_ref,
+            .type_ref = prop_type_ref,
             .is_property = true,
-            .initializer = default_init,
+            .initializer = default_init.?,
         });
         try promoted.append(nl);
     }
@@ -2357,7 +2466,11 @@ fn mkCoopAwaitMarker(
 /// where the guard state begins.
 fn machineBuildCoopAwait(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
     const v = &stmt.data.var_decl;
-    const recv = v.initializer.?.data.call_expr.arguments[0];
+    const raw_recv = v.initializer.?.data.call_expr.arguments[0];
+    const recv = if (raw_recv.data == .get_expr and raw_recv.data.get_expr.object.data == .identifier and std.mem.eql(u8, raw_recv.data.get_expr.object.data.identifier.name, "this"))
+        mkUnary(.bang_bang, raw_recv)
+    else
+        raw_recv;
 
     const guard_label = try m.newState();
     const read_label = try m.newState();
@@ -2413,6 +2526,18 @@ fn mkBoolLit(value: bool) *ASTNode {
         .line = 0,
         .column = 0,
         .data = .{ .bool_literal = value },
+    };
+    return n;
+}
+
+fn mkArrayLit(elements: []const *ASTNode) *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .array_literal = .{
+            .elements = elements,
+        } },
     };
     return n;
 }
@@ -2493,6 +2618,19 @@ fn mkSetExpr(object: *ASTNode, name: []const u8, value: *ASTNode) *ASTNode {
             .name = name,
             .value = value,
             .is_safe = false,
+        } },
+    };
+    return n;
+}
+
+fn mkIndexExpr(object: *ASTNode, index: *ASTNode) *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .index_expr = .{
+            .object = object,
+            .index = index,
         } },
     };
     return n;
@@ -2819,7 +2957,54 @@ fn typeRefForEiwaType(allocator: std.mem.Allocator, t: *const EiwaType) !*const 
             };
             return ref;
         },
-        else => return typeRefSimple("Int"),
+        .Array => |elem_t| {
+            const elem_ref = try typeRefForEiwaType(allocator, elem_t);
+            const args = try allocator.alloc(*const ASTTypeRef, 1);
+            args[0] = elem_ref;
+            const ref = try allocator.create(ASTTypeRef);
+            ref.* = .{
+                .name = "NativeArray",
+                .generic_args = args,
+                .is_array = false,
+                .is_nullable = false,
+            };
+            return ref;
+        },
+        .Pointer => |elem_t| {
+            if (elem_t.* == .Void) return typeRefSimple("Pointer");
+            const elem_ref = try typeRefForEiwaType(allocator, elem_t);
+            const args = try allocator.alloc(*const ASTTypeRef, 1);
+            args[0] = elem_ref;
+            const ref = try allocator.create(ASTTypeRef);
+            ref.* = .{
+                .name = "Pointer",
+                .generic_args = args,
+                .is_array = false,
+                .is_nullable = false,
+            };
+            return ref;
+        },
+        .GenericParam => |gp| return typeRefSimple(gp),
+        .Function => |f| {
+            var params = ArrayList(*const ASTTypeRef).init(allocator);
+            for (f.params) |p| {
+                try params.append(try typeRefForEiwaType(allocator, p));
+            }
+            const ret_ref = try typeRefForEiwaType(allocator, f.return_type);
+            const rec_ref = if (f.receiver) |r| try typeRefForEiwaType(allocator, r) else null;
+            const ref = try allocator.create(ASTTypeRef);
+            ref.* = .{
+                .name = "",
+                .generic_args = try params.toOwnedSlice(),
+                .is_function = true,
+                .is_array = false,
+                .return_type = ret_ref,
+                .receiver_type = rec_ref,
+                .is_nullable = false,
+            };
+            return ref;
+        },
+        .Unknown => return typeRefSimple("Int"),
     }
 }
 
