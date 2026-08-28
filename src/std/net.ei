@@ -6,6 +6,9 @@ lib NativeNet {
     @Alias("eiwa_tcp_bind")
     fun tcpBind(port: Int): Int
 
+    @Alias("eiwa_tcp_connect")
+    fun tcpConnect(host: Pointer, port: Int): Int
+
     @Alias("eiwa_tcp_accept")
     fun tcpAccept(fd: Int): Int
 
@@ -22,7 +25,8 @@ lib NativeNet {
     fun socketClose(fd: Int): Void
 }
 
-type Socket(val fd: Int) {
+type Socket(val fd: Int = -1) {
+    @Suspend
     fun read(maxLen: Int): String {
         val buf = Standard.gcMalloc(maxLen + 1)
         EventLoop.waitReadable(this.fd)
@@ -34,6 +38,7 @@ type Socket(val fd: Int) {
         return String(buf, n)
     }
     
+    @Suspend
     fun write(data: String): Int {
         EventLoop.waitWritable(this.fd)
         return NativeNet.socketWrite(this.fd, data.ptr, data.length)
@@ -41,6 +46,17 @@ type Socket(val fd: Int) {
     
     fun close(): Void {
         NativeNet.socketClose(this.fd)
+    }
+}
+
+object SocketClient {
+    fun connect(host: String, port: Int): Socket? {
+        val fd = NativeNet.tcpConnect(host.ptr, port)
+        if (fd < 0) {
+            return null
+        }
+        NativeNet.setNonblocking(fd)
+        return Socket(fd)
     }
 }
 
@@ -53,6 +69,7 @@ type TCPServer(var fd: Int = -1) {
         return this.fd >= 0
     }
     
+    @Suspend
     fun accept(): Socket? {
         if (this.fd < 0) {
             return null

@@ -1,0 +1,57 @@
+import { assert } from "std.core"
+import { EventLoop } from "std.coroutines"
+import { TCPServer, Socket, SocketClient } from "std.net"
+
+test "cooperative non-blocking TCP server accept and client communication" {
+    val bgTask = task {
+        var i = 0
+        var count = 0
+        while (i < 5) {
+            sleepMs(2)
+            count = count + 1
+            i = i + 1
+        }
+        count
+    }
+
+    val serverTask = task {
+        val server = TCPServer()
+        val bound = server.bind(19482)
+        assert(bound, "server should bind to port")
+        var serverReceived: String = ""
+        val client = server.accept()
+        assert(client != null, "server should accept client connection")
+        if (client != null) {
+            val s: Socket = client!!
+            val msg: String = s.read(100)
+            serverReceived = msg
+            s.write("PONG:" + msg)
+            s.close()
+        }
+        server.close()
+        serverReceived
+    }
+
+    val clientTask = task {
+        var clientReceived: String = ""
+        sleepMs(10)
+        val client = SocketClient.connect("127.0.0.1", 19482)
+        assert(client != null, "client should connect to server")
+        if (client != null) {
+            val s: Socket = client!!
+            s.write("PING")
+            val resp: String = s.read(100)
+            clientReceived = resp
+            s.close()
+        }
+        clientReceived
+    }
+
+    val sMsg = serverTask.await()
+    val cMsg = clientTask.await()
+    val bgCount = bgTask.await()
+
+    assert(sMsg == "PING", "server received PING")
+    assert(cMsg == "PONG:PING", "client received PONG:PING")
+    assert(bgCount == 5, "background counter ran concurrently")
+}

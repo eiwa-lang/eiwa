@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 int64_t eiwa_tcp_bind(int64_t port);
+int64_t eiwa_tcp_connect(const char* host, int64_t port);
 int64_t eiwa_tcp_accept(int64_t fd);
 int64_t eiwa_socket_read(int64_t fd, char* buf, int64_t max_len);
 int64_t eiwa_socket_write(int64_t fd, const char* data, int64_t len);

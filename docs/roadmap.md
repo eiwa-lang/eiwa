@@ -786,7 +786,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 68.1.1 — Loop `for` com Suspensão:** Suporte a chamadas suspensivas (`sleep()`, `yield()`) dentro do corpo de laços `for` em `task {}` (atualmente suportado em laços `while`).
 - [x] **Task 68.1.2 — `try / catch` no Builder de State Machine:** Suporte completo a blocos `try / catch` contendo pontos de suspensão cooperativa (`sleepMs`, `yield`, `await`), com transições de estado isoladas por quadros de exceção locais e desvio automático para manipuladores de `catch`.
 - [x] **Task 68.1.3 — Hoisting de `await` em Assignments Diretos:** Tratar expressões do tipo `x = inner.await() + x` no `hoistAwaitsWalk` (atualmente requer declaração intermediária `val res = inner.await(); x = res + x`).
-- [ ] **Task 68.1.4 — I/O Waiters Cooperativos no Scheduler:** Evoluir `EventLoop.waitReadable`/`waitWritable` de `poll()` bloqueante para suspensão cooperativa não-bloqueante integrada ao timer/event loop do scheduler.
+- [x] **Task 68.1.4 — I/O Waiters Cooperativos no Scheduler:** Evoluir `EventLoop.waitReadable`/`waitWritable` de `poll()` bloqueante para suspensão cooperativa não-bloqueante integrada ao timer/event loop do scheduler (ADR 56).
 - [ ] **Task 68.1.5 — Remoção do Bridge no `arest`:** Remover o `Scheduler.run()` manual no accept loop do framework `arest` assim que os I/O waiters cooperativos (Task 68.1.4) estiverem integrados.
 
 ---

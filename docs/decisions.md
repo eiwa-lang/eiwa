@@ -708,6 +708,32 @@ Além disso, em sistemas que utilizam `setjmp`/`longjmp` para exceções (como o
 **Razão:**
 Permite tratamento transparente, determinístico e robusto de exceções através de quaisquer fronteiras assíncronas e pontos de suspensão cooperativa sem corrupção da pilha C ou vazamento de quadros de `setjmp`.
 
+---
+
+## ADR 56: I/O Waiters Cooperativos no TaskScheduler (`EventLoop.waitReadable` / `waitWritable`)
+**Status:** Aprovado
+**Data:** Agosto 2026
+
+**Contexto:**
+1. No modelo de corrotinas stackless multi-thread (ADR 51), chamadas a operações de rede bloqueantes (`accept()`, `read()`, `write()`) dentro de uma `task {}` bloqueavam a thread do sistema operacional (OS thread) no kernel, impedindo que outros trabalhos e timers fossem processados no mesmo worker.
+2. No framework `arest`, o loop do servidor precisava recorrer a bridges provisórios (ex: polling não-bloqueante combinado com `sleepMs(1)` ou `Scheduler.run()`), consumindo CPU desnecessariamente e não integrando diretamente os eventos de socket ao scheduler.
+3. Precisamos de um modelo limpo onde operações de socket suspendam a corrotina registrando-a como um "I/O Waiter" no `TaskScheduler`, liberando a thread para processar outras tarefas e acordando a continuação assim que o descritor estiver pronto.
+
+**Decisão:**
+1. **Primitivas de Suspensão de I/O na State Machine:**
+   - As chamadas `EventLoop.waitReadable(fd)` e `EventLoop.waitWritable(fd)` são reconhecidas como primitivas de suspensão pelo transformador de corrotinas (`src/core/coroutines_transform.zig`), sendo reescritas para `Scheduler.waitReadable(this, fd)` e `Scheduler.waitWritable(this, fd)` com avanço de estado e retorno ao scheduler.
+2. **Fila de I/O Waiters no `TaskScheduler` (`src/std/coroutines.ei`):**
+   - Adicionada a lista encadeada `ioHead: IoWaiterNode?`, registrando o descritor de arquivo (`fd`), a máscara de eventos (`POLLIN = 1`, `POLLOUT = 4`), a continuação (`cont`) e o próximo nó.
+   - Implementado o método `pollIoLocked(timeoutMs)` que monta a tabela `struct pollfd`, destrava o mutex durante a chamada de sistema `poll()`, e reinsere na fila pronta (`head`/`tail`) todas as corrotinas cujos descritores reportaram prontidão (`revents != 0`).
+3. **Eleição de Líder e Polling Livre de Deadlock:**
+   - Adicionada a flag de controle `isPolling: Bool` no `TaskScheduler`, garantindo que apenas uma thread de worker execute a chamada `poll()` por vez. As demais threads aguardam no `CondVar`.
+   - Quando `ioHead` contém descritores pendentes, as threads de worker realizam uma espera limitada (2ms) avançando o relógio virtual `this.now` e verificando I/O e timers simultaneamente, garantindo despertar imediato sem loops de consumo alto de CPU (busy-wait).
+4. **Métodos de Rede Nativos Cooperativos (`src/std/net.ei`):**
+   - As funções `TCPServer.accept()`, `Socket.read()` e `Socket.write()` foram anotadas com `@Suspend` e integradas nativamente a `EventLoop.waitReadable` e `waitWritable`.
+
+**Razão:**
+Permite servidores TCP e clientes de rede de alto desempenho em Eiwa operando sobre I/O cooperativo não-bloqueante em pool multi-core real sem qualquer dependência de runtimes C externos.
+
 
 
 

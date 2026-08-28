@@ -3231,7 +3231,16 @@ pub const LLVMEmitter = struct {
         var h = std.hash.Wyhash.init(0);
         {
             var src_it = self.c_sources.keyIterator();
-            while (src_it.next()) |s| h.update(s.*);
+            while (src_it.next()) |s| {
+                h.update(s.*);
+                if (std.Io.Dir.cwd().openFile(io, s.*, .{})) |f| {
+                    if (f.stat(io)) |st| {
+                        h.update(std.mem.asBytes(&st.mtime));
+                        h.update(std.mem.asBytes(&st.size));
+                    } else |_| {}
+                    f.close(io);
+                } else |_| {}
+            }
             var def_it = self.c_defines.keyIterator();
             while (def_it.next()) |d| h.update(d.*);
             var inc_it = self.c_includes.keyIterator();

@@ -12,6 +12,9 @@ int64_t eiwa_tcp_bind(int64_t port) {
     if (fd < 0) return -1;
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#ifdef SO_REUSEPORT
+    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+#endif
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -24,6 +27,24 @@ int64_t eiwa_tcp_bind(int64_t port) {
         return -1;
     }
     if (listen(fd, 10) < 0) {
+        close(fd);
+        return -1;
+    }
+    return (int64_t)fd;
+}
+
+int64_t eiwa_tcp_connect(const char* host, int64_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
+        close(fd);
+        return -1;
+    }
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         close(fd);
         return -1;
     }

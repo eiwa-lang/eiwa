@@ -1385,7 +1385,9 @@ fn isSuspendPrimitiveCall(node: *ASTNode) bool {
     };
     return std.mem.eql(u8, name, "sleep") or
         std.mem.eql(u8, name, "sleepMs") or
-        std.mem.eql(u8, name, "yield");
+        std.mem.eql(u8, name, "yield") or
+        std.mem.eql(u8, name, "waitReadable") or
+        std.mem.eql(u8, name, "waitWritable");
 }
 
 /// True if the subtree contains a cooperative suspension primitive. Task
@@ -1473,13 +1475,34 @@ fn collectLocals(allocator: std.mem.Allocator, body: []const *ASTNode) ![]Captur
     return out.toOwnedSlice();
 }
 
-fn typeRefForVarDecl(allocator: std.mem.Allocator, v: ast.VarDecl, node: *ASTNode) !*const ast.ASTTypeRef {
+fn typeRefForVarDecl(allocator: std.mem.Allocator, node: *ASTNode) !*const ast.ASTTypeRef {
+    const v = node.data.var_decl;
     if (v.type_ref) |tr| return tr;
     if (node.resolved_type) |rt| return try typeRefForEiwaType(allocator, rt);
     if (v.initializer) |init| {
         if (init.resolved_type) |irt| return try typeRefForEiwaType(allocator, irt);
+        switch (init.data) {
+            .string_literal => return typeRefSimple("String"),
+            .bool_literal => return typeRefSimple("Bool"),
+            .double_literal => return typeRefSimple("Double"),
+            .int_literal => return typeRefSimple("Int"),
+            .call_expr => |c| {
+                if (c.callee.data == .identifier) {
+                    return typeRefSimple(c.callee.data.identifier.name);
+                }
+            },
+            .unary_expr => |u| {
+                if (u.operand.resolved_type) |ort| {
+                    if (ort.* == .Union and ort.Union.right.* == .Null) {
+                        return try typeRefForEiwaType(allocator, ort.Union.left);
+                    }
+                    return try typeRefForEiwaType(allocator, ort);
+                }
+            },
+            else => {},
+        }
     }
-    return error.MissingTypeInfo;
+    return typeRefSimple("Any");
 }
 
 fn collectLocalVars(
@@ -1495,7 +1518,7 @@ fn collectLocalVars(
             }
             if (!seen.contains(v.name)) {
                 try seen.put(v.name, {});
-                const tr = try typeRefForVarDecl(allocator, v, node);
+                const tr = try typeRefForVarDecl(allocator, node);
                 try out.append(.{
                     .name = v.name,
                     .type_ref = tr,
@@ -2111,6 +2134,12 @@ fn buildSuspendCall(stmt: *ASTNode) anyerror!*ASTNode {
     };
     if (std.mem.eql(u8, gname, "yield")) {
         return mkCall(mkGetExpr(mkIdent("Scheduler"), "yield"), &.{ mkIdent("this") });
+    }
+    if (std.mem.eql(u8, gname, "waitReadable")) {
+        return mkCall(mkGetExpr(mkIdent("Scheduler"), "waitReadable"), &.{ mkIdent("this"), c.arguments[0] });
+    }
+    if (std.mem.eql(u8, gname, "waitWritable")) {
+        return mkCall(mkGetExpr(mkIdent("Scheduler"), "waitWritable"), &.{ mkIdent("this"), c.arguments[0] });
     }
     const ms_arg = if (std.mem.eql(u8, gname, "sleepMs"))
         c.arguments[0]

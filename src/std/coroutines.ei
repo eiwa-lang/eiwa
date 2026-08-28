@@ -48,6 +48,10 @@ type ContNode(val cont: Continuation, var next: ContNode?)
 // virtual clock reaches `deadline`. Intrusive, kept in deadline order.
 type TimerNode(var deadline: Int, var cont: Continuation, var next: TimerNode?)
 
+// I/O Waiter node for cooperative non-blocking I/O
+// events: 1 = POLLIN (readable), 4 = POLLOUT (writable)
+type IoWaiterNode(val fd: Int, val events: Int, val cont: Continuation, var next: IoWaiterNode?)
+
 type TaskScheduler(
     val mutex: RawMutex,
     val cond: CondVar
@@ -55,6 +59,8 @@ type TaskScheduler(
     var head: ContNode? = null
     var tail: ContNode? = null
     var timerHead: TimerNode? = null
+    var ioHead: IoWaiterNode? = null
+    var isPolling: Bool = false
     var now: Int = 0
     var isShutdown: Bool = false
 
@@ -104,6 +110,106 @@ type TaskScheduler(
         return true
     }
 
+    // Registers `cont` to be re-scheduled once `fd` is ready for `events`.
+    fun waitIo(cont: Continuation, fd: Int, events: Int): Bool {
+        this.mutex.lock()
+        val node = IoWaiterNode(fd, events, cont, this.ioHead)
+        this.ioHead = node
+        this.cond.signal()
+        this.mutex.unlock()
+        return true
+    }
+
+    fun waitReadable(cont: Continuation, fd: Int): Bool {
+        return this.waitIo(cont, fd, 1)
+    }
+
+    fun waitWritable(cont: Continuation, fd: Int): Bool {
+        return this.waitIo(cont, fd, 4)
+    }
+
+    fun pollIoLocked(timeoutMs: Int): Bool {
+        if (this.ioHead == null || this.isPolling) {
+            return false
+        }
+        this.isPolling = true
+        var count = 0
+        var cur = this.ioHead
+        while (cur != null) {
+            count = count + 1
+            cur = cur!!.next
+        }
+        if (count == 0) {
+            this.isPolling = false
+            return false
+        }
+        val pfd = Standard.gcMalloc(count * 8)
+        cur = this.ioHead
+        var idx = 0
+        while (cur != null) {
+            val w = cur!!
+            var v = w.fd
+            var b = 0
+            while (b < 4) {
+                NativeMemory.writeByte(pfd, idx * 8 + b, mod(v, 256))
+                v = v / 256
+                b = b + 1
+            }
+            NativeMemory.writeByte(pfd, idx * 8 + 4, mod(w.events, 256))
+            NativeMemory.writeByte(pfd, idx * 8 + 5, 0)
+            NativeMemory.writeByte(pfd, idx * 8 + 6, 0)
+            NativeMemory.writeByte(pfd, idx * 8 + 7, 0)
+            idx = idx + 1
+            cur = w.next
+        }
+        var actualTimeout = timeoutMs
+        if (actualTimeout < 0) {
+            actualTimeout = 0
+        }
+        this.mutex.unlock()
+        val n = NativePoll.poll(pfd, count, actualTimeout)
+        this.mutex.lock()
+        this.isPolling = false
+
+        if (n <= 0 || this.ioHead == null) {
+            return false
+        }
+        var fired = false
+        var prev: IoWaiterNode? = null
+        cur = this.ioHead
+        idx = 0
+        while (cur != null && idx < count) {
+            val w = cur!!
+            val reventsLow = NativeMemory.readByte(pfd, idx * 8 + 6)
+            val reventsHigh = NativeMemory.readByte(pfd, idx * 8 + 7)
+            val revents = reventsLow + reventsHigh * 256
+            if (revents != 0) {
+                if (prev == null) {
+                    this.ioHead = w.next
+                } else {
+                    prev!!.next = w.next
+                }
+                val node = ContNode(w.cont, null)
+                if (this.tail == null) {
+                    this.head = node
+                    this.tail = node
+                } else {
+                    this.tail!!.next = node
+                    this.tail = node
+                }
+                fired = true
+            } else {
+                prev = w
+            }
+            idx = idx + 1
+            cur = w.next
+        }
+        if (fired) {
+            this.cond.broadcast()
+        }
+        return fired
+    }
+
     // Blocking pop for worker threads in a thread pool
     fun popBlocking(): ContNode? {
         this.mutex.lock()
@@ -116,10 +222,31 @@ type TaskScheduler(
                     this.fireTimersLocked()
                 }
             }
+            if (this.ioHead != null && !this.isPolling) {
+                this.pollIoLocked(0)
+            }
             if (this.head != null || this.isShutdown) {
                 waiting = false
             } else {
-                this.cond.wait(this.mutex)
+                if (this.ioHead != null) {
+                    this.mutex.unlock()
+                    this.waitMs(2)
+                    this.mutex.lock()
+                    this.now = this.now + 2
+                    this.fireTimersLocked()
+                } else if (this.timerHead != null) {
+                    val first = this.timerHead!!
+                    val delta = first.deadline - this.now
+                    if (delta > 0) {
+                        this.mutex.unlock()
+                        this.waitMs(delta)
+                        this.mutex.lock()
+                        this.now = first.deadline
+                    }
+                    this.fireTimersLocked()
+                } else {
+                    this.cond.wait(this.mutex)
+                }
                 waiting = this.head == null && !this.isShutdown
             }
         }
@@ -159,6 +286,9 @@ type TaskScheduler(
                 fired = true
             }
         }
+        if (fired) {
+            this.cond.broadcast()
+        }
         return fired
     }
 
@@ -170,7 +300,7 @@ type TaskScheduler(
     }
 
     fun waitMs(ms: Int) {
-        val ts = Standard.gcMalloc(16)
+        val ts = Standard.malloc(16)
         var sec = ms / 1000
         var nsec = mod(ms, 1000) * 1000000
         var i = 0
@@ -182,6 +312,7 @@ type TaskScheduler(
             i = i + 1
         }
         NativeTime.nanosleep(ts, null)
+        Standard.free(ts)
     }
 
     fun run() {
@@ -194,11 +325,14 @@ type TaskScheduler(
             if (this.timerHead != null) {
                 val first = this.timerHead!!
                 val delta = first.deadline - this.now
-                if (delta > 0) {
+                if (delta > 0 && this.ioHead == null) {
                     this.waitMs(delta)
                     this.now = first.deadline
                 }
                 this.fireTimersLocked()
+            }
+            if (this.ioHead != null) {
+                this.pollIoLocked(0)
             }
         }
         if (this.head == null) {
@@ -328,6 +462,16 @@ object Scheduler {
         return Dispatchers.Default.scheduler.yield(cont)
     }
 
+    fun waitReadable(cont: Continuation, fd: Int): Bool {
+        Dispatchers.Default.ensureStarted()
+        return Dispatchers.Default.scheduler.waitReadable(cont, fd)
+    }
+
+    fun waitWritable(cont: Continuation, fd: Int): Bool {
+        Dispatchers.Default.ensureStarted()
+        return Dispatchers.Default.scheduler.waitWritable(cont, fd)
+    }
+
     fun run() {
         Dispatchers.Default.scheduler.run()
     }
@@ -349,7 +493,7 @@ object Coroutine {
 
     @Suspend
     fun sleep(nanosecs: Int): Int {
-        val ts = Standard.gcMalloc(16)
+        val ts = Standard.malloc(16)
         var sec = nanosecs / 1000000000
         var nsec = mod(nanosecs, 1000000000)
         var i = 0
@@ -360,7 +504,9 @@ object Coroutine {
             nsec = nsec / 256
             i = i + 1
         }
-        return NativeTime.nanosleep(ts, null)
+        val res = NativeTime.nanosleep(ts, null)
+        Standard.free(ts)
+        return res
     }
 
     @Suspend
@@ -410,7 +556,8 @@ type WaiterNode(val cont: Continuation, var next: WaiterNode?)
 type StackTask<T>(
     var done: Bool,
     var result: T?,
-    var waiters: WaiterNode?
+    var waiters: WaiterNode?,
+    val mutex: RawMutex = RawMutex.create()
 ): Awaitable<T> {
 
     @Suspend
@@ -424,18 +571,14 @@ type StackTask<T>(
     }
 
     fun awaitCoop(cont: Continuation): Bool {
+        this.mutex.lock()
         if (this.done) {
+            this.mutex.unlock()
             return true
         }
-        if (this.waiters == null) {
-            this.waiters = WaiterNode(cont, null)
-        } else {
-            var cur = this.waiters!!
-            while (cur.next != null) {
-                cur = cur.next!!
-            }
-            cur.next = WaiterNode(cont, null)
-        }
+        val node = WaiterNode(cont, this.waiters)
+        this.waiters = node
+        this.mutex.unlock()
         return false
     }
 
@@ -443,7 +586,7 @@ type StackTask<T>(
 }
 
 @Coroutine
-fun task<T>(block: () -> T) = StackTask<T>(false, null, null)
+fun task<T>(block: () -> T) = StackTask<T>(false, null, null, RawMutex.create())
 
 @Coroutine
-fun task<T>(dispatcher: Dispatcher, block: () -> T) = StackTask<T>(false, null, null)
+fun task<T>(dispatcher: Dispatcher, block: () -> T) = StackTask<T>(false, null, null, RawMutex.create())
