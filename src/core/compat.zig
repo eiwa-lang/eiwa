@@ -21,6 +21,11 @@ pub fn ArrayList(comptime T: type) type {
             self.items = &.{};
         }
 
+        pub fn clearRetainingCapacity(self: *Self) void {
+            self.unmanaged.clearRetainingCapacity();
+            self.items = self.unmanaged.items;
+        }
+
         pub fn append(self: *Self, item: T) !void {
             try self.unmanaged.append(self.allocator, item);
             self.items = self.unmanaged.items;

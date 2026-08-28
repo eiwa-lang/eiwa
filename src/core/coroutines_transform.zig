@@ -1473,6 +1473,15 @@ fn collectLocals(allocator: std.mem.Allocator, body: []const *ASTNode) ![]Captur
     return out.toOwnedSlice();
 }
 
+fn typeRefForVarDecl(allocator: std.mem.Allocator, v: ast.VarDecl, node: *ASTNode) !*const ast.ASTTypeRef {
+    if (v.type_ref) |tr| return tr;
+    if (node.resolved_type) |rt| return try typeRefForEiwaType(allocator, rt);
+    if (v.initializer) |init| {
+        if (init.resolved_type) |irt| return try typeRefForEiwaType(allocator, irt);
+    }
+    return error.MissingTypeInfo;
+}
+
 fn collectLocalVars(
     allocator: std.mem.Allocator,
     node: *ASTNode,
@@ -1486,13 +1495,12 @@ fn collectLocalVars(
             }
             if (!seen.contains(v.name)) {
                 try seen.put(v.name, {});
-                if (node.resolved_type) |rt| {
-                    try out.append(.{
-                        .name = v.name,
-                        .type_ref = try typeRefForEiwaType(allocator, rt),
-                        .is_boxed = false,
-                    });
-                }
+                const tr = try typeRefForVarDecl(allocator, v, node);
+                try out.append(.{
+                    .name = v.name,
+                    .type_ref = tr,
+                    .is_boxed = false,
+                });
             }
             if (v.initializer) |init| try collectLocalVars(allocator, init, seen, out);
         },
@@ -1553,7 +1561,20 @@ fn collectLocalVars(
         },
         .try_stmt => |t| {
             try collectLocalVars(allocator, t.body, seen, out);
-            for (t.catches) |cb| try collectLocalVars(allocator, cb.body, seen, out);
+            for (t.catches) |cb| {
+                if (cb.var_name) |vname| {
+                    if (!seen.contains(vname)) {
+                        try seen.put(vname, {});
+                        const type_ref = if (cb.types.len > 0) cb.types[0] else typeRefSimple("Exception");
+                        try out.append(.{
+                            .name = vname,
+                            .type_ref = type_ref,
+                            .is_boxed = false,
+                        });
+                    }
+                }
+                try collectLocalVars(allocator, cb.body, seen, out);
+            }
         },
         .throw_stmt => |t| try collectLocalVars(allocator, t.expr, seen, out),
         .when_expr => |w| {
@@ -1684,7 +1705,20 @@ fn collectNewLocals(
         },
         .try_stmt => |t| {
             try collectNewLocals(allocator, t.body, promoted_names, out);
-            for (t.catches) |cb| try collectNewLocals(allocator, cb.body, promoted_names, out);
+            for (t.catches) |cb| {
+                if (cb.var_name) |vname| {
+                    if (!promoted_names.contains(vname)) {
+                        try promoted_names.put(vname, {});
+                        const type_ref = if (cb.types.len > 0) cb.types[0] else typeRefSimple("Exception");
+                        try out.append(.{
+                            .name = vname,
+                            .type_ref = type_ref,
+                            .is_boxed = false,
+                        });
+                    }
+                }
+                try collectNewLocals(allocator, cb.body, promoted_names, out);
+            }
         },
         .throw_stmt => |t| try collectNewLocals(allocator, t.expr, promoted_names, out),
         .when_expr => |w| {
@@ -1957,6 +1991,7 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
             return entry;
         },
         .block => |b| return machineBuildStmts(m, b.statements, after),
+        .try_stmt => return machineBuildTryStmt(m, stmt, after),
         else => {
             // Cooperative await marker: `val x = __CoopAwait(<recv>)`.
             if (isCoopAwaitMarker(stmt)) {
@@ -1969,6 +2004,100 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
             return entry;
         },
     }
+}
+
+fn isStateSuspendOrReturn(node: *ASTNode) bool {
+    switch (node.data) {
+        .return_stmt => return true,
+        .call_expr => |c| {
+            if (c.callee.data == .get_expr) {
+                const g = c.callee.data.get_expr;
+                if (g.object.data == .identifier and std.mem.eql(u8, g.object.data.identifier.name, "Scheduler")) {
+                    return true;
+                }
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
+/// Assembles the states for a try/catch statement crossing suspension points.
+fn machineBuildTryStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
+    const t = &stmt.data.try_stmt;
+
+    // 1. Build states for each catch block (they all transition to `after` on normal completion).
+    const catch_labels = try m.allocator.alloc(usize, t.catches.len);
+    for (t.catches, 0..) |cb, i| {
+        catch_labels[i] = try machineBuildBranch(m, cb.body, after);
+    }
+
+    // 2. Build states for the try body, transitioning to `after` on normal completion.
+    const states_before = m.states.items.len;
+    const try_entry = try machineBuildBranch(m, t.body, after);
+    const states_after = m.states.items.len;
+
+    // 3. For each state created for the try body, wrap its statements in a try_stmt
+    // with synthetic catch blocks that redirect to the corresponding catch_label.
+    // Only suspension/return statements remain outside the try block.
+    for (m.states.items[states_before..states_after]) |*state| {
+        if (state.stmts.items.len == 0) continue;
+
+        var has_suspend = false;
+        for (state.stmts.items) |s| {
+            if (isStateSuspendOrReturn(s)) {
+                has_suspend = true;
+                break;
+            }
+        }
+
+        var user_stmts = ArrayList(*ASTNode).init(m.allocator);
+        var term_stmts = ArrayList(*ASTNode).init(m.allocator);
+
+        if (has_suspend) {
+            for (state.stmts.items) |s| {
+                if (isStateSuspendOrReturn(s) or (s.data == .set_expr and s.data.set_expr.object.data == .identifier and std.mem.eql(u8, s.data.set_expr.object.data.identifier.name, "this") and std.mem.eql(u8, s.data.set_expr.name, "label"))) {
+                    try term_stmts.append(s);
+                } else {
+                    try user_stmts.append(s);
+                }
+            }
+        } else {
+            for (state.stmts.items) |s| {
+                try user_stmts.append(s);
+            }
+        }
+
+        if (user_stmts.items.len > 0) {
+            var synthetic_catches = ArrayList(ast.CatchBlock).init(m.allocator);
+            for (t.catches, 0..) |cb, idx| {
+                var catch_stmts = ArrayList(*ASTNode).init(m.allocator);
+                if (cb.var_name) |vname| {
+                    try catch_stmts.append(mkSetExpr(mkIdent("this"), vname, mkIdent(vname)));
+                }
+                try catch_stmts.append(mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(catch_labels[idx]))));
+
+                try synthetic_catches.append(.{
+                    .var_name = cb.var_name,
+                    .types = cb.types,
+                    .body = mkBlock(try catch_stmts.toOwnedSlice()),
+                });
+            }
+
+            const wrapped_try = mkTryStmt(
+                mkBlock(try user_stmts.toOwnedSlice()),
+                try synthetic_catches.toOwnedSlice(),
+            );
+
+            state.stmts.clearRetainingCapacity();
+            try state.stmts.append(wrapped_try);
+            for (term_stmts.items) |term_node| {
+                try state.stmts.append(term_node);
+            }
+        }
+    }
+
+    return try_entry;
 }
 
 /// Rewrites a suspension primitive call (`sleepMs(x)`/`sleep(x)`/`yield()`) into
@@ -2537,6 +2666,19 @@ fn mkArrayLit(elements: []const *ASTNode) *ASTNode {
         .column = 0,
         .data = .{ .array_literal = .{
             .elements = elements,
+        } },
+    };
+    return n;
+}
+
+fn mkTryStmt(body: *ASTNode, catches: []const ast.CatchBlock) *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .try_stmt = .{
+            .body = body,
+            .catches = @constCast(catches),
         } },
     };
     return n;

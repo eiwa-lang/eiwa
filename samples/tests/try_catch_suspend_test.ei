@@ -1,0 +1,126 @@
+import { assert } from "std.core"
+import { Exception } from "std.exceptions"
+import { List, MutableList } from "std.collections"
+
+test "try catch with sleepMs inside task - exception thrown after sleep" {
+    val t = task {
+        var result = 0
+        try {
+            sleepMs(2)
+            result = 10
+            throw Exception("error after sleep")
+        } catch (e: Exception) {
+            result = 42
+        }
+        result
+    }
+    val res = t.await()
+    assert(res == 42, "result should be 42")
+}
+
+test "try catch with yield inside task - exception thrown after yield" {
+    val t = task {
+        var status = "initial"
+        try {
+            yield()
+            status = "yielded"
+            throw Exception("fail yield")
+        } catch (e: Exception) {
+            status = "recovered_" + status
+        }
+        status
+    }
+    val res = t.await()
+    assert(res == "recovered_yielded", "status should be recovered_yielded")
+}
+
+test "try catch with suspension completing normally without exception" {
+    val t = task {
+        var total = 0
+        try {
+            sleepMs(2)
+            total = total + 10
+            yield()
+            total = total + 20
+        } catch (e: Exception) {
+            total = -1
+        }
+        total
+    }
+    val res = t.await()
+    assert(res == 30, "total should be 30")
+}
+
+test "try catch with inner task await and exception" {
+    val t = task {
+        var value = 0
+        try {
+            val step1 = task {
+                sleepMs(2)
+                100
+            }
+            value = step1.await()
+            if (value == 100) {
+                throw Exception("inner await boom")
+            }
+            value = 999
+        } catch (e: Exception) {
+            value = value + 50
+        }
+        value
+    }
+    val res = t.await()
+    assert(res == 150, "value should be 150")
+}
+
+test "try catch inside suspending for loop" {
+    val t = task {
+        val items = [1, 2, 3, 4]
+        var caughtCount = 0
+        var processedSum = 0
+        for (items) { item ->
+            try {
+                sleepMs(1)
+                if (item == 2 || item == 4) {
+                    throw Exception("even item error")
+                }
+                processedSum = processedSum + item
+            } catch (e: Exception) {
+                caughtCount = caughtCount + 1
+            }
+        }
+        val total = (processedSum * 100) + caughtCount
+        total
+    }
+    val res = t.await()
+    assert(res == 402, "res should be 402 (400 + 2)")
+}
+
+test "multiple sequential try catch blocks in same task" {
+    val t = task {
+        var log = ""
+        try {
+            sleepMs(1)
+            throw Exception("first")
+        } catch (e: Exception) {
+            log = log + "first_caught;"
+        }
+
+        try {
+            yield()
+            log = log + "second_ok;"
+        } catch (e: Exception) {
+            log = log + "second_fail;"
+        }
+
+        try {
+            sleepMs(1)
+            throw Exception("third")
+        } catch (e: Exception) {
+            log = log + "third_caught"
+        }
+        log
+    }
+    val res = t.await()
+    assert(res == "first_caught;second_ok;third_caught", "log should match")
+}

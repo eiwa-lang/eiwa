@@ -683,6 +683,32 @@ Garante paridade total entre ambientes de desenvolvimento locais (macOS/Windows)
 **Razão:**
 Elimina casos especiais e suposições frágeis do compilador, unificando a promoção de variáveis locais na State Machine de forma matemática e consistente com o sistema de tipos anuláveis do Eiwa, além de permitir o uso livre de laços `for` idiomáticos com qualquer chamada assíncrona ou suspensiva.
 
+---
+
+## ADR 55: Tratamento de `try / catch` Cruzando Estados de Suspensão na State Machine
+**Status:** Aprovado
+**Data:** Agosto 2026
+
+**Contexto:**
+Quando um bloco `try / catch` envolvia operações suspensivas (`sleepMs()`, `yield()`, `.await()`) dentro de uma corrotina `task {}`, o builder de máquinas de estados (`machineBuildStmt` em `src/core/coroutines_transform.zig`) não possuía suporte nativo a nós `.try_stmt`, rejeitando a compilação com `error.SuspendInOperand`.
+Além disso, em sistemas que utilizam `setjmp`/`longjmp` para exceções (como o runtime LLVM do Eiwa), quadros de exceção (`EiwaExceptionFrame`) alocados na pilha C são desenrolados quando a função `resume()` suspende e retorna ao scheduler. Se um quadro de exceção permanecesse aberto durante a suspensão, o ponteiro na lista global `eiwa_exception_stack` apontaria para memória de pilha desfeita.
+
+**Decisão:**
+1. **Isolamento de Exceções por Estado (`machineBuildTryStmt`):**
+   - Para cada manipulador `catch` associado ao `try_stmt`, o compilador constrói os estados correspondentes do corpo do `catch`, terminando na transição para o estado posterior ao `try` (`this.label = after`).
+   - Para o corpo do `try`, os estados da máquina de estados são gerados sequencialmente.
+   - Cada estado individual gerado a partir do corpo do `try` tem suas instruções síncronas envolvidas por um `try_stmt` sintético local.
+2. **Separação Estrita entre Instruções do Usuário e Terminadores:**
+   - Instruções de suspensão (`Scheduler.sleep()`, `Scheduler.yield()`) e instruções de retorno (`return`) são mantidas **fora** do bloco `try` local do estado.
+   - Isso garante que a suspensão retorne ao escalonador com o registro de pilha de exceções limpo (`eiwa_exception_stack` desempilhado).
+3. **Desvio Automático para Estados de Manipulação (`catch`):**
+   - Caso qualquer instrução síncrona dentro do estado lance uma exceção durante a execução de `resume()`, o `catch` sintético local captura o objeto de exceção, armazena-o no campo de propriedade promovido (`this.<vname> = <vname>`) e redireciona a máquina de estados para o rótulo do manipulador de catch correspondente (`this.label = catch_label`).
+   - O loop de despacho `while (true)` do `resume()` avança imediatamente para o estado de tratamento do erro.
+
+**Razão:**
+Permite tratamento transparente, determinístico e robusto de exceções através de quaisquer fronteiras assíncronas e pontos de suspensão cooperativa sem corrupção da pilha C ou vazamento de quadros de `setjmp`.
+
+
 
 
 
