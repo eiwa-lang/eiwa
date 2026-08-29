@@ -10,6 +10,7 @@ const coroutines = @import("core/coroutines.zig");
 const coroutines_transform = @import("core/coroutines_transform.zig");
 const eiwa_home = @import("core/eiwa_home.zig");
 const case_checker = @import("core/case_checker.zig");
+const target_mod = @import("core/target.zig");
 const build_options = @import("build_options");
 const llvm_emitter = if (build_options.has_llvm) @import("backend/llvm_emitter/core.zig") else struct {};
 
@@ -189,6 +190,7 @@ fn run(init: std.process.Init) !void {
             \\
             \\Options:
             \\  --release        Optimized build
+            \\  --target <name>  Target triple or alias (windows, linux, macos, wasm)
             \\  -o <name>        Output binary name (build command)
             \\  -I, -L, -l, -D   Extra flags forwarded to the C compiler
             \\  -h, --help       Show this help
@@ -221,6 +223,7 @@ fn run(init: std.process.Init) !void {
     defer positionals.deinit();
 
     var is_release: bool = false;
+    var target_arg: ?[]const u8 = null;
     var output_name: ?[]const u8 = null;
     var module_paths = ArrayList([]const u8).init(allocator);
     defer module_paths.deinit();
@@ -235,6 +238,13 @@ fn run(init: std.process.Init) !void {
             }
             arg_idx += 1;
             output_name = args[arg_idx];
+        } else if (std.mem.eql(u8, arg, "--target")) {
+            if (arg_idx + 1 >= args.len) {
+                std.debug.print("Error: --target requires a target triple or alias (e.g. windows, linux, macos)\n", .{});
+                return;
+            }
+            arg_idx += 1;
+            target_arg = args[arg_idx];
         } else if (std.mem.eql(u8, arg, "--module-path")) {
             if (arg_idx + 1 >= args.len) {
                 std.debug.print("Error: --module-path requires a directory\n", .{});
@@ -369,6 +379,14 @@ fn run(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
+    const target_info = if (target_arg) |t_str|
+        target_mod.TargetInfo.parse(arena.allocator(), t_str) catch |err| {
+            std.debug.print("Error: Invalid --target '{s}' ({s})\n", .{ t_str, @errorName(err) });
+            std.process.exit(1);
+        }
+    else
+        target_mod.TargetInfo.detectHost(arena.allocator());
+
     var registry = @import("core/type_checker/core.zig").ModuleRegistry.init(arena.allocator());
     defer registry.deinit();
 
@@ -430,6 +448,7 @@ fn run(init: std.process.Init) !void {
         checker.module_prefix = if (queue_idx == 0) null else prefix;
         checker.is_test_mode = is_test;
         checker.registry = &registry;
+        checker.target_info = target_info;
 
         try checker.injectImplicitImports(ast_root_mod);
 
@@ -591,14 +610,16 @@ fn run(init: std.process.Init) !void {
     emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
     // Allocate via real GC_malloc/
     // GC_realloc (zeroed, GC-managed) instead of raw malloc. Always for
-    // native builds (the binary links -lgc); for the JIT only when the
-    // host eiwac links libgc. Must be set before emitModule.
-    llvm_emitter.prefer_gc_alloc = is_build or llvm_emitter.has_gc;
+    // host native builds (the binary links -lgc); for the JIT only when the
+    // host eiwac links libgc. For cross-target builds without vendored libgc,
+    // uses standard libc allocator.
+    llvm_emitter.prefer_gc_alloc = (is_build and target_info.is_host) or (llvm_emitter.has_gc and target_info.is_host);
     emitter.is_test_mode = is_test;
     emitter.contracts_ast = &global_contracts_ast;
     emitter.classes_ast = &global_classes_ast;
     emitter.cli_c_flags = cli_c_flags.items;
     emitter.registry = &registry;
+    emitter.target_info = target_info;
     emitter.host_argv = args;
     // argv[0] is the program name (basename of the file); the rest are the
     // positional arguments after it. Exposed to Process.args()/argAt().

@@ -95,10 +95,38 @@ pub fn parseAnnotations(self: *Parser) anyerror![]ast.Annotation {
     return try annotations.toOwnedSlice();
 }
 
+pub fn parsePlatformTargets(self: *Parser) anyerror![]const []const u8 {
+    if (!self.check(.l_paren)) return &.{};
+    const saved_lexer = self.lexer;
+    const saved_current = self.current;
+    const saved_previous = self.previous;
+
+    self.advance(); // consume '('
+    if (!self.check(.string_literal)) {
+        self.lexer = saved_lexer;
+        self.current = saved_current;
+        self.previous = saved_previous;
+        return &.{};
+    }
+
+    var targets = ArrayList([]const u8).init(self.allocator);
+    while (!self.check(.r_paren) and !self.check(.eof)) {
+        try self.consume(.string_literal, "Expected string literal in platform target list (e.g. \"posix\", \"windows\").");
+        const str_with_quotes = self.previous.lexeme;
+        const str = if (str_with_quotes.len >= 2) str_with_quotes[1 .. str_with_quotes.len - 1] else str_with_quotes;
+        try targets.append(str);
+        if (!self.match(.comma)) break;
+    }
+    try self.consume(.r_paren, "Expected ')' after platform target list.");
+    return try targets.toOwnedSlice();
+}
+
 pub fn libDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*ASTNode {
     const line = self.previous.line;
     const col = self.previous.column;
     
+    const platform_targets = try self.parsePlatformTargets();
+
     try self.consume(.identifier, "Expected lib name.");
     const name = self.previous.lexeme;
     
@@ -120,6 +148,7 @@ pub fn libDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*AS
         .annotations = annotations,
         .name = name,
         .functions = try functions.toOwnedSlice(),
+        .platform_targets = platform_targets,
     } }, line, col);
 }
 
@@ -339,6 +368,8 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
     const line = self.previous.line;
     const col = self.previous.column;
 
+    const platform_targets = try self.parsePlatformTargets();
+
     if (self.check(.kw_default)) {
         self.reportLexerError(self.current.line, self.current.column, "Syntax Error: 'default' is a reserved keyword in Eiwa.", .{});
         return error.ParseError;
@@ -481,6 +512,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
         .contracts = try contracts.toOwnedSlice(),
         .skills = try skills.toOwnedSlice(),
         .body_fields = try body_fields.toOwnedSlice(),
+        .platform_targets = platform_targets,
     } }, line, col);
 }
 
@@ -644,6 +676,8 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
     const line = self.previous.line;
     const col = self.previous.column;
     
+    const platform_targets = try self.parsePlatformTargets();
+
     var name: ?[]const u8 = null;
     if (self.match(.identifier)) {
         name = self.previous.lexeme;
@@ -726,6 +760,7 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
         .resolved_c_name = null,
         .contracts = try contracts.toOwnedSlice(),
         .skills = try skills.toOwnedSlice(),
+        .platform_targets = platform_targets,
     } }, line, col);
 }
 

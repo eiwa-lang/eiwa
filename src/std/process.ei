@@ -5,12 +5,28 @@
 import { List, MutableList } from "std.collections"
 
 @Header("<stdlib.h>", "<stdio.h>", "<unistd.h>")
-lib NativeProcess {
+lib("posix") NativeProcess {
     fun system(cmd: String): Int
     fun popen(cmd: String, mode: String): Pointer
     fun pclose(stream: Pointer): Int
     fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer
     fun chdir(path: String): Int
+    fun realpath(path: String, resolved: Pointer): Pointer
+    fun eiwa_args_count(): Int
+    fun eiwa_args_get(i: Int): Pointer
+}
+
+@Header("<stdlib.h>", "<stdio.h>", "<direct.h>")
+lib("windows") NativeProcess {
+    fun system(cmd: String): Int
+    @Alias("_popen")
+    fun popen(cmd: String, mode: String): Pointer
+    @Alias("_pclose")
+    fun pclose(stream: Pointer): Int
+    fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer
+    @Alias("_chdir")
+    fun chdir(path: String): Int
+    @Alias("_fullpath")
     fun realpath(path: String, resolved: Pointer): Pointer
     fun eiwa_args_count(): Int
     fun eiwa_args_get(i: Int): Pointer

@@ -158,9 +158,15 @@ pub const LLVMEmitter = struct {
     /// Module registry (set by main.zig) — used to resolve `@Source`/`@Include`
     /// relative paths against the DECLARING module's file (not the entry file).
     registry: ?*tc_core.ModuleRegistry = null,
+    target_info: ?tc_core.TargetInfo = null,
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         llvm.LLVMLinkInMCJIT();
+        _ = llvm.LLVMInitializeAllTargets();
+        _ = llvm.LLVMInitializeAllTargetInfos();
+        _ = llvm.LLVMInitializeAllTargetMCs();
+        _ = llvm.LLVMInitializeAllAsmPrinters();
+        _ = llvm.LLVMInitializeAllAsmParsers();
         _ = llvm.LLVMInitializeNativeTarget();
         _ = llvm.LLVMInitializeNativeAsmPrinter();
         _ = llvm.LLVMInitializeNativeAsmParser();
@@ -189,6 +195,7 @@ pub const LLVMEmitter = struct {
             .c_includes = std.StringHashMap(void).init(allocator),
             .c_defines = std.StringHashMap(void).init(allocator),
             .link_libraries = std.StringHashMap(void).init(allocator),
+            .target_info = null,
         };
     }
 
@@ -212,9 +219,26 @@ pub const LLVMEmitter = struct {
         }
     }
 
+    pub fn matchesTarget(self: *LLVMEmitter, targets: []const []const u8) bool {
+        if (targets.len == 0) return true;
+        if (self.target_info) |ti| {
+            return ti.matchesAny(targets);
+        }
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const host_ti = tc_core.TargetInfo.detectHost(arena.allocator());
+        return host_ti.matchesAny(targets);
+    }
+
     /// Emits LLVM IR for top-level functions, expressions, and statements.
     pub fn emitModule(self: *LLVMEmitter, ast_root: *ast.ASTNode) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
+
+        if (self.target_info) |ti| {
+            const triple_z = try self.allocator.dupeZ(u8, ti.triple);
+            defer self.allocator.free(triple_z);
+            llvm.LLVMSetTarget(mod, triple_z.ptr);
+        }
 
         if (ast_root.data != .program) return error.InvalidASTRoot;
 
@@ -352,7 +376,9 @@ pub const LLVMEmitter = struct {
         // struct EiwaExceptionFrame { jmp_buf buf; EiwaExceptionFrame* next; }
         // jmp_buf size is target-dependent (OS/architecture).
         const frame_struct = llvm.LLVMStructCreateNamed(self.context, "EiwaExceptionFrame");
-        const jmp_buf_words = getJmpBufWords(builtin.target.os.tag, builtin.target.cpu.arch);
+        const target_os = if (self.target_info) |ti| ti.os_tag else builtin.target.os.tag;
+        const target_arch = if (self.target_info) |ti| ti.arch else builtin.target.cpu.arch;
+        const jmp_buf_words = getJmpBufWords(target_os, target_arch);
         const buf_type = llvm.LLVMArrayType(llvm.LLVMInt64TypeInContext(self.context), @intCast(jmp_buf_words));
         var frame_fields = [_]llvm.LLVMTypeRef{ buf_type, ptr_type };
         llvm.LLVMStructSetBody(frame_struct, &frame_fields, 2, 0);
@@ -432,6 +458,7 @@ pub const LLVMEmitter = struct {
             }
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .lib_decl) {
+                    if (!self.matchesTarget(stmt.data.lib_decl.platform_targets)) continue;
                     try self.declareLib(mod, stmt, module_path);
                 }
             }
@@ -449,6 +476,7 @@ pub const LLVMEmitter = struct {
                     if (self.is_test_mode and std.mem.eql(u8, stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name, "main")) continue;
                     try self.declareFunction(mod, stmt, false);
                 } else if (stmt.data == .object_decl) {
+                    if (!self.matchesTarget(stmt.data.object_decl.platform_targets)) continue;
                     for (stmt.data.object_decl.members) |member| {
                         if (member.data != .fun_decl) continue;
                         try self.declareFunction(mod, member, true);
@@ -464,6 +492,7 @@ pub const LLVMEmitter = struct {
             for (m.data.program.statements) |stmt| {
                 if (stmt.data != .object_decl) continue;
                 const obj = stmt.data.object_decl;
+                if (!self.matchesTarget(obj.platform_targets)) continue;
                 const obj_c_name = obj.resolved_c_name orelse (obj.name orelse "Object");
                 for (obj.members) |member| {
                     if (member.data != .var_decl) continue;
@@ -974,23 +1003,23 @@ pub const LLVMEmitter = struct {
                         break;
                     }
                 }
-                const is_lib_fn = ffi_symbols.contains(fn_name_s);
+                const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
+                const is_posix_target = if (self.target_info) |ti| ti.family == .posix else (!is_windows);
+                const is_lib_fn = if (is_windows) false else ffi_symbols.contains(fn_name_s);
                 const is_libc = is_libm or is_lib_fn or
                     std.mem.eql(u8, fn_name_s, "printf") or
                     std.mem.eql(u8, fn_name_s, "malloc") or
                     std.mem.eql(u8, fn_name_s, "realloc") or
-                    // libgc symbols resolved from the host process when the
-                    // host links libgc. Without the allowlist the
-                    // stub pass would rewrite GC_init to a no-op and
-                    // GC_realloc to `ret null`, silently breaking GC mode.
-                    std.mem.eql(u8, fn_name_s, "GC_malloc") or
-                    std.mem.eql(u8, fn_name_s, "GC_malloc_uncollectable") or
-                    std.mem.eql(u8, fn_name_s, "GC_realloc") or
-                    std.mem.eql(u8, fn_name_s, "GC_init") or
-                    std.mem.eql(u8, fn_name_s, "GC_allow_register_threads") or
-                    std.mem.eql(u8, fn_name_s, "GC_get_stack_base") or
-                    std.mem.eql(u8, fn_name_s, "GC_register_my_thread") or
-                    std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread") or
+                    (prefer_gc_alloc and (
+                        std.mem.eql(u8, fn_name_s, "GC_malloc") or
+                        std.mem.eql(u8, fn_name_s, "GC_malloc_uncollectable") or
+                        std.mem.eql(u8, fn_name_s, "GC_realloc") or
+                        std.mem.eql(u8, fn_name_s, "GC_init") or
+                        std.mem.eql(u8, fn_name_s, "GC_allow_register_threads") or
+                        std.mem.eql(u8, fn_name_s, "GC_get_stack_base") or
+                        std.mem.eql(u8, fn_name_s, "GC_register_my_thread") or
+                        std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread")
+                    )) or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
                     std.mem.eql(u8, fn_name_s, "_setjmp") or
                     std.mem.eql(u8, fn_name_s, "longjmp") or
@@ -1011,32 +1040,118 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "abs") or
                     std.mem.eql(u8, fn_name_s, "labs") or
                     std.mem.eql(u8, fn_name_s, "llabs") or
-                    // POSIX socket helpers hand-emitted by emitSocketHelpers
-                    // (equivalents of the original C backend's net_helpers.h).
-                    // These are real libc functions; without the allowlist the
-                    // undefined-function stub pass below rewrites them to
-                    // `ret 0`, so socket() creates no socket and bind/accept
-                    // silently "succeed" with a bogus fd 0.
-                    std.mem.eql(u8, fn_name_s, "socket") or
-                    std.mem.eql(u8, fn_name_s, "setsockopt") or
-                    std.mem.eql(u8, fn_name_s, "bind") or
-                    std.mem.eql(u8, fn_name_s, "listen") or
-                    std.mem.eql(u8, fn_name_s, "accept") or
-                    std.mem.eql(u8, fn_name_s, "read") or
-                    std.mem.eql(u8, fn_name_s, "write") or
-                    std.mem.eql(u8, fn_name_s, "close") or
                     std.mem.eql(u8, fn_name_s, "memset") or
                     std.mem.eql(u8, fn_name_s, "calloc") or
-                    std.mem.eql(u8, fn_name_s, "sysconf") or
-                    std.mem.eql(u8, fn_name_s, "gettimeofday");
+                    (is_posix_target and (
+                        std.mem.eql(u8, fn_name_s, "socket") or
+                        std.mem.eql(u8, fn_name_s, "setsockopt") or
+                        std.mem.eql(u8, fn_name_s, "bind") or
+                        std.mem.eql(u8, fn_name_s, "listen") or
+                        std.mem.eql(u8, fn_name_s, "accept") or
+                        std.mem.eql(u8, fn_name_s, "read") or
+                        std.mem.eql(u8, fn_name_s, "write") or
+                        std.mem.eql(u8, fn_name_s, "close") or
+                        std.mem.eql(u8, fn_name_s, "sysconf") or
+                        std.mem.eql(u8, fn_name_s, "gettimeofday") or
+                        std.mem.eql(u8, fn_name_s, "poll")
+                    ));
                 if (!is_libc) {
                     self.emitFunctionStub(mod, fn_name_s) catch {};
                 }
             }
         }
 
+        try self.emitNonGCHelpers(mod);
         try self.emitArgvSupport(mod);
         try self.emitEntryShim(mod, &modules);
+    }
+
+    fn emitNonGCHelpers(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
+        if (prefer_gc_alloc) return;
+
+        // GC_init -> ret void
+        if (llvm.LLVMGetNamedFunction(mod, "GC_init")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                _ = llvm.LLVMBuildRetVoid(self.builder);
+            }
+        }
+        // GC_allow_register_threads -> ret void
+        if (llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                _ = llvm.LLVMBuildRetVoid(self.builder);
+            }
+        }
+        // GC_get_stack_base -> ret 0
+        if (llvm.LLVMGetNamedFunction(mod, "GC_get_stack_base")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const ret_type = llvm.LLVMGetReturnType(llvm.LLVMGlobalGetValueType(f));
+                _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstNull(ret_type));
+            }
+        }
+        // GC_register_my_thread -> ret 0
+        if (llvm.LLVMGetNamedFunction(mod, "GC_register_my_thread")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const ret_type = llvm.LLVMGetReturnType(llvm.LLVMGlobalGetValueType(f));
+                _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstNull(ret_type));
+            }
+        }
+        // GC_unregister_my_thread -> ret 0
+        if (llvm.LLVMGetNamedFunction(mod, "GC_unregister_my_thread")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const ret_type = llvm.LLVMGetReturnType(llvm.LLVMGlobalGetValueType(f));
+                _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstNull(ret_type));
+            }
+        }
+        // GC_malloc -> call malloc
+        if (llvm.LLVMGetNamedFunction(mod, "GC_malloc")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const size_val = llvm.LLVMGetParam(f, 0);
+                const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc").?;
+                const m_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+                var args = [_]llvm.LLVMValueRef{size_val};
+                const res = llvm.LLVMBuildCall2(self.builder, m_type, malloc_fn, &args, 1, "gc_m");
+                _ = llvm.LLVMBuildRet(self.builder, res);
+            }
+        }
+        // GC_malloc_uncollectable -> call malloc
+        if (llvm.LLVMGetNamedFunction(mod, "GC_malloc_uncollectable")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const size_val = llvm.LLVMGetParam(f, 0);
+                const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc").?;
+                const m_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+                var args = [_]llvm.LLVMValueRef{size_val};
+                const res = llvm.LLVMBuildCall2(self.builder, m_type, malloc_fn, &args, 1, "gc_mu");
+                _ = llvm.LLVMBuildRet(self.builder, res);
+            }
+        }
+        // GC_realloc -> call realloc
+        if (llvm.LLVMGetNamedFunction(mod, "GC_realloc")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const ptr_val = llvm.LLVMGetParam(f, 0);
+                const size_val = llvm.LLVMGetParam(f, 1);
+                const realloc_fn = llvm.LLVMGetNamedFunction(mod, "realloc").?;
+                const r_type = llvm.LLVMGlobalGetValueType(realloc_fn);
+                var args = [_]llvm.LLVMValueRef{ ptr_val, size_val };
+                const res = llvm.LLVMBuildCall2(self.builder, r_type, realloc_fn, &args, 2, "gc_r");
+                _ = llvm.LLVMBuildRet(self.builder, res);
+            }
+        }
     }
 
     /// Emits `main(i32 argc, ptr argv)` — the real C entry the OS runtime
@@ -1072,6 +1187,14 @@ pub const LLVMEmitter = struct {
         const shim = llvm.LLVMAddFunction(mod, "main", shim_type);
         const shim_entry = llvm.LLVMAppendBasicBlockInContext(self.context, shim, "entry");
         llvm.LLVMPositionBuilderAtEnd(self.builder, shim_entry);
+
+        const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
+        if (is_windows) {
+            if (llvm.LLVMGetNamedGlobal(mod, "_fltused") == null) {
+                const fltused = llvm.LLVMAddGlobal(mod, i32_type, "_fltused");
+                llvm.LLVMSetInitializer(fltused, llvm.LLVMConstInt(i32_type, 1, 0));
+            }
+        }
 
         if (llvm.LLVMGetNamedFunction(mod, "GC_init")) |gc_init| {
             const gci_type = llvm.LLVMGlobalGetValueType(gc_init);
@@ -2424,6 +2547,7 @@ pub const LLVMEmitter = struct {
 
     fn declareLib(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, lib_node: *ast.ASTNode, module_path: ?[]const u8) !void {
         const lib = lib_node.data.lib_decl;
+        if (!self.matchesTarget(lib.platform_targets)) return;
 
         // Collect build requirements from lib annotations so the backend can
         // compile and link the vendored C sources (mirrors the C transpiler,
@@ -3036,9 +3160,11 @@ pub const LLVMEmitter = struct {
     /// Picks the C compiler/linker driver for the native link / shared-lib
     /// steps. Prefers the system compiler (`cc`/`clang`/`gcc`) so `eiwac`
     /// does not hard-require zig at runtime; `zig cc` is only a fallback when
-    /// no system compiler is on PATH. The whole point of the LLVM backend is
-    /// to avoid extra toolchain deps — a plain C compiler is enough to link.
+    /// no system compiler is on PATH or when cross-compiling to another target.
     fn pickLinkDriver(self: *LLVMEmitter, io: std.Io) []const u8 {
+        if (self.target_info) |ti| {
+            if (!ti.is_host) return "zig";
+        }
         const candidates = [_][]const u8{ "cc", "clang", "gcc", "zig" };
         for (candidates) |name| {
             if (self.executableOnPath(io, name)) return name;
@@ -3076,8 +3202,18 @@ pub const LLVMEmitter = struct {
     pub fn emitNativeBinary(self: *LLVMEmitter, output_filename: []const u8, io: std.Io) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
 
-        const triple = llvm.LLVMGetDefaultTargetTriple();
-        defer llvm.LLVMDisposeMessage(triple);
+        const is_host = if (self.target_info) |ti| ti.is_host else true;
+        const default_triple_c = if (self.target_info == null) llvm.LLVMGetDefaultTargetTriple() else null;
+        defer if (default_triple_c) |dt| llvm.LLVMDisposeMessage(dt);
+
+        var llvm_triple_str: []const u8 = if (self.target_info) |ti| ti.triple else std.mem.span(default_triple_c.?);
+        if (self.target_info) |ti| {
+            if (ti.os_tag == .windows) {
+                llvm_triple_str = if (ti.arch == .aarch64) "aarch64-pc-windows-msvc" else "x86_64-pc-windows-msvc";
+            }
+        }
+        const triple = try self.allocator.dupeZ(u8, llvm_triple_str);
+        defer self.allocator.free(triple);
 
         var target: llvm.LLVMTargetRef = undefined;
         var err_msg: [*c]u8 = null;
@@ -3089,11 +3225,11 @@ pub const LLVMEmitter = struct {
             return error.LLVMTargetError;
         }
 
-        // Host CPU tuning by default; set EIWA_BASELINE_CPU=1 to emit a
+        // Host CPU tuning by default when compiling for host; set EIWA_BASELINE_CPU=1 to emit a
         // portable binary (baseline x86_64/arm64, no host-only features like
         // AVX-512). Needed so releases built on modern CI runners keep working
         // on older CPUs / emulators (e.g. Rosetta 2, which lacks AVX-512).
-        const use_host_cpu = std.c.getenv("EIWA_BASELINE_CPU") == null;
+        const use_host_cpu = is_host and (std.c.getenv("EIWA_BASELINE_CPU") == null);
         var cpu: [*c]const u8 = "";
         var features: [*c]const u8 = "";
         if (use_host_cpu) {
@@ -3104,16 +3240,29 @@ pub const LLVMEmitter = struct {
 
         const opt_level: llvm.LLVMCodeGenOptLevel = if (self.is_release) llvm.LLVMCodeGenLevelAggressive else llvm.LLVMCodeGenLevelNone;
 
+        const reloc_mode: llvm.LLVMRelocMode = if (self.target_info != null and self.target_info.?.os_tag == .windows)
+            llvm.LLVMRelocDefault
+        else
+            llvm.LLVMRelocPIC;
+
         const target_machine = llvm.LLVMCreateTargetMachine(
             target,
             triple,
             cpu,
             features,
             opt_level,
-            llvm.LLVMRelocPIC,
+            reloc_mode,
             llvm.LLVMCodeModelDefault,
         ) orelse return error.LLVMTargetMachineFailed;
         defer llvm.LLVMDisposeTargetMachine(target_machine);
+
+        const target_data = llvm.LLVMCreateTargetDataLayout(target_machine);
+        defer llvm.LLVMDisposeTargetData(target_data);
+        const data_layout_str = llvm.LLVMCopyStringRepOfTargetData(target_data);
+        defer llvm.LLVMDisposeMessage(data_layout_str);
+
+        llvm.LLVMSetTarget(mod, triple);
+        llvm.LLVMSetDataLayout(mod, data_layout_str);
 
         // Verify IR correctness before optimization and machine emission
         {
@@ -3134,7 +3283,8 @@ pub const LLVMEmitter = struct {
         try self.optimizeModule(target_machine);
 
         // Emit object file directly from RAM to temp object
-        const obj_filename = "temp_llvm.o";
+        const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
+        const obj_filename = if (is_windows) "temp_llvm.obj" else "temp_llvm.o";
         const obj_z = try self.allocator.dupeZ(u8, obj_filename);
         defer self.allocator.free(obj_z);
 
@@ -3149,15 +3299,20 @@ pub const LLVMEmitter = struct {
 
         // Link object file into native binary. Prefers the system C compiler
         // (no zig required at runtime); falls back to `zig cc` when no system
-        // compiler is on PATH.
+        // compiler is on PATH or when cross-compiling.
         const link_driver = self.pickLinkDriver(io);
         var cc_argv = ArrayList([]const u8).init(self.allocator);
         defer cc_argv.deinit();
 
         const opt_flag = if (self.is_release) "-O3" else "-O0";
         try appendLinkDriverPrefix(&cc_argv, link_driver);
+        if (self.target_info) |ti| {
+            if (!ti.is_host) {
+                try cc_argv.appendSlice(&[_][]const u8{ "-target", ti.triple });
+            }
+        }
         try cc_argv.appendSlice(&[_][]const u8{ opt_flag, "-fwrapv" });
-        if (builtin.target.os.tag == .macos) {
+        if (is_host and builtin.target.os.tag == .macos) {
             const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
             try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
         }
@@ -3165,8 +3320,10 @@ pub const LLVMEmitter = struct {
             obj_filename,
             "-o",
             output_filename,
-            "-lgc",
         });
+        if (is_host or prefer_gc_alloc) {
+            try cc_argv.append("-lgc");
+        }
         for (self.cli_c_flags) |flag| try cc_argv.append(flag);
 
         // Build requirements declared by `lib` annotations (@Include/@Define/@Source/@Link),

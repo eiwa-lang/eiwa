@@ -77,6 +77,7 @@ pub const Parser = struct {
     pub const parseModifiers = declaration_mod.parseModifiers;
     pub const objectDeclaration = declaration_mod.objectDeclaration;
     pub const enumDeclaration = declaration_mod.enumDeclaration;
+    pub const parsePlatformTargets = declaration_mod.parsePlatformTargets;
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         var p = Parser{

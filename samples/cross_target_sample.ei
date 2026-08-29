@@ -1,0 +1,25 @@
+// Sample program demonstrating platform specialization
+
+contract OSInfo {
+    fun getPlatform(): String
+}
+
+object("windows") CurrentOS : OSInfo {
+    implement fun getPlatform(): String = "Target is Windows"
+}
+
+object("linux") CurrentOS : OSInfo {
+    implement fun getPlatform(): String = "Target is Linux"
+}
+
+object("macos", "darwin") CurrentOS : OSInfo {
+    implement fun getPlatform(): String = "Target is macOS"
+}
+
+object CurrentOS : OSInfo {
+    implement fun getPlatform(): String = "Target is Other OS"
+}
+
+fun main() {
+    print(CurrentOS.getPlatform())
+}

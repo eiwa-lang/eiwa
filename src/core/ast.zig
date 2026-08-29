@@ -201,6 +201,7 @@ pub const ASTNodeType = union(enum) {
         /// initializer evaluated at construction. They are NOT constructor
         /// parameters — callers construct the type without them.
         body_fields: []ClassProp = &.{},
+        platform_targets: []const []const u8 = &.{},
     },
     contract_decl: struct {
         annotations: []const Annotation,
@@ -225,6 +226,7 @@ pub const ASTNodeType = union(enum) {
         annotations: []const Annotation,
         name: []const u8,
         functions: []const *ASTNode,
+        platform_targets: []const []const u8 = &.{},
     },
     object_decl: struct {
         annotations: []const Annotation,
@@ -233,6 +235,7 @@ pub const ASTNodeType = union(enum) {
         resolved_c_name: ?[]const u8,
         contracts: []const []const u8 = &.{},
         skills: []const []const u8 = &.{},
+        platform_targets: []const []const u8 = &.{},
     },
     enum_decl: struct {
         annotations: []const Annotation,

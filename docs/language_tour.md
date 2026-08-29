@@ -2586,3 +2586,94 @@ The CLI locates `eiwac` in this order:
 ### 30.6 Not Yet Implemented
 
 Transitive dependency resolution (MVS). The manifest parser is currently a minimal indentation parser (marked with a TODO in the code) to be replaced by a typed DTO.
+
+---
+
+## 31. Cross-Compilation & Platform Abstraction
+
+Eiwa provides first-class cross-compilation (`--target`) and declarative platform abstraction directly in user-space code. You can target Linux, Windows, macOS, and WebAssembly seamlessly without managing complex toolchains or writing platform-specific build scripts.
+
+### 31.1 Declarative Platform Specialization
+
+Rather than relying on magic filename conventions (like `_linux.ei` or `_windows.ei`), platform specializations are declared directly on `object`, `lib`, and `type` definitions using target tags:
+
+```kotlin
+contract AudioDriver {
+    fun playSound(frequency: Int)
+}
+
+// Specialized for Windows
+object("windows") CurrentAudioDriver : AudioDriver {
+    implement fun playSound(frequency: Int) {
+        // Windows WinMM / WASAPI logic
+        print("Playing sound on Windows")
+    }
+}
+
+// Specialized for Linux and macOS (POSIX)
+object("linux", "macos") CurrentAudioDriver : AudioDriver {
+    implement fun playSound(frequency: Int) {
+        // Linux ALSA / macOS CoreAudio logic
+        print("Playing sound on POSIX")
+    }
+}
+
+// Universal Fallback (used when no specialized match exists for the target OS)
+object CurrentAudioDriver : AudioDriver {
+    implement fun playSound(frequency: Int) {
+        print("Playing sound via generic driver")
+    }
+}
+```
+
+### 31.2 FFI & Low-Level Specialization (`lib`)
+
+Low-level C bindings can also be specialized per platform, allowing seamless adaptation between POSIX APIs and Windows CRT equivalents:
+
+```kotlin
+@Header("<stdlib.h>", "<stdio.h>", "<unistd.h>")
+lib("posix") NativeProcess {
+    fun popen(cmd: String, mode: String): Pointer
+    fun pclose(stream: Pointer): Int
+    fun chdir(path: String): Int
+}
+
+@Header("<stdlib.h>", "<stdio.h>", "<direct.h>")
+lib("windows") NativeProcess {
+    @Alias("_popen")
+    fun popen(cmd: String, mode: String): Pointer
+    @Alias("_pclose")
+    fun pclose(stream: Pointer): Int
+    @Alias("_chdir")
+    fun chdir(path: String): Int
+}
+```
+
+### 31.3 Cross-Compilation CLI (`--target`)
+
+The `--target` option is available in both the compiler backend (`eiwac`) and the developer CLI (`eiwa`):
+
+```bash
+# Build for Linux (ELF 64-bit static binary)
+eiwa build --target linux -o bin/server_linux src/main.ei
+
+# Build for Windows (PE32+ executable)
+eiwa build --target windows -o bin/app.exe src/main.ei
+
+# Build for macOS (Apple Silicon / Intel)
+eiwa build --target macos -o bin/app_mac src/main.ei
+```
+
+#### Supported Target Aliases
+
+| Alias / Name | Resolved Target Triple | Output Binary Format |
+| :--- | :--- | :--- |
+| `windows`, `win`, `win64` | `x86_64-windows-gnu` / `x86_64-pc-windows-msvc` | PE32+ `.exe` (COFF) |
+| `windows-arm64`, `win-arm64` | `aarch64-windows-gnu` / `aarch64-pc-windows-msvc` | PE32+ ARM64 `.exe` |
+| `linux`, `linux-musl`, `linux-amd64` | `x86_64-linux-musl` | ELF 64-bit static |
+| `linux-arm64`, `linux-aarch64` | `aarch64-linux-musl` | ELF 64-bit ARM64 static |
+| `macos`, `darwin`, `macos-arm64` | `arm64-apple-darwin` | Mach-O 64-bit arm64 |
+| `macos-x86_64`, `macos-amd64` | `x86_64-apple-darwin` | Mach-O 64-bit x86_64 |
+| `wasm` | `wasm32-wasi` | WebAssembly WASI |
+| *Custom Triple* (e.g. `x86_64-unknown-linux-gnu`) | Exact LLVM/Zig target query | Target native format |
+

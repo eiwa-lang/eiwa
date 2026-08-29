@@ -361,6 +361,10 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
 pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var c = &node.data.type_decl;
+    if (!self.matchesTarget(c.platform_targets)) {
+        t.* = .Void;
+        return;
+    }
     if (c.resolved_c_name == null) {
         if (self.module_prefix) |prefix| {
             c.resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, c.name });
@@ -1225,6 +1229,10 @@ fn hasAnnotation(annotations: []const ast.Annotation, name: []const u8) bool {
 
 pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const l = node.data.lib_decl;
+    if (!self.matchesTarget(l.platform_targets)) {
+        t.* = .Void;
+        return;
+    }
     const lib_type = try self.allocator.create(EiwaType);
     lib_type.* = .{ .Custom = l.name };
     try scope.define(l.name, lib_type, false, false);
@@ -1278,6 +1286,10 @@ pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
 
 pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var o = &node.data.object_decl;
+    if (!self.matchesTarget(o.platform_targets)) {
+        t.* = .Void;
+        return;
+    }
     const name = o.name orelse {
         self.reportError(node.line, node.column, "TypeError: Companion object must have a resolved bound name.", .{});
         return error.TypeError;

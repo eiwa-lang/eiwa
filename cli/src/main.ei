@@ -33,7 +33,8 @@ type CliArgs(
 // Options that consume the next argument as their value.
 fun isValueOption(arg: String): Bool {
     return arg == "-o" || arg == "--branch" || arg == "--tag" || arg == "--commit" ||
-        arg == "--module-path" || arg == "--github" || arg == "--gitlab" || arg == "--git"
+        arg == "--module-path" || arg == "--github" || arg == "--gitlab" || arg == "--git" ||
+        arg == "--target"
 }
 
 fun optionValue(args: CliArgs, key: String): String? {
@@ -375,6 +376,7 @@ fun printHelp() {
     println("Options:")
     println("  -o <name>       Output binary name/path (build)")
     println("  --release       Optimized build (-O3), projects and files")
+    println("  --target <t>    Target platform / triple (e.g. windows, linux, macos, wasm)")
     println("  --module-path <d>  Extra directory to resolve imports (repeatable)")
     println("  -h, --help      Show this help")
     println("  --frozen        Fail if eiwa.freeze does not exist (for CI)")
@@ -864,10 +866,14 @@ fun compilerCommand(cmd: String) {
     }
 
     // Forward eiwac flags/options supplied on the CLI: --release,
-    // extra --module-path entries and user program args (after `--` on run).
+    // --target, extra --module-path entries and user program args (after `--` on run).
     var extraFlags = ""
     if (hasFlag(args, "--release")) {
         extraFlags = extraFlags + " --release"
+    }
+    val targetVal = optionValue(args, "--target")
+    if (targetVal != null) {
+        extraFlags = extraFlags + " --target " + targetVal!!
     }
     var userModulePaths = ""
     var i = 0

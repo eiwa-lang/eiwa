@@ -1,0 +1,33 @@
+// Test platform specialization and fallback behavior
+
+contract Greeting {
+    fun greet(): String
+}
+
+object("windows") Greeter : Greeting {
+    implement fun greet(): String = "Hello from Windows"
+}
+
+object("posix") Greeter : Greeting {
+    implement fun greet(): String = "Hello from POSIX"
+}
+
+object("windows") PlatformSpecificConfig {
+    fun platformName(): String = "Win32"
+}
+
+// Fallback universal for non-Windows
+object PlatformSpecificConfig {
+    fun platformName(): String = "Universal/Default"
+}
+
+test "platform specialized object resolution" {
+    val greeting = Greeter.greet()
+    // On macOS/Linux, Greeter should be POSIX
+    assert(greeting == "Hello from POSIX", "Should resolve posix specialized object on POSIX platforms")
+}
+
+test "platform fallback resolution" {
+    val name = PlatformSpecificConfig.platformName()
+    assert(name == "Universal/Default", "Should fallback to universal object when no platform match overrides")
+}

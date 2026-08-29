@@ -734,6 +734,42 @@ Permite tratamento transparente, determinístico e robusto de exceções atravé
 **Razão:**
 Permite servidores TCP e clientes de rede de alto desempenho em Eiwa operando sobre I/O cooperativo não-bloqueante em pool multi-core real sem qualquer dependência de runtimes C externos.
 
+---
+
+## ADR 57: Cross-Compilation (`--target`) e Especialização de Plataforma Declarativa
+**Status:** Aprovado / Implementado
+**Data:** Agosto 2026
+
+**Contexto:**
+1. O compilador Eiwa compilava exclusivamente para a máquina e sistema operacional host nativo (`builtin.target`).
+2. Para criar utilitários de linha de comando portáveis e servidores web prontos para produção em containers Linux e executáveis Windows a partir do macOS/Linux (estilo Go, Rust, Crystal), era indispensável suportar compilação cruzada *out-of-the-box* via flag `--target`.
+3. Diferentes sistemas operacionais possuem chamadas e APIs nativas distintas (ex.: `sysconf` e `poll` em POSIX vs `WSAPoll`, `GetSystemInfo` e `_popen` em Windows). Uma abordagem baseada em sufixos mágicos de arquivos (ex.: `_linux.ei`, `_windows.ei`) é propensa a erros acidentais de digitação e fragmenta o código.
+
+**Decisão:**
+1. **Sintaxe de Especialização Direta na Declaração:**
+   - O Eiwa introduz anotações de plataforma nos nós `object`, `lib` e `type`:
+     ```kotlin
+     object("windows") CurrentAudioDriver : AudioDriver { ... }
+     object("linux", "macos") CurrentAudioDriver : AudioDriver { ... }
+     lib("posix") NativeProcess { ... }
+     lib("windows") NativeProcess { ... }
+     ```
+2. **Resolução com Fallback Universal:**
+   - Uma declaração sem discriminador de plataforma (ex.: `object CurrentAudioDriver : AudioDriver { ... }`) atua como fallback padrão.
+   - O TypeChecker seleciona a declaração especializada caso o alvo ativo corresponda à tag de plataforma; caso contrário, seleciona a declaração universal fallback.
+3. **Resolução de Targets e Aliases Simplificados (`src/core/target.zig`):**
+   - Suporte a aliases amigáveis como `--target windows` (`x86_64-windows-gnu` / COFF), `--target linux` (`x86_64-linux-musl` / ELF), `--target linux-arm64` (`aarch64-linux-musl`), `--target macos` (`arm64-apple-darwin` / `x86_64-apple-darwin`), `--target wasm` (`wasm32-wasi`), além de triples completas.
+   - Sem a flag `--target`, o compilador preserva 100% de retrocompatibilidade utilizando o host nativo.
+4. **Backend LLVM & Linker Cruzado Autocontido (`src/backend/llvm_emitter/core.zig`):**
+   - Configuração de triples canônicas e data layouts por módulo antes da otimização e geração de código.
+   - Inclusão automática de símbolos CRT requeridos por plataforma (ex.: `_fltused = 1` no Windows).
+   - Linking cruzado inteligente via `zig cc -target <triple>`.
+   - Suporte a ambientes sem Boehm GC externo durante cross-compilation, mapeando alocações de heap para a libc padrão (`malloc`/`calloc`/`realloc`) e fornecendo stubs no-op seguros de ciclo de vida do GC.
+
+**Razão:**
+Permite aos desenvolvedores distribuir binários estáticos portáveis para qualquer sistema operacional de forma simples, declarativa, segura e sem atrito com dependências externas.
+
+
 
 
 

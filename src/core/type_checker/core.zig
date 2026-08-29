@@ -9,6 +9,7 @@ const diagnostics = @import("../diagnostics.zig");
 pub const ASTNode = ast.ASTNode;
 pub const EiwaType = type_system.EiwaType;
 pub const Scope = type_system.Scope;
+pub const TargetInfo = @import("../target.zig").TargetInfo;
 
 const infer_expr_mod = @import("infer_expr.zig");
 const infer_stmt_mod = @import("infer_stmt.zig");
@@ -78,6 +79,7 @@ pub const TypeChecker = struct {
     current_class_methods: ?[]const *ASTNode = null,
     current_type_c_name: ?[]const u8 = null,
     registry: ?*ModuleRegistry = null,
+    target_info: ?TargetInfo = null,
     pass: enum { declaration, validation } = .validation,
     status: enum { unvisited, declaring_types, declared_types, declaring_signatures, declared_signatures, resolving_imports, resolved_imports, validating, validated } = .unvisited,
 
@@ -101,6 +103,14 @@ pub const TypeChecker = struct {
     pub const implementsContract = core_implementsContract;
     pub const injectImplicitImports = core_injectImplicitImports;
     pub const substituteParam = infer_call_mod.substituteParam;
+
+    pub fn matchesTarget(self: *const TypeChecker, platform_targets: []const []const u8) bool {
+        if (platform_targets.len == 0) return true;
+        if (self.target_info) |ti| {
+            return ti.matchesAny(platform_targets);
+        }
+        return true;
+    }
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8, filename: []const u8) TypeChecker {
         const checker = TypeChecker{
@@ -126,10 +136,10 @@ pub const TypeChecker = struct {
             .monomorphized_nodes = ArrayList(*ASTNode).init(allocator),
             .current_class_name = null,
             .registry = null,
+            .target_info = null,
             .pass = .validation,
             .status = .unvisited,
         };
-
         return checker;
     }
 
@@ -615,6 +625,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
         for (node.data.program.statements) |stmt| {
             if (stmt.data == .type_decl) {
                 var c = &stmt.data.type_decl;
+                if (!self.matchesTarget(c.platform_targets)) continue;
                 if (c.resolved_c_name == null) {
                     const prospective: []const u8 = if (self.module_prefix) |prefix|
                         try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, c.name })
@@ -631,6 +642,20 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     }
                 }
                 const actual_c_name = c.resolved_c_name.?;
+
+                if (self.classes_ast.get(actual_c_name)) |existing| {
+                    const existing_targets = existing.data.type_decl.platform_targets;
+                    if (existing_targets.len == 0 and c.platform_targets.len > 0) {
+                        // Specialized overrides universal fallback
+                    } else if (existing_targets.len > 0 and c.platform_targets.len == 0) {
+                        // Specialized already registered, ignore universal fallback
+                        continue;
+                    } else {
+                        self.reportError(stmt.line, stmt.column, "TypeError: Duplicate type declaration '{s}' for the same target.", .{c.name});
+                        return error.TypeError;
+                    }
+                }
+
                 const class_type = try self.allocator.create(EiwaType);
                 if (std.mem.eql(u8, c.name, "Int")) {
                     class_type.* = .Int;
@@ -684,6 +709,7 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                 try self.local_symbols.put(sd.name, {});
             } else if (stmt.data == .object_decl) {
                 var o = &stmt.data.object_decl;
+                if (!self.matchesTarget(o.platform_targets)) continue;
                 if (o.name) |o_name| {
                     if (o.resolved_c_name == null) {
                         if (self.module_prefix) |prefix| {
@@ -694,6 +720,20 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         }
                     }
                     const actual_c_name = o.resolved_c_name.?;
+
+                    if (self.objects_ast.get(actual_c_name)) |existing| {
+                        const existing_targets = existing.data.object_decl.platform_targets;
+                        if (existing_targets.len == 0 and o.platform_targets.len > 0) {
+                            // Specialized overrides universal fallback
+                        } else if (existing_targets.len > 0 and o.platform_targets.len == 0) {
+                            // Specialized already registered, ignore universal fallback
+                            continue;
+                        } else {
+                            self.reportError(stmt.line, stmt.column, "TypeError: Duplicate object declaration '{s}' for the same target.", .{o_name});
+                            return error.TypeError;
+                        }
+                    }
+
                     const obj_type = try self.allocator.create(EiwaType);
                     obj_type.* = .{ .Custom = actual_c_name };
                     try self.objects_ast.put(actual_c_name, stmt);
@@ -770,7 +810,16 @@ fn core_declareSignatures(self: *TypeChecker, node: *ASTNode) anyerror!void {
 
         // Declare local signatures
         for (node.data.program.statements) |stmt| {
-            if (stmt.data == .lib_decl or stmt.data == .type_decl or stmt.data == .contract_decl or stmt.data == .skill_decl or stmt.data == .object_decl or stmt.data == .fun_decl) {
+            if (stmt.data == .lib_decl) {
+                if (!self.matchesTarget(stmt.data.lib_decl.platform_targets)) continue;
+                _ = try self.inferNode(stmt, &self.global_scope);
+            } else if (stmt.data == .type_decl) {
+                if (!self.matchesTarget(stmt.data.type_decl.platform_targets)) continue;
+                _ = try self.inferNode(stmt, &self.global_scope);
+            } else if (stmt.data == .object_decl) {
+                if (!self.matchesTarget(stmt.data.object_decl.platform_targets)) continue;
+                _ = try self.inferNode(stmt, &self.global_scope);
+            } else if (stmt.data == .contract_decl or stmt.data == .skill_decl or stmt.data == .fun_decl) {
                 _ = try self.inferNode(stmt, &self.global_scope);
             }
         }
