@@ -580,7 +580,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 
 ---
 
-### Phase 60: Default Values Referencing Sibling Parameters (PENDING)
+### Phase 60: Default Values Referencing Sibling Parameters (COMPLETED)
 > **Motivação:** Suportar o padrão Kotlin de defaults que referenciam parâmetros anteriores do mesmo construtor/função (ex.: `type Dispatcher(val builder: ArestBuilder, val http: HttpDispatcher = HttpDispatcher(builder))`). Hoje o initializer é validado contra o escopo externo em `inferTypeDecl`/`inferFunDecl` (`src/core/type_checker/infer_decl.zig`), e os parâmetros irmãos só são registrados no `class_scope`/`fun_scope` **depois** do próprio default ser checado — a referência falha com `TypeError: Undeclared variable`.
 >
 > **Exemplo de erro (arest `src/dispatcher/dispatcher.ei`):**

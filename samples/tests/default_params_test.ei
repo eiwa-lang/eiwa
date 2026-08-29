@@ -61,3 +61,25 @@ test "default_params: should use default constructor arguments" {
     assert(computeWithSibling(10) == 25)
     assert(computeWithSibling(10, 3) == 13)
 }
+
+type Calculator {
+    fun calculate(a: Int, b: Int = a * 2, c: Int = b + 1): Int {
+        return a + b + c
+    }
+}
+
+test "default_params: should resolve sibling default parameters in type methods" {
+    val calc = Calculator()
+    assert(calc.calculate(5) == 26) // a=5, b=10, c=11 -> 5+10+11 = 26
+    assert(calc.calculate(5, 20) == 46) // a=5, b=20, c=21 -> 5+20+21 = 46
+    assert(calc.calculate(5, 20, 100) == 125)
+}
+
+fun multiSibling(x: Int, y: Int = x * 2, z: Int = y + 3): Int = x + y + z
+
+test "default_params: should resolve chained sibling defaults in top-level functions" {
+    assert(multiSibling(4) == 23) // 4 + 8 + 11 = 23
+    assert(multiSibling(4, 10) == 27) // 4 + 10 + 13 = 27
+    assert(multiSibling(4, 10, 50) == 64)
+}
+

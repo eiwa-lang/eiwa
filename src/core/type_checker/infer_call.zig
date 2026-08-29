@@ -702,6 +702,9 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
             const prop = mono_decl.primary_constructor[i];
             if (prop.initializer) |init_node| {
                 const cloned = try self.cloneNode(init_node);
+                for (mono_decl.primary_constructor[0..i], 0..) |prev_p, prev_i| {
+                    try self.substituteParam(cloned, prev_p.name, new_args[prev_i]);
+                }
                 cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
                 new_args[i] = cloned;
                 _ = try self.inferNode(cloned, scope);
@@ -1076,24 +1079,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 const func_decl = func_node.data.fun_decl;
                 const ret_type = func_node.resolved_type.?.Function.return_type;
 
-                if (c.arguments.len < func_decl.params.len) {
-                    var new_args = try self.allocator.alloc(*ASTNode, func_decl.params.len);
-                    for (c.arguments, 0..) |arg, arg_i| {
-                        new_args[arg_i] = arg;
-                    }
-                    var i = c.arguments.len;
-                    while (i < func_decl.params.len) : (i += 1) {
-                        if (func_decl.params[i].initializer) |init_node| {
-                            const cloned = try self.cloneNode(init_node);
-                            if (func_decl.params[i].type_ref) |tr| {
-                                cloned.expected_type = self.resolveTypeRef(tr) catch null;
-                            }
-                            new_args[i] = cloned;
-                            _ = try self.inferNode(cloned, scope);
-                        }
-                    }
-                    c.arguments = new_args;
-                }
+                try resolveCallArguments(self, node, func_decl.params, scope);
 
                 for (c.arguments, 0..) |arg, arg_i| {
                     if (arg_i < func_decl.params.len) {
@@ -1497,6 +1483,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 const prop = type_decl.primary_constructor[i];
                                 if (prop.initializer) |init_node| {
                                     const cloned = try self.cloneNode(init_node);
+                                    for (type_decl.primary_constructor[0..i], 0..) |prev_p, prev_i| {
+                                        try self.substituteParam(cloned, prev_p.name, new_args[prev_i]);
+                                    }
                                     cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
                                     new_args[i] = cloned;
                                     _ = try self.inferNode(cloned, scope);
@@ -1737,38 +1726,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             const ret_type = matched_method.resolved_type.?.Function.return_type;
             const f = &matched_method.data.fun_decl;
             
-            if (f.params.len > 0 and f.params[f.params.len - 1].is_varargs) {
-                // Varargs method: always run arg resolution so positional args landing
-                // on the variadic slot are collected into a List (even when the call's
-                // arg count happens to equal the fixed param count).
-                try resolveCallArguments(self, node, f.params, scope);
-            } else if (hasNamedArgs(c.arguments)) {
-                // Named arguments (`name = value`) must be reordered positionally;
-                // the default-fill branch below would otherwise leave named_arg
-                // nodes in place, which the emitters cannot lower.
-                try resolveCallArguments(self, node, f.params, scope);
-            } else if (c.arguments.len < f.params.len) {
-                var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
-                for (c.arguments, 0..) |arg, arg_i| {
-                    new_args[arg_i] = arg;
-                }
-                var i = c.arguments.len;
-                while (i < f.params.len) : (i += 1) {
-                    const prop = f.params[i];
-                    if (prop.initializer) |init_node| {
-                        const cloned = try self.cloneNode(init_node);
-                        if (prop.type_ref) |tr| {
-                            cloned.expected_type = self.resolveTypeRef(tr) catch null;
-                        }
-                        new_args[i] = cloned;
-                        _ = try self.inferNode(cloned, scope);
-                    } else {
-                        self.reportError(node.line, node.column, "TypeError: Missing argument for parameter '{s}' of '{s}' which has no default value.", .{ prop.name, f.name });
-                        return error.TypeError;
-                    }
-                }
-                c.arguments = new_args;
-            }
+            try resolveCallArguments(self, node, f.params, scope);
             
             const static_c_name = matched_method.resolved_type.?.Function.c_name;
             c.callee.data = .{ .identifier = .{
@@ -1998,40 +1956,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
 
 
-                        if (f.params.len > 0 and f.params[f.params.len - 1].is_varargs) {
-                            // Varargs method: always run arg resolution so positional args
-                            // landing on the variadic slot are collected into a List.
-                            try resolveCallArguments(self, node, f.params, scope);
-                        } else if (hasNamedArgs(c.arguments)) {
-                            // Named arguments (`name = value`) must be reordered
-                            // positionally; see the type-method dispatch above.
-                            try resolveCallArguments(self, node, f.params, scope);
-                        } else if (c.arguments.len < f.params.len) {
-
-                            var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
-                            for (c.arguments, 0..) |arg, arg_i| {
-                                new_args[arg_i] = arg;
-                            }
-                            var i = c.arguments.len;
-                            while (i < f.params.len) : (i += 1) {
-                                const prop = f.params[i];
-                                if (prop.initializer) |init_node| {
-                                    const cloned = try self.cloneNode(init_node);
-                                    if (prop.type_ref) |tr| {
-                                        cloned.expected_type = self.resolveTypeRef(tr) catch null;
-                                    }
-                                    new_args[i] = cloned;
-                                    _ = try self.inferNode(cloned, scope);
-                                } else {
-                                    self.reportError(node.line, node.column, "TypeError: Missing argument for method parameter '{s}' of '{s}.{s}' which has no default value.", .{ prop.name, type_decl.name, g.name });
-                                    return error.TypeError;
-                                }
-                            }
-                            c.arguments = new_args;
-                        } else if (c.arguments.len > f.params.len) {
-                            self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for method '{s}.{s}', got {}.", .{ f.params.len, type_decl.name, g.name, c.arguments.len });
-                            return error.TypeError;
-                        }
+                        try resolveCallArguments(self, node, f.params, scope);
 
                         for (c.arguments, 0..) |arg, arg_i| {
                             var exp_t: ?*const EiwaType = null;
@@ -2067,28 +1992,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     for (cd.methods) |method| {
                         if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
                             const f = &method.data.fun_decl;
-                            if (hasNamedArgs(c.arguments)) {
-                                // Named arguments (`name = value`) must be reordered
-                                // positionally; see the type-method dispatch above.
-                                try resolveCallArguments(self, node, f.params, scope);
-                            } else if (c.arguments.len < f.params.len) {
-                                var new_args = try self.allocator.alloc(*ASTNode, f.params.len);
-                                for (c.arguments, 0..) |arg, arg_i| {
-                                    new_args[arg_i] = arg;
-                                }
-                                var i = c.arguments.len;
-                                while (i < f.params.len) : (i += 1) {
-                                    if (f.params[i].initializer) |init_node| {
-                                        const cloned = try self.cloneNode(init_node);
-                                        if (f.params[i].type_ref) |tr| {
-                                            cloned.expected_type = self.resolveTypeRef(tr) catch null;
-                                        }
-                                        new_args[i] = cloned;
-                                        _ = try self.inferNode(cloned, scope);
-                                    }
-                                }
-                                c.arguments = new_args;
-                            }
+                            try resolveCallArguments(self, node, f.params, scope);
                             for (c.arguments, 0..) |arg, arg_i| {
                                 var exp_t: ?*const EiwaType = null;
                                 if (arg_i < f.params.len) {
