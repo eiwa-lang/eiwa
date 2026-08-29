@@ -1,0 +1,75 @@
+import { assert } from "std.core"
+
+// Extensions on String
+fun String.lastChar(): String {
+    if (this.length == 0) {
+        return ""
+    }
+    return this.substring(this.length - 1, this.length)
+}
+
+fun String.surroundWith(prefix: String, suffix: String): String {
+    return prefix + this + suffix
+}
+
+// Extensions on Int
+fun Int.squared(): Int = this * this
+
+fun Int.addWith(other: Int): Int = this + other
+
+fun Int.isEven(): Bool = (this - ((this / 2) * 2)) == 0
+
+// Extensions on custom types
+type Vector2(val x: Int, val y: Int)
+
+fun Vector2.magnitudeSquared(): Int {
+    return (this.x * this.x) + (this.y * this.y)
+}
+
+fun Vector2.scaled(factor: Int): Vector2 {
+    return Vector2(this.x * factor, this.y * factor)
+}
+
+test "extension functions on primitive String" {
+    val s = "Eiwa"
+    assert(s.lastChar() == "a")
+    assert(s.surroundWith("[", "]") == "[Eiwa]")
+    assert("".lastChar() == "")
+}
+
+test "extension functions on primitive Int" {
+    val x = 9
+    assert(x.squared() == 81)
+    assert(x.addWith(11) == 20)
+    assert(x.isEven() == false)
+    assert((x + 1).isEven() == true)
+}
+
+test "extension functions on custom type" {
+    val v = Vector2(3, 4)
+    assert(v.magnitudeSquared() == 25)
+
+    val scaled = v.scaled(2)
+    assert(scaled.x == 6)
+    assert(scaled.y == 8)
+    assert(scaled.magnitudeSquared() == 100)
+}
+
+test "chained extension function calls" {
+    val s = "Hello"
+    val res = s.surroundWith("<", ">").surroundWith("{", "}")
+    assert(res == "{<Hello>}")
+}
+
+fun Bool.invert(): Bool = !this
+fun Double.half(): Double = this / 2.0
+
+test "extension functions on Bool and Double" {
+    val b = true
+    assert(b.invert() == false)
+    assert(b.invert().invert() == true)
+
+    val d = 10.0
+    assert(d.half() == 5.0)
+}
+

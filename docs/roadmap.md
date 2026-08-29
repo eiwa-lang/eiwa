@@ -216,10 +216,10 @@ Substituição completa do backend C por um emissor nativo LLVM IR construído 1
 - [ ] ~~**Task 33.3:** Implement semantic validation in the TypeChecker: verify that non-abstract classes implement all inherited interface/abstract methods.~~
 - [ ] ~~**Task 33.4:** Update the C Transpiler to generate virtual tables (vtables) for interfaces, enabling runtime dynamic dispatch.~~
 
-### Phase 34: Extension Functions (PENDING)
-- [ ] **Task 34.1:** Add support in the Parser for declaring extension functions (e.g., `fun String.lastChar(): String`).
-- [ ] **Task 34.2:** Resolve extension methods in the TypeChecker statically (ensuring they can access public members of the receiver class).
-- [ ] **Task 34.3:** Desugar extension function calls (e.g., `str.lastChar()`) to static helper function calls (e.g., `lastChar(str)`) in the C Transpiler.
+### Phase 34: Extension Functions (COMPLETED)
+- [x] **Task 34.1:** Add support in the Parser and AST for declaring extension functions (e.g., `fun String.lastChar(): String`).
+- [x] **Task 34.2:** Resolve extension methods in the TypeChecker statically, registering `this` in scope and binding to receiver type.
+- [x] **Task 34.3:** Desugar extension function calls (e.g., `str.lastChar()`) to static function calls with receiver as first argument in LLVM backend.
 
 ### Phase 35: Standard Library HTTP & Networking (`std.http` & `std.net`) (COMPLETED)
 - [x] **Task 35.1:** Design `std.net` defining Socket and TCP abstractions using POSIX socket FFI bindings.

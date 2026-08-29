@@ -183,6 +183,7 @@ pub const ASTNodeType = union(enum) {
         /// True when the function (transitively) contains a call to an `@Suspend`
         /// function (detected by the coroutine pass, not by the parser).
         is_suspend: bool = false,
+        receiver_type: ?*const ASTTypeRef = null,
     },
     type_decl: struct {
         annotations: []const Annotation,

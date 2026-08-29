@@ -68,6 +68,7 @@ pub const TypeChecker = struct {
     enums_ast: std.StringHashMap(*ASTNode),
     functions_ast: std.StringHashMap(*ASTNode),
     generic_functions_ast: std.StringHashMap(ArrayList(*ASTNode)),
+    extension_functions: std.StringHashMap(ArrayList(*ASTNode)),
     /// `cFunctionPtr(fn)` trampolines: C name -> the fun_decl node it forwards to.
     trampolines: std.StringHashMap(*ASTNode),
     local_symbols: std.StringHashMap(void),
@@ -118,6 +119,7 @@ pub const TypeChecker = struct {
             .enums_ast = std.StringHashMap(*ASTNode).init(allocator),
             .functions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .generic_functions_ast = std.StringHashMap(ArrayList(*ASTNode)).init(allocator),
+            .extension_functions = std.StringHashMap(ArrayList(*ASTNode)).init(allocator),
             .trampolines = std.StringHashMap(*ASTNode).init(allocator),
             .local_symbols = std.StringHashMap(void).init(allocator),
             .lib_symbols = std.StringHashMap(void).init(allocator),
@@ -145,6 +147,11 @@ pub const TypeChecker = struct {
             entry.value_ptr.deinit();
         }
         self.generic_functions_ast.deinit();
+        var ext_it = self.extension_functions.iterator();
+        while (ext_it.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        self.extension_functions.deinit();
         self.local_symbols.deinit();
         self.lib_symbols.deinit();
         self.monomorphized_nodes.deinit();

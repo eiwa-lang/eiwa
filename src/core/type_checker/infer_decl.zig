@@ -972,9 +972,27 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
     var param_types = ArrayList(*const EiwaType).init(self.allocator);
     var mangled_name = ArrayList(u8).init(self.allocator);
-    const is_method = scope.lookupVariable("this") != null;
+    var receiver_type: ?*const EiwaType = null;
+    if (f.receiver_type) |rt_ref| {
+        receiver_type = self.resolveTypeRef(rt_ref) catch null;
+    }
+
+    const is_method = scope.lookupVariable("this") != null or receiver_type != null;
     const old_fn_type_c_name = self.current_type_c_name;
-    if (is_method) {
+    if (receiver_type) |rec_t| {
+        const base_t = core.extractBaseType(rec_t);
+        const rec_name = switch (base_t.*) {
+            .Custom => |n| self.alias_map.get(n) orelse n,
+            .String => "core_String",
+            .Int => "core_Int",
+            .Double => "core_Double",
+            .Bool => "core_Bool",
+            .GenericInstance => |gi| gi.base_name,
+            else => "type",
+        };
+        self.current_type_c_name = rec_name;
+        try mangled_name.writer().print("{s}_{s}", .{ rec_name, f.name });
+    } else if (scope.lookupVariable("this") != null) {
         const this_t = scope.lookupVariable("this").?;
         const base_t = core.extractBaseType(this_t);
         const class_name = if (self.current_class_name) |cname| (self.alias_map.get(cname) orelse cname) else (if (base_t.* == .Custom) base_t.Custom else (if (base_t.* == .Pointer and base_t.Pointer.* == .Custom) base_t.Pointer.Custom else (if (base_t.* == .Int) "core_Int" else (if (base_t.* == .Bool) "core_Bool" else (if (base_t.* == .String) "core_String" else f.name)))));
@@ -1008,6 +1026,10 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     var fun_scope = Scope.init(self.allocator, scope);
     fun_scope.is_function_boundary = true;
     defer fun_scope.deinit();
+
+    if (receiver_type) |rec_t| {
+        try fun_scope.define("this", rec_t, false, false);
+    }
 
     for (f.params) |*p| {
         var param_type: *EiwaType = undefined;
@@ -1068,6 +1090,23 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         }
     }
 
+    if (receiver_type != null) {
+        if (self.extension_functions.getPtr(f.name)) |list| {
+            var already_present = false;
+            for (list.items) |existing| {
+                if (existing == node) {
+                    already_present = true;
+                    break;
+                }
+            }
+            if (!already_present) try list.append(node);
+        } else {
+            var list = ArrayList(*ASTNode).init(self.allocator);
+            try list.append(node);
+            try self.extension_functions.put(f.name, list);
+        }
+    }
+
     var return_type: *const EiwaType = undefined;
     var body_inferred = false;
 
@@ -1098,7 +1137,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         .params = try param_types.toOwnedSlice(),
         .return_type = return_type,
         .c_name = f.resolved_c_name.?,
-        .receiver = if (is_method) scope.lookupVariable("this") else null,
+        .receiver = if (receiver_type) |rec_t| rec_t else (if (scope.lookupVariable("this")) |this_t| this_t else null),
     } };
 
     if (node.resolved_type) |rt| {

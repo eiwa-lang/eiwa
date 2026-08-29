@@ -1,0 +1,42 @@
+import { assert } from "std.core"
+import { print } from "std.io"
+
+// 1. Extension function on String
+fun String.lastChar(): String {
+    if (this.length == 0) {
+        return ""
+    }
+    return this.substring(this.length - 1, this.length)
+}
+
+fun String.quoted(): String {
+    return "\"" + this + "\""
+}
+
+// 2. Extension function on Int
+fun Int.squared(): Int = this * this
+
+fun Int.isEven(): Bool = (this - ((this / 2) * 2)) == 0
+
+// 3. Extension function on custom type
+type Point(val x: Int, val y: Int)
+
+fun Point.manhattanDistance(): Int = this.x + this.y
+
+fun main() {
+    print("Testing Extension Functions in Eiwa...")
+
+    val greeting = "Hello Eiwa"
+    assert(greeting.lastChar() == "a")
+    assert(greeting.quoted() == "\"Hello Eiwa\"")
+
+    val num = 8
+    assert(num.squared() == 64)
+    assert(num.isEven() == true)
+    assert((num + 1).isEven() == false)
+
+    val pt = Point(10, 20)
+    assert(pt.manhattanDistance() == 30)
+
+    print("Extension Functions executed successfully!")
+}

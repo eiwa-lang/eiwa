@@ -605,6 +605,50 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
 
     if (prop_type == null) {
+        if (self.extension_functions.get(g.name)) |ext_list| {
+            for (ext_list.items) |ext_node| {
+                const f = ext_node.data.fun_decl;
+                if (f.receiver_type) |rt_ref| {
+                    const rec_t = self.resolveTypeRef(rt_ref) catch null;
+                    if (rec_t) |rt| {
+                        if (self.isCompatible(rt, base_type) or self.isCompatible(base_type, rt)) {
+                            if (ext_node.resolved_type == null or ext_node.resolved_type.?.* != .Function) {
+                                _ = self.inferNode(ext_node, scope) catch null;
+                            }
+                            prop_type = ext_node.resolved_type;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (prop_type == null and self.registry != null) {
+        var mod_it = self.registry.?.modules.iterator();
+        while (mod_it.next()) |entry| {
+            if (entry.value_ptr.checker.extension_functions.get(g.name)) |ext_list| {
+                for (ext_list.items) |ext_node| {
+                    const f = ext_node.data.fun_decl;
+                    if (f.receiver_type) |rt_ref| {
+                        const rec_t = entry.value_ptr.checker.resolveTypeRef(rt_ref) catch null;
+                        if (rec_t) |rt| {
+                            if (self.isCompatible(rt, base_type) or self.isCompatible(base_type, rt)) {
+                                if (ext_node.resolved_type == null or ext_node.resolved_type.?.* != .Function) {
+                                    _ = entry.value_ptr.checker.inferNode(ext_node, scope) catch null;
+                                }
+                                prop_type = ext_node.resolved_type;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (prop_type != null) break;
+            }
+        }
+    }
+
+    if (prop_type == null) {
         self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {}.", .{ g.name, obj_type.* });
         return error.TypeError;
     }

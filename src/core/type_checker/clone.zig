@@ -245,6 +245,7 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
                 .is_expr_body = f.is_expr_body,
                 .resolved_c_name = null,
                 .from_skill = f.from_skill,
+                .receiver_type = if (f.receiver_type) |rt| try self.cloneTypeRef(rt) else null,
             } };
         },
         else => {}, // For identifiers and literals, shallow copy is fine as long as we cleared resolved_type

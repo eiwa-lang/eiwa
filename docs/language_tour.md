@@ -1232,6 +1232,45 @@ val invalid = { x: Int ->
 
 To return a value from a lambda, simply use the trailing expression.
 
+### 15.6 Extension Functions
+Eiwa allows you to extend existing types (including standard types like `String`, `Int`, `List<T>` or user-defined types) with new methods without modifying their original declaration or using inheritance.
+
+Extension functions are declared by prefixing the function name with the receiver type: `fun ReceiverType.methodName(...)`. Inside the extension function, `this` refers to the receiver instance.
+
+```kotlin
+// Extending String with a custom helper
+fun String.lastChar(): String {
+    if (this.length == 0) {
+        return ""
+    }
+    return this.substring(this.length - 1, this.length)
+}
+
+// Single-expression extension function
+fun Int.squared(): Int = this * this
+
+// Extending a custom type
+type Point(val x: Int, val y: Int)
+
+fun Point.manhattanDistance(): Int = this.x + this.y
+
+fun main() {
+    val lang = "Eiwa"
+    assert(lang.lastChar() == "a")
+
+    val num = 7
+    assert(num.squared() == 49)
+
+    val p = Point(3, 4)
+    assert(p.manhattanDistance() == 7)
+}
+```
+
+#### Key Rules of Extension Functions:
+- **Static Resolution:** Extension functions are resolved statically at compile time.
+- **Member Priority:** If a member method with the exact same signature already exists on the type, the member method is called instead.
+- **Zero Overhead:** Extension function calls `receiver.extFunc(a, b)` are desugared directly into static function calls `Type_extFunc(receiver, a, b)` with `this` passed as the first parameter.
+
 ---
 
 ## 16. C Interoperability & Annotations

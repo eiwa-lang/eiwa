@@ -204,9 +204,6 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
     const line = self.previous.line;
     const col = self.previous.column;
     
-    try self.consume(.identifier, "Expected function name.");
-    const name = self.previous.lexeme;
-
     var generic_params = ArrayList([]const u8).init(self.allocator);
     if (self.match(.less)) {
         if (!self.check(.greater)) {
@@ -217,6 +214,49 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
             }
         }
         try self.consume(.greater, "Expected '>' after generic parameters.");
+    }
+
+    try self.consume(.identifier, "Expected function name.");
+    var name = self.previous.lexeme;
+    var receiver_type: ?*const ast.ASTTypeRef = null;
+
+    var generic_args = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+    if (self.match(.less)) {
+        while (true) {
+            const arg = try self.parseType();
+            try generic_args.append(arg);
+            if (!self.match(.comma)) break;
+        }
+        try self.consume(.greater, "Expected '>' after generic type arguments.");
+    }
+
+    if (self.match(.dot)) {
+        const ref = try self.allocator.create(ast.ASTTypeRef);
+        ref.* = .{
+            .name = name,
+            .generic_args = try generic_args.toOwnedSlice(),
+            .is_array = false,
+            .is_nullable = false,
+        };
+        receiver_type = ref;
+
+        try self.consume(.identifier, "Expected extension function name after '.'.");
+        name = self.previous.lexeme;
+
+        if (self.match(.less)) {
+            if (!self.check(.greater)) {
+                while (true) {
+                    try self.consume(.identifier, "Expected generic parameter name.");
+                    try generic_params.append(self.previous.lexeme);
+                    if (!self.match(.comma)) break;
+                }
+            }
+            try self.consume(.greater, "Expected '>' after generic parameters.");
+        }
+    } else {
+        for (generic_args.items) |ga| {
+            try generic_params.append(ga.name);
+        }
     }
 
     try self.consume(.l_paren, "Expected '(' after function name.");
@@ -265,8 +305,8 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
     var is_expr = false;
 
     if (self.match(.eq)) {
-        body = try self.expression();
         is_expr = true;
+        body = try self.expression();
     } else if (self.match(.l_brace)) {
         var stmts = ArrayList(*ASTNode).init(self.allocator);
         while (!self.check(.r_brace) and !self.check(.eof)) {
@@ -291,6 +331,7 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
         .body = body,
         .is_expr_body = is_expr,
         .resolved_c_name = null,
+        .receiver_type = receiver_type,
     }}, line, col);
 }
 
