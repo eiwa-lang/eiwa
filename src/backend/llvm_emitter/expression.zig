@@ -1356,6 +1356,11 @@ pub fn emitExpression(
                     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMStructTypeKind) {
                         r_val = llvm.LLVMBuildExtractValue(builder, r_val, 0, "r_data");
                     }
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMIntegerTypeKind) {
+                        l_val = llvm.LLVMBuildPtrToInt(builder, l_val, llvm.LLVMTypeOf(r_val), "l_int");
+                    } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
+                        r_val = llvm.LLVMBuildPtrToInt(builder, r_val, llvm.LLVMTypeOf(l_val), "r_int");
+                    }
                     {
                         var eq_class: ?[]const u8 = null;
                         if (customEqualsClass(bin.left, mod)) |cn| {
@@ -1403,6 +1408,11 @@ pub fn emitExpression(
                     }
                     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMStructTypeKind) {
                         r_val = llvm.LLVMBuildExtractValue(builder, r_val, 0, "r_data");
+                    }
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMIntegerTypeKind) {
+                        l_val = llvm.LLVMBuildPtrToInt(builder, l_val, llvm.LLVMTypeOf(r_val), "l_int");
+                    } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
+                        r_val = llvm.LLVMBuildPtrToInt(builder, r_val, llvm.LLVMTypeOf(l_val), "r_int");
                     }
                     {
                         var eq_class: ?[]const u8 = null;
@@ -2211,7 +2221,7 @@ pub fn emitExpression(
             // malloc + strlen + sprintf formatting.
             if (call.callee.data == .get_expr) {
                 const g = call.callee.data.get_expr;
-                var obj_rt_opt = g.object.resolved_type orelse blk: {
+                const obj_rt_opt = g.object.resolved_type orelse blk: {
                     if (g.object.resolved_type) |irt| {
                         break :blk irt;
                     }
@@ -2264,22 +2274,6 @@ pub fn emitExpression(
                     break :blk null;
                 };
 
-                const static_string_type = struct {
-                    const t = ts.EiwaType{ .String = {} };
-                };
-                const is_known_string_method = std.mem.eql(u8, g.name, "indexOf") or
-                    std.mem.eql(u8, g.name, "contains") or
-                    std.mem.eql(u8, g.name, "replace") or
-                    std.mem.eql(u8, g.name, "substring") or
-                    std.mem.eql(u8, g.name, "plus") or
-                    std.mem.eql(u8, g.name, "charAt") or
-                    std.mem.eql(u8, g.name, "toLowerCase") or
-                    std.mem.eql(u8, g.name, "toUpperCase") or
-                    std.mem.eql(u8, g.name, "toDouble");
-
-                if (obj_rt_opt == null and is_known_string_method) {
-                    obj_rt_opt = &static_string_type.t;
-                }
 
                 if (std.mem.eql(u8, g.name, "plus")) {
                     if (obj_rt_opt) |obj_rt| {
@@ -3401,47 +3395,54 @@ pub fn emitExpression(
                                 subj_data = llvm.LLVMBuildExtractValue(builder, subj_load, 0, "when_subj_data");
                                 subj_vtable = llvm.LLVMBuildExtractValue(builder, subj_load, 1, "when_subj_vtable");
                             }
-                            const subj_int = if (subj_is_fat)
-                                llvm.LLVMConstInt(i64_type, 0, 0)
-                            else
-                                llvm.LLVMBuildPtrToInt(builder, subj_load, i64_type, "when_subj_int");
                             const i1_false = llvm.LLVMConstInt(i1_type, 0, 0);
                             const i1_true = llvm.LLVMConstInt(i1_type, 1, 0);
+                            const subj_int = llvm.LLVMBuildPtrToInt(builder, subj_data, i64_type, "when_subj_int");
+                            const is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGE, subj_int, llvm.LLVMConstInt(i64_type, 4096, 0), "is_heap");
+                            const is_non_null = llvm.LLVMBuildIsNotNull(builder, subj_data, "is_non_null");
+                            const is_small = llvm.LLVMBuildAnd(builder, is_non_null, llvm.LLVMBuildNot(builder, is_heap, "not_heap"), "is_small");
+
                             var is_match: llvm.LLVMValueRef = undefined;
                             if (std.mem.endsWith(u8, target_c_name, "Stringable") or std.mem.endsWith(u8, target_c_name, "Equatable") or std.mem.endsWith(u8, target_c_name, "Hashable") or std.mem.endsWith(u8, target_c_name, "Echoable")) {
                                 is_match = i1_true;
                             } else if (std.mem.eql(u8, target_c_name, "core_Null") or std.mem.eql(u8, target_c_name, "Null")) {
                                 is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_data, llvm.LLVMConstNull(ptr_type), "when_is_null");
                             } else if (std.mem.eql(u8, target_c_name, "Int") or std.mem.eql(u8, target_c_name, "core_Int") or std.mem.eql(u8, target_c_name, "std_core_Int") or std.mem.eql(u8, target_c_name, "core_Double") or std.mem.eql(u8, target_c_name, "Double")) {
-                                is_match = if (subj_is_fat) i1_false else llvm.LLVMBuildICmp(builder, llvm.LLVMIntULT, subj_int, llvm.LLVMConstInt(i64_type, 0x1000000, 0), "when_is_small");
+                                is_match = if (subj_is_fat) i1_false else is_small;
                             } else if (std.mem.eql(u8, target_c_name, "Bool") or std.mem.eql(u8, target_c_name, "core_Bool") or std.mem.eql(u8, target_c_name, "std_core_Bool")) {
-                                is_match = if (subj_is_fat) i1_false else llvm.LLVMBuildICmp(builder, llvm.LLVMIntULE, subj_int, llvm.LLVMConstInt(i64_type, 1, 0), "when_is_bool");
+                                is_match = if (subj_is_fat) i1_false else is_small;
                             } else if (std.mem.eql(u8, target_c_name, "String") or std.mem.eql(u8, target_c_name, "core_String") or std.mem.eql(u8, target_c_name, "std_core_String")) {
                                 if (subj_is_fat) {
                                     is_match = i1_false;
                                 } else {
-                                    // In union expressions, a String payload is distinguished
-                                    // from a scalar (< 0x1000000) by its heap pointer and
-                                    // zeroed header pad.
-                                    const is_heap_ptr = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGT, subj_int, llvm.LLVMConstInt(i64_type, 0x1000000, 0), "is_heap");
                                     const dummy_arr_t = llvm.LLVMArrayType2(i64_type, 2);
                                     const dummy_alloc = llvm.LLVMBuildAlloca(builder, dummy_arr_t, "dummy_str_check");
                                     _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(dummy_arr_t), dummy_alloc);
-                                    const safe_val = llvm.LLVMBuildSelect(builder, is_heap_ptr, subj_data, dummy_alloc, "safe_val_ptr");
+                                    const safe_val = llvm.LLVMBuildSelect(builder, is_heap, subj_data, dummy_alloc, "safe_val_ptr");
 
                                     var f0_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
                                     const f0_ptr = llvm.LLVMBuildGEP2(builder, ptr_type, safe_val, &f0_idx, 1, "f0_ptr");
                                     const f0_val = llvm.LLVMBuildLoad2(builder, ptr_type, f0_ptr, "f0_val");
                                     const f0_int = llvm.LLVMBuildPtrToInt(builder, f0_val, i64_type, "f0_int");
-                                    const f0_is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGT, f0_int, llvm.LLVMConstInt(i64_type, 0x1000000, 0), "f0_is_heap");
+                                    const f0_is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGE, f0_int, llvm.LLVMConstInt(i64_type, 4096, 0), "f0_is_heap");
 
-                                    const safe_f0 = llvm.LLVMBuildSelect(builder, f0_is_heap, f0_val, dummy_alloc, "safe_f0");
                                     var f1_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
-                                    const f0_f1_ptr = llvm.LLVMBuildGEP2(builder, i64_type, safe_f0, &f1_idx, 1, "f0_f1_ptr");
-                                    const f0_f1_val = llvm.LLVMBuildLoad2(builder, i64_type, f0_f1_ptr, "f0_f1_val");
-                                    const f0_f1_zero = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, f0_f1_val, llvm.LLVMConstInt(i64_type, 0, 0), "f0_f1_zero");
+                                    const f1_ptr = llvm.LLVMBuildGEP2(builder, i64_type, safe_val, &f1_idx, 1, "f1_ptr");
+                                    const f1_val = llvm.LLVMBuildLoad2(builder, i64_type, f1_ptr, "f1_val");
 
-                                    is_match = llvm.LLVMBuildAnd(builder, is_heap_ptr, f0_f1_zero, "is_str_res");
+                                    const strlen_func = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
+                                        var ps = [_]llvm.LLVMTypeRef{ptr_type};
+                                        const ft = llvm.LLVMFunctionType(i64_type, &ps, 1, 0);
+                                        break :blk llvm.LLVMAddFunction(mod, "strlen", ft);
+                                    };
+                                    const strlen_type = llvm.LLVMGlobalGetValueType(strlen_func);
+                                    const safe_buf = llvm.LLVMBuildSelect(builder, f0_is_heap, f0_val, dummy_alloc, "safe_buf");
+                                    var sl_args = [_]llvm.LLVMValueRef{safe_buf};
+                                    const calc_len = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sl_args, 1, "str_check_len");
+                                    const len_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, calc_len, f1_val, "len_eq");
+
+                                    const is_valid_str = llvm.LLVMBuildAnd(builder, f0_is_heap, len_eq, "is_valid_str");
+                                    is_match = llvm.LLVMBuildAnd(builder, is_heap, is_valid_str, "is_str_res");
                                 }
                             } else if (subj_is_fat) {
                                 // Custom type from a contract subject: match by vtable
@@ -3482,7 +3483,7 @@ pub fn emitExpression(
                                     is_match = i1_false;
                                 }
                             } else {
-                                is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGE, subj_int, llvm.LLVMConstInt(i64_type, 0x1000000, 0), "when_is_custom");
+                                is_match = llvm.LLVMBuildIsNotNull(builder, subj_data, "when_is_custom");
                             }
                             if (type_cond.is_not) {
                                 is_match = llvm.LLVMBuildNot(builder, is_match, "when_is_not");
@@ -3683,20 +3684,11 @@ pub fn emitExpression(
                 const data_ptr = llvm.LLVMBuildExtractValue(builder, val, 0, "is_data_ptr");
 
                 if (is_target_int or is_target_bool or is_target_double) {
-                    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                    const data_int = llvm.LLVMBuildPtrToInt(builder, data_ptr, i64_type, "data_int");
-                    const threshold = llvm.LLVMConstInt(i64_type, 0x1000000, 0);
-                    const not_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntULE, data_int, threshold, "not_heap");
                     const vtable_is_null = llvm.LLVMBuildIsNull(builder, exc_vtable, "vt_null");
                     const data_is_not_null = llvm.LLVMBuildIsNotNull(builder, data_ptr, "data_not_null");
-                    const is_int1 = llvm.LLVMBuildAnd(builder, vtable_is_null, data_is_not_null, "is_prim1");
-                    res = llvm.LLVMBuildAnd(builder, is_int1, not_heap, "is_primitive_res");
+                    res = llvm.LLVMBuildAnd(builder, vtable_is_null, data_is_not_null, "is_primitive_res");
                 } else if (is_target_str) {
-                    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                    const data_int = llvm.LLVMBuildPtrToInt(builder, data_ptr, i64_type, "data_int");
-                    const threshold = llvm.LLVMConstInt(i64_type, 0x1000000, 0);
-                    const is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGT, data_int, threshold, "is_heap");
-                    res = is_heap;
+                    res = llvm.LLVMBuildIsNotNull(builder, data_ptr, "is_str_res");
                 } else if (target_c_name.len > 0) {
                     var target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, "Throwable");
                     if (target_vt_opt == null) {
@@ -3719,16 +3711,11 @@ pub fn emitExpression(
                         const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                         const vt_cast = llvm.LLVMBuildPointerCast(builder, target_vt, ptr_type, "target_vt_cast");
                         const data_not_null = llvm.LLVMBuildIsNotNull(builder, data_ptr, "data_not_null");
-                        const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                        const data_int = llvm.LLVMBuildPtrToInt(builder, data_ptr, i64_type, "data_int");
-                        const threshold = llvm.LLVMConstInt(i64_type, 0x1000000, 0);
-                        const is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGT, data_int, threshold, "is_heap");
                         const obj_vt = llvm.LLVMBuildLoad2(builder, ptr_type, data_ptr, "obj_vt");
                         const vt_eq1 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, exc_vtable, vt_cast, "vt_eq1");
                         const vt_eq2 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, obj_vt, vt_cast, "vt_eq2");
                         const vt_eq = llvm.LLVMBuildOr(builder, vt_eq1, vt_eq2, "vt_eq_or");
-                        const match1 = llvm.LLVMBuildAnd(builder, data_not_null, is_heap, "match1");
-                        res = llvm.LLVMBuildAnd(builder, match1, vt_eq, "is_vtable_eq");
+                        res = llvm.LLVMBuildAnd(builder, data_not_null, vt_eq, "is_vtable_eq");
                     } else {
                         res = llvm.LLVMBuildIsNotNull(builder, data_ptr, "is_not_null_cmp");
                     }
@@ -3745,35 +3732,44 @@ pub fn emitExpression(
                     }
                 } else if (val_kind == llvm.LLVMPointerTypeKind) {
                     const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                     const ptr_int = llvm.LLVMBuildPtrToInt(builder, val, i64_type, "ptr_int");
-                    const threshold = llvm.LLVMConstInt(i64_type, 0x1000000, 0);
-                    const is_heap_ptr = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGT, ptr_int, threshold, "is_heap");
+                    const is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGE, ptr_int, llvm.LLVMConstInt(i64_type, 4096, 0), "is_heap");
+                    const not_null = llvm.LLVMBuildIsNotNull(builder, val, "not_null");
                     if (is_target_int or is_target_bool or is_target_double) {
-                        const not_heap = llvm.LLVMBuildNot(builder, is_heap_ptr, "not_heap");
-                        const not_null = llvm.LLVMBuildIsNotNull(builder, val, "not_null");
-                        res = llvm.LLVMBuildAnd(builder, not_heap, not_null, "is_int_res");
+                        const not_heap = llvm.LLVMBuildNot(builder, is_heap, "not_heap");
+                        res = llvm.LLVMBuildAnd(builder, not_heap, not_null, "is_prim_res");
                     } else if (is_target_str) {
+                        const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                         const dummy_arr_t = llvm.LLVMArrayType2(i64_type, 2);
                         const dummy_alloc = llvm.LLVMBuildAlloca(builder, dummy_arr_t, "dummy_str_check");
                         _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(dummy_arr_t), dummy_alloc);
-                        const safe_val = llvm.LLVMBuildSelect(builder, is_heap_ptr, val, dummy_alloc, "safe_val_ptr");
+                        const safe_val = llvm.LLVMBuildSelect(builder, is_heap, val, dummy_alloc, "safe_val_ptr");
 
                         var f0_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
                         const f0_ptr = llvm.LLVMBuildGEP2(builder, ptr_type, safe_val, &f0_idx, 1, "f0_ptr");
                         const f0_val = llvm.LLVMBuildLoad2(builder, ptr_type, f0_ptr, "f0_val");
                         const f0_int = llvm.LLVMBuildPtrToInt(builder, f0_val, i64_type, "f0_int");
-                        const f0_is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGT, f0_int, llvm.LLVMConstInt(i64_type, 0x1000000, 0), "f0_is_heap");
+                        const f0_is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGE, f0_int, llvm.LLVMConstInt(i64_type, 4096, 0), "f0_is_heap");
 
-                        const safe_f0 = llvm.LLVMBuildSelect(builder, f0_is_heap, f0_val, dummy_alloc, "safe_f0");
                         var f1_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
-                        const f0_f1_ptr = llvm.LLVMBuildGEP2(builder, i64_type, safe_f0, &f1_idx, 1, "f0_f1_ptr");
-                        const f0_f1_val = llvm.LLVMBuildLoad2(builder, i64_type, f0_f1_ptr, "f0_f1_val");
-                        const f0_f1_zero = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, f0_f1_val, llvm.LLVMConstInt(i64_type, 0, 0), "f0_f1_zero");
+                        const f1_ptr = llvm.LLVMBuildGEP2(builder, i64_type, safe_val, &f1_idx, 1, "f1_ptr");
+                        const f1_val = llvm.LLVMBuildLoad2(builder, i64_type, f1_ptr, "f1_val");
 
-                        res = llvm.LLVMBuildAnd(builder, is_heap_ptr, f0_f1_zero, "is_str_res");
+                        const strlen_func = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
+                            var ps = [_]llvm.LLVMTypeRef{ptr_type};
+                            const ft = llvm.LLVMFunctionType(i64_type, &ps, 1, 0);
+                            break :blk llvm.LLVMAddFunction(mod, "strlen", ft);
+                        };
+                        const strlen_type = llvm.LLVMGlobalGetValueType(strlen_func);
+                        const safe_buf = llvm.LLVMBuildSelect(builder, f0_is_heap, f0_val, dummy_alloc, "safe_buf");
+                        var sl_args = [_]llvm.LLVMValueRef{safe_buf};
+                        const calc_len = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sl_args, 1, "str_check_len");
+                        const len_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, calc_len, f1_val, "len_eq");
+
+                        const is_valid_str = llvm.LLVMBuildAnd(builder, f0_is_heap, len_eq, "is_valid_str");
+                        res = llvm.LLVMBuildAnd(builder, is_heap, is_valid_str, "is_str_res");
                     } else {
-                        res = llvm.LLVMBuildIsNotNull(builder, val, "is_not_null_cmp");
+                        res = not_null;
                     }
                 } else {
                     res = llvm.LLVMBuildIsNotNull(builder, val, "is_not_null_cmp");

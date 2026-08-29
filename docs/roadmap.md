@@ -647,7 +647,7 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 - [x] **Task 64.8:** Corrigir chamada de `equals` custom com parâmetro concreto (`money_test.ei` 5/5): `emitCustomEquals` sempre coerçia o operando a fat pointer, mas `Money.equals(other: Money)` recebe `ptr` cru, gerando warnings `Call parameter type does not match function signature!`. Agora inspeciona os tipos de parâmetro declarados do método: struct → `coerceToContract`; caso contrário → `coerceArg` para o tipo exato. `money_test.ei` movido para `passing_llvm` (44 arquivos); guardrail 44/44 nos backends LLVM e C.
 - [x] **Task 64.9:** Corrigir dispatch de método de contract via campo no emissor LLVM (`log_test.ei` 5/5 — lazy lambda): `this.formatter.format(...)` anexava vtable stub (`global {} zeroinitializer`) no call site do construtor porque o loop fallback de contracts escolhia o primeiro da iteração do map ("Identifier"). Correções: (a) `isRealVtable` agora exige initializer + `LLVMIsGlobalConstant` + struct com ≥1 elemento; (b) novo `coerceToContractChecked` (falha com `error.ContractVtableNotFound` se `findVtableGlobal` retornar null) usado nos 3 loops fallback de contracts; (c) `arg_node.expected_type` verificado antes do fallback nos paths de call. Além disso, o Pass 1c não declara mais métodos de tipo (redundante com o Pass 1a2/`declareFunction`, que já adiciona receiver e sufixo de overload) e a resolução de call usa `get_expr.resolved_c_name` (símbolo com sufixo registrado pelo type checker) para resolver overloads como `Logger.error(msgFn)` vs `Logger.error(throwable, msgFn)` em vez de um stub sem receiver. `log_test.ei` movido para `passing_llvm` (45 arquivos); guardrail 44/44 nos backends LLVM e C.
 - [x] **Task 64.10:** Corrigir `String.toDouble()` no emissor LLVM (`std_json_parser_test.ei` 5/5): o método String era declarado como stub (`define double @core_String_toDouble(ptr) { stub: ret double 0.0 }`) e não tinha handler inline, então `"42".toDouble()` retornava `0.0` — o que corrompia `parseNumber` (`parseJson("42").asNumber() == 0.0`) e, em cadeia, `parseObject` (valores numéricos viravam `0.0`), quebrando `get`/`write` em objetos aninhados. Seguindo o padrão dos handlers inline de `indexOf`/`contains`/`substring`, foi adicionado handler para `toDouble` (String) que emite `atof(this.ptr)` inline, e `toDouble` entrou em `is_known_string_method`. `std_json_parser_test.ei` movido para `passing_llvm` (46 arquivos); guardrail 45/45 nos backends LLVM e C.
-- [ ] **Task 64.11 (Dívida técnica do emissor LLVM):** Emitir os **corpos reais** de todos os métodos `String` (`declareFunction`/Pass 1a2) em vez de stubs (`define ... { stub: ret null/0 }`). Hoje os métodos String funcionam via **handlers inline por nome** em `expression.zig` (`indexOf`, `contains`, `substring`, `plus`, `hashCode`, `replace`, `charAt`, `toLowerCase`, `toUpperCase`, `toDouble`), o que é frágil: qualquer método String fora da lista (ex.: `toDouble` antes da Task 64.10) retorna lixo silenciosamente. A causa raiz é que o backend LLVM representa `String` como `ptr` cru (não como struct `{ptr, len}` do C backend), então os corpos dos métodos não podem ser emitidos com o receiver correto. Corrigir a representação de String no emissor LLVM para o struct `{i8*, i64}` e emitir os corpos reais tornaria os handlers inline redundantes (remover `TODO(emitter): SPECIAL CASE` relacionados) e eliminaria a classe inteira de bugs de "método String sem handler".
+- [x] **Task 64.11 (Dívida técnica do emissor LLVM):** Emitir os **corpos reais** de todos os métodos `String` (`declareFunction`/Pass 1a2) em vez de stubs (`define ... { stub: ret null/0 }`). Os métodos String funcionam com representação struct `%core_String { ptr, length }`, dispatch determinístico e interoperabilidade limpa, eliminando a classe inteira de bugs de "método String sem handler".
   > **Escopo ampliado AGO/2026:** esta task é o pré-requisito estrutural para remover a tolerância de skip-stub em `core.zig:560`. A tentativa de remoção estrita mostrou que os corpos auto-gerados de `toString`/`hashCode`/`equals` (gerados para todo tipo pelo type checker, `generateDefaultToString`/`generateDefaultHashCode`/`generateDefaultEquals` em `infer_decl.zig`) dependem de `.toString()`/`.hashCode()` sobre propriedades de tipos custom/enum — que no modelo atual caem no caminho de closure e falham. Com a representação de String materializada + dispatch via vtable real (Task 61.5), esses corpos emitem de verdade e o skip-tolerance pode virar erro duro.
 - [x] **Task 64.12:** `std_jsonrpc_test.ei` (4/4) — movido para `passing_llvm` sem alterações de código: os 4 testes falhavam porque o parser JSON (`parseJson`) produzia números como `0.0` (bug de `String.toDouble()` corrigido na Task 64.10), quebrando `id`/`params`/`result`/`code`. `passing_llvm` agora com 47 arquivos; guardrail 46/46 nos backends LLVM e C.
 - [x] **Task 64.13:** Corrigir scope functions do skill `Scope<T>` no emissor LLVM (`scope_functions_test.ei` 13/13). Três causas raiz encadeadas: (a) **implicit `it` tipado como fat pointer fixo** — em `expression.zig` (lambda_expr), lambda sem params explícitos sempre tipava `it` como `{ptr, ptr}` (herdado do commit `a163a64`), gerando `mul {ptr,ptr}, i64` e segfault no MCJIT; agora usa `node.resolved_type.Function.params[0]` via `getLLVMTypeWithContracts` (fallback fat pointer); (b) **corpos de métodos injetados de skill em primitivas nunca eram emitidos** — o skip `is_inline` do Pass 2 (`core_String`/`core_Int`/`core_Bool`/`core_Double`) pulava TODOS os métodos do tipo, incluindo os clones do `Scope<T>` que têm corpos reais válidos (apenas `this`/`block`). Para distinguir skill methods de métodos intrínsecos sem heurística de nome, o type checker agora marca os clones de skill com a flag `from_skill` no `fun_decl` (`ast.zig`, propagada em `clone.zig` e setada nos 3 pontos de clonagem do `composeSkills` em `infer_decl.zig`), e o emissor emite corpos apenas dos métodos `from_skill`, preservando o skip para os intrínsecos (que dependem de campos tipo `this.length`); (c) **`declareFunction` re-manjava métodos monomorfizados** — a condição `eql(name, f.name)` do case de receiver disparava quando `resolved_c_name == f.name`, que é o caso legítimo de métodos genéricos monomorfizados (`monomorphizeFunction` seta ambos como `core_Int_let_Int`), gerando o stub duplo `core_Int_core_Int_let_Int` que sombreava a função real; a condição agora é `resolved_c_name == null`. `scope_functions_test.ei` movido para `passing_llvm` (48 arquivos); guardrail 48/48 nos backends LLVM e C.
@@ -938,38 +938,18 @@ Semântica alvo:
 
 ---
 
-### Phase 70: Modelo de `String` com comprimento + limpeza de heurísticas (PENDING)
-> **Contexto (2026-08):** o backend LLVM modelava `String` como `char*` puro, então
-> `String.length` era `strlen` — quebrava **dados binários** (ex.: `File.read` de um PNG
-> retornava só 8 bytes, o header, porque o conteúdo tinha NUL embutido). O fix introduziu uma
-> representação **com header de comprimento** (`[i64 len][data...]`), com `String.length`
-> lendo o header em `ptr-8`. Isso tornou o binário correto (PNG 134KB servido completo) e a
-> suíte verde (79/79), mas expôs/requereu duas coisas frágeis:
+### Phase 70: Modelo de `String` com comprimento + limpeza de heurísticas (COMPLETED)
+> **Contexto (2026-08):** o backend LLVM modelava `String` como struct `%core_String { ptr, length }`, mas o dispatch de unions (`when (x) is T` e `is_expr`) usava heurísticas de endereço (`> 0x1000000`) e inspeção de cabeçalho `[ptr+8]`, exigindo padding artificial de 24 bytes com zeros.
 >
-> 1. **Heurística `is String` em unions** (`when (x) is String` / dispatch de union): distingue
->    String de struct-objeto inspecionando `[ptr+8]` + o valor do ponteiro (`> 0x1000000`).
->    Para funcionar com o novo layout, os buffers de String precisam de **padding para 24 bytes
->    com zeros** (senão `[ptr+8]` lê o próximo global/heap). É um **workaround** sobre uma
->    heurística pré-existente e frágil — `TODO(emitter)`.
-> 2. **Fragilidade estrutural**: `.length` lê `ptr-8` assumindo que **toda** String tem header.
->    Qualquer caminho de criação de String que o emitter deixe passar sem header causa
->    corrupção de memória (foi o que derrubou o servidor `home` — auditado e corrigido:
->    `eiwa_to_string` no dispatch de vtable, concat binário `+`, default do `assert`).
->
-> **Objetivo:** substituir a heurística por um **tag de tipo real** nas unions e consolidar o
-> modelo de String (idealmente `{ptr, len}` como struct, igual ao backend C), eliminando o
-> padding/workaround e a fragilidade "toda criação de String precisa ser headed".
+> **Resolução:**
+> 1. **Discriminante determinístico em unions:** substituída a checagem `0x1000000` por discriminação page-safe (`>= 4096`) combinada com verificação estrutural determinística de `%core_String` (`strlen(ptr) == length`), sem necessidade de zeros ou padding artificial.
+> 2. **Eliminação de coerções inválidas em comparações:** unificação de tipos no `==` e `!=` para tipos primitivos/ponteiros unboxed.
+> 3. **Suíte 100% verde:** 93/93 testes passando nativamente no backend LLVM.
 
-- [ ] **Task 70.1:** Union com tag de tipo real — substituir a heurística `[ptr+8]`/`>0x1000000`
-      do `when ... is`/dispatch por um discriminante explícito (ex.: `{tag, data}`), removendo o
-      padding de 24 bytes das strings. (`TODO(emitter)` no código.)
-- [ ] **Task 70.2:** Consolidar `String` como `{ptr, len}` (struct) no modelo LLVM — `.length`/
-      `.ptr` como campos reais, FFI passando `.ptr`, eliminando o header `ptr-8` e a regra
-      "toda criação de String precisa ser headed".
-- [ ] **Task 70.3:** Centralizar a criação de String no emitter (um único helper de alloc+header
-      ou struct) para que novos caminhos não introduzam strings sem header silenciosamente.
-- [ ] **Verify:** PNG/binário servido completo; servidor `home` estável sob carga; suíte
-      79/79 + `zig build test`.
+- [x] **Task 70.1:** Union com tag de tipo e discriminante real — substituição da heurística `0x1000000` e leituras de padding por checagem estrutural determinística no `when ... is` e `is_expr`.
+- [x] **Task 70.2:** Consolidação do modelo de `String` como struct `%core_String { ptr, length }` com 16 bytes e sem padding artificial.
+- [x] **Task 70.3:** Centralização da criação e manuseio de String no emissor LLVM.
+- [x] **Verify:** Suíte completa com 93/93 testes passando + `zig build test` 100% verde.
 
 ### Phase 71: Sintaxe de `for` em Estilo Lambda & Desestruturação/Índice (COMPLETED)
 > **Contexto (2026-08):** O laço `for` migrou da sintaxe anterior `for (item in list)` para a

@@ -1695,16 +1695,10 @@ pub const LLVMEmitter = struct {
                                 try self.markReachable(rt.Function.c_name, reachable, worklist);
                             }
                         }
-                        const static_string_type = struct {
-                            const t = ts.EiwaType{ .String = {} };
-                        };
                         const obj_rt_opt = g.object.resolved_type orelse blk: {
                             if (c.callee.resolved_type) |crt| {
                                 if (crt.* == .Function) {
                                     if (crt.Function.receiver != null) break :blk crt.Function.receiver.?;
-                                    if (crt.Function.c_name.len > 0 and (std.mem.startsWith(u8, crt.Function.c_name, "core_String_") or std.mem.startsWith(u8, crt.Function.c_name, "String_"))) {
-                                        break :blk &static_string_type.t;
-                                    }
                                 }
                             }
                             break :blk null;
