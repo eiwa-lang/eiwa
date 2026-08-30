@@ -871,6 +871,11 @@ fun compilerCommand(cmd: String) {
     if (hasFlag(args, "--release")) {
         extraFlags = extraFlags + " --release"
     }
+    // Run via the AOT binary cache (build-if-stale + exec) instead of the JIT:
+    // warm runs cost ~0.01s. See docs/perf-plan-incremental-cache.md.
+    if (cmd == "run") {
+        extraFlags = extraFlags + " --aot"
+    }
     val targetVal = optionValue(args, "--target")
     if (targetVal != null) {
         extraFlags = extraFlags + " --target " + targetVal!!
