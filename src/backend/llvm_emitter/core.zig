@@ -522,7 +522,12 @@ pub const LLVMEmitter = struct {
                     defer self.allocator.free(var_name_z);
                     if (llvm.LLVMGetNamedGlobal(mod, var_name_z.ptr) == null) {
                         const global = llvm.LLVMAddGlobal(mod, llvm_type, var_name_z.ptr);
-                        llvm.LLVMSetInitializer(global, llvm.LLVMConstNull(llvm_type));
+                        const const_init = if (v.initializer) |ie| tryGetConstLLVMValue(ie, llvm_type) else null;
+                        if (const_init) |ci| {
+                            llvm.LLVMSetInitializer(global, ci);
+                        } else {
+                            llvm.LLVMSetInitializer(global, llvm.LLVMConstNull(llvm_type));
+                        }
                     }
                 }
             }
@@ -1437,6 +1442,26 @@ pub const LLVMEmitter = struct {
         }
     }
 
+    fn tryGetConstLLVMValue(node: *ast.ASTNode, llvm_type: llvm.LLVMTypeRef) ?llvm.LLVMValueRef {
+        return switch (node.data) {
+            .int_literal => |val| llvm.LLVMConstInt(llvm_type, @bitCast(val), 1),
+            .bool_literal => |val| llvm.LLVMConstInt(llvm_type, if (val) 1 else 0, 0),
+            .double_literal => |val| llvm.LLVMConstReal(llvm_type, val),
+            .null_literal => llvm.LLVMConstNull(llvm_type),
+            .unary_expr => |u| {
+                if (u.operator == .minus and u.operand.data == .int_literal) {
+                    return llvm.LLVMConstInt(llvm_type, @bitCast(-u.operand.data.int_literal), 1);
+                } else if (u.operator == .minus and u.operand.data == .double_literal) {
+                    return llvm.LLVMConstReal(llvm_type, -u.operand.data.double_literal);
+                } else if (u.operator == .bang and u.operand.data == .bool_literal) {
+                    return llvm.LLVMConstInt(llvm_type, if (u.operand.data.bool_literal) 0 else 1, 0);
+                }
+                return null;
+            },
+            else => null,
+        };
+    }
+
     fn emitObjectInitializers(
         self: *LLVMEmitter,
         mod: llvm.LLVMModuleRef,
@@ -1453,9 +1478,17 @@ pub const LLVMEmitter = struct {
             if (m.data != .program) continue;
             for (m.data.program.statements) |stmt| {
                 if (stmt.data != .object_decl) continue;
+                if (!self.matchesTarget(stmt.data.object_decl.platform_targets)) continue;
                 for (stmt.data.object_decl.members) |member| {
                     if (member.data == .var_decl and member.data.var_decl.initializer != null) {
-                        total_vars += 1;
+                        const v = member.data.var_decl;
+                        const llvm_type = if (member.resolved_type) |rt|
+                            types_mapping.getLLVMType(self.context, rt.*)
+                        else
+                            llvm.LLVMInt64TypeInContext(self.context);
+                        if (tryGetConstLLVMValue(v.initializer.?, llvm_type) == null) {
+                            total_vars += 1;
+                        }
                     }
                 }
             }
@@ -1477,11 +1510,17 @@ pub const LLVMEmitter = struct {
             for (m.data.program.statements) |stmt| {
                 if (stmt.data != .object_decl) continue;
                 const obj = stmt.data.object_decl;
+                if (!self.matchesTarget(obj.platform_targets)) continue;
                 const obj_c_name = obj.resolved_c_name orelse (obj.name orelse "Object");
                 for (obj.members) |member| {
                     if (member.data != .var_decl) continue;
                     const v = member.data.var_decl;
                     const init_expr = v.initializer orelse continue;
+                    const llvm_type = if (member.resolved_type) |rt|
+                        types_mapping.getLLVMType(self.context, rt.*)
+                    else
+                        llvm.LLVMInt64TypeInContext(self.context);
+                    if (tryGetConstLLVMValue(init_expr, llvm_type) != null) continue;
                     const var_name = if (v.resolved_c_name) |rcn| rcn else try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ obj_c_name, v.name });
                     defer if (v.resolved_c_name == null) self.allocator.free(var_name);
                     const var_name_z = try self.allocator.dupeZ(u8, var_name);
