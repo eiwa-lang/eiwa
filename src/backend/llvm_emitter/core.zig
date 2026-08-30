@@ -3371,7 +3371,28 @@ pub const LLVMEmitter = struct {
     }
 
     /// Direct native binary emission using LLVMTargetMachineEmitToFile.
+    /// Thin wrapper: emit the module to a temp object file, then link.
+    /// (Split into emitObjectFile/linkObjects for the incremental cache —
+    /// see docs/perf-plan-incremental-cache.md, Phase A2.)
     pub fn emitNativeBinary(self: *LLVMEmitter, output_filename: []const u8, io: std.Io) !void {
+        const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
+        const obj_ext = if (is_windows) "obj" else "o";
+        // Unique per process so concurrent eiwac runs in the same directory
+        // (e.g. two `eiwa run` builds) never collide on the temp object.
+        const obj_filename = try std.fmt.allocPrint(self.allocator, "temp_llvm_{d}.{s}", .{ std.c.getpid(), obj_ext });
+        defer self.allocator.free(obj_filename);
+
+        try self.emitObjectFile(obj_filename);
+        defer std.Io.Dir.cwd().deleteFile(io, obj_filename) catch {};
+
+        const obj_paths = [_][]const u8{obj_filename};
+        try self.linkObjects(&obj_paths, output_filename, io);
+    }
+
+    /// Emits the current LLVM module to an object file at `obj_path`
+    /// (verify → optimize → codegen). The module is mutated by the pass
+    /// pipeline, so call at most once per module.
+    pub fn emitObjectFile(self: *LLVMEmitter, obj_path: []const u8) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         try self.collectUsedLibAnnotations();
 
@@ -3455,10 +3476,7 @@ pub const LLVMEmitter = struct {
         // Run passes
         try self.optimizeModule(target_machine);
 
-        // Emit object file directly from RAM to temp object
-        const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
-        const obj_filename = if (is_windows) "temp_llvm.obj" else "temp_llvm.o";
-        const obj_z = try self.allocator.dupeZ(u8, obj_filename);
+        const obj_z = try self.allocator.dupeZ(u8, obj_path);
         defer self.allocator.free(obj_z);
 
         if (llvm.LLVMTargetMachineEmitToFile(target_machine, mod, obj_z.ptr, llvm.LLVMObjectFile, &err_msg) != 0) {
@@ -3468,11 +3486,13 @@ pub const LLVMEmitter = struct {
             }
             return error.LLVMEmitObjectFailed;
         }
-        defer std.Io.Dir.cwd().deleteFile(io, obj_filename) catch {};
+    }
 
-        // Link object file into native binary. Prefers the system C compiler
-        // (no zig required at runtime); falls back to `zig cc` when no system
-        // compiler is on PATH or when cross-compiling.
+    /// Links object files into a native binary. Prefers the system C compiler
+    /// (no zig required at runtime); falls back to `zig cc` when no system
+    /// compiler is on PATH or when cross-compiling.
+    pub fn linkObjects(self: *LLVMEmitter, obj_paths: []const []const u8, output_filename: []const u8, io: std.Io) !void {
+        const is_host = if (self.target_info) |ti| ti.is_host else true;
         const link_driver = self.pickLinkDriver(io);
         var cc_argv = ArrayList([]const u8).init(self.allocator);
         defer cc_argv.deinit();
@@ -3489,11 +3509,8 @@ pub const LLVMEmitter = struct {
             const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
             try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
         }
-        try cc_argv.appendSlice(&[_][]const u8{
-            obj_filename,
-            "-o",
-            output_filename,
-        });
+        for (obj_paths) |p| try cc_argv.append(p);
+        try cc_argv.appendSlice(&[_][]const u8{ "-o", output_filename });
         if (is_host or prefer_gc_alloc) {
             try cc_argv.append("-lgc");
         }
