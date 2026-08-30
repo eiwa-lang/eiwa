@@ -125,6 +125,11 @@ pub fn getJmpBufWords(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) usize {
     };
 }
 
+pub const LibDeclEntry = struct {
+    lib_node: *ast.ASTNode,
+    module_path: ?[]const u8,
+};
+
 pub const LLVMEmitter = struct {
     allocator: std.mem.Allocator,
     context: llvm.LLVMContextRef,
@@ -147,6 +152,8 @@ pub const LLVMEmitter = struct {
     classes_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
     /// Build requirements declared by `lib` annotations (@Source/@Include/@Define/@Link),
     /// mirroring the C transpiler (Phase 65 — LLVM backend compiles the C sources too).
+    lib_declarations: std.StringHashMap(LibDeclEntry),
+    used_libs: std.StringHashMap(void),
     c_sources: std.StringHashMap(void),
     c_includes: std.StringHashMap(void),
     c_defines: std.StringHashMap(void),
@@ -191,6 +198,8 @@ pub const LLVMEmitter = struct {
             .functions = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .structs = std.StringHashMap(StructInfo).init(allocator),
             .libs = std.StringHashMap(std.StringHashMap([]const u8)).init(allocator),
+            .lib_declarations = std.StringHashMap(LibDeclEntry).init(allocator),
+            .used_libs = std.StringHashMap(void).init(allocator),
             .c_sources = std.StringHashMap(void).init(allocator),
             .c_includes = std.StringHashMap(void).init(allocator),
             .c_defines = std.StringHashMap(void).init(allocator),
@@ -207,6 +216,8 @@ pub const LLVMEmitter = struct {
             v.*.deinit();
         }
         self.libs.deinit();
+        self.lib_declarations.deinit();
+        self.used_libs.deinit();
         self.c_sources.deinit();
         self.c_includes.deinit();
         self.c_defines.deinit();
@@ -346,13 +357,17 @@ pub const LLVMEmitter = struct {
             llvm.LLVMSetInitializer(ctors_global, ctor_arr);
         }
 
+        const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
+        const setjmp_name: [*:0]const u8 = if (is_windows) "setjmp" else "_setjmp";
+        const longjmp_name: [*:0]const u8 = if (is_windows) "longjmp" else "_longjmp";
+
         var setjmp_params = [_]llvm.LLVMTypeRef{ptr_type};
         const setjmp_type = llvm.LLVMFunctionType(i32_type, &setjmp_params, 1, 0);
-        _ = llvm.LLVMAddFunction(mod, "_setjmp", setjmp_type);
+        _ = llvm.LLVMAddFunction(mod, setjmp_name, setjmp_type);
 
         var longjmp_params = [_]llvm.LLVMTypeRef{ ptr_type, i32_type };
         const longjmp_type = llvm.LLVMFunctionType(void_type, &longjmp_params, 2, 0);
-        _ = llvm.LLVMAddFunction(mod, "_longjmp", longjmp_type);
+        _ = llvm.LLVMAddFunction(mod, longjmp_name, longjmp_type);
 
         var exit_params = [_]llvm.LLVMTypeRef{i32_type};
         const exit_type = llvm.LLVMFunctionType(void_type, &exit_params, 1, 0);
@@ -536,6 +551,9 @@ pub const LLVMEmitter = struct {
         // entry module's top-level statements (which become main()).
         if (ast_root.data == .program) {
             for (ast_root.data.program.statements) |stmt| {
+                if (stmt.data == .lib_decl) {
+                    try self.used_libs.put(stmt.data.lib_decl.name, {});
+                }
                 try self.collectCallees(stmt, &reachable, &worklist);
             }
             // In test mode ast_root is a synthetic wrapper that only holds
@@ -1003,7 +1021,6 @@ pub const LLVMEmitter = struct {
                         break;
                     }
                 }
-                const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
                 const is_posix_target = if (self.target_info) |ti| ti.family == .posix else (!is_windows);
                 const is_lib_fn = if (is_windows) false else ffi_symbols.contains(fn_name_s);
                 const is_libc = is_libm or is_lib_fn or
@@ -1737,6 +1754,11 @@ pub const LLVMEmitter = struct {
                 try self.collectCallees(i.value, reachable, worklist);
             },
             .array_literal => |a| for (a.elements) |e| try self.collectCallees(e, reachable, worklist),
+            .identifier => |i| {
+                if (self.libs.get(i.name) != null) {
+                    try self.used_libs.put(i.name, {});
+                }
+            },
             .map_literal => |m| {
                 for (m.elements) |e| try self.collectCallees(e, reachable, worklist);
                 // The map literal emitter calls `MutableMap_{K,V}_put` for each
@@ -1811,7 +1833,9 @@ pub const LLVMEmitter = struct {
                 } else if (c.callee.data == .get_expr) {
                     const g = c.callee.data.get_expr;
                     // FFI lib method call: object is an identifier naming a lib.
-                    if (g.object.data != .identifier or self.libs.get(g.object.data.identifier.name) == null) {
+                    if (g.object.data == .identifier and self.libs.get(g.object.data.identifier.name) != null) {
+                        try self.used_libs.put(g.object.data.identifier.name, {});
+                    } else {
                         // Object/static method call resolved to an exact mangled symbol.
                         if (c.callee.resolved_type) |rt| {
                             if (rt.* == .Function and rt.Function.c_name.len > 0) {
@@ -2549,40 +2573,7 @@ pub const LLVMEmitter = struct {
         const lib = lib_node.data.lib_decl;
         if (!self.matchesTarget(lib.platform_targets)) return;
 
-        // Collect build requirements from lib annotations so the backend can
-        // compile and link the vendored C sources (mirrors the C transpiler,
-        // Phase 65). `@Header` only matters for the C transpiler's generated
-        // code; the LLVM module has no C to inject includes into.
-        for (lib.annotations) |ann| {
-            if (std.mem.eql(u8, ann.name, "Link")) {
-                for (ann.arguments) |arg| try self.link_libraries.put(arg, {});
-            } else if (std.mem.eql(u8, ann.name, "Source")) {
-                for (ann.arguments) |arg| {
-                    // `./`/`../` resolve relative to the importing .ei file (like
-                    // @Include); anything else goes through resolveRepoPath
-                    // (maps `src/...` to the compiler repo).
-                    if ((std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../"))) {
-                        const base = module_path orelse self.source_file;
-                        const dir = std.fs.path.dirname(base) orelse ".";
-                        try self.c_sources.put(try std.fs.path.join(self.allocator, &.{ dir, arg }), {});
-                    } else {
-                        try self.c_sources.put(try resolveRepoPath(self.allocator, arg), {});
-                    }
-                }
-            } else if (std.mem.eql(u8, ann.name, "Include")) {
-                for (ann.arguments) |arg| {
-                    if ((std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../"))) {
-                        const base = module_path orelse self.source_file;
-                        const dir = std.fs.path.dirname(base) orelse ".";
-                        try self.c_includes.put(try std.fs.path.join(self.allocator, &.{ dir, arg }), {});
-                    } else {
-                        try self.c_includes.put(try resolveRepoPath(self.allocator, arg), {});
-                    }
-                }
-            } else if (std.mem.eql(u8, ann.name, "Define")) {
-                for (ann.arguments) |arg| try self.c_defines.put(arg, {});
-            }
-        }
+        try self.lib_declarations.put(lib.name, .{ .lib_node = lib_node, .module_path = module_path });
 
         var func_names = std.StringHashMap([]const u8).init(self.allocator);
         for (lib.functions) |func_node| {
@@ -2605,6 +2596,42 @@ pub const LLVMEmitter = struct {
             }
         }
         try self.libs.put(lib.name, func_names);
+    }
+
+    fn collectUsedLibAnnotations(self: *LLVMEmitter) !void {
+        var it = self.used_libs.keyIterator();
+        while (it.next()) |lib_name_ptr| {
+            if (self.lib_declarations.get(lib_name_ptr.*)) |entry| {
+                const lib = entry.lib_node.data.lib_decl;
+                for (lib.annotations) |ann| {
+                    if (std.mem.eql(u8, ann.name, "Link")) {
+                        for (ann.arguments) |arg| try self.link_libraries.put(arg, {});
+                    } else if (std.mem.eql(u8, ann.name, "Source")) {
+                        for (ann.arguments) |arg| {
+                            if (std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../")) {
+                                const base = entry.module_path orelse self.source_file;
+                                const dir = std.fs.path.dirname(base) orelse ".";
+                                try self.c_sources.put(try std.fs.path.join(self.allocator, &.{ dir, arg }), {});
+                            } else {
+                                try self.c_sources.put(try resolveRepoPath(self.allocator, arg), {});
+                            }
+                        }
+                    } else if (std.mem.eql(u8, ann.name, "Include")) {
+                        for (ann.arguments) |arg| {
+                            if (std.mem.startsWith(u8, arg, "./") or std.mem.startsWith(u8, arg, "../")) {
+                                const base = entry.module_path orelse self.source_file;
+                                const dir = std.fs.path.dirname(base) orelse ".";
+                                try self.c_includes.put(try std.fs.path.join(self.allocator, &.{ dir, arg }), {});
+                            } else {
+                                try self.c_includes.put(try resolveRepoPath(self.allocator, arg), {});
+                            }
+                        }
+                    } else if (std.mem.eql(u8, ann.name, "Define")) {
+                        for (ann.arguments) |arg| try self.c_defines.put(arg, {});
+                    }
+                }
+            }
+        }
     }
 
     fn declareFunctionNamed(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, c_name: []const u8) !void {
@@ -3201,6 +3228,7 @@ pub const LLVMEmitter = struct {
     /// Direct native binary emission using LLVMTargetMachineEmitToFile.
     pub fn emitNativeBinary(self: *LLVMEmitter, output_filename: []const u8, io: std.Io) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
+        try self.collectUsedLibAnnotations();
 
         const is_host = if (self.target_info) |ti| ti.is_host else true;
         const default_triple_c = if (self.target_info == null) llvm.LLVMGetDefaultTargetTriple() else null;
@@ -3324,6 +3352,9 @@ pub const LLVMEmitter = struct {
         if (is_host or prefer_gc_alloc) {
             try cc_argv.append("-lgc");
         }
+        if (self.target_info != null and self.target_info.?.os_tag == .windows) {
+            try cc_argv.append("-lws2_32");
+        }
         for (self.cli_c_flags) |flag| try cc_argv.append(flag);
 
         // Build requirements declared by `lib` annotations (@Include/@Define/@Source/@Link),
@@ -3377,6 +3408,7 @@ pub const LLVMEmitter = struct {
     /// (e.g. the neco runtime, present in every test file) is compiled once and
     /// reused across processes instead of recompiled per file.
     fn loadLibSourcesIntoJIT(self: *LLVMEmitter, io: std.Io) !void {
+        try self.collectUsedLibAnnotations();
         if (self.c_sources.count() == 0 and self.c_includes.count() == 0 and self.c_defines.count() == 0 and self.link_libraries.count() == 0) return;
 
         var h = std.hash.Wyhash.init(0);
@@ -3495,12 +3527,24 @@ pub const LLVMEmitter = struct {
         return false;
     }
 
+    pub fn isLibFunction(self: *LLVMEmitter, name: []const u8) bool {
+        var it = self.libs.valueIterator();
+        while (it.next()) |func_map| {
+            var f_it = func_map.valueIterator();
+            while (f_it.next()) |c_name| {
+                if (std.mem.eql(u8, c_name.*, name)) return true;
+            }
+        }
+        return false;
+    }
+
     /// Emits a function body, falling back to a complete stub when the body
     /// either fails to emit OR emits malformed IR (e.g. `when`/smart-cast or
     /// contract dispatch that leaves an unterminated block, an icmp on a
     /// struct, or a return-type mismatch without raising an error). The stub
     /// keeps the module verifiable for the JIT/linker.
     fn emitFunctionBodyOrStub(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, fname: []const u8, is_object_method: bool) void {
+        if (self.isLibFunction(fname)) return;
         // Record the lambda counter so lambdas emitted while building this
         // body can be cleaned up if the emission fails: the partial body is
         // discarded, so they are orphaned and often malformed (unterminated
@@ -3560,6 +3604,7 @@ pub const LLVMEmitter = struct {
     /// undefined symbol that breaks JIT linking and `emitNativeBinary`
     /// (undefined symbol error) even when the function is never called.
     fn emitFunctionStub(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, fname: []const u8) !void {
+        if (self.isLibFunction(fname)) return;
         const func_val = self.functions.get(fname) orelse blk: {
             const fname_z = try self.allocator.dupeZ(u8, fname);
             defer self.allocator.free(fname_z);

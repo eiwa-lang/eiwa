@@ -27,8 +27,14 @@ lib NativeSched {
 }
 
 @Header("<poll.h>")
-lib NativePoll {
+lib("posix") NativePoll {
     @Alias("poll")
+    fun poll(fds: Pointer, nfds: Int, timeout: Int): Int
+}
+
+@Header("<winsock2.h>")
+lib("windows") NativePoll {
+    @Alias("WSAPoll")
     fun poll(fds: Pointer, nfds: Int, timeout: Int): Int
 }
 

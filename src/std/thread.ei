@@ -5,7 +5,7 @@
 import { Standard } from "std.core"
 
 @Header("<pthread.h>", "<unistd.h>")
-lib NativeThread {
+lib("posix") NativeThread {
     @Alias("pthread_create")
     fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
 
@@ -46,6 +46,64 @@ lib NativeThread {
     fun sysconf(name: Int): Int
 }
 
+@Header("<pthread.h>", "<windows.h>")
+lib("windows") NativeThread {
+    @Alias("pthread_create")
+    fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
+
+    @Alias("pthread_join")
+    fun pthreadJoin(thread: Pointer, retval: Pointer): Int
+
+    @Alias("pthread_self")
+    fun pthreadSelf(): Pointer
+
+    @Alias("pthread_mutex_init")
+    fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int
+
+    @Alias("pthread_mutex_lock")
+    fun pthreadMutexLock(mutex: Pointer): Int
+
+    @Alias("pthread_mutex_unlock")
+    fun pthreadMutexUnlock(mutex: Pointer): Int
+
+    @Alias("pthread_mutex_destroy")
+    fun pthreadMutexDestroy(mutex: Pointer): Int
+
+    @Alias("pthread_cond_init")
+    fun pthreadCondInit(cond: Pointer, attr: Pointer): Int
+
+    @Alias("pthread_cond_wait")
+    fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int
+
+    @Alias("pthread_cond_signal")
+    fun pthreadCondSignal(cond: Pointer): Int
+
+    @Alias("pthread_cond_broadcast")
+    fun pthreadCondBroadcast(cond: Pointer): Int
+
+    @Alias("pthread_cond_destroy")
+    fun pthreadCondDestroy(cond: Pointer): Int
+
+    @Alias("GetActiveProcessorCount")
+    fun getActiveProcessorCount(groupNumber: Int): Int
+}
+
+object ThreadConstants {
+    // POSIX sysconf keys for online processor count
+    val SC_NPROCESSORS_ONLN_DARWIN: Int = 58
+    val SC_NPROCESSORS_ONLN_LINUX: Int = 84
+
+    // Win32 processor group mask for all active processors
+    val ALL_PROCESSOR_GROUPS: Int = 65535
+
+    // Native buffer allocation sizes (bytes)
+    val PTHREAD_MUTEX_SIZE: Int = 128
+    val PTHREAD_COND_SIZE: Int = 128
+    val PTHREAD_HANDLE_SIZE: Int = 16
+    val GC_STACK_BASE_SIZE: Int = 16
+    val THREAD_TASK_SIZE: Int = 24
+}
+
 type RawMutex(val ptr: Pointer) {
     fun lock() {
         NativeThread.pthreadMutexLock(this.ptr)
@@ -60,8 +118,8 @@ type RawMutex(val ptr: Pointer) {
     }
 } object {
     fun create(): RawMutex {
-        // Allocate 128 bytes (sufficient for pthread_mutex_t on all platforms: macOS=64B, Linux=40B)
-        val mPtr = Standard.gcMalloc(128)
+        // Allocate buffer (sufficient for pthread_mutex_t on all platforms: macOS=64B, Linux=40B, Windows=40B)
+        val mPtr = Standard.gcMalloc(ThreadConstants.PTHREAD_MUTEX_SIZE)
         NativeThread.pthreadMutexInit(mPtr, null)
         return RawMutex(mPtr)
     }
@@ -106,8 +164,8 @@ type CondVar(val ptr: Pointer) {
     }
 } object {
     fun create(): CondVar {
-        // Allocate 128 bytes (sufficient for pthread_cond_t on all platforms: macOS=48B, Linux=48B)
-        val cPtr = Standard.gcMalloc(128)
+        // Allocate buffer (sufficient for pthread_cond_t on all platforms: macOS=48B, Linux=48B, Windows=48B)
+        val cPtr = Standard.gcMalloc(ThreadConstants.PTHREAD_COND_SIZE)
         NativeThread.pthreadCondInit(cPtr, null)
         return CondVar(cPtr)
     }
@@ -135,7 +193,7 @@ type ThreadTask(var action: () -> Void)
 
 fun threadTrampoline(arg: Pointer): Pointer {
     if (arg != null) {
-        val sb = Standard.malloc(16)
+        val sb = Standard.malloc(ThreadConstants.GC_STACK_BASE_SIZE)
         NativeGC.getStackBase(sb)
         NativeGC.registerMyThread(sb)
         Standard.free(sb)
@@ -148,18 +206,40 @@ fun threadTrampoline(arg: Pointer): Pointer {
     return null
 }
 
-object Threads {
-    fun numCores(): Int {
-        // _SC_NPROCESSORS_ONLN is 84 on Linux, 58 on macOS/BSD.
-        // Try macOS value (58) first; if invalid (<= 0), try Linux value (84).
-        var cores = NativeThread.sysconf(58)
+contract CoreDetector {
+    fun getCores(): Int
+}
+
+object("posix") CurrentCoreDetector : CoreDetector {
+    implement fun getCores(): Int {
+        var cores = NativeThread.sysconf(ThreadConstants.SC_NPROCESSORS_ONLN_DARWIN)
         if (cores <= 0) {
-            cores = NativeThread.sysconf(84)
+            cores = NativeThread.sysconf(ThreadConstants.SC_NPROCESSORS_ONLN_LINUX)
         }
         if (cores <= 0) {
             cores = 1
         }
         return cores
+    }
+}
+
+object("windows") CurrentCoreDetector : CoreDetector {
+    implement fun getCores(): Int {
+        val count = NativeThread.getActiveProcessorCount(ThreadConstants.ALL_PROCESSOR_GROUPS)
+        if (count > 0) {
+            return count
+        }
+        return 1
+    }
+}
+
+object CurrentCoreDetector : CoreDetector {
+    implement fun getCores(): Int = 1
+}
+
+object Threads {
+    fun numCores(): Int {
+        return CurrentCoreDetector.getCores()
     }
 
     fun currentThread(): Pointer {
@@ -167,10 +247,10 @@ object Threads {
     }
 
     fun spawn(block: () -> Void): Thread {
-        val buf = Standard.gcMalloc(24)
+        val buf = Standard.gcMalloc(ThreadConstants.THREAD_TASK_SIZE)
         val task = buf as ThreadTask
         task.action = block
-        val threadBuf = Standard.gcMalloc(16)
+        val threadBuf = Standard.gcMalloc(ThreadConstants.PTHREAD_HANDLE_SIZE)
         val routine = funPointer { arg: Pointer -> threadTrampoline(arg) }
         NativeThread.pthreadCreate(threadBuf, null, routine, buf)
         val handle = Standard.loadInt64(threadBuf) as Pointer

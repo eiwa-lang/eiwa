@@ -639,7 +639,11 @@ fn run(init: std.process.Init) !void {
         const basename = std.fs.path.basename(filename);
         const ext = std.fs.path.extension(basename);
         const out_bin_name = basename[0 .. basename.len - ext.len];
-        const final_bin = output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
+        var final_bin = output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
+        const is_windows_target = target_info.os_tag == .windows;
+        if (is_windows_target and !std.mem.endsWith(u8, final_bin, ".exe")) {
+            final_bin = try std.fmt.allocPrint(allocator, "{s}.exe", .{final_bin});
+        }
 
         try emitter.emitNativeBinary(final_bin, io);
         std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
