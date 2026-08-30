@@ -28,7 +28,8 @@ Eiwa is a pragmatic, statically typed, natively compiled systems language with a
 Always use these commands to build, run, and test the project:
 
 ```bash
-# 1. Build the Eiwa compiler
+# 1. Build the Eiwa compiler (defaults to ReleaseSafe since perf/emitter-hotpaths;
+#    pass -Doptimize=Debug for compiler development)
 zig build
 
 # 2. Run the compiler's unit tests (written in Zig)

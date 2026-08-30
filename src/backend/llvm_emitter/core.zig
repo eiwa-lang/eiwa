@@ -166,6 +166,12 @@ pub const LLVMEmitter = struct {
     /// relative paths against the DECLARING module's file (not the entry file).
     registry: ?*tc_core.ModuleRegistry = null,
     target_info: ?tc_core.TargetInfo = null,
+    /// Lazily-built index: underscore-delimited token -> names in `functions`
+    /// containing that token as a component. Lets the "related mangled
+    /// variants" lookups (markReachable, vtable pass) scan a small candidate
+    /// set instead of the entire functions map. Rebuilt if `functions` grows.
+    fn_token_index: ?std.StringHashMap(ArrayList([]const u8)) = null,
+    fn_token_index_count: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         llvm.LLVMLinkInMCJIT();
@@ -210,6 +216,11 @@ pub const LLVMEmitter = struct {
 
     pub fn deinit(self: *LLVMEmitter) void {
         self.functions.deinit();
+        if (self.fn_token_index) |*idx| {
+            var tok_it = idx.valueIterator();
+            while (tok_it.next()) |v| v.deinit();
+            idx.deinit();
+        }
         self.structs.deinit();
         var lib_it = self.libs.valueIterator();
         while (lib_it.next()) |v| {
@@ -668,18 +679,27 @@ pub const LLVMEmitter = struct {
                             const target_prefix = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_c_name, cm_name });
                             defer self.allocator.free(target_prefix);
 
-                            var fit = self.functions.iterator();
-                            while (fit.next()) |entry| {
-                                const fk = entry.key_ptr.*;
-                                if (std.mem.eql(u8, fk, target_prefix)) {
-                                    impl_fn = entry.value_ptr.*;
-                                    try self.markReachable(fk, &reachable, &worklist);
-                                    break;
+                            if (try self.fnCandidates(target_prefix)) |candidates| {
+                                for (candidates) |fk| {
+                                    if (std.mem.eql(u8, fk, target_prefix) or
+                                        (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_'))
+                                    {
+                                        impl_fn = self.functions.get(fk);
+                                        try self.markReachable(fk, &reachable, &worklist);
+                                        break;
+                                    }
                                 }
-                                if (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_') {
-                                    impl_fn = entry.value_ptr.*;
-                                    try self.markReachable(fk, &reachable, &worklist);
-                                    break;
+                            } else {
+                                var fit = self.functions.iterator();
+                                while (fit.next()) |entry| {
+                                    const fk = entry.key_ptr.*;
+                                    if (std.mem.eql(u8, fk, target_prefix) or
+                                        (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_'))
+                                    {
+                                        impl_fn = entry.value_ptr.*;
+                                        try self.markReachable(fk, &reachable, &worklist);
+                                        break;
+                                    }
                                 }
                             }
                             if (impl_fn) |fn_val| {
@@ -1602,21 +1622,107 @@ pub const LLVMEmitter = struct {
         try reachable.put(owned, {});
         try worklist.append(owned);
 
-        const prefix = try std.fmt.allocPrint(self.allocator, "{s}_", .{name});
-        defer self.allocator.free(prefix);
-        const suffix = try std.fmt.allocPrint(self.allocator, "_{s}_", .{name});
-        defer self.allocator.free(suffix);
-
-        var it = self.functions.keyIterator();
-        while (it.next()) |k| {
-            if (std.mem.eql(u8, k.*, name) or std.mem.startsWith(u8, k.*, prefix) or std.mem.indexOf(u8, k.*, suffix) != null or std.mem.endsWith(u8, k.*, suffix[0 .. suffix.len - 1])) {
-                if (!reachable.contains(k.*)) {
-                    const func_owned = try self.allocator.dupe(u8, k.*);
-                    try reachable.put(func_owned, {});
-                    try worklist.append(func_owned);
-                }
+        // Mark related mangled variants: monomorphized methods and helpers
+        // are named after their type (`{name}_*`, `*_{name}_*`, `*_{name}`),
+        // so marking a base name must pull them in. The token index narrows
+        // this from a full scan of `functions` to a small candidate set.
+        if (try self.fnCandidates(name)) |candidates| {
+            for (candidates) |k| {
+                if (matchesRelatedName(k, name)) try markReachableExact(self.allocator, k, reachable, worklist);
+            }
+        } else {
+            var it = self.functions.keyIterator();
+            while (it.next()) |k| {
+                if (matchesRelatedName(k.*, name)) try markReachableExact(self.allocator, k.*, reachable, worklist);
             }
         }
+    }
+
+    fn markReachableExact(
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        reachable: *std.StringHashMap(void),
+        worklist: *ArrayList([]const u8),
+    ) !void {
+        if (reachable.contains(name)) return;
+        const func_owned = try allocator.dupe(u8, name);
+        try reachable.put(func_owned, {});
+        try worklist.append(func_owned);
+    }
+
+    /// True when `k` equals `name` or contains it as an underscore-delimited
+    /// component run (`name_*`, `*_name_*`, `*_name`). Allocation-free
+    /// equivalent of the old prefix/suffix string checks.
+    fn matchesRelatedName(k: []const u8, name: []const u8) bool {
+        if (std.mem.eql(u8, k, name)) return true;
+        if (k.len <= name.len) return false;
+        // prefix: k == name ++ "_" ++ rest
+        if (k[name.len] == '_' and std.mem.eql(u8, k[0..name.len], name)) return true;
+        // suffix: k == rest ++ "_" ++ name
+        if (k[k.len - name.len - 1] == '_' and std.mem.endsWith(u8, k, name)) return true;
+        // infix: k contains "_" ++ name ++ "_"
+        var pos: usize = 0;
+        while (std.mem.indexOfPos(u8, k, pos, name)) |i| {
+            if (i > 0 and k[i - 1] == '_' and i + name.len < k.len and k[i + name.len] == '_') return true;
+            pos = i + 1;
+        }
+        return false;
+    }
+
+    /// Builds (or rebuilds, when `functions` has grown) the token index over
+    /// function names. Keys are borrowed from `functions`, so the index must
+    /// be rebuilt if that map is mutated — the count check covers growth;
+    /// the reachability passes only add entries, never remove/rehash keys.
+    fn ensureFnTokenIndex(self: *LLVMEmitter) !void {
+        if (self.fn_token_index != null and self.fn_token_index_count == self.functions.count()) return;
+        if (self.fn_token_index) |*idx| {
+            var tok_it = idx.valueIterator();
+            while (tok_it.next()) |v| v.deinit();
+            idx.deinit();
+        }
+        var index = std.StringHashMap(ArrayList([]const u8)).init(self.allocator);
+        errdefer index.deinit();
+        var kit = self.functions.keyIterator();
+        while (kit.next()) |k| {
+            const key = k.*;
+            var tok_it = std.mem.splitScalar(u8, key, '_');
+            while (tok_it.next()) |tok| {
+                if (tok.len == 0) continue;
+                const gop = try index.getOrPut(tok);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = ArrayList([]const u8).init(self.allocator);
+                } else if (gop.value_ptr.items[gop.value_ptr.items.len - 1].ptr == key.ptr) {
+                    // Same key, repeated token: occurrences of one key are
+                    // appended consecutively, so comparing with the last
+                    // append dedupes them.
+                    continue;
+                }
+                try gop.value_ptr.append(key);
+            }
+        }
+        self.fn_token_index = index;
+        self.fn_token_index_count = self.functions.count();
+    }
+
+    /// Returns the smallest token bucket that any key related to `query`
+    /// must belong to (a related key contains every token of `query`, so the
+    /// rarest token's bucket is a superset of all matches). Empty slice when
+    /// no key can match; null when `query` has no usable token and the
+    /// caller must fall back to a full scan.
+    fn fnCandidates(self: *LLVMEmitter, query: []const u8) !?[]const []const u8 {
+        try self.ensureFnTokenIndex();
+        const index = &self.fn_token_index.?;
+        var best: ?[]const []const u8 = null;
+        var tok_it = std.mem.splitScalar(u8, query, '_');
+        while (tok_it.next()) |tok| {
+            if (tok.len == 0) continue;
+            if (index.get(tok)) |bucket| {
+                if (best == null or bucket.items.len < best.?.len) best = bucket.items;
+            } else {
+                return &.{}; // a required token appears in no key at all
+            }
+        }
+        return best;
     }
 
     /// Builds a single index of every non-generic function's resolved name
