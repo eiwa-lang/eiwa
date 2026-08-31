@@ -47,6 +47,10 @@ type JsonValue(
     fun asNumber(): Double = this.num
     fun asBool(): Bool = this.boolean
 
+    fun asObject(): Map<String, JsonValue> = this.obj
+
+    fun asArray(): List<JsonValue> = this.arr
+
     fun write(): String = when (this.kind) {
         JsonKind.OBJECT -> this.writeObject()
         JsonKind.ARRAY -> this.writeArray()

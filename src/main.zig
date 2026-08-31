@@ -166,6 +166,152 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
+/// Computes a content hash over everything that affects the emitted binary:
+/// the compiler executable itself (which embeds the stdlib sources), target,
+/// codegen flags, and every module in the import closure (path + source).
+/// Transitive dependency changes are covered because dep modules are part of
+/// the closure. When `deps_only` is set, only dependency modules (std/* and
+/// modules under a --module-path dir) contribute — used for the per-deps
+/// object cache (Phase A3). Returns null on any I/O failure — the cache is
+/// best-effort and must never break a build.
+fn computeProgramCacheKey(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    registry: *type_checker.ModuleRegistry,
+    is_release: bool,
+    target_info: target_mod.TargetInfo,
+    cli_c_flags: []const []const u8,
+    module_paths: []const []const u8,
+    deps_only: bool,
+    pool_keys: ?*std.StringHashMap(*ast.ASTNode),
+) ?[64]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(&.{ @intFromBool(build_options.has_llvm), @intFromBool(build_options.has_gc), @intFromBool(is_release) });
+    hasher.update(target_info.triple);
+    hasher.update(&.{0});
+    for (cli_c_flags) |f| {
+        hasher.update(f);
+        hasher.update(&.{0});
+    }
+    // Host-CPU tuning changes codegen; include the opt-out env var if set.
+    if (std.c.getenv("EIWA_BASELINE_CPU")) |v| hasher.update(std.mem.span(v));
+    hasher.update(&.{0});
+
+    // Any change to the compiler (including the embedded stdlib sources)
+    // invalidates every cached binary.
+    const exe_path = std.process.executablePathAlloc(io, alloc) catch return null;
+    defer alloc.free(exe_path);
+    const exe_bytes = std.Io.Dir.cwd().readFileAlloc(io, exe_path, alloc, .limited(64 * 1024 * 1024)) catch return null;
+    defer alloc.free(exe_bytes);
+    hasher.update(exe_bytes);
+
+    for (registry.ordered_modules.items) |path| {
+        const mod = registry.modules.get(path) orelse continue;
+        if (deps_only and !((isDepModulePath(alloc, path, module_paths) catch false))) continue;
+        hasher.update(mod.filename);
+        hasher.update(&.{0});
+        hasher.update(mod.source);
+        hasher.update(&.{0});
+    }
+
+    // The deps object's content also depends on the whole-program
+    // monomorphization pool: generic skill bodies (e.g. collection `equals`
+    // doing `is List<T>`) reference vtables of every `List<X>` instantiated
+    // anywhere, which is entry-driven. Hash the sorted pool names so the
+    // deps object is invalidated iff the instantiated-type set changes.
+    if (deps_only) {
+        if (pool_keys) |pk| {
+            var names = ArrayList([]const u8).init(alloc);
+            defer names.deinit();
+            var kit = pk.keyIterator();
+            while (kit.next()) |k| names.append(k.*) catch return null;
+            std.mem.sort([]const u8, names.items, {}, struct {
+                fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                    return std.mem.order(u8, a, b) == .lt;
+                }
+            }.lessThan);
+            for (names.items) |n| {
+                hasher.update(n);
+                hasher.update(&.{0});
+            }
+        }
+    }
+
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    var hex: [64]u8 = undefined;
+    for (digest, 0..) |b, i| {
+        hex[i * 2] = std.fmt.hex_charset[b >> 4];
+        hex[i * 2 + 1] = std.fmt.hex_charset[b & 0xf];
+    }
+    return hex;
+}
+
+/// True when `path` belongs to a dependency: an embedded std module or a
+/// file under one of the `--module-path` directories (e.g. git deps cloned
+/// into ~/.eiwa/repository). Everything else is project (entry-unit) code.
+fn isDepModulePath(alloc: std.mem.Allocator, path: []const u8, module_paths: []const []const u8) !bool {
+    if (std.mem.startsWith(u8, path, "std/")) return true;
+    const abs_path = try std.fs.path.resolve(alloc, &.{path});
+    defer alloc.free(abs_path);
+    for (module_paths) |mp| {
+        const abs_mp = try std.fs.path.resolve(alloc, &.{mp});
+        defer alloc.free(abs_mp);
+        if (std.mem.startsWith(u8, abs_path, abs_mp)) return true;
+    }
+    return false;
+}
+
+/// Directory holding cached artifacts. `EIWA_CACHE_DIR` overrides the
+/// default (`~/.eiwa/cache`); returns null when no base dir is known.
+fn cacheDir(alloc: std.mem.Allocator, sub: []const u8) ?[]const u8 {
+    if (std.c.getenv("EIWA_CACHE_DIR")) |v| {
+        return std.fmt.allocPrint(alloc, "{s}/{s}", .{ std.mem.span(v), sub }) catch null;
+    }
+    const home = std.c.getenv("HOME") orelse return null;
+    return std.fmt.allocPrint(alloc, "{s}/.eiwa/cache/{s}", .{ std.mem.span(home), sub }) catch null;
+}
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
+/// Copies `src_abs` (absolute) to `dst` (may be relative to the cwd),
+/// preserving permissions (exec bit) and replacing atomically.
+fn copyFileFromCache(io: std.Io, src_abs: []const u8, dst: []const u8) !void {
+    const src_dir_path = std.fs.path.dirname(src_abs) orelse ".";
+    var src_dir = try std.Io.Dir.cwd().openDir(io, src_dir_path, .{});
+    defer src_dir.close(io);
+    try std.Io.Dir.copyFile(src_dir, std.fs.path.basename(src_abs), std.Io.Dir.cwd(), dst, io, .{});
+}
+
+/// Stores `src` (relative to cwd or absolute) into the cache at `dst_abs`,
+/// atomically (atomic create + replace), preserving the exec bit.
+fn copyFileToCache(io: std.Io, src: []const u8, dst_abs: []const u8) !void {
+    const dst_dir_path = std.fs.path.dirname(dst_abs) orelse return error.InvalidPath;
+    var dst_dir = try std.Io.Dir.cwd().openDir(io, dst_dir_path, .{});
+    defer dst_dir.close(io);
+    try std.Io.Dir.copyFile(std.Io.Dir.cwd(), src, dst_dir, std.fs.path.basename(dst_abs), io, .{});
+}
+
+/// Runs the cached binary in a child process (same process group, so signals
+/// like Ctrl+C reach it) and exits with its exit code.
+fn execCachedBinary(io: std.Io, alloc: std.mem.Allocator, bin_path: []const u8, prog_args: []const []const u8) noreturn {
+    var argv = ArrayList([]const u8).init(alloc);
+    argv.append(bin_path) catch std.process.exit(1);
+    for (prog_args) |a| argv.append(a) catch std.process.exit(1);
+    var child = std.process.spawn(io, .{ .argv = argv.items }) catch |err| {
+        std.debug.print("Error: failed to execute cached binary '{s}': {s}\n", .{ bin_path, @errorName(err) });
+        std.process.exit(1);
+    };
+    const term = child.wait(io) catch std.process.exit(1);
+    switch (term) {
+        .exited => |code| std.process.exit(code),
+        else => std.process.exit(1),
+    }
+}
+
 fn run(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
 
@@ -192,11 +338,17 @@ fn run(init: std.process.Init) !void {
             \\  --release        Optimized build
             \\  --target <name>  Target triple or alias (windows, linux, macos, wasm)
             \\  -o <name>        Output binary name (build command)
+            \\  --aot            run: build a cached native binary and execute
+            \\                   it instead of JIT (used by eiwa run on projects)
+            \\  --no-cache       Disable the incremental build cache
             \\  -I, -L, -l, -D   Extra flags forwarded to the C compiler
             \\  -h, --help       Show this help
             \\
             \\Extra positional arguments after the file are forwarded to
             \\the program when using the run command.
+            \\
+            \\Incremental cache: unchanged builds reuse artifacts under
+            \\EIWA_CACHE_DIR (default ~/.eiwa/cache) keyed by content hashes.
             \\
         , .{});
         return;
@@ -223,6 +375,8 @@ fn run(init: std.process.Init) !void {
     defer positionals.deinit();
 
     var is_release: bool = false;
+    var aot_run: bool = false;
+    var no_cache: bool = false;
     var target_arg: ?[]const u8 = null;
     var output_name: ?[]const u8 = null;
     var module_paths = ArrayList([]const u8).init(allocator);
@@ -238,6 +392,10 @@ fn run(init: std.process.Init) !void {
             }
             arg_idx += 1;
             output_name = args[arg_idx];
+        } else if (std.mem.eql(u8, arg, "--aot")) {
+            aot_run = true;
+        } else if (std.mem.eql(u8, arg, "--no-cache")) {
+            no_cache = true;
         } else if (std.mem.eql(u8, arg, "--target")) {
             if (arg_idx + 1 >= args.len) {
                 std.debug.print("Error: --target requires a target triple or alias (e.g. windows, linux, macos)\n", .{});
@@ -496,6 +654,48 @@ fn run(init: std.process.Init) !void {
         }
     }
 
+    // Incremental binary cache (docs/perf-plan-incremental-cache.md): the key
+    // covers the full import closure + compiler binary + flags, so a change
+    // anywhere invalidates. A hit lets `build` skip the whole backend and
+    // lets `run --aot` exec the cached binary directly.
+    var final_bin: ?[]const u8 = null;
+    if (is_build) {
+        const basename = std.fs.path.basename(filename);
+        const ext = std.fs.path.extension(basename);
+        const out_bin_name = basename[0 .. basename.len - ext.len];
+        var fb: []const u8 = output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
+        if (target_info.os_tag == .windows and !std.mem.endsWith(u8, fb, ".exe")) {
+            fb = try std.fmt.allocPrint(allocator, "{s}.exe", .{fb});
+        }
+        final_bin = fb;
+    }
+
+    var cache_bin_path: ?[]const u8 = null;
+    const cache_enabled = !no_cache and target_info.is_host and (is_build or (!is_test and aot_run));
+    if (cache_enabled) {
+        if (computeProgramCacheKey(arena.allocator(), io, &registry, is_release, target_info, cli_c_flags.items, module_paths.items, false, null)) |hex| {
+            if (cacheDir(arena.allocator(), "bin")) |dir| {
+                const exe_ext = if (target_info.os_tag == .windows) ".exe" else "";
+                std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+                cache_bin_path = std.fmt.allocPrint(arena.allocator(), "{s}/{s}{s}", .{ dir, hex, exe_ext }) catch null;
+            }
+        }
+    }
+
+    if (cache_bin_path) |cp| {
+        if (fileExists(io, cp)) {
+            if (is_build) {
+                copyFileFromCache(io, cp, final_bin.?) catch {
+                    std.debug.print("Error: cache hit but failed to copy '{s}' to '{s}'\n", .{ cp, final_bin.? });
+                    std.process.exit(1);
+                };
+                std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {}, cache hit)\n", .{ final_bin.?, is_release });
+                return;
+            }
+            execCachedBinary(io, arena.allocator(), cp, positionals.items[1..]);
+        }
+    }
+
     // Pass 2a: Declare Class and Object Types (Dependencies first: reverse queue order)
     const modules_slice = registry.ordered_modules.items;
     var idx: usize = modules_slice.len;
@@ -633,20 +833,100 @@ fn run(init: std.process.Init) !void {
         emitter.program_argv = argv.items;
     }
 
-    try emitter.emitModule(ast_root);
+    // Phase A3 split emission (docs/perf-plan-incremental-cache.md): the deps
+    // unit (std + --module-path dependencies) is emitted once and cached as a
+    // single object; the entry unit (project code) is re-emitted every build
+    // and linked against it. Eligibility mirrors prefer_gc_alloc (split needs
+    // the GC runtime linked, not the non-GC helper stubs).
+    var linked_split = false;
+    const aot_tmp: ?[]const u8 = if (!is_build and aot_run and cache_bin_path != null and !is_test)
+        try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ cache_bin_path.?, std.c.getpid() })
+    else
+        null;
 
-    if (is_build) {
-        const basename = std.fs.path.basename(filename);
-        const ext = std.fs.path.extension(basename);
-        const out_bin_name = basename[0 .. basename.len - ext.len];
-        var final_bin = output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
-        const is_windows_target = target_info.os_tag == .windows;
-        if (is_windows_target and !std.mem.endsWith(u8, final_bin, ".exe")) {
-            final_bin = try std.fmt.allocPrint(allocator, "{s}.exe", .{final_bin});
+    const split_eligible = cache_enabled and build_options.has_llvm and llvm_emitter.prefer_gc_alloc;
+    if (split_eligible) {
+        var dep_module_set = std.AutoHashMap(*ast.ASTNode, void).init(arena.allocator());
+        var entry_module_set = std.AutoHashMap(*ast.ASTNode, void).init(arena.allocator());
+        for (registry.ordered_modules.items) |path| {
+            const mod = registry.modules.get(path).?;
+            if (isDepModulePath(arena.allocator(), path, module_paths.items) catch false) {
+                try dep_module_set.put(mod.ast_root, {});
+            } else {
+                try entry_module_set.put(mod.ast_root, {});
+            }
         }
 
-        try emitter.emitNativeBinary(final_bin, io);
-        std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ final_bin, is_release });
+        var deps_obj_path: ?[]const u8 = null;
+        if (dep_module_set.count() > 0 and entry_module_set.count() > 0) {
+            if (computeProgramCacheKey(arena.allocator(), io, &registry, is_release, target_info, cli_c_flags.items, module_paths.items, true, &global_classes_ast)) |hex| {
+                if (cacheDir(arena.allocator(), "objects")) |dir| {
+                    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+                    const obj_ext = if (target_info.os_tag == .windows) "obj" else "o";
+                    deps_obj_path = std.fmt.allocPrint(arena.allocator(), "{s}/{s}.{s}", .{ dir, hex, obj_ext }) catch null;
+                }
+            }
+        }
+
+        if (deps_obj_path) |deps_obj| {
+            const obj_ext = if (target_info.os_tag == .windows) "obj" else "o";
+            // Ensure the deps object (emit only on cache miss).
+            if (!fileExists(io, deps_obj)) {
+                const deps_emitter = try allocator.create(llvm_emitter.LLVMEmitter);
+                deps_emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
+                deps_emitter.contracts_ast = &global_contracts_ast;
+                deps_emitter.classes_ast = &global_classes_ast;
+                deps_emitter.cli_c_flags = cli_c_flags.items;
+                deps_emitter.registry = &registry;
+                deps_emitter.target_info = target_info;
+                deps_emitter.unit_modules = &dep_module_set;
+                deps_emitter.unit_is_entry = false;
+                try deps_emitter.emitModule(ast_root);
+                const dtmp = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ deps_obj, std.c.getpid() });
+                try deps_emitter.emitObjectFile(dtmp);
+                std.Io.Dir.renameAbsolute(dtmp, deps_obj, io) catch {
+                    std.Io.Dir.cwd().deleteFile(io, dtmp) catch {};
+                    if (!fileExists(io, deps_obj)) return error.CacheStoreFailed;
+                };
+            }
+
+            // Entry object: emitted every build, then linked with the deps object.
+            emitter.unit_modules = &entry_module_set;
+            emitter.unit_is_entry = true;
+            try emitter.emitModule(ast_root);
+            const etmp = try std.fmt.allocPrint(allocator, "{s}.entry.{d}.{s}", .{ deps_obj, std.c.getpid(), obj_ext });
+            try emitter.emitObjectFile(etmp);
+            defer std.Io.Dir.cwd().deleteFile(io, etmp) catch {};
+            const out_path = if (is_build) final_bin.? else aot_tmp.?;
+            const objs = [_][]const u8{ deps_obj, etmp };
+            try emitter.linkObjects(&objs, out_path, io);
+            linked_split = true;
+        }
+    }
+
+    if (!linked_split) {
+        try emitter.emitModule(ast_root);
+    }
+
+    if (is_build) {
+        const fb = final_bin.?;
+        if (!linked_split) try emitter.emitNativeBinary(fb, io);
+        std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ fb, is_release });
+        // Populate the binary cache for future builds/runs (best-effort).
+        if (cache_bin_path) |cp| {
+            copyFileToCache(io, fb, cp) catch {};
+        }
+    } else if (aot_run and cache_bin_path != null and !is_test) {
+        // run --aot: build into the cache (temp + atomic rename so concurrent
+        // runs never see a partial binary), then execute it.
+        const cp = cache_bin_path.?;
+        const tmp = aot_tmp.?;
+        if (!linked_split) try emitter.emitNativeBinary(tmp, io);
+        std.Io.Dir.renameAbsolute(tmp, cp, io) catch {
+            std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+            if (!fileExists(io, cp)) return error.CacheStoreFailed;
+        };
+        execCachedBinary(io, arena.allocator(), cp, positionals.items[1..]);
     } else {
         const exit_code = try emitter.executeJIT(io);
         const code: u8 = if (exit_code < 0) 1 else @intCast(@min(exit_code, 255));

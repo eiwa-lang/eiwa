@@ -378,13 +378,19 @@ fun printHelp() {
     println("  --release       Optimized build (-O3), projects and files")
     println("  --target <t>    Target platform / triple (e.g. windows, linux, macos, wasm)")
     println("  --module-path <d>  Extra directory to resolve imports (repeatable)")
+    println("  --no-cache      Disable the incremental build cache")
     println("  -h, --help      Show this help")
     println("  --frozen        Fail if eiwa.freeze does not exist (for CI)")
+    println("")
+    println("Incremental cache: `run` and `build` reuse cached native artifacts")
+    println("keyed by content hashes (EIWA_CACHE_DIR, default ~/.eiwa/cache).")
+    println("Warm runs/builds on unchanged code cost ~0.01-0.1s.")
     println("")
     println("Use `--` to forward every following argument to the program (run).")
     println("")
     println("Environment:")
-    println("  EIWAC        Path to the eiwac compiler (default: eiwac next to the eiwa binary)")
+    println("  EIWAC           Path to the eiwac compiler (default: eiwac next to the eiwa binary)")
+    println("  EIWA_CACHE_DIR  Cache root (default: ~/.eiwa)")
 }
 
 fun enterProjectDir(arg: String?) {
@@ -870,6 +876,11 @@ fun compilerCommand(cmd: String) {
     var extraFlags = ""
     if (hasFlag(args, "--release")) {
         extraFlags = extraFlags + " --release"
+    }
+    // Run via the AOT binary cache (build-if-stale + exec) instead of the JIT:
+    // warm runs cost ~0.01s. See docs/perf-plan-incremental-cache.md.
+    if (cmd == "run") {
+        extraFlags = extraFlags + " --aot"
     }
     val targetVal = optionValue(args, "--target")
     if (targetVal != null) {

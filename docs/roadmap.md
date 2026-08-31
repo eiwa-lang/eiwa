@@ -3,7 +3,9 @@
 This document tracks the historical progress, current status, and future roadmap of the Eiwa Compiler. 
 
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
-> **Fase atual (2026-08):** **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
+> **Phase 73 — Incremental Object Cache & Fast `run`** (Two-Unit Split `deps.o` × `entry.o`, cache AOT `~/.eiwa/cache/bin`, 0.01s hit / 0.27s warm edit) — **concluída**.
+> **Fase atual (2026-08):** **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **pendente**.
+> **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
 
 ---
@@ -969,14 +971,88 @@ Semântica alvo:
 
 ---
 
-## ✅ Definition of Done (Per Phase)
-* [x] **Security/Lint:** No memory leaks in tests (utilizing `std.testing.allocator` across internal Zig modules).
-* [x] **Build:** `zig build test` and `zig build run` execute successfully.
+## Fase atual (2026-08): **Phase 72 — Lacunas do ADR 31 no backend LLVM (PENDENTE)**
+
+> **Contexto (2026-08, descoberto durante a padronização de argumentos do Arest MCP):** O ADR 31
+> (Sintaxe de Membro Implícito de `this`) foi implementado no **CTranspiler**, mas o backend
+> **LLVM** atual não resolve **campos** do receiver em lambdas de receptor (`T.() -> Void`) sem o
+> prefixo `this.`. Métodos irmãos resolvem; campos não. O exemplo `example/arest` quebra com
+> `PropertyNotFound` em `request.queries["name"]` (HTTP) e `arguments["a"]` (MCP) quando escritos
+> sem `this.` — o mesmo código compilava no backend C antigo.
+
+- [ ] **Task 72.1:** Corrigir resolução de campos do receiver em lambdas de receptor (`T.() -> Void`) no backend LLVM sem exigir `this.` (espelhar o ADR 31 / CTranspiler). Caso mínimo que falha hoje:
+      ```eiwa
+      type Box(val name: String, var count: Int = 0)
+      fun runBox(init: Box.() -> Void) { val b = Box("x", 1); init(b) }
+      fun main() { runBox { println(name); println(count) } }  // PropertyNotFound
+      ```
+      Com `this.` explícito compila e roda. Também quebra em lambdas de receptor aninhadas (padrão do Arest: `arest {}` → `routing {}` → `get("/") { }`).
+- [ ] **Task 72.2:** Corrigir safe-calls encadeados `?.` (ex.: `arguments["a"]?.asNumber()?.toInt()`). Hoje `PropertyNotFound`/ICmp verification error no LLVM; `!!` por valor presente e `?:` único funcionam.
+- [ ] **Task 72.3:** Adicionar teste de regressão em `samples/tests/` cobrindo campo `val` e `var` em receiver lambda simples e aninhado.
+- [ ] **Task 72.4:** Corrigir coação de primitivo → contract (`Stringable`/`SerdeValue`/etc.) **dentro de receiver lambda** no backend LLVM. Fora de lambda funciona; dentro de lambda, o fat pointer `{data, vtable}` não é construído e o valor cru do primitivo vira o `data` (segfault ao dereferenciar o bit pattern do double). Caso mínimo que falha:
+      ```eiwa
+      type Box(val label: String) {
+          fun show(value: Stringable): String { return label + ":" + value.toString() }
+      }
+      fun runBox(init: Box.() -> Void) { val b = Box("x"); init(b) }
+      fun main() {
+          runBox {
+              show(40.0 + 2.0)   // segfault: 0x4045000000000000 (bit pattern de 42.0)
+          }
+      }
+      ```
+      `show("ola")` (String) funciona mesmo no lambda — String já é ponteiro; só primitivos numéricos/bool quebram. É o que impede `respond(value: Stringable)` no Arest MCP (`McpCall.respond(a + b)`).
+- [ ] **Verify:** `example/arest/src/main.ei` compila com `request.queries["name"]` e `arguments["a"]` **sem** `this.`, a suíte `zig build test` permanece verde, e `McpCall.respond(a + b)` com `a`, `b` numéricos responde via `Stringable` sem `.toString()`.
+
+---
+
+### Phase 73: Incremental Object Cache & Fast `run` — Two-Unit Split (COMPLETED)
+> **Contexto (2026-08):** O tempo de inicialização do `eiwa run` em projetos com dependências (`example/home`, `arest`, etc.) levava ~2.8s porque o compilador reprocessava, fazia typecheck e emitia IR LLVM para a árvore completa de dependências e stdlib do zero.
+>
+> **Resolução (Entregue em `perf/incremental-cache` — Fases B, A0, A1, A2, A3):**
+> 1. **Cache de Binário Completo (A0/A1):** Execuções com fontes inalterados checam o hash da árvore de fontes e disparam o binário nativo em cache diretamente em **~0.01s - 0.02s (140x mais rápido)**.
+> 2. **Separação de Emissão em Duas Unidades (A2/A3):**
+>    - `deps.o`: Toda a Standard Library + dependências externas (`--module-path`, `arest`, `html`, `postgres`) são emitidas e cacheadas em `~/.eiwa/cache/objects/<hash>.o`.
+>    - `entry.o`: Apenas o código do projeto do usuário é emitido em cada ciclo de edição.
+> 3. **Resolução Determinística de Símbolos:**
+>    - Helpers e intrinsics emitidos com linkage `internal` (evita `duplicate symbol`).
+>    - Variáveis globais mutáveis de runtime (`eiwa_exception_stack`, `eiwa_active_exception`, `GC_init`) de posse exclusiva do `entry unit`.
+>    - Inclusão de **Pool Signature** (nomes ordenados de `classes_ast`) no hash do `deps.o` para garantir vtables genéricas consistentes.
+> 4. **Resultados:** Tempo de rebuild em edição caindo de 2.78s para **0.27s** (nível `go run`), com 95/95 testes passando na suíte de regressão.
+
+- [x] **Task 73.1:** Implementar otimizações de hotpaths do emissor (Fase B — build ReleaseSafe por padrão, token index para reachability/vtables).
+- [x] **Task 73.2:** Implementar infraestrutura de cache com SHA-256 e fast-path AOT para `eiwa run` (Fases A0/A1).
+- [x] **Task 73.3:** Desacoplar emissão de objeto (`emitObjectFile`) e linkagem nativa (`linkObjects`) com arquivos temporários únicos por PID (Fase A2).
+- [x] **Task 73.4:** Implementar split de emissão em duas unidades (`deps.o` × `entry.o`) com linkage `internal` para helpers e ownership de runtime no entry unit (Fase A3).
+- [x] **Task 73.5:** Estabilizar vtables de genéricos com Pool Signature no hash do `deps.o` e validar suíte completa (95/95 PASSED).
+- [x] **Verify:** `eiwa run` no projeto `home` inicializa em ≤ 0.1s (hit: ~0.01s / warm edit: ~0.27s).
+
+---
+
+### Phase 74: Compilação Incremental em Escala — Package-Level Cache & Export Data (FUTURE / BACKLOG)
+> **Contexto:** Com a Phase 73, projetos pequenos e médios (até ~10.000 linhas) compilam no dev-loop em ~0.27s (onde o link físico de ~100ms é o teto). Conforme surgirem projetos de grande escala em Eiwa (30k a 100k+ linhas de código próprio), o `entry unit` começará a dominar o tempo de compilação.
+>
+> **Gatilho de Ativação:** Reabrir esta fase quando o tempo de rebuild do `entry.o` em projetos reais ultrapassar **0.8s - 1.0s** (projetos > 15.000 - 20.000 LOC de código do usuário).
+
+- [ ] **Task 74.1: Particionamento Granular por Pacote/Diretório (Package-Level Cache):**
+      - Em vez de $N$-way por arquivo individual (que sobrecarregaria o linker com centenas de arquivos `.o`), emitir e cachear **um `.o` por pacote/pasta** (modelo Go), mantendo a lista de objetos no linker entre 10 e 25 arquivos.
+- [ ] **Task 74.2: Export Data Hashing (Assinaturas Públicas):**
+      - Extrair e armazenar o hash apenas das declarações e assinaturas públicas exportadas de cada módulo.
+      - Alterações em corpos de funções privadas ou comentários não invalidam os pacotes dependentes, eliminando re-typecheck e re-link em cascata desnecessários.
+- [ ] **Task 74.3: Deduplicação de Monomorfizações com `linkonce_odr`:**
+      - Com múltiplos pacotes de usuário gerando código separadamente, tipos genéricos monomorfizados de `classes_ast` instanciados em múltiplos pacotes devem ser emitidos com linkage `linkonce_odr` para fusão automática no link-time.
+- [ ] **Task 74.4: Otimização de Linker Driver (`lld` / `mold`):**
+      - Adicionar detecção e suporte opcional a linkers modernos ultrarrápidos (`lld` no Linux/Windows, `mold`) para reduzir o piso de linkagem de ~100ms para < 30ms em projetos com múltiplos pacotes.
+- [ ] **Verify:** Projeto com 50.000+ LOC de código de usuário recompila e linka uma alteração pontual em ≤ 0.35s.
+
+---
 * [x] **Errors:** Semantic validations fail gracefully, emitting rich terminal errors.
 
 ---
 
 ## 🛠️ Historic Bugfixes & Tools
+* **Primitive→Contract Coercion in Receiver Lambdas (Aug 30, 2026):** Coercing a primitive (`Int`/`Double`/`Bool`) to a contract (e.g. `Stringable`) inside a receiver lambda does not build the fat pointer `{data, vtable}` — the raw 64-bit value becomes `data`, so `toString()` dereferences the bit pattern (e.g. `42.0` → `0x4045000000000000`) and segfaults. `String` works (already a pointer). Blocks `McpCall.respond(value: Stringable)` on numeric args. Tracked as **Phase 72 / Task 72.4**.
+* **Receiver-Lambda Field Access Gap (Aug 30, 2026):** ADR 31 (implicit `this`) was implemented in the CTranspiler but is incomplete in the LLVM backend: receiver lambdas (`T.() -> Void`) resolve sibling **methods** without `this.`, but **fields** (`request`, `arguments`, `server`) fail with `PropertyNotFound` — including nested receiver lambdas (Arest's `arest{}` → `routing{}` → `get("/"){}`). Examples (`example/arest`, `example/home`) are written in the idiomatic no-`this.` form and will compile once fixed. Also, chained safe calls (`a?.b()?.c()`) fail (`PropertyNotFound`/ICmp verify error); single `??`-style elvis and `!!` on present values work. Tracked as **Phase 72**.
 * **Unified Process-Isolated Test Runner (Aug 13, 2026):** Refactored `eiwac test <directory>` in `src/main.zig` to use process-isolated child process spawning (`std.process.spawn`) across **both** C and LLVM backends. Eliminates fragile single-process synthetic module bundling (`import {}`), preventing segfaults/aborts in individual test files from halting execution of subsequent tests in the directory, and ensuring clean memory and GC state per test file.
 * **LLVM `String.toString()` Stub Null-Hang (Aug 10, 2026):** `core_String_toString` era emitido como stub retornando `null` (sem corpo válido), propagando `null` pela serialização (`serdeFields` → `SerdeString` → `writeJsonValue` → `escapeJsonString` → `eiwa_str_replace(null)` → `strlen(null)` → loop). O `collections_test.ei` pendurava no teste 12. Intercepta `.toString()` sobre receiver `String` retornando `this` (identidade) antes do dispatch genérico no emissor LLVM; remove o bloco `replace` tardio que ficou morto (Phase 62). Também a partir daqui os logs de diagnóstico do emissor LLVM (`LLVM Debug:`/per-function/stub-fallback e o print do verificador `LLVMVerifyFunction`) ficam atrás da env `EIWA_LLVM_VERBOSE=1`, deixando builds normais limpos — mensagens de falha dura (JIT/Verify/Target) permanecem sempre visíveis.
 * **Concurrency Module Extraction (July 26, 2026):** Moved all concurrency infrastructure (`lib Neco`, `Taskable`, `TaskableNeco`, `Task<T>`, `task()`) from `std.core` to the new `std.coroutines` module, keeping `Awaitable<T>` in core. Non-destructured imports now also re-export `generic_functions_ast` of local symbols (ADR 37).

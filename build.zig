@@ -100,7 +100,15 @@ fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    // Default to ReleaseSafe: `zig build` is how eiwac is normally produced
+    // (see AGENTS.md), and a Debug compiler is several times slower on every
+    // `eiwa run`/`build`. Safety checks stay on; pass -Doptimize=Debug for
+    // compiler development or -Doptimize=ReleaseFast for maximum speed.
+    const optimize = b.option(
+        std.builtin.OptimizeMode,
+        "optimize",
+        "Prioritize performance, safety, or binary size",
+    ) orelse .ReleaseSafe;
 
     const llvm_info = findLlvmPath(b);
     const has_llvm = llvm_info != null;
