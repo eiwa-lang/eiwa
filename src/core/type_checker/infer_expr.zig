@@ -60,28 +60,38 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         var cap_crossed = false;
         var cap_target: ?*Scope = null;
         while (cap_scope) |s| {
-            if (s.symbols.contains("this")) break;
             if (s.symbols.contains(a.name)) {
                 cap_target = s;
                 break;
             }
+            // Stop at an enclosing `this` owner (a class body) — property
+            // targets are handled below. Receiver-lambda scopes also define
+            // `this` but are part of the lambda, so they must be crossed to
+            // reach captured variables declared in the enclosing function.
+            if (s.symbols.contains("this") and !s.is_receiver_boundary) break;
             if (s.is_function_boundary) cap_crossed = true;
             cap_scope = s.parent;
         }
         if (cap_crossed) {
             if (cap_target) |ts_scope| {
-                if (ts_scope.symbols.getPtr(a.name)) |sym_ptr| {
-                    var sym = sym_ptr.*;
-                    if (sym.variable) |v| {
-                        if (v.is_mut) {
-                            var new_v = v;
-                            new_v.is_boxed = true;
-                            sym.variable = new_v;
-                            a.is_boxed = true;
-                            if (v.decl_node) |decl| {
-                                decl.data.var_decl.is_boxed = true;
+                const is_prop_target = if (self.current_class_props) |props|
+                    props.contains(a.name)
+                else
+                    false;
+                if (!is_prop_target) {
+                    if (ts_scope.symbols.getPtr(a.name)) |sym_ptr| {
+                        var sym = sym_ptr.*;
+                        if (sym.variable) |v| {
+                            if (v.is_mut) {
+                                var new_v = v;
+                                new_v.is_boxed = true;
+                                sym.variable = new_v;
+                                a.is_boxed = true;
+                                if (v.decl_node) |decl| {
+                                    decl.data.var_decl.is_boxed = true;
+                                }
+                                sym_ptr.* = sym;
                             }
-                            sym_ptr.* = sym;
                         }
                     }
                 }
@@ -436,7 +446,11 @@ pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *E
 pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const l = &node.data.lambda_expr;
     const old_props = self.current_class_props;
-    defer self.current_class_props = old_props;
+    const old_type_c_name = self.current_type_c_name;
+    defer {
+        self.current_class_props = old_props;
+        self.current_type_c_name = old_type_c_name;
+    }
     
     var expected_params: ?[]const *const EiwaType = null;
     var expected_receiver: ?*const EiwaType = null;
@@ -490,6 +504,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             }
         }
         parent_scope = &receiver_scope.?;
+        receiver_scope.?.is_receiver_boundary = true;
     }
     
     var lambda_scope = Scope.init(self.allocator, parent_scope);
@@ -547,6 +562,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                     }
                 }
             }
+            self.current_type_c_name = actual_name;
         }
         self.current_class_props = &lambda_class_props;
     }

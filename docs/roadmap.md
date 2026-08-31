@@ -4,7 +4,7 @@ This document tracks the historical progress, current status, and future roadmap
 
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
 > **Phase 73 — Incremental Object Cache & Fast `run`** (Two-Unit Split `deps.o` × `entry.o`, cache AOT `~/.eiwa/cache/bin`, 0.01s hit / 0.27s warm edit) — **concluída**.
-> **Fase atual (2026-08):** **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **pendente**.
+> **Fase atual (2026-08):** **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
 
@@ -971,7 +971,7 @@ Semântica alvo:
 
 ---
 
-## Fase atual (2026-08): **Phase 72 — Lacunas do ADR 31 no backend LLVM (PENDENTE)**
+## Fase atual (2026-08): **Phase 72 — Lacunas do ADR 31 no backend LLVM (CONCLUÍDA)**
 
 > **Contexto (2026-08, descoberto durante a padronização de argumentos do Arest MCP):** O ADR 31
 > (Sintaxe de Membro Implícito de `this`) foi implementado no **CTranspiler**, mas o backend
@@ -979,17 +979,39 @@ Semântica alvo:
 > prefixo `this.`. Métodos irmãos resolvem; campos não. O exemplo `example/arest` quebra com
 > `PropertyNotFound` em `request.queries["name"]` (HTTP) e `arguments["a"]` (MCP) quando escritos
 > sem `this.` — o mesmo código compilava no backend C antigo.
+>
+> **Resolução (2026-08):**
+> 1. **Task 72.1 — campos de receiver sem `this.`:** o type checker setava `current_class_props`
+>    no `inferLambdaExpr` mas **não** `current_type_c_name`, então `inferIdentifier`/
+>    `inferAssignment` marcavam `is_class_property` com `owner_type_c_name = null` e o emissor
+>    LLVM caía no fallback de nome de função (`lambda_anon_...`) → `PropertyNotFound`. Agora o
+>    receiver lambda seta `current_type_c_name` para o tipo mangled do receiver.
+> 2. **Boxing de captura por atribuição em receiver lambda:** `inferAssignment` fazia `break` ao
+>    encontrar um escopo com `this` — o `receiver_scope` do lambda (que define `this`) impedia a
+>    detecção de captura de `var` externas. Novo flag `Scope.is_receiver_boundary` distingue o
+>    escopo de receiver do escopo de classe: o walk agora atravessa o receiver scope (sem boxar
+>    propriedades do receiver, tratadas pelo path de `is_class_property`).
+> 3. **Task 72.4 — coerção primitivo→contract dentro de receiver lambda:** `this.show(42.0)` (método
+>    irmão via `this`) era roteado pelo path "static-method" (get_expr com `Function.c_name`) que
+>    usava só `coerceArg` — fat pointer com vtable `null` → `eiwa_to_string` dereferenciava o bit
+>    pattern (`0x4045...`). O path agora constrói o fat pointer real via `coerceToContract`
+>    (espelhando o path sibling).
+> 4. **Task 72.2 — safe-calls encadeados `?.`:** builtins em receivers union/nullable
+>    (`toString`/`toInt`/`toDouble` sobre `Int?`/`Double?`/`Bool?`/`String?`) agora são emitidos
+>    por `emitUnionBuiltin` (null-check `?.` + desboxagem do variant + re-boxing do resultado), e
+>    comparações `T? ==/!= scalar` usam `emitNullableScalarCompare` (null-check primeiro, para
+>    `null` nunca igualar scalar zero).
 
-- [ ] **Task 72.1:** Corrigir resolução de campos do receiver em lambdas de receptor (`T.() -> Void`) no backend LLVM sem exigir `this.` (espelhar o ADR 31 / CTranspiler). Caso mínimo que falha hoje:
+- [x] **Task 72.1:** Corrigir resolução de campos do receiver em lambdas de receptor (`T.() -> Void`) no backend LLVM sem exigir `this.` (espelhar o ADR 31 / CTranspiler). Caso mínimo que falha hoje:
       ```eiwa
       type Box(val name: String, var count: Int = 0)
       fun runBox(init: Box.() -> Void) { val b = Box("x", 1); init(b) }
       fun main() { runBox { println(name); println(count) } }  // PropertyNotFound
       ```
       Com `this.` explícito compila e roda. Também quebra em lambdas de receptor aninhadas (padrão do Arest: `arest {}` → `routing {}` → `get("/") { }`).
-- [ ] **Task 72.2:** Corrigir safe-calls encadeados `?.` (ex.: `arguments["a"]?.asNumber()?.toInt()`). Hoje `PropertyNotFound`/ICmp verification error no LLVM; `!!` por valor presente e `?:` único funcionam.
-- [ ] **Task 72.3:** Adicionar teste de regressão em `samples/tests/` cobrindo campo `val` e `var` em receiver lambda simples e aninhado.
-- [ ] **Task 72.4:** Corrigir coação de primitivo → contract (`Stringable`/`SerdeValue`/etc.) **dentro de receiver lambda** no backend LLVM. Fora de lambda funciona; dentro de lambda, o fat pointer `{data, vtable}` não é construído e o valor cru do primitivo vira o `data` (segfault ao dereferenciar o bit pattern do double). Caso mínimo que falha:
+- [x] **Task 72.2:** Corrigir safe-calls encadeados `?.` (ex.: `arguments["a"]?.asNumber()?.toInt()`). Hoje `PropertyNotFound`/ICmp verification error no LLVM; `!!` por valor presente e `?:` único funcionam.
+- [x] **Task 72.3:** Adicionar teste de regressão em `samples/tests/` cobrindo campo `val` e `var` em receiver lambda simples e aninhado.
+- [x] **Task 72.4:** Corrigir coação de primitivo → contract (`Stringable`/`SerdeValue`/etc.) **dentro de receiver lambda** no backend LLVM. Fora de lambda funciona; dentro de lambda, o fat pointer `{data, vtable}` não é construído e o valor cru do primitivo vira o `data` (segfault ao dereferenciar o bit pattern do double). Caso mínimo que falha:
       ```eiwa
       type Box(val label: String) {
           fun show(value: Stringable): String { return label + ":" + value.toString() }
@@ -1002,7 +1024,7 @@ Semântica alvo:
       }
       ```
       `show("ola")` (String) funciona mesmo no lambda — String já é ponteiro; só primitivos numéricos/bool quebram. É o que impede `respond(value: Stringable)` no Arest MCP (`McpCall.respond(a + b)`).
-- [ ] **Verify:** `example/arest/src/main.ei` compila com `request.queries["name"]` e `arguments["a"]` **sem** `this.`, a suíte `zig build test` permanece verde, e `McpCall.respond(a + b)` com `a`, `b` numéricos responde via `Stringable` sem `.toString()`.
+- [x] **Verify:** `samples/tests/receiver_lambda_fields_test.ei` (10 testes) cobre campo `val`/`var` simples e aninhado, captura por atribuição, coerção primitivo→contract (Double/Int/Bool), safe-calls encadeados e semântica null-check; suíte completa **94/94 PASSED** (LLVM único) + `zig build test` verde. **Nota:** `example/arest` não está neste repositório (extraído para repo próprio); os cenários `request.queries["name"]`, `arguments["a"]` e `McpCall.respond(a + b)` são cobertos pelos testes de regressão equivalentes.
 
 ---
 
@@ -1051,6 +1073,8 @@ Semântica alvo:
 ---
 
 ## 🛠️ Historic Bugfixes & Tools
+* **Int/Double Numeric Promotion in Binary Ops (Aug 31, 2026):** `x * 2.0` with `x: Int` emitted `mul i64, double` (LLVM verification error) or returned `0` in method bodies — the emitter's `is_double` only inspected the **left** operand (`bin.left.resolved_type == .Double`), even though the type checker already resolves `Int op Double` to `.Double`. Now `is_double` is true when **either** operand is `Double` (guarded to both-numeric so custom-type operators like `Money * Int` still dispatch via `.times()`), and the `Int` operand is promoted with `SIToFP` before the float op/comparison. Regression tests added to `double_test.ei` (`Int * Double`, `Double * Int`, `+`/`-`/`/`, comparisons, `Int * Int` stays `Int`).
+* **Phase 72 — ADR 31 LLVM Gaps (Aug 31, 2026):** All four gaps closed. (1) **Receiver-lambda field access:** `inferLambdaExpr` now sets `current_type_c_name` alongside `current_class_props`, so `name`/`count` inside `T.() -> Void` resolve fields with the correct owner type (was `PropertyNotFound`). (2) **Boxing of captured `var` by assignment inside receiver lambdas:** the capture walk in `inferAssignment` broke at any scope containing `this`; a new `Scope.is_receiver_boundary` flag marks receiver scopes so the walk crosses them (class-property targets are still excluded from boxing). (3) **Primitive→contract coercion inside receiver lambdas:** `this.show(42.0)` routed through the "static-method" path which only called `coerceArg` (fat pointer with null vtable → `eiwa_to_string(0x4045...)` segfault); the path now builds the real fat pointer via `coerceToContract`. (4) **Chained safe calls (`?.`):** builtins (`toString`/`toInt`/`toDouble`) on nullable/union receivers now emit via `emitUnionBuiltin` (null-check + variant unboxing + result re-boxing), and `T? ==/!= scalar` comparisons via `emitNullableScalarCompare` (null-checked, so `null != 0`). Regression suite `receiver_lambda_fields_test.ei` (10 tests); full suite 94/94 PASSED + `zig build test` green.
 * **Primitive→Contract Coercion in Receiver Lambdas (Aug 30, 2026):** Coercing a primitive (`Int`/`Double`/`Bool`) to a contract (e.g. `Stringable`) inside a receiver lambda does not build the fat pointer `{data, vtable}` — the raw 64-bit value becomes `data`, so `toString()` dereferences the bit pattern (e.g. `42.0` → `0x4045000000000000`) and segfaults. `String` works (already a pointer). Blocks `McpCall.respond(value: Stringable)` on numeric args. Tracked as **Phase 72 / Task 72.4**.
 * **Receiver-Lambda Field Access Gap (Aug 30, 2026):** ADR 31 (implicit `this`) was implemented in the CTranspiler but is incomplete in the LLVM backend: receiver lambdas (`T.() -> Void`) resolve sibling **methods** without `this.`, but **fields** (`request`, `arguments`, `server`) fail with `PropertyNotFound` — including nested receiver lambdas (Arest's `arest{}` → `routing{}` → `get("/"){}`). Examples (`example/arest`, `example/home`) are written in the idiomatic no-`this.` form and will compile once fixed. Also, chained safe calls (`a?.b()?.c()`) fail (`PropertyNotFound`/ICmp verify error); single `??`-style elvis and `!!` on present values work. Tracked as **Phase 72**.
 * **Unified Process-Isolated Test Runner (Aug 13, 2026):** Refactored `eiwac test <directory>` in `src/main.zig` to use process-isolated child process spawning (`std.process.spawn`) across **both** C and LLVM backends. Eliminates fragile single-process synthetic module bundling (`import {}`), preventing segfaults/aborts in individual test files from halting execution of subsequent tests in the directory, and ensuring clean memory and GC state per test file.

@@ -37,6 +37,18 @@ test "double: conversions toInt and toDouble" {
     assert(d2 == 100.0, "100.toDouble() should be 100.0")
 }
 
+test "double: Int/Double numeric promotion in binary ops" {
+    val x: Int = 7
+    assert(x * 2.0 == 14.0, "Int * Double promotes to Double")
+    assert(2.0 * x == 14.0, "Double * Int promotes to Double")
+    assert(x + 2.5 == 9.5, "Int + Double promotes to Double")
+    assert(10.5 - x == 3.5, "Double - Int promotes to Double")
+    assert(x / 2.0 == 3.5, "Int / Double promotes to Double")
+    assert(x < 10.0, "Int < Double compares in double precision")
+    assert(x == 7.0, "Int == Double compares in double precision")
+    assert(x * 3 == 21, "Int * Int stays Int")
+}
+
 test "double: toString" {
     val d = 12.34
     val s = d.toString()

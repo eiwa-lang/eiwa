@@ -401,6 +401,9 @@ pub fn emitExpression(
                 if (get.object.resolved_type) |obj_rt| {
                     if (types_mapping.isStringable(obj_rt.*)) {
                         const obj_base = obj_rt.*;
+                        if (obj_base == .Union) {
+                            return try emitUnionBuiltin(ctx, mod, builder, scope, structs, libs, get.object, .to_string, get.is_safe);
+                        }
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                         if (obj_base == .Int) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
@@ -460,7 +463,9 @@ pub fn emitExpression(
             // Emits direct CPU cast instructions (FPToSI / SIToFP).
             if (std.mem.eql(u8, get.name, "toInt")) {
                 if (get.object.resolved_type) |obj_rt| {
-                    if (obj_rt.* == .Double) {
+                    if (obj_rt.* == .Union) {
+                        return try emitUnionBuiltin(ctx, mod, builder, scope, structs, libs, get.object, .to_int, get.is_safe);
+                    } else if (obj_rt.* == .Double) {
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                         return llvm.LLVMBuildFPToSI(builder, obj_val, llvm.LLVMInt64TypeInContext(ctx), "double_to_int");
                     } else if (obj_rt.* == .Int) {
@@ -470,7 +475,9 @@ pub fn emitExpression(
             }
             if (std.mem.eql(u8, get.name, "toDouble")) {
                 if (get.object.resolved_type) |obj_rt| {
-                    if (obj_rt.* == .Int) {
+                    if (obj_rt.* == .Union) {
+                        return try emitUnionBuiltin(ctx, mod, builder, scope, structs, libs, get.object, .to_double, get.is_safe);
+                    } else if (obj_rt.* == .Int) {
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                         return llvm.LLVMBuildSIToFP(builder, obj_val, llvm.LLVMDoubleTypeInContext(ctx), "int_to_double");
                     } else if (obj_rt.* == .Double) {
@@ -1099,7 +1106,34 @@ pub fn emitExpression(
             var left_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.left);
             var right_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.right);
 
-            const is_double = if (bin.left.resolved_type) |t| (t.* == .Double) else false;
+            // Numeric promotion: `Int op Double` (or the reverse) resolves to a
+            // Double in the type checker, so the arithmetic/comparison must run
+            // in double precision with the Int operand promoted via SIToFP. Only
+            // applies when both operands are numeric — custom-type operators
+            // (e.g. `Money * Int` → `.times()`) dispatch via method, not float ops.
+            const l_is_double = if (bin.left.resolved_type) |t| (t.* == .Double) else false;
+            const r_is_double = if (bin.right.resolved_type) |t| (t.* == .Double) else false;
+            const l_is_num = if (bin.left.resolved_type) |t| (t.* == .Int or t.* == .Double) else false;
+            const r_is_num = if (bin.right.resolved_type) |t| (t.* == .Int or t.* == .Double) else false;
+            const is_double = (l_is_double or r_is_double) and l_is_num and r_is_num;
+
+            if (is_double) {
+                const dbl_t = llvm.LLVMDoubleTypeInContext(ctx);
+                if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(left_val)) == llvm.LLVMIntegerTypeKind) {
+                    left_val = llvm.LLVMBuildSIToFP(builder, left_val, dbl_t, "int2dbl_l");
+                }
+                if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(right_val)) == llvm.LLVMIntegerTypeKind) {
+                    right_val = llvm.LLVMBuildSIToFP(builder, right_val, dbl_t, "int2dbl_r");
+                }
+            }
+
+            // Nullable/union vs scalar primitive (`Double? == 42.0`, `Int? == 42`,
+            // `Bool? == true`): null-check the union before comparing, so `null`
+            // never equals a zero scalar. Runs before the ptr→int coercions below.
+            if (bin.op == .eq_eq or bin.op == .bang_eq) {
+                const nullable_res = try emitNullableScalarCompare(ctx, mod, builder, left_val, right_val, bin.left.resolved_type, bin.right.resolved_type, bin.op == .eq_eq);
+                if (nullable_res) |nr| return nr;
+            }
 
             if (bin.op == .plus and (isStringOperand(bin.left) or isStringOperand(bin.right))) {
                 const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
@@ -2180,7 +2214,61 @@ pub fn emitExpression(
                                 for (call.arguments, 0..) |arg_node, idx| {
                                     var arg_val = try emitExpression(ctx, mod, builder, scope, structs, libs, arg_node);
                                     if (idx + arg_base < param_count) {
-                                        arg_val = coerceArg(builder, arg_val, func_param_types[idx + arg_base]);
+                                        const ptype = func_param_types[idx + arg_base];
+                                        // Contract parameter: build the fat pointer
+                                        // `{ data, vtable }` for primitive/pointer args
+                                        // (e.g. `show(40.0 + 2.0)` inside a receiver
+                                        // lambda), mirroring the sibling-method path —
+                                        // coerceArg alone would attach a null vtable.
+                                        if (llvm.LLVMGetTypeKind(ptype) == llvm.LLVMStructTypeKind and
+                                            llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind)
+                                        {
+                                            if (arg_node.resolved_type) |arg_rt| {
+                                                const arg_c_name = switch (ts.extractBaseType(arg_rt).*) {
+                                                    .Custom => |n| n,
+                                                    .GenericInstance => |gi| gi.base_name,
+                                                    .Int => "core_Int",
+                                                    .Double => "core_Double",
+                                                    .Bool => "core_Bool",
+                                                    .String => "core_String",
+                                                    .Pointer => "core_Pointer",
+                                                    else => "",
+                                                };
+                                                if (arg_c_name.len > 0) {
+                                                    var contract_c_name: []const u8 = "";
+                                                    if (arg_node.expected_type) |et| {
+                                                        const ebase = ts.extractBaseType(et);
+                                                        if (ebase.* == .Custom) contract_c_name = ebase.Custom;
+                                                    }
+                                                    if (contract_c_name.len == 0) {
+                                                        if (call.callee.resolved_type) |crt| {
+                                                            const base_crt = ts.extractBaseType(crt);
+                                                            if (base_crt.* == .Function and idx + arg_base < base_crt.Function.params.len) {
+                                                                switch (ts.extractBaseType(base_crt.Function.params[idx + arg_base]).*) {
+                                                                    .Custom => |n| contract_c_name = n,
+                                                                    .GenericInstance => |gi| contract_c_name = gi.base_name,
+                                                                    else => {},
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    if (contract_c_name.len > 0) {
+                                                        arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
+                                                    } else if (global_contracts_ast_ptr) |ca| {
+                                                        var it = ca.iterator();
+                                                        while (it.next()) |entry| {
+                                                            const c_name = entry.key_ptr.*;
+                                                            const test_fat = coerceToContractChecked(ctx, mod, builder, arg_val, arg_c_name, c_name) catch continue;
+                                                            if (llvm.LLVMTypeOf(test_fat) == ptype) {
+                                                                arg_val = test_fat;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        arg_val = coerceArg(builder, arg_val, ptype);
                                     }
                                     arg_vals[idx + arg_base] = arg_val;
                                 }
@@ -4098,6 +4186,225 @@ fn wrapStringWithHeader(
     _ = llvm.LLVMBuildStore(builder, len, f1_ptr);
 
     return inst_ptr;
+}
+
+/// Returns the single non-null variant base type of a nullable union
+/// (`T | null`), or null for multi-variant unions (which require runtime
+/// discrimination).
+fn unionPrimaryVariant(rt: *const ts.EiwaType) ?ts.EiwaType {
+    var base = ts.extractBaseType(rt);
+    while (base.* == .Union) {
+        const u = base.Union;
+        const left_null = u.left.* == .Null;
+        const right_null = u.right.* == .Null;
+        if (left_null and !right_null) {
+            base = ts.extractBaseType(u.right);
+        } else if (right_null and !left_null) {
+            base = ts.extractBaseType(u.left);
+        } else {
+            return null;
+        }
+    }
+    if (base.* == .Null or base.* == .Unknown) return null;
+    return base.*;
+}
+
+/// Unboxes a union/boxed pointer value back to the raw scalar of `variant`
+/// (Int → i64, Double → double, Bool → i1). String / Pointer / Custom variants
+/// are already pointers and returned unchanged.
+fn unboxUnionVariant(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, variant: ts.EiwaType, boxed: llvm.LLVMValueRef) llvm.LLVMValueRef {
+    const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+    switch (variant) {
+        .Int => return llvm.LLVMBuildPtrToInt(builder, boxed, i64_t, "union_int"),
+        .Bool => {
+            const i64_val = llvm.LLVMBuildPtrToInt(builder, boxed, i64_t, "union_bool_i64");
+            return llvm.LLVMBuildTrunc(builder, i64_val, llvm.LLVMInt1TypeInContext(ctx), "union_bool");
+        },
+        .Double => {
+            const i64_val = llvm.LLVMBuildPtrToInt(builder, boxed, i64_t, "union_dbl_i64");
+            return llvm.LLVMBuildBitCast(builder, i64_val, llvm.LLVMDoubleTypeInContext(ctx), "union_dbl");
+        },
+        else => return boxed,
+    }
+}
+
+/// Emits a builtin primitive method (`toString` / `toInt` / `toDouble`) on a
+/// nullable/union receiver (`T?`), honoring the safe-call (`?.`) null check and
+/// boxing the result back into the union representation (a pointer).
+fn emitUnionBuiltin(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    object: *ast.ASTNode,
+    method: enum { to_string, to_int, to_double },
+    is_safe: bool,
+) !llvm.LLVMValueRef {
+    const obj_rt = object.resolved_type orelse return error.UnsupportedUnionDispatch;
+    const variant = unionPrimaryVariant(obj_rt) orelse return error.UnsupportedUnionDispatch;
+    const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, object);
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+
+    const emit_result = struct {
+        fn run(
+            c_ctx: llvm.LLVMContextRef,
+            c_mod: llvm.LLVMModuleRef,
+            c_builder: llvm.LLVMBuilderRef,
+            c_variant: ts.EiwaType,
+            c_boxed: llvm.LLVMValueRef,
+            c_method: @TypeOf(method),
+        ) !llvm.LLVMValueRef {
+            switch (c_method) {
+                .to_string => {
+                    const is_str = switch (c_variant) {
+                        .String => true,
+                        .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String") or std.mem.eql(u8, n, "std_core_String"),
+                        else => false,
+                    };
+                    if (is_str) return c_boxed;
+                    const unboxed = unboxUnionVariant(c_ctx, c_builder, c_variant, c_boxed);
+                    return try emitValueToString(c_ctx, c_mod, c_builder, unboxed, &c_variant);
+                },
+                .to_int => {
+                    const i64_t = llvm.LLVMInt64TypeInContext(c_ctx);
+                    const unboxed = unboxUnionVariant(c_ctx, c_builder, c_variant, c_boxed);
+                    const i64_val = switch (c_variant) {
+                        .Double => llvm.LLVMBuildFPToSI(c_builder, unboxed, i64_t, "union_dbl_to_int"),
+                        .Int => unboxed,
+                        else => unboxed,
+                    };
+                    // Box back into the union pointer representation.
+                    return llvm.LLVMBuildIntToPtr(c_builder, i64_val, llvm.LLVMPointerTypeInContext(c_ctx, 0), "union_int_box");
+                },
+                .to_double => {
+                    const dbl_t = llvm.LLVMDoubleTypeInContext(c_ctx);
+                    const unboxed = unboxUnionVariant(c_ctx, c_builder, c_variant, c_boxed);
+                    const dbl_val = switch (c_variant) {
+                        .Int => llvm.LLVMBuildSIToFP(c_builder, unboxed, dbl_t, "union_int_to_dbl"),
+                        .Double => unboxed,
+                        else => unboxed,
+                    };
+                    const i64_t = llvm.LLVMInt64TypeInContext(c_ctx);
+                    const bits = llvm.LLVMBuildBitCast(c_builder, dbl_val, i64_t, "union_dbl_bits");
+                    return llvm.LLVMBuildIntToPtr(c_builder, bits, llvm.LLVMPointerTypeInContext(c_ctx, 0), "union_dbl_box");
+                },
+            }
+        }
+    }.run;
+
+    if (!is_safe) {
+        return try emit_result(ctx, mod, builder, variant, obj_val, method);
+    }
+
+    const parent_func = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "safe_union_then");
+    const else_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "safe_union_else");
+    const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "safe_union_merge");
+
+    const is_null = llvm.LLVMBuildIsNull(builder, obj_val, "union_is_null");
+    _ = llvm.LLVMBuildCondBr(builder, is_null, else_bb, then_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+    const val_then = try emit_result(ctx, mod, builder, variant, obj_val, method);
+    const then_end_bb = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+    const const_null = llvm.LLVMConstNull(ptr_t);
+    const else_end_bb = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+    const phi = llvm.LLVMBuildPhi(builder, ptr_t, "safe_union_val");
+    var incoming_vals = [_]llvm.LLVMValueRef{ val_then, const_null };
+    var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };
+    llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+    return phi;
+}
+
+/// Compares a nullable/union value (boxed pointer) against a scalar primitive
+/// (`Double? == 42.0`, `Int? == 42`, `Bool? == true`), null-checking the union
+/// first so `null` never compares equal to a zero scalar. Returns null when the
+/// operand pair is not a (nullable union, scalar) combination.
+fn emitNullableScalarCompare(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    left_val: llvm.LLVMValueRef,
+    right_val: llvm.LLVMValueRef,
+    left_rt: ?*const ts.EiwaType,
+    right_rt: ?*const ts.EiwaType,
+    is_eq: bool,
+) !?llvm.LLVMValueRef {
+    var is_union_left = false;
+    const union_rt: ?*const ts.EiwaType = if (left_rt != null and left_rt.?.* == .Union) blk: {
+        is_union_left = true;
+        break :blk left_rt.?;
+    } else if (right_rt != null and right_rt.?.* == .Union) blk: {
+        break :blk right_rt.?;
+    } else null;
+    const urt = union_rt orelse return null;
+    const variant = unionPrimaryVariant(urt) orelse return null;
+    if (variant != .Int and variant != .Double and variant != .Bool) return null;
+
+    const scalar_rt = if (is_union_left) right_rt else left_rt;
+    const srt = scalar_rt orelse return null;
+    const base = ts.extractBaseType(srt).*;
+    const compatible = switch (variant) {
+        .Double => base == .Double or base == .Int,
+        .Int => base == .Int,
+        .Bool => base == .Bool,
+        else => false,
+    };
+    if (!compatible) return null;
+
+    const union_val = if (is_union_left) left_val else right_val;
+    var scalar_val = if (is_union_left) right_val else left_val;
+    const i1_t = llvm.LLVMInt1TypeInContext(ctx);
+    const dbl_t = llvm.LLVMDoubleTypeInContext(ctx);
+    const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+    if (variant == .Double) scalar_val = coerceArg(builder, scalar_val, dbl_t);
+    if (variant == .Int) scalar_val = coerceArg(builder, scalar_val, i64_t);
+
+    const parent_func = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "nullable_cmp_then");
+    const else_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "nullable_cmp_else");
+    const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "nullable_cmp_merge");
+
+    const is_null = llvm.LLVMBuildIsNull(builder, union_val, "nullable_is_null");
+    _ = llvm.LLVMBuildCondBr(builder, is_null, else_bb, then_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+    const unboxed = unboxUnionVariant(ctx, builder, variant, union_val);
+    const l_cmp = if (is_union_left) unboxed else scalar_val;
+    const r_cmp = if (is_union_left) scalar_val else unboxed;
+    const cmp_then = if (variant == .Double)
+        (if (is_eq)
+            llvm.LLVMBuildFCmp(builder, llvm.LLVMRealOEQ, l_cmp, r_cmp, "nullable_feq")
+        else
+            llvm.LLVMBuildFCmp(builder, llvm.LLVMRealUNE, l_cmp, r_cmp, "nullable_fne"))
+    else
+        (if (is_eq)
+            llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, l_cmp, r_cmp, "nullable_ieq")
+        else
+            llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, l_cmp, r_cmp, "nullable_ine"));
+    const then_end_bb = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+    const null_result = llvm.LLVMConstInt(i1_t, if (is_eq) 0 else 1, 0);
+    const else_end_bb = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+    const phi = llvm.LLVMBuildPhi(builder, i1_t, "nullable_cmp_res");
+    var incoming_vals = [_]llvm.LLVMValueRef{ cmp_then, null_result };
+    var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };
+    llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+    _ = mod;
+    return phi;
 }
 
 pub fn emitValueToString(

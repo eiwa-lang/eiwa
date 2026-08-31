@@ -1,0 +1,116 @@
+import { assert } from "std.core"
+
+type Box(val name: String, var count: Int = 0) {
+    fun show(value: Stringable): String {
+        return name + ":" + value.toString()
+    }
+}
+
+fun runBox(init: Box.() -> Void): Void {
+    val b = Box("x", 1)
+    init(b)
+}
+
+fun runBoxNested(init: Box.() -> Void): Void {
+    runBox {
+        init(this)
+    }
+}
+
+fun runBoxWithVal(init: Box.() -> Void): Void {
+    val b = Box("v")
+    init(b)
+}
+
+test "receiver lambda: val field access without this." {
+    var captured = ""
+    runBox {
+        captured = name
+    }
+    assert(captured == "x")
+}
+
+test "receiver lambda: var field access without this." {
+    var captured = 0
+    runBox {
+        captured = count
+    }
+    assert(captured == 1)
+}
+
+test "receiver lambda: var field read and reassigned without this." {
+    var before = ""
+    var after = ""
+    runBox {
+        before = name + count.toString()
+        count = count + 10
+        after = count.toString()
+    }
+    assert(before == "x1")
+    assert(after == "11")
+}
+
+test "receiver lambda: nested receiver field access without this." {
+    var captured = ""
+    runBoxNested {
+        captured = name + count.toString()
+    }
+    assert(captured == "x1")
+}
+
+test "receiver lambda: capture outer var by assignment still propagates" {
+    var captured = ""
+    runBox {
+        captured = name
+    }
+    assert(captured == "x")
+}
+
+test "receiver lambda: sibling method call and primitive to contract coercion" {
+    var captured = ""
+    runBoxWithVal {
+        captured = show(40.0 + 2.0)
+    }
+    assert(captured == "v:42")
+}
+
+test "receiver lambda: primitive to contract coercion for Int and Bool" {
+    var captured = ""
+    runBoxWithVal {
+        captured = show(7) + show(true)
+    }
+    assert(captured == "v:7v:true")
+}
+
+fun getBox(): Box? {
+    return Box("q", 5)
+}
+
+test "chained safe calls: nullable field access" {
+    val s = getBox()?.name
+    assert(s == "q")
+    val n = getBox()?.count
+    assert(n == 5)
+}
+
+fun asNum(): Double? {
+    return 42.0
+}
+
+test "chained safe calls: nullable numeric conversions" {
+    val n = asNum()?.toInt()
+    assert(n == 42)
+    assert(n != 41)
+    assert(n != 43)
+}
+
+test "chained safe calls: nullable comparison null-check semantics" {
+    val nul: Int? = null
+    assert(nul == null)
+    assert(nul != 0)
+    assert(nul != 42)
+    val present: Int? = 42
+    assert(present != null)
+    assert(present == 42)
+    assert(present != 41)
+}
