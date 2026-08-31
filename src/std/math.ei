@@ -1,4 +1,5 @@
 @Header("<math.h>")
+@Link("m")
 lib NativeMath {
     fun sin(x: Double): Double
     fun cos(x: Double): Double
