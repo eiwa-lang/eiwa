@@ -338,11 +338,17 @@ fn run(init: std.process.Init) !void {
             \\  --release        Optimized build
             \\  --target <name>  Target triple or alias (windows, linux, macos, wasm)
             \\  -o <name>        Output binary name (build command)
+            \\  --aot            run: build a cached native binary and execute
+            \\                   it instead of JIT (used by eiwa run on projects)
+            \\  --no-cache       Disable the incremental build cache
             \\  -I, -L, -l, -D   Extra flags forwarded to the C compiler
             \\  -h, --help       Show this help
             \\
             \\Extra positional arguments after the file are forwarded to
             \\the program when using the run command.
+            \\
+            \\Incremental cache: unchanged builds reuse artifacts under
+            \\EIWA_CACHE_DIR (default ~/.eiwa/cache) keyed by content hashes.
             \\
         , .{});
         return;
