@@ -3,6 +3,7 @@
 This document tracks the historical progress, current status, and future roadmap of the Eiwa Compiler. 
 
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
+> **Phase 73 — Incremental Object Cache & Fast `run`** (Two-Unit Split `deps.o` × `entry.o`, cache AOT `~/.eiwa/cache/bin`, 0.01s hit / 0.27s warm edit) — **concluída**.
 > **Fase atual (2026-08):** **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **pendente**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1005,9 +1006,46 @@ Semântica alvo:
 
 ---
 
-## ✅ Definition of Done (Per Phase)
-* [x] **Security/Lint:** No memory leaks in tests (utilizing `std.testing.allocator` across internal Zig modules).
-* [x] **Build:** `zig build test` and `zig build run` execute successfully.
+### Phase 73: Incremental Object Cache & Fast `run` — Two-Unit Split (COMPLETED)
+> **Contexto (2026-08):** O tempo de inicialização do `eiwa run` em projetos com dependências (`example/home`, `arest`, etc.) levava ~2.8s porque o compilador reprocessava, fazia typecheck e emitia IR LLVM para a árvore completa de dependências e stdlib do zero.
+>
+> **Resolução (Entregue em `perf/incremental-cache` — Fases B, A0, A1, A2, A3):**
+> 1. **Cache de Binário Completo (A0/A1):** Execuções com fontes inalterados checam o hash da árvore de fontes e disparam o binário nativo em cache diretamente em **~0.01s - 0.02s (140x mais rápido)**.
+> 2. **Separação de Emissão em Duas Unidades (A2/A3):**
+>    - `deps.o`: Toda a Standard Library + dependências externas (`--module-path`, `arest`, `html`, `postgres`) são emitidas e cacheadas em `~/.eiwa/cache/objects/<hash>.o`.
+>    - `entry.o`: Apenas o código do projeto do usuário é emitido em cada ciclo de edição.
+> 3. **Resolução Determinística de Símbolos:**
+>    - Helpers e intrinsics emitidos com linkage `internal` (evita `duplicate symbol`).
+>    - Variáveis globais mutáveis de runtime (`eiwa_exception_stack`, `eiwa_active_exception`, `GC_init`) de posse exclusiva do `entry unit`.
+>    - Inclusão de **Pool Signature** (nomes ordenados de `classes_ast`) no hash do `deps.o` para garantir vtables genéricas consistentes.
+> 4. **Resultados:** Tempo de rebuild em edição caindo de 2.78s para **0.27s** (nível `go run`), com 95/95 testes passando na suíte de regressão.
+
+- [x] **Task 73.1:** Implementar otimizações de hotpaths do emissor (Fase B — build ReleaseSafe por padrão, token index para reachability/vtables).
+- [x] **Task 73.2:** Implementar infraestrutura de cache com SHA-256 e fast-path AOT para `eiwa run` (Fases A0/A1).
+- [x] **Task 73.3:** Desacoplar emissão de objeto (`emitObjectFile`) e linkagem nativa (`linkObjects`) com arquivos temporários únicos por PID (Fase A2).
+- [x] **Task 73.4:** Implementar split de emissão em duas unidades (`deps.o` × `entry.o`) com linkage `internal` para helpers e ownership de runtime no entry unit (Fase A3).
+- [x] **Task 73.5:** Estabilizar vtables de genéricos com Pool Signature no hash do `deps.o` e validar suíte completa (95/95 PASSED).
+- [x] **Verify:** `eiwa run` no projeto `home` inicializa em ≤ 0.1s (hit: ~0.01s / warm edit: ~0.27s).
+
+---
+
+### Phase 74: Compilação Incremental em Escala — Package-Level Cache & Export Data (FUTURE / BACKLOG)
+> **Contexto:** Com a Phase 73, projetos pequenos e médios (até ~10.000 linhas) compilam no dev-loop em ~0.27s (onde o link físico de ~100ms é o teto). Conforme surgirem projetos de grande escala em Eiwa (30k a 100k+ linhas de código próprio), o `entry unit` começará a dominar o tempo de compilação.
+>
+> **Gatilho de Ativação:** Reabrir esta fase quando o tempo de rebuild do `entry.o` em projetos reais ultrapassar **0.8s - 1.0s** (projetos > 15.000 - 20.000 LOC de código do usuário).
+
+- [ ] **Task 74.1: Particionamento Granular por Pacote/Diretório (Package-Level Cache):**
+      - Em vez de $N$-way por arquivo individual (que sobrecarregaria o linker com centenas de arquivos `.o`), emitir e cachear **um `.o` por pacote/pasta** (modelo Go), mantendo a lista de objetos no linker entre 10 e 25 arquivos.
+- [ ] **Task 74.2: Export Data Hashing (Assinaturas Públicas):**
+      - Extrair e armazenar o hash apenas das declarações e assinaturas públicas exportadas de cada módulo.
+      - Alterações em corpos de funções privadas ou comentários não invalidam os pacotes dependentes, eliminando re-typecheck e re-link em cascata desnecessários.
+- [ ] **Task 74.3: Deduplicação de Monomorfizações com `linkonce_odr`:**
+      - Com múltiplos pacotes de usuário gerando código separadamente, tipos genéricos monomorfizados de `classes_ast` instanciados em múltiplos pacotes devem ser emitidos com linkage `linkonce_odr` para fusão automática no link-time.
+- [ ] **Task 74.4: Otimização de Linker Driver (`lld` / `mold`):**
+      - Adicionar detecção e suporte opcional a linkers modernos ultrarrápidos (`lld` no Linux/Windows, `mold`) para reduzir o piso de linkagem de ~100ms para < 30ms em projetos com múltiplos pacotes.
+- [ ] **Verify:** Projeto com 50.000+ LOC de código de usuário recompila e linka uma alteração pontual em ≤ 0.35s.
+
+---
 * [x] **Errors:** Semantic validations fail gracefully, emitting rich terminal errors.
 
 ---
