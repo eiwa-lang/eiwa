@@ -172,5 +172,5 @@ jobs:
             EIWA_VERSION=${{ github.ref_name }}
             EIWA_CACHE_BUST=${{ github.sha }}
           tags: |
-            leodouglas/eiwa:${{ github.ref_name }}
-            leodouglas/eiwa:latest
+            eiwac/eiwa:${{ github.ref_name }}
+            eiwac/eiwa:latest

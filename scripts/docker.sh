@@ -4,11 +4,11 @@
 #   ./scripts/docker.sh build   # build local image
 #   ./scripts/docker.sh push    # build + push to Docker Hub (amd64 + arm64)
 #
-# Image: leodouglas/eiwa (tags: latest + v<git tag>)
+# Image: eiwac/eiwa (tags: latest + v<git tag>)
 
 set -e
 
-IMAGE="leodouglas/eiwa"
+IMAGE="eiwac/eiwa"
 VERSION="$(git describe --tags --always 2>/dev/null || echo dev)"
 case "$VERSION" in
   v*) TAG="$VERSION" ;;
