@@ -15,17 +15,17 @@
 
 | ID | Task | Status | Branch | Notes |
 |----|------|--------|--------|-------|
-| B | ReleaseSafe default + token-indexed reachability | ✅ done | `perf/emitter-hotpaths` (merged into A branch) | 4x on build |
+| B | ReleaseSafe default + token-indexed reachability | ✅ done | `perf/emitter-hotpaths` | 4x on build |
 | A0 | Full-program binary cache in `eiwac` + `run --aot` (build-if-stale + exec) | ✅ done | `perf/incremental-cache` | hit = ~0.01-0.02s |
 | A1 | Cache infra: sha256 key (closure sources + eiwac binary + flags), `~/.eiwa/cache/bin`, `EIWA_CACHE_DIR`, `--no-cache` | ✅ done | `perf/incremental-cache` | |
 | A2 | Split `emitNativeBinary` into `emitObjectFile(module) → .o` + `linkObjects([.o]) → bin` | ✅ done | `perf/incremental-cache` (736b03b) | temp object unique per pid |
-| A3 | Two-unit split emission: deps unit (std + `--module-path` deps, cached object) × entry unit (project code, always emitted) | 🔄 **in progress** | `perf/incremental-cache` (**uncommitted**) | see sub-tasks below |
-| A4 | Per-module object cache wired into default build/run path (relink only changed modules) | ⬜ pending | | target: warm edit-run ≤ 0.3s |
+| A3 | Two-unit split emission: deps unit (std + `--module-path` deps, cached object) × entry unit (project code, always emitted) | ✅ **done** | `perf/incremental-cache` (0ad2430) | see sub-tasks below |
+| A4 | N-way per-module object cache (granular relink) | ⬜ pending | | **revisited** — 2-units já é default (ver nota); N-way só se benchmark justificar |
 | A5 | (optional) Serialized type-check cache for std/deps modules; export-data-based invalidation (comment-only changes don't rebuild dependents) | ⬜ pending | | measure first |
 
-**Current focus:** A3 — **implementado e funcional**. Guardrail pegou **1 falha**
-(`cli_integration_test`: build standalone `.ei`) → root cause = **deps.o instável**
-(vtables de pool types). Corrigido com pool signature no hash. **Validando + commit pendente.**
+**Current focus:** A4 — avaliar se N-way granular vale a pena vs o split 2-units já
+entregue. O split **já é o caminho default** para `eiwac build` e `run --aot`
+(qualquer compilação host com cache usa deps.o + entry.o).
 
 ### A3 sub-tasks
 
@@ -48,35 +48,53 @@
 | | ⑤ stub pass stubbava símbolos dos deps (`coroutines_StackTask`, métodos derivados `log_Logger_error_...`) → set `dep_owned_fns` | ✅ |
 | | ⑥ dedupe `seen_types` (clones monomorfizados espalhados por módulos) | ✅ |
 | | ⑦ types genéricos base (`List`, `StackTask`) — ctor de template também dep-owned | ✅ |
-| | ⑧ **deps.o instável**: `is List<T>` no `equals` genérico referencia vtables de TODAS as instâncias do pool → **pool signature** (nomes ordenados de `classes_ast`) no hash do deps.o (invalida só quando o set de tipos instanciados muda) | ✅ |
-| A3.11 | Functional test: `home` HTTP 200 ✅, `hello` HTML ✅, JIT-vs-AOT MATCH (`hello`, `arrays_and_loops`) ✅, `make build` ✅, `eiwa build app.ei` standalone ✅ (após ⑧) | ✅ |
-| A3.12 | **Guardrail**: `zig build test` ✅; `eiwac test` **94/95** — a falha (`cli_integration_test`) foi DIAGNOSTICADA como o bug ⑧ e corrigida; **rerun pendente** | 🔄 |
-| A3.13 | Benchmark entry-change rebuild = 0,27s (deps.o reutilizado quando pool estável) ✅; commit A3 | ⬜ |
-
-> **Nota A3.12:** o guardrail `eiwac test` é JIT e não cobre o caminho split — a falha
-> apareceu porque o teste invoca `eiwac build` do CLI (que usa split). A correção ⑧
-> garante que o deps.o cache seja invalidado corretamente quando o pool muda.
+| | ⑧ **deps.o instável**: `is List<T>` no `equals` genérico referencia vtables de TODAS as instâncias do pool → **pool signature** (nomes ordenados de `classes_ast`) no hash do deps.o | ✅ |
+| A3.11 | Functional test: `home` HTTP 200 ✅, `hello` HTML ✅, JIT-vs-AOT MATCH (`hello`, `arrays_and_loops`) ✅, `make build` ✅, `eiwa build app.ei` standalone ✅ | ✅ |
+| A3.12 | **Guardrail**: `zig build test` ✅; `eiwac test` **95/95 PASSED** (56.47s) após correção ⑧ | ✅ |
+| A3.13 | Benchmark entry-change rebuild = 0,27s ✅; **commit A3 = `0ad2430`** | ✅ |
 
 ### Resume checklist (next session)
 
 1. `git checkout perf/incremental-cache && zig build`
-2. A3 state is **uncommitted** in the working tree (`src/main.zig`, `src/backend/llvm_emitter/core.zig`, `expression.zig`, `docs/perf-plan-incremental-cache.md`) — continue from A3.12/A3.13.
-3. Guardrail: `./bin/eiwac test` (95/95, ~57s) — JIT path, unaffected by A3; A3 needs its own AOT verification (A3.11) + benchmark (A3.13).
+2. Working tree **clean** (A3 + docs committed: `53215fd`, `736b03b`, `0ad2430`; user commits `a99bfc0`).
+3. Guardrail: `./bin/eiwac test` (95/95, ~57s) + `zig build test`.
+4. Continue from **A4** (below).
 
 ---
 
 ## Benchmarks (project `example/home`, Apple Silicon)
 
-| Scenario | Before (Debug eiwac, no cache) | After B | After A0/A1 |
-|----------|-------------------------------|---------|-------------|
-| `eiwa build` (sources unchanged) | 2.78s | 0.65s | **0.02s** |
-| `eiwac build` direct (unchanged) | 2.59s | 0.65s | **0.01s** |
-| `eiwa run` → server responding | ~2.8s + JIT start | — | **≤0.1s to exec** (HTTP 200 verified) |
-| `eiwa build` (entry source changed) | 2.78s | 0.65s | 0.52-0.65s (full re-emit; A2+ targets ~0.3s) |
-| `eiwac test` (95-test guardrail) | 100.76s | 56.59s | 56.59s (JIT path untouched) |
+| Scenario | Before (Debug eiwac, no cache) | After B | After A0/A1 | **After A3 (split)** |
+|----------|-------------------------------|---------|-------------|----------------------|
+| `eiwa build` (sources unchanged) | 2.78s | 0.65s | **0.02s** | **0.01-0.02s** (binary cache hit) |
+| `eiwac build` direct (unchanged) | 2.59s | 0.65s | **0.01s** | **0.01s** |
+| `eiwa run` → server responding | ~2.8s + JIT start | — | ≤0.1s to exec | **≤0.1s** (HTTP 200 verified) |
+| `eiwa build` (**entry source changed**) | 2.78s | 0.65s | 0.52-0.65s | **0.27s** (deps.o reusado, entry re-emitido) |
+| `eiwac test` (95-test guardrail) | 100.76s | 56.59s | 56.59s | **56.47s** (JIT path untouched) |
 
-Warm-breakdown after B (what A2+ still attacks): frontend+typecheck ~0.15s,
-coroutines ~0.05s, `emitModule` ~0.15s, LLVM `.o` emit ~0.25s, `cc` link ~0.1s.
+Warm-breakdown after A3 (what A5 still attacks): frontend+typecheck ~0.15s,
+coroutines ~0.05s, entry `emitModule` + LLVM codegen ~0.05s, `cc` link ~0.1s.
+
+---
+
+## A4 — N-way per-module (revisited)
+
+O split 2-units **já é default** (todo `eiwac build`/`run --aot` host usa deps.o +
+entry.o). A4 granular (um `.o` por módulo) traria ganho marginal: o entry unit
+re-emite TODO o código do projeto a cada mudança, mas o código do projeto é
+pequeno comparado a deps+std (que ficam cacheados). O custo real restante no
+dev-loop é **frontend + typecheck** (~0.15s, atacado pela A5), não a emissão.
+
+**Decisão A4:** N-way **adiado**. Fazer só se o projeto crescer o suficiente
+para o entry unit dominar o tempo (medir: `time eiwac build --no-cache` num
+projeto grande). A A5 (cache de typecheck) tem prioridade — é o próximo
+gargalo fixo.
+
+### A5 — Cache de typecheck (próximo)
+
+Serializar o resultado do type-check de módulos de std/deps (AST resolvida +
+símbolos) keyed por hash de source, reutilizando entre builds. Meta: derrubar
+o `~0.15s` de frontend+typecheck do entry-change rebuild (0,27s → ~0,12s).
 
 ---
 
@@ -90,11 +108,10 @@ coroutines ~0.05s, `emitModule` ~0.15s, LLVM `.o` emit ~0.25s, `cc` link ~0.1s.
 | Pure helpers/intrinsics | `eiwa_to_string`, `eiwa_str_replace`, `GC_MALLOC`/`GC_REALLOC` wrappers | **`internal` linkage** per object — private copies, stripped by linker, zero collision risk. |
 | `llvm.global_ctors` (GC init) | `__eiwa_gc_init_ctor` | Emitted **only in the entry unit** (owns `main`). |
 
-> **A3 scope note:** the implementation splits into **two units** (deps+std ×
-> project) instead of N per-module objects. The mechanisms are identical;
-> two units capture ~90% of the win (deps dominate emitted code and rarely
-> change) with far less link surface. N-way remains possible in A4 if
-> benchmarks justify it.
+> **A3 scope note:** implemented as **two units** (deps+std × project) — the
+> mechanisms are identical to N-way; two units capture ~90% of the win (deps
+> dominate emitted code and rarely change) with far less link surface. See A4
+> for the N-way reconsideration.
 
 ### B. Transitive invalidation
 
@@ -136,22 +153,10 @@ link floor measured ~0.1s); revisit only if Linux benchmarks show otherwise.
 
 ---
 
-## Original design notes (per-module object cache, A2-A4)
+## Known limitations / follow-ups
 
-- Cache dir: `~/.eiwa/cache/objects/<content-hash>.o` (+ `.meta` sidecar).
-- Key: `sha256(eiwac_version | target_triple | opt_flags | module_source | transitive_dep_hashes)`.
-- Per-module objects replace today's single-LLVM-module whole-program
-  emission for the **build** path; the reachability pass
-  (`markReachable`/`drainReachableWorklist`) stays for the JIT path only.
-- Final link: all objects + `eiwa_runtime.o` + libgc + lib requirements via
-  the existing `cc` driver; skip relink when the output binary is newer than
-  every input object.
-
-### Known limitations / follow-ups
-
-- `temp_llvm.o` is written to the CWD during emission — concurrent `eiwac`
-  processes in the same directory can collide (pre-existing; per-module
-  emission should use per-object temp names).
 - `argv[0]` seen by the program under `run --aot` is the cached binary path,
   not the entry file basename (JIT shows the basename). Cosmetic; revisit if
   it bites.
+- `temp_llvm.o` name is now unique per pid (A2) — concurrent `eiwac` builds
+  in the same directory no longer collide.
