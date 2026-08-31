@@ -769,6 +769,56 @@ Permite servidores TCP e clientes de rede de alto desempenho em Eiwa operando so
 **Razão:**
 Permite aos desenvolvedores distribuir binários estáticos portáveis para qualquer sistema operacional de forma simples, declarativa, segura e sem atrito com dependências externas.
 
+---
+
+## ADR 58: Pipeline de Compilação Incremental — Binary Cache + Split Emission (Go-like `eiwa run`/`build`)
+**Status:** Aprovado / Implementado
+**Data:** Agosto 2026
+**Referência:** `docs/perf-plan-incremental-cache.md` (plano vivo com status tracker e benchmarks)
+
+**Contexto:**
+1. `eiwa run`/`eiwa build` recompilavam **todo o programa** a cada execução — stdlib, dependências git (`~/.eiwa/repository`), e o código do projeto — do zero. Um `run` de um serviço simples custava ~2.8s, muito acima do padrão Go (`go run` ~0.1-0.3s).
+2. O compilador `eiwac` era construído em modo **Debug** por padrão (`zig build`), tornando todas as fases do compilador várias vezes mais lentas que um binário otimizado.
+3. O backend LLVM emitia **um único módulo LLVM** com pruning por reachability — correto, mas impossível de cachear por unidade de compilação: qualquer mudança invalidava tudo.
+
+**Decisão:**
+
+1. **Compiler build padrão = ReleaseSafe** (`build.zig`): `zig build` produz `eiwac` otimizado (safety checks on), com `-Doptimize=Debug` disponível para desenvolvimento do compilador. Sozinho, ~2.2x de speedup em todas as compilações.
+
+2. **Binary cache full-program (A0/A1):** `eiwac build` calcula um hash de conteúdo cobrindo **todo o closure de imports** (paths + sources), o binário do `eiwac` em si (que embute a stdlib via `std_modules`), o triple, flags de codegen e `EIWA_BASELINE_CPU`. Hit → copia o binário cacheado (`~/.eiwa/cache/bin/<sha256>`) e pula o backend inteiro. `run --aot` (usado por `eiwa run` de projetos) compila-if-stale e executa o binário — warm `run` ≈ **0.01-0.1s**.
+
+3. **Split emission em 2 unidades (A2/A3):** o backend passa a emitir **dois objetos LLVM** em vez de um módulo único:
+   - **Deps unit** — std + dependências `--module-path` (ex.: `~/.eiwa/repository`), emitida uma vez e cacheada em `~/.eiwa/cache/objects/<hash>.o`. Chave = sources de deps + compilador + flags + **assinatura do pool de monomorfização** (nomes ordenados de `classes_ast` — ver razão abaixo).
+   - **Entry unit** — código do projeto, re-emitida a cada build e linkada contra o objeto de deps via `cc` (`linkObjects`).
+   - Rebuild com fonte do projeto alterada cai de ~0.65s para **~0.27s** (deps.o reutilizado).
+
+4. **Protocolo de ownership entre unidades:** define-se qual unidade define cada símbolo para evitar colisões de link:
+   - **Estado mutável compartilhado** (`eiwa_exception_stack`, `eiwa_active_exception`, `eiwa_argc/argv`), GC ctor (`llvm.global_ctors`), argv support, main shim e top-level statements → **entry unit apenas** (instância única).
+   - **Helpers/intrinsics/lambdas** (`eiwa_to_string`, `GC_MALLOC`, `lambda_anon_N`...) → **linkage `internal`** (cópia privada por objeto).
+   - **Types/funções/vtables** → a unidade dona define; as outras declaram `extern`. Ctors de `type` (emitidos inline em `declareType`), enums, globais de objetos e vtables seguem a mesma regra.
+   - **Vtables de contratos**: cada unidade **pré-declara o conjunto completo de vtables do programa** (`constant`, sem initializer) para que `when (x) is Contract` (que itera todos os globals `_vtable` do módulo) veja todas em toda unidade; `isRealVtable` aceita declarações `extern` constantes.
+   - **Stub pass**: só stubam símbolos que a própria unidade possui; a entry ainda stuba "synthetics" de nenhum módulo, mas **nunca** o que o deps.o define.
+   - **Pool de monomorfização** (`classes_ast`): instâncias genéricas pertencem à entry unit; deps referenciam `extern`.
+
+5. **Assinatura do pool no hash do deps.o (correção de instabilidade):** métodos de skill genéricos (ex.: `equals` de coleções fazendo `is List<T>`) referenciam vtables de **todas** as instâncias `List<X>` do programa — conjunto dirigido pelo código do entry. Sem isso, um deps.o cacheado de um build com `List<Dependency>` quebrava (undefined vtable) num build onde o entry não instancia mais `Dependency`. Incluir os **nomes ordenados de `classes_ast`** na chave do deps.o invalida exatamente quando o conjunto de tipos instanciados muda.
+
+6. **Escape hatches:** `--no-cache` desativa o cache (fallback legacy de módulo único); `EIWA_CACHE_DIR` sobrepõe `~/.eiwa/cache`.
+
+**Resultados medidos (`example/home`, Apple Silicon):**
+
+| Cenário | Antes | Depois |
+|---------|-------|--------|
+| `eiwa build` inalterado | 2.78s | **0.01-0.02s** |
+| `eiwa run` → serviço no ar | ~2.8s + JIT | **≤0.1s** |
+| Build com fonte do projeto alterada | 2.78s | **0.27s** |
+| Guardrail `eiwac test` (95 testes) | 100.76s | **55-57s** |
+
+**Razão:**
+- **Go-like warm dev loop**: a maioria dos dev-loops altera só o código do projeto; o deps.o cacheado torna o rebuild dominado pelo link (~0.1s) + entry emit (~0.1s) + typecheck (~0.05s) = **~0.27s**.
+- **Dois units em vez de N (A4)**: as unidades deps×entry capturam ~90% do ganho (deps dominam o código emitido e mudam raramente) com superfície de link mínima. N-way por módulo fica adiado (reavaliar se o projeto crescer).
+- **A5 (cache de typecheck) medido e adiado**: typecheck = ~49ms (18%) do rebuild; serializar AST+symbols inter-module não justifica o risco para ~0.05s. Piso real = emit+link (~210ms).
+- **`internal` em vez de `linkonce_odr`**: helpers/lambdas nunca cruzam unidades — `internal` é mais simples e permite dead-strip. `linkonce_odr` voltaria a ser necessário se A4 (N-way) for implementado.
+
 
 
 

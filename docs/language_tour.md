@@ -1357,8 +1357,16 @@ Options:
   --release          Optimized build (-O3)
   -o <name>          Output binary name/path (build command)
   --module-path <d>  Extra directory to resolve imports (repeatable)
+  --aot              run: compile to a cached native binary and execute it
+                     instead of JIT (used by `eiwa run` for projects)
+  --no-cache         Disable the incremental cache (legacy single-module path)
   -h, --help         Show help
 ```
+
+> **Incremental cache (ADR 58):** `build` and `run --aot` reuse cached
+> artifacts (`~/.eiwa/cache/bin`, `~/.eiwa/cache/objects`) keyed by content
+> hashes — unchanged builds ~0.01s, entry-only edits ~0.3s. Override the
+> cache root with `EIWA_CACHE_DIR`. See §30.7.
 
 **Program arguments.** Extra positional arguments after the file are forwarded to the program by `eiwac run`. Programs read them through `std.process` (Section 17.1) — this works whether the program defines `fun main()` or uses top-level statements:
 
@@ -2512,11 +2520,16 @@ Options:
 `eiwa run`, `eiwa build` and `eiwa test` also accept a standalone `.ei` file. When any argument after the command ends with `.ei`, the CLI skips project mode entirely and forwards the full command line to the `eiwac` backend (no `eiwa.yaml` required):
 
 ```bash
-eiwa run app.ei                  # compile + execute via JIT
+eiwa run app.ei                  # compile + execute (standalone .ei, JIT)
 eiwa build app.ei -o my_tool     # native binary
 eiwa test app_test.ei            # run test "name" {} blocks in the file
 eiwa run app.ei -- arg1 arg2     # forward args to the program after `--`
 ```
+
+> **`run` modes:** a standalone `file.ei` is executed through the in-process
+> LLVM JIT; a **project** (`src/main.ei`) is compiled to a cached native
+> binary and executed (see 30.7), which is what makes warm project `run`s
+> ~0.05-0.1s.
 
 Flags (`--release`, `--backend=llvm`, ...) and key-value options (`-o`, `--module-path`, ...) can appear before or after the file — they are forwarded verbatim. Project commands (`init`, `add`, `remove`, `freeze`, `update`) and `run`/`build`/`test` on a directory still use the project flow.
 
@@ -2586,6 +2599,41 @@ The CLI locates `eiwac` in this order:
 ### 30.6 Not Yet Implemented
 
 Transitive dependency resolution (MVS). The manifest parser is currently a minimal indentation parser (marked with a TODO in the code) to be replaced by a typed DTO.
+
+### 30.7 Incremental Build Cache (Go-like `run`/`build`)
+
+Eiwa caches compilation artifacts so **unchanged runs/builds cost ~0.01s** and
+changing only your own project code costs ~0.25-0.3s — the same feel as `go run`.
+See `docs/perf-plan-incremental-cache.md` for the full architecture (ADR 58).
+
+**How it works (two-tier cache):**
+
+| Cache | Location | Keyed by | Hit result |
+|-------|----------|----------|------------|
+| Full-program binary | `~/.eiwa/cache/bin/<sha256>` | all module sources + compiler + flags | copies binary, skips compiler backend |
+| Deps object | `~/.eiwa/cache/objects/<sha256>.o` | deps/std sources + compiler + flags + monomorphization-pool signature | links cached deps `.o` against a freshly emitted entry `.o` |
+
+The compiler emits the program as **two LLVM objects**: the *deps unit*
+(std + git dependencies) once — cached — and the *entry unit* (your project
+code) on every build, linked together. `eiwa run` on a project compiles
+if-stale and executes the native binary directly (no JIT).
+
+```bash
+eiwa run       # 1st time (cold): ~0.7-1s · unchanged: ~0.05-0.1s to exec
+eiwa build     # 1st time (cold): ~0.7-1s · unchanged: ~0.01s · changed entry: ~0.3s
+```
+
+**Environment & flags:**
+
+- `EIWA_CACHE_DIR=/path` — override the cache root (default `~/.eiwa`).
+- `--no-cache` — disable the cache entirely (legacy single-module emission).
+- `eiwac` itself is built in **ReleaseSafe** by default (`zig build`); pass
+  `-Doptimize=Debug` only when developing the compiler.
+
+Caches are **content-addressed and safe**: any change to sources, the compiler
+binary, target triple, codegen flags, or the set of instantiated generic types
+invalidates the relevant entry automatically. Clearing `~/.eiwa/cache` is
+always safe (nothing more than a speed hit).
 
 ---
 
