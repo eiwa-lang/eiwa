@@ -166,6 +166,15 @@ pub const LLVMEmitter = struct {
     /// relative paths against the DECLARING module's file (not the entry file).
     registry: ?*tc_core.ModuleRegistry = null,
     target_info: ?tc_core.TargetInfo = null,
+    /// Incremental split-emission mode (docs/perf-plan-incremental-cache.md,
+    /// Phase A3). When set, this unit emits definitions only for modules in
+    /// the set; all other modules are declared extern. null = legacy
+    /// whole-program single-module emission.
+    unit_modules: ?*std.AutoHashMap(*ast.ASTNode, void) = null,
+    /// The entry unit additionally owns: program entry shim, argv support,
+    /// GC ctor, runtime globals (exception stack, eiwa_argc/argv), object/enum
+    /// initializers, top-level statements and the test runner.
+    unit_is_entry: bool = true,
     /// Lazily-built index: underscore-delimited token -> names in `functions`
     /// containing that token as a component. Lets the "related mangled
     /// variants" lookups (markReachable, vtable pass) scan a small candidate
@@ -253,8 +262,63 @@ pub const LLVMEmitter = struct {
     }
 
     /// Emits LLVM IR for top-level functions, expressions, and statements.
+    /// Split-mode ownership: true when this unit emits definitions for `m`.
+    /// Legacy whole-program mode owns everything.
+    fn unitOwns(self: *LLVMEmitter, m: *ast.ASTNode) bool {
+        const set = self.unit_modules orelse return true;
+        return set.contains(m);
+    }
+
+    /// Marks compiler-emitted helper functions (intrinsics, GC wrappers,
+    /// string helpers) as internal so every split unit can carry a private
+    /// copy without colliding at link time. No-op in legacy mode. Also covers
+    /// `.N` auto-renamed duplicates created by re-declaration (e.g. FFI lib
+    /// prototypes colliding with the prologue definitions).
+    fn makeHelpersInternal(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) void {
+        if (self.unit_modules == null) return;
+        const names = [_][]const u8{
+            "GC_MALLOC",           "GC_REALLOC",          "eiwa_to_string",
+            "eiwa_str_replace",    "eiwa_string_equals",  "eiwa_char_at",
+            "eiwa_write_byte",     "eiwa_random_bytes",   "eiwa_now_millis",
+            "eiwa_load_int64",     "eiwa_store_int64",    "eiwa_read_byte",
+            "eiwa_atomic_cas_bool", "eiwa_atomic_cas_val", "eiwa_atomic_fetch_add",
+            "eiwa_atomic_test_and_set",
+        };
+        for (names) |n| {
+            const nz = self.allocator.dupeZ(u8, n) catch continue;
+            defer self.allocator.free(nz);
+            if (llvm.LLVMGetNamedFunction(mod, nz.ptr)) |f| {
+                llvm.LLVMSetLinkage(f, llvm.LLVMInternalLinkage);
+            }
+        }
+        // Sweep `.N` renamed duplicates (LLVM re-declaration artifacts) and
+        // anonymous lambdas. Lambda names come from a per-process global
+        // counter (expression.zig), so two split units can generate the same
+        // `lambda_anon_N` — internal linkage keeps them private per object.
+        var f = llvm.LLVMGetFirstFunction(mod);
+        while (f != null) : (f = llvm.LLVMGetNextFunction(f.?)) {
+            const fname = std.mem.span(llvm.LLVMGetValueName(f.?));
+            if (std.mem.startsWith(u8, fname, "lambda_anon")) {
+                llvm.LLVMSetLinkage(f.?, llvm.LLVMInternalLinkage);
+                continue;
+            }
+            var base_len = fname.len;
+            if (std.mem.lastIndexOfScalar(u8, fname, '.')) |dot| {
+                base_len = dot;
+            }
+            for (names) |n| {
+                if (base_len == n.len and std.mem.eql(u8, fname[0..base_len], n)) {
+                    llvm.LLVMSetLinkage(f.?, llvm.LLVMInternalLinkage);
+                    break;
+                }
+            }
+        }
+    }
+
     pub fn emitModule(self: *LLVMEmitter, ast_root: *ast.ASTNode) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
+        const split = self.unit_modules != null;
+        const is_entry = self.unit_is_entry;
 
         if (self.target_info) |ti| {
             const triple_z = try self.allocator.dupeZ(u8, ti.triple);
@@ -343,7 +407,8 @@ pub const LLVMEmitter = struct {
         // covers every entry shape (plain main, eiwa_test_main) without touching each one.
         // The JIT path does NOT rely on this (MCJIT never runs global ctors);
         // executeJIT calls GC_init and GC_allow_register_threads from the host side.
-        if (prefer_gc_alloc) {
+        // Split mode: only the entry unit defines the ctor (it owns main).
+        if (prefer_gc_alloc and (!split or is_entry)) {
             const ctor_fn = llvm.LLVMAddFunction(mod, "__eiwa_gc_init_ctor", void_fn_type);
             const ctor_bb = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_fn, "entry");
             llvm.LLVMPositionBuilderAtEnd(self.builder, ctor_bb);
@@ -393,11 +458,14 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMAddFunction(mod, "time", time_type);
 
         // Exception stack + active exception globals.
+        // Split mode: defined (with initializer) only by the entry unit —
+        // cross-module exception propagation requires a single shared
+        // instance; other units reference them as extern declarations.
         const exc_stack_global = llvm.LLVMAddGlobal(mod, ptr_type, "eiwa_exception_stack");
-        llvm.LLVMSetInitializer(exc_stack_global, llvm.LLVMConstNull(ptr_type));
+        if (!split or is_entry) llvm.LLVMSetInitializer(exc_stack_global, llvm.LLVMConstNull(ptr_type));
         const fat_type = types_mapping.getFatPointerType(self.context);
         const active_exc_global = llvm.LLVMAddGlobal(mod, fat_type, "eiwa_active_exception");
-        llvm.LLVMSetInitializer(active_exc_global, llvm.LLVMConstNull(fat_type));
+        if (!split or is_entry) llvm.LLVMSetInitializer(active_exc_global, llvm.LLVMConstNull(fat_type));
 
         // struct EiwaExceptionFrame { jmp_buf buf; EiwaExceptionFrame* next; }
         // jmp_buf size is target-dependent (OS/architecture).
@@ -436,6 +504,9 @@ pub const LLVMEmitter = struct {
         try self.emitRandomBytesHelper(mod);
         try self.emitNowMillisHelper(mod);
 
+        // Split mode: helper bodies are private to each unit's object.
+        self.makeHelpersInternal(mod);
+
         expression.global_contracts_ast_ptr = self.contracts_ast;
         expression.global_classes_ast_ptr = self.classes_ast;
 
@@ -446,14 +517,73 @@ pub const LLVMEmitter = struct {
         defer visited.deinit();
         try self.collectModules(ast_root, &modules, &visited);
 
+        // Split mode, entry unit: types whose type_decl appears in a DEP
+        // module's statements are dep-owned (the deps object defines their
+        // ctor, methods and vtables). Monomorphized instances are cloned into
+        // every using module's statement list, so a type can show up in both
+        // units' modules — ownership must follow "appears in a dep module",
+        // which is a function of dep sources alone (keeps the deps object
+        // cache key entry-independent).
+        var dep_owned_types = std.StringHashMap(void).init(self.allocator);
+        defer dep_owned_types.deinit();
+        var dep_owned_fns = std.StringHashMap(void).init(self.allocator);
+        defer dep_owned_fns.deinit();
+        if (split and is_entry) {
+            for (modules.items) |m| {
+                if (m.data != .program) continue;
+                if (self.unitOwns(m)) continue;
+                for (m.data.program.statements) |stmt| {
+                    if (stmt.data == .type_decl) {
+                        const t = stmt.data.type_decl;
+                        // The ctor symbol exists for generic templates too
+                        // (declareType emits it) — record the name; methods of
+                        // templates are not emitted directly, so skip them.
+                        const t_name = t.resolved_c_name orelse t.name;
+                        try dep_owned_types.put(t_name, {});
+                        try dep_owned_fns.put(t_name, {});
+                        if (t.generic_params.len > 0) continue;
+                        for (t.methods) |m_node| {
+                            if (m_node.data != .fun_decl) continue;
+                            if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                            if (m_node.data.fun_decl.resolved_c_name) |rcn| try dep_owned_fns.put(rcn, {});
+                            try dep_owned_fns.put(try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name }), {});
+                        }
+                    } else if (stmt.data == .fun_decl) {
+                        if (stmt.data.fun_decl.generic_params.len > 0) continue;
+                        try dep_owned_fns.put(stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name, {});
+                    } else if (stmt.data == .object_decl) {
+                        for (stmt.data.object_decl.members) |member| {
+                            if (member.data != .fun_decl) continue;
+                            if (member.data.fun_decl.generic_params.len > 0) continue;
+                            try dep_owned_fns.put(member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name, {});
+                        }
+                    }
+                }
+            }
+        }
+
         // Pass 1a: Declare all user-defined types (structs & constructors) & enums
+        // Split mode: monomorphized clones appear in several modules' statement
+        // lists; LLVMAddFunction re-adds under a `.N` rename, and two units
+        // producing the same `.N` collide at link. Dedupe by resolved name —
+        // first declaration wins (same semantics as the existing function).
+        var seen_types = std.StringHashMap(void).init(self.allocator);
+        defer seen_types.deinit();
         for (modules.items) |m| {
             if (m.data != .program) continue;
+            const own = self.unitOwns(m);
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .type_decl) {
-                    try self.declareType(mod, stmt);
+                    const t = stmt.data.type_decl;
+                    const t_c_name = t.resolved_c_name orelse t.name;
+                    if (split) {
+                        if (seen_types.contains(t_c_name)) continue;
+                        try seen_types.put(t_c_name, {});
+                    }
+                    const dep_owned = split and is_entry and dep_owned_types.contains(t_c_name);
+                    try self.declareType(mod, stmt, own and !dep_owned);
                 } else if (stmt.data == .enum_decl) {
-                    try self.declareEnum(mod, stmt);
+                    try self.declareEnum(mod, stmt, own);
                 }
             }
         }
@@ -462,7 +592,17 @@ pub const LLVMEmitter = struct {
             while (c_it.next()) |entry| {
                 const c_node = entry.value_ptr.*;
                 if (c_node.data == .type_decl) {
-                    try self.declareType(mod, c_node);
+                    // Dep-owned pool types are defined by the deps unit.
+                    const t = c_node.data.type_decl;
+                    const t_c_name = t.resolved_c_name orelse t.name;
+                    if (split and is_entry and dep_owned_types.contains(t_c_name)) continue;
+                    if (split) {
+                        if (seen_types.contains(t_c_name)) continue;
+                        try seen_types.put(t_c_name, {});
+                    }
+                    // Monomorphized pool types belong to the entry unit in
+                    // split mode (linker resolves cross-unit references).
+                    try self.declareType(mod, c_node, !split or is_entry);
                 }
             }
         }
@@ -513,8 +653,11 @@ pub const LLVMEmitter = struct {
 
         // Pass 1d: Declare object member globals (`Env.isLoaded` etc.), named
         // `{object_c_name}_{var}` per infer_decl.zig inferVarDecl.
+        // Split mode: owning unit defines (with initializer); other units
+        // reference the global as an extern declaration.
         for (modules.items) |m| {
             if (m.data != .program) continue;
+            const own = self.unitOwns(m);
             for (m.data.program.statements) |stmt| {
                 if (stmt.data != .object_decl) continue;
                 const obj = stmt.data.object_decl;
@@ -533,12 +676,28 @@ pub const LLVMEmitter = struct {
                     defer self.allocator.free(var_name_z);
                     if (llvm.LLVMGetNamedGlobal(mod, var_name_z.ptr) == null) {
                         const global = llvm.LLVMAddGlobal(mod, llvm_type, var_name_z.ptr);
-                        const const_init = if (v.initializer) |ie| tryGetConstLLVMValue(ie, llvm_type) else null;
-                        if (const_init) |ci| {
-                            llvm.LLVMSetInitializer(global, ci);
-                        } else {
-                            llvm.LLVMSetInitializer(global, llvm.LLVMConstNull(llvm_type));
+                        if (!split or own) {
+                            const const_init = if (v.initializer) |ie| tryGetConstLLVMValue(ie, llvm_type) else null;
+                            if (const_init) |ci| {
+                                llvm.LLVMSetInitializer(global, ci);
+                            } else {
+                                llvm.LLVMSetInitializer(global, llvm.LLVMConstNull(llvm_type));
+                            }
                         }
+                    }
+                }
+            }
+        }
+
+        // Split mode skips the reachability pass below (every own body is
+        // emitted), so mark every declared lib as used — link requirements
+        // (@Source/@Link) are then collected for the whole program.
+        if (split) {
+            for (modules.items) |m| {
+                if (m.data != .program) continue;
+                for (m.data.program.statements) |stmt| {
+                    if (stmt.data == .lib_decl) {
+                        try self.used_libs.put(stmt.data.lib_decl.name, {});
                     }
                 }
             }
@@ -565,88 +724,98 @@ pub const LLVMEmitter = struct {
 
         // Seed: every function declared in the entry module plus callees of the
         // entry module's top-level statements (which become main()).
-        if (ast_root.data == .program) {
-            for (ast_root.data.program.statements) |stmt| {
-                if (stmt.data == .lib_decl) {
-                    try self.used_libs.put(stmt.data.lib_decl.name, {});
+        // Split mode: skipped — every body of an owned module is emitted and
+        // the linker dead-strips the rest, so no reachability is computed.
+        var func_index = try self.buildFuncIndex(&modules);
+        defer func_index.deinit();
+        if (!split) {
+            if (ast_root.data == .program) {
+                for (ast_root.data.program.statements) |stmt| {
+                    if (stmt.data == .lib_decl) {
+                        try self.used_libs.put(stmt.data.lib_decl.name, {});
+                    }
+                    try self.collectCallees(stmt, &reachable, &worklist);
                 }
-                try self.collectCallees(stmt, &reachable, &worklist);
-            }
-            // In test mode ast_root is a synthetic wrapper that only holds
-            // import_stmt's; the actual `test "..." { }` bodies live in the
-            // imported modules. Seed their callees so the functions tests call
-            // are considered reachable and get real bodies emitted.
-            if (self.is_test_mode) {
-                for (modules.items) |m| {
-                    if (m.data != .program) continue;
-                    for (m.data.program.statements) |stmt| {
-                        if (stmt.data == .test_decl) {
-                            try self.collectCallees(stmt, &reachable, &worklist);
+                // In test mode ast_root is a synthetic wrapper that only holds
+                // import_stmt's; the actual `test "..." { }` bodies live in the
+                // imported modules. Seed their callees so the functions tests call
+                // are considered reachable and get real bodies emitted.
+                if (self.is_test_mode) {
+                    for (modules.items) |m| {
+                        if (m.data != .program) continue;
+                        for (m.data.program.statements) |stmt| {
+                            if (stmt.data == .test_decl) {
+                                try self.collectCallees(stmt, &reachable, &worklist);
+                            }
                         }
                     }
                 }
-            }
-            // Seed callees of object member initializers from all modules so functions
-            // invoked during entry object initialization get real bodies emitted.
-            for (modules.items) |m| {
-                if (m.data != .program) continue;
-                for (m.data.program.statements) |stmt| {
-                    if (stmt.data == .object_decl) {
-                        for (stmt.data.object_decl.members) |member| {
-                            if (member.data == .var_decl) {
-                                if (member.data.var_decl.initializer) |init_e| {
-                                    try self.collectCallees(init_e, &reachable, &worklist);
+                // Seed callees of object member initializers from all modules so functions
+                // invoked during entry object initialization get real bodies emitted.
+                for (modules.items) |m| {
+                    if (m.data != .program) continue;
+                    for (m.data.program.statements) |stmt| {
+                        if (stmt.data == .object_decl) {
+                            for (stmt.data.object_decl.members) |member| {
+                                if (member.data == .var_decl) {
+                                    if (member.data.var_decl.initializer) |init_e| {
+                                        try self.collectCallees(init_e, &reachable, &worklist);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            for (ast_root.data.program.statements) |stmt| {
-                if (stmt.data == .fun_decl) {
-                    if (stmt.data.fun_decl.generic_params.len > 0) continue;
-                    const name = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
-                    try self.markReachable(name, &reachable, &worklist);
-                } else if (stmt.data == .type_decl) {
-                    if (stmt.data.type_decl.generic_params.len > 0) continue;
-                    const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
-                    for (stmt.data.type_decl.methods) |m_node| {
-                        if (m_node.data != .fun_decl) continue;
-                        if (m_node.data.fun_decl.generic_params.len > 0) continue;
-                        const name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
-                        defer self.allocator.free(name);
+                for (ast_root.data.program.statements) |stmt| {
+                    if (stmt.data == .fun_decl) {
+                        if (stmt.data.fun_decl.generic_params.len > 0) continue;
+                        const name = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
                         try self.markReachable(name, &reachable, &worklist);
-                    }
-                } else if (stmt.data == .object_decl) {
-                    for (stmt.data.object_decl.members) |member| {
-                        if (member.data != .fun_decl) continue;
-                        if (member.data.fun_decl.generic_params.len > 0) continue;
-                        const name = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
-                        try self.markReachable(name, &reachable, &worklist);
+                    } else if (stmt.data == .type_decl) {
+                        if (stmt.data.type_decl.generic_params.len > 0) continue;
+                        const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
+                        for (stmt.data.type_decl.methods) |m_node| {
+                            if (m_node.data != .fun_decl) continue;
+                            if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                            const name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
+                            defer self.allocator.free(name);
+                            try self.markReachable(name, &reachable, &worklist);
+                        }
+                    } else if (stmt.data == .object_decl) {
+                        for (stmt.data.object_decl.members) |member| {
+                            if (member.data != .fun_decl) continue;
+                            if (member.data.fun_decl.generic_params.len > 0) continue;
+                            const name = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
+                            try self.markReachable(name, &reachable, &worklist);
+                        }
                     }
                 }
             }
-        }
 
-        // Fixpoint: walk every reachable function's body to find more callees.
-        // A name -> *ASTNode index makes each worklist lookup O(1) instead of
-        // rescanning every statement of every module per function (O(F*S)).
-        // The C transpiler emits every function and lets the linker dead-strip;
-        // this pass exists only to keep JIT compile time/IR size down (the
-        // stdlib would otherwise be pulled in wholesale). LLVM-SPECIFIC.
-        var func_index = try self.buildFuncIndex(&modules);
-        defer func_index.deinit();
-        try self.drainReachableWorklist(&func_index, &reachable, &worklist);
+            // Fixpoint: walk every reachable function's body to find more callees.
+            // A name -> *ASTNode index makes each worklist lookup O(1) instead of
+            // rescanning every statement of every module per function (O(F*S)).
+            // The C transpiler emits every function and lets the linker dead-strip;
+            // this pass exists only to keep JIT compile time/IR size down (the
+            // stdlib would otherwise be pulled in wholesale). LLVM-SPECIFIC.
+            try self.drainReachableWorklist(&func_index, &reachable, &worklist);
+        } // if (!split reachability seed/fixpoint)
 
         // Pass 1e: Emit static vtables for implemented contracts of reachable types (Task 61.1)
-        // Named `{type_c_name}_{contract_c_name}_vtable`
+        // Named `{type_c_name}_{contract_c_name}_vtable`.
+        // Split mode: the owning unit defines the vtable; other units declare
+        // it extern (constant, no initializer) so `when (x) is Contract`
+        // checks — which iterate every `_vtable` global in the module — see
+        // the complete whole-program set in every unit.
         for (modules.items) |m| {
             if (m.data != .program) continue;
+            const own_body_vt = self.unitOwns(m);
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .type_decl) {
                     const t = stmt.data.type_decl;
                     if (t.generic_params.len > 0) continue;
                     const type_c_name = t.resolved_c_name orelse t.name;
+                    const own_vt = own_body_vt and !(split and is_entry and dep_owned_types.contains(type_c_name));
 
 
                     for (t.contracts) |contract_src| {
@@ -659,6 +828,38 @@ pub const LLVMEmitter = struct {
                         }
                         if (contract_node == null or contract_node.?.data != .contract_decl) continue;
                         const c_decl = contract_node.?.data.contract_decl;
+
+                        // Non-owning split unit: extern declaration only.
+                        if (split and !own_vt) {
+                            var method_count: usize = 0;
+                            for (c_decl.methods) |cm| {
+                                if (cm.data == .fun_decl) method_count += 1;
+                            }
+                            const slot_types = try self.allocator.alloc(llvm.LLVMTypeRef, method_count);
+                            defer self.allocator.free(slot_types);
+                            for (slot_types) |*st| st.* = ptr_type;
+                            const ext_type = llvm.LLVMStructTypeInContext(self.context, slot_types.ptr, @intCast(method_count), 0);
+
+                            const ext_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, c_decl.name });
+                            defer self.allocator.free(ext_name);
+                            const ext_name_z = try self.allocator.dupeZ(u8, ext_name);
+                            defer self.allocator.free(ext_name_z);
+                            if (llvm.LLVMGetNamedGlobal(mod, ext_name_z.ptr) == null) {
+                                const g = llvm.LLVMAddGlobal(mod, ext_type, ext_name_z.ptr);
+                                llvm.LLVMSetGlobalConstant(g, 1);
+                            }
+                            if (!std.mem.eql(u8, contract_src, c_decl.name)) {
+                                const alt_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, contract_src });
+                                defer self.allocator.free(alt_name);
+                                const alt_name_z = try self.allocator.dupeZ(u8, alt_name);
+                                defer self.allocator.free(alt_name_z);
+                                if (llvm.LLVMGetNamedGlobal(mod, alt_name_z.ptr) == null) {
+                                    const g2 = llvm.LLVMAddGlobal(mod, ext_type, alt_name_z.ptr);
+                                    llvm.LLVMSetGlobalConstant(g2, 1);
+                                }
+                            }
+                            continue;
+                        }
 
                         var vtable_funcs = ArrayList(llvm.LLVMValueRef).init(self.allocator);
                         defer vtable_funcs.deinit();
@@ -685,7 +886,7 @@ pub const LLVMEmitter = struct {
                                         (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_'))
                                     {
                                         impl_fn = self.functions.get(fk);
-                                        try self.markReachable(fk, &reachable, &worklist);
+                                        if (!split) try self.markReachable(fk, &reachable, &worklist);
                                         break;
                                     }
                                 }
@@ -697,7 +898,7 @@ pub const LLVMEmitter = struct {
                                         (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_'))
                                     {
                                         impl_fn = entry.value_ptr.*;
-                                        try self.markReachable(fk, &reachable, &worklist);
+                                        if (!split) try self.markReachable(fk, &reachable, &worklist);
                                         break;
                                     }
                                 }
@@ -738,15 +939,29 @@ pub const LLVMEmitter = struct {
         // drain the worklist again so the callees of those implementations
         // (e.g. getAnsiColor called from within the TextFormatter.format
         // skill) are also collected and don't degrade to stubs.
-        try self.drainReachableWorklist(&func_index, &reachable, &worklist);
+        if (!split) try self.drainReachableWorklist(&func_index, &reachable, &worklist);
+
+        // Split-mode ownership sets for the stub pass below: a bodyless
+        // declaration may only be stubbed by the unit that owns it (the
+        // owning unit's real definition would otherwise collide at link).
+        var owned_names = std.StringHashMap(void).init(self.allocator);
+        defer owned_names.deinit();
+        var foreign_names = std.StringHashMap(void).init(self.allocator);
+        defer foreign_names.deinit();
 
         for (modules.items) |m| {
             if (m.data != .program) continue;
+            const own_body = self.unitOwns(m);
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .fun_decl) {
                     if (stmt.data.fun_decl.generic_params.len > 0) continue;
                     const fname = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
-                    if (!reachable.contains(fname)) continue;
+                    if (split) {
+                        if (own_body) try owned_names.put(fname, {}) else {
+                            try foreign_names.put(fname, {});
+                            continue;
+                        }
+                    } else if (!reachable.contains(fname)) continue;
                     // In test mode the entry point is `eiwa_test_main`, not a
                     // user `fun main()`. A `main` declared in an imported module
                     // (e.g. the CLI binary imported by cli/test helpers) would
@@ -764,12 +979,24 @@ pub const LLVMEmitter = struct {
                     const is_template = stmt.data.type_decl.generic_params.len > 0 and (stmt.data.type_decl.methods.len == 0 or stmt.data.type_decl.methods[0].data.fun_decl.resolved_c_name == null);
                     if (is_template) continue;
                     const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
+                    // Dep-owned type (entry unit): the deps object holds the
+                    // ctor, methods and vtables — reference them extern.
+                    const skip_dep_owned = split and is_entry and dep_owned_types.contains(t_name);
+                    if (split) {
+                        // The constructor symbol is the type name itself.
+                        if (own_body and !skip_dep_owned) try owned_names.put(t_name, {}) else try foreign_names.put(t_name, {});
+                    }
 
                     for (stmt.data.type_decl.methods) |m_node| {
                         if (m_node.data != .fun_decl) continue;
                         if (m_node.data.fun_decl.generic_params.len > 0) continue;
                         const fname = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
-                        if (!reachable.contains(fname)) continue;
+                        if (split) {
+                            if (own_body and !skip_dep_owned) try owned_names.put(fname, {}) else {
+                                try foreign_names.put(fname, {});
+                                continue;
+                            }
+                        } else if (!reachable.contains(fname)) continue;
                         // Emit the method body, with graceful stub fallback for synthetic
                         // or unmaterialized stdlib derivations that are marked reachable.
                         self.emitFunctionBodyOrStub(mod, m_node, fname, true);
@@ -779,11 +1006,18 @@ pub const LLVMEmitter = struct {
                         if (member.data != .fun_decl) continue;
                         if (member.data.fun_decl.generic_params.len > 0) continue;
                         const fname = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
-                        if (!reachable.contains(fname)) continue;
+                        if (split) {
+                            if (own_body) try owned_names.put(fname, {}) else {
+                                try foreign_names.put(fname, {});
+                                continue;
+                            }
+                        } else if (!reachable.contains(fname)) continue;
                         self.emitFunctionBodyOrStub(mod, member, fname, true);
                     }
                 }
-                if (m == ast_root and
+                // Split mode: only the entry unit synthesizes `main` from
+                // top-level statements (the deps object must not define it).
+                if (m == ast_root and (!split or self.unitOwns(m)) and
                     stmt.data != .fun_decl and stmt.data != .type_decl and stmt.data != .enum_decl and
                     stmt.data != .contract_decl and stmt.data != .skill_decl and stmt.data != .object_decl and
                     stmt.data != .lib_decl and stmt.data != .import_stmt and stmt.data != .test_decl)
@@ -792,21 +1026,30 @@ pub const LLVMEmitter = struct {
                 }
             }
         }
-        if (self.classes_ast) |ca| {
-            var c_it = ca.iterator();
-            while (c_it.next()) |entry| {
-                const c_node = entry.value_ptr.*;
+        // Monomorphized pool methods belong to the entry unit in split mode.
+        if ((!split or is_entry)) {
+            if (self.classes_ast) |ca| {
+                var c_it = ca.iterator();
+                while (c_it.next()) |entry| {
+                    const c_node = entry.value_ptr.*;
                 if (c_node.data == .type_decl) {
                     const stmt = c_node;
                     if (stmt.data.type_decl.generic_params.len > 0) continue;
                     const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
-                    for (stmt.data.type_decl.methods) |m_node| {
-                        if (m_node.data != .fun_decl) continue;
-                        if (m_node.data.fun_decl.generic_params.len > 0) continue;
-                        const fname = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
-                        defer self.allocator.free(fname);
-                        if (!reachable.contains(fname) and !reachable.contains(m_node.data.fun_decl.name)) continue;
-                        self.emitFunctionBodyOrStub(mod, m_node, fname, true);
+                    // Dep-owned pool type: the deps object defines it.
+                    if (split and is_entry and dep_owned_types.contains(t_name)) continue;
+                    if (split) try owned_names.put(t_name, {});
+                        for (stmt.data.type_decl.methods) |m_node| {
+                            if (m_node.data != .fun_decl) continue;
+                            if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                            const fname = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
+                            defer self.allocator.free(fname);
+                            if (split) {
+                                // dupe: fname is freed at iteration end.
+                                try owned_names.put(try self.allocator.dupe(u8, fname), {});
+                            } else if (!reachable.contains(fname) and !reachable.contains(m_node.data.fun_decl.name)) continue;
+                            self.emitFunctionBodyOrStub(mod, m_node, fname, true);
+                        }
                     }
                 }
             }
@@ -1098,14 +1341,28 @@ pub const LLVMEmitter = struct {
                         std.mem.eql(u8, fn_name_s, "poll")
                     ));
                 if (!is_libc) {
+                    // Split mode: only stub symbols this unit owns — the other
+                    // unit holds the real definition (stubbing it here would
+                    // collide at link). The entry unit additionally stubs
+                    // leftover synthetic names owned by no module (mirrors
+                    // legacy whole-program behavior).
+                    if (split and !owned_names.contains(fn_name_s) and
+                        !(is_entry and !dep_owned_types.contains(fn_name_s) and !dep_owned_fns.contains(fn_name_s)))
+                    {
+                        continue;
+                    }
                     self.emitFunctionStub(mod, fn_name_s) catch {};
                 }
             }
         }
 
         try self.emitNonGCHelpers(mod);
-        try self.emitArgvSupport(mod);
-        try self.emitEntryShim(mod, &modules);
+        // Split mode: program entry (argv support + main shim) lives only in
+        // the entry unit.
+        if (!split or is_entry) {
+            try self.emitArgvSupport(mod);
+            try self.emitEntryShim(mod, &modules);
+        }
     }
 
     fn emitNonGCHelpers(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
@@ -1357,7 +1614,7 @@ pub const LLVMEmitter = struct {
     }
 
 
-    fn declareEnum(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, node: *ast.ASTNode) !void {
+    fn declareEnum(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, node: *ast.ASTNode, define: bool) !void {
         const ed = node.data.enum_decl;
         const name = ed.resolved_c_name orelse ed.name;
         const struct_name_z = try self.allocator.dupeZ(u8, name);
@@ -1388,7 +1645,9 @@ pub const LLVMEmitter = struct {
             defer self.allocator.free(v_name_z);
 
             const global = llvm.LLVMAddGlobal(mod, ptr_type, v_name_z.ptr);
-            llvm.LLVMSetInitializer(global, llvm.LLVMConstNull(ptr_type));
+            // Split mode: only the owning unit defines the variant global;
+            // other units reference it as an extern declaration.
+            if (define) llvm.LLVMSetInitializer(global, llvm.LLVMConstNull(ptr_type));
         }
     }
 
@@ -2928,7 +3187,7 @@ pub const LLVMEmitter = struct {
         _ = struct_name;
     }
 
-    fn declareType(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, type_node: *ast.ASTNode) !void {
+    fn declareType(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, type_node: *ast.ASTNode, define_body: bool) !void {
         const t = type_node.data.type_decl;
         const name = if (t.resolved_c_name) |rcn| (if (rcn.len > 0) rcn else t.name) else t.name;
 
@@ -3015,76 +3274,80 @@ pub const LLVMEmitter = struct {
         const ctor_val = llvm.LLVMAddFunction(mod, struct_name_z.ptr, ctor_type);
         try self.functions.put(name, ctor_val);
 
+        // Split mode: the constructor body is a definition — only the owning
+        // unit emits it; other units keep the extern declaration.
+if (define_body) {
         // Emit constructor body
-        const entry_block = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_val, "entry");
-        llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);
+            const entry_block = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_val, "entry");
+            llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
-        // Allocate the instance via the active heap allocator (GC_malloc when
-        // prefer_gc_alloc, malloc otherwise) sized to the struct's actual byte size.
-        const gc_func = getHeapAllocFn(mod);
-        const gc_func_type = llvm.LLVMGlobalGetValueType(gc_func);
-        const size_val = llvm.LLVMSizeOf(struct_type);
-        var gc_args = [_]llvm.LLVMValueRef{size_val};
-        const raw_ptr = llvm.LLVMBuildCall2(self.builder, gc_func_type, gc_func, &gc_args, 1, "raw_inst");
+            // Allocate the instance via the active heap allocator (GC_malloc when
+            // prefer_gc_alloc, malloc otherwise) sized to the struct's actual byte size.
+            const gc_func = getHeapAllocFn(mod);
+            const gc_func_type = llvm.LLVMGlobalGetValueType(gc_func);
+            const size_val = llvm.LLVMSizeOf(struct_type);
+            var gc_args = [_]llvm.LLVMValueRef{size_val};
+            const raw_ptr = llvm.LLVMBuildCall2(self.builder, gc_func_type, gc_func, &gc_args, 1, "raw_inst");
 
-        // Store constructor parameters into struct fields
-        for (0..ctor_param_count) |idx| {
-            var param_val = llvm.LLVMGetParam(ctor_val, @intCast(idx));
-            if (idx < field_types_owned.len) {
-                const field_type = field_types_owned[idx];
-                const p_type = llvm.LLVMTypeOf(param_val);
-                if (llvm.LLVMGetTypeKind(p_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(field_type) == llvm.LLVMIntegerTypeKind) {
-                    const p_bits = llvm.LLVMGetIntTypeWidth(p_type);
-                    const f_bits = llvm.LLVMGetIntTypeWidth(field_type);
-                    if (p_bits < f_bits) {
-                        param_val = llvm.LLVMBuildZExt(self.builder, param_val, field_type, "zext_ctor_param");
-                    } else if (p_bits > f_bits) {
-                        param_val = llvm.LLVMBuildTrunc(self.builder, param_val, field_type, "trunc_ctor_param");
+            // Store constructor parameters into struct fields
+            for (0..ctor_param_count) |idx| {
+                var param_val = llvm.LLVMGetParam(ctor_val, @intCast(idx));
+                if (idx < field_types_owned.len) {
+                    const field_type = field_types_owned[idx];
+                    const p_type = llvm.LLVMTypeOf(param_val);
+                    if (llvm.LLVMGetTypeKind(p_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(field_type) == llvm.LLVMIntegerTypeKind) {
+                        const p_bits = llvm.LLVMGetIntTypeWidth(p_type);
+                        const f_bits = llvm.LLVMGetIntTypeWidth(field_type);
+                        if (p_bits < f_bits) {
+                            param_val = llvm.LLVMBuildZExt(self.builder, param_val, field_type, "zext_ctor_param");
+                        } else if (p_bits > f_bits) {
+                            param_val = llvm.LLVMBuildTrunc(self.builder, param_val, field_type, "trunc_ctor_param");
+                        }
                     }
                 }
-            }
-            const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(idx), "field_gep");
-            _ = llvm.LLVMBuildStore(self.builder, param_val, field_ptr);
-        }
-
-        // Evaluate body-field initializers in declaration order with `this`
-        // bound to the freshly allocated instance, storing into each field.
-        // Constructor fields are also bound (by their names) so an initializer
-        // can reference ctor params/properties, Kotlin-style.
-        if (t.body_fields.len > 0) {
-            var this_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
-            defer this_scope.deinit();
-            const this_z = try self.allocator.dupeZ(u8, "this");
-            defer self.allocator.free(this_z);
-            const this_alloca = llvm.LLVMBuildAlloca(self.builder, ptr_type, this_z.ptr);
-            _ = llvm.LLVMBuildStore(self.builder, raw_ptr, this_alloca);
-            try this_scope.put("this", this_alloca);
-
-            for (t.primary_constructor, 0..) |prop, i| {
-                const p_name_z = try self.allocator.dupeZ(u8, prop.name);
-                defer self.allocator.free(p_name_z);
-                const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(i), p_name_z.ptr);
-                const field_t = field_types_owned[i];
-                const val = llvm.LLVMBuildLoad2(self.builder, field_t, field_ptr, "ctor_field_load");
-                const alloca_ptr = llvm.LLVMBuildAlloca(self.builder, field_t, p_name_z.ptr);
-                _ = llvm.LLVMBuildStore(self.builder, val, alloca_ptr);
-                try this_scope.put(prop.name, alloca_ptr);
+                const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(idx), "field_gep");
+                _ = llvm.LLVMBuildStore(self.builder, param_val, field_ptr);
             }
 
-            for (t.body_fields, 0..) |prop, i| {
-                const init_node = prop.initializer orelse continue;
-                const field_idx = ctor_param_count + i;
-                const field_type = field_types_owned[field_idx];
-                var init_val = try expression.emitExpression(self.context, mod, self.builder, &this_scope, &self.structs, &self.libs, init_node);
-                if (llvm.LLVMTypeOf(init_val) != field_type) {
-                    init_val = expression.coerceArg(self.builder, init_val, field_type);
+            // Evaluate body-field initializers in declaration order with `this`
+            // bound to the freshly allocated instance, storing into each field.
+            // Constructor fields are also bound (by their names) so an initializer
+            // can reference ctor params/properties, Kotlin-style.
+            if (t.body_fields.len > 0) {
+                var this_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
+                defer this_scope.deinit();
+                const this_z = try self.allocator.dupeZ(u8, "this");
+                defer self.allocator.free(this_z);
+                const this_alloca = llvm.LLVMBuildAlloca(self.builder, ptr_type, this_z.ptr);
+                _ = llvm.LLVMBuildStore(self.builder, raw_ptr, this_alloca);
+                try this_scope.put("this", this_alloca);
+
+                for (t.primary_constructor, 0..) |prop, i| {
+                    const p_name_z = try self.allocator.dupeZ(u8, prop.name);
+                    defer self.allocator.free(p_name_z);
+                    const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(i), p_name_z.ptr);
+                    const field_t = field_types_owned[i];
+                    const val = llvm.LLVMBuildLoad2(self.builder, field_t, field_ptr, "ctor_field_load");
+                    const alloca_ptr = llvm.LLVMBuildAlloca(self.builder, field_t, p_name_z.ptr);
+                    _ = llvm.LLVMBuildStore(self.builder, val, alloca_ptr);
+                    try this_scope.put(prop.name, alloca_ptr);
                 }
-                const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(field_idx), "bfield_gep");
-                _ = llvm.LLVMBuildStore(self.builder, init_val, field_ptr);
-            }
-        }
 
-        _ = llvm.LLVMBuildRet(self.builder, raw_ptr);
+                for (t.body_fields, 0..) |prop, i| {
+                    const init_node = prop.initializer orelse continue;
+                    const field_idx = ctor_param_count + i;
+                    const field_type = field_types_owned[field_idx];
+                    var init_val = try expression.emitExpression(self.context, mod, self.builder, &this_scope, &self.structs, &self.libs, init_node);
+                    if (llvm.LLVMTypeOf(init_val) != field_type) {
+                        init_val = expression.coerceArg(self.builder, init_val, field_type);
+                    }
+                    const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(field_idx), "bfield_gep");
+                    _ = llvm.LLVMBuildStore(self.builder, init_val, field_ptr);
+                }
+            }
+
+            _ = llvm.LLVMBuildRet(self.builder, raw_ptr);
+        } // if (define_body)
 
         // Pass 1a2: Emit member methods inside type
         for (t.methods) |m_node| {

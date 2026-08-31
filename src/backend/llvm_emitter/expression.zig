@@ -4290,14 +4290,15 @@ pub fn storeValue(val: llvm.LLVMValueRef, dest_type: llvm.LLVMTypeRef) ?llvm.LLV
 /// module. Used by `when (x) is SomeType` on contract subjects to type-check by
 /// vtable identity.
 fn isRealVtable(g: llvm.LLVMValueRef) bool {
-    if (llvm.LLVMGetInitializer(g) == null) return false;
     if (llvm.LLVMIsGlobalConstant(g) == 0) return false;
     const t = llvm.LLVMGlobalGetValueType(g);
     if (llvm.LLVMGetTypeKind(t) != llvm.LLVMStructTypeKind) return false;
     // Empty-struct vtables are legitimate: contracts with no methods (e.g.
     // `contract SerdeValue`) produce `constant {}`. Stubs created on the fly by
     // coerceToContract are `global {}` (not constant), so the constant check
-    // above already excludes them.
+    // above already excludes them. Extern vtable DECLARATIONS (split-emission
+    // units, see docs/perf-plan-incremental-cache.md) carry no initializer —
+    // they are still real vtables, defined by the owning unit at link time.
     return true;
 }
 

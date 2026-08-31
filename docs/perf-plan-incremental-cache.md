@@ -18,20 +18,50 @@
 | B | ReleaseSafe default + token-indexed reachability | ✅ done | `perf/emitter-hotpaths` (merged into A branch) | 4x on build |
 | A0 | Full-program binary cache in `eiwac` + `run --aot` (build-if-stale + exec) | ✅ done | `perf/incremental-cache` | hit = ~0.01-0.02s |
 | A1 | Cache infra: sha256 key (closure sources + eiwac binary + flags), `~/.eiwa/cache/bin`, `EIWA_CACHE_DIR`, `--no-cache` | ✅ done | `perf/incremental-cache` | |
-| A2 | Split `emitNativeBinary` into `emitObject(module) → .o` + `linkObjects([.o]) → bin` | ⬜ pending | | next task |
-| A3 | Per-module emission: emit-all-bodies + linker dead-strip; `internal` helpers; `eiwa_runtime.o` (shared mutable state); `linkonce_odr` generics/coroutine trampolines; vtables in `llvm.used` | ⬜ pending | | see Decisions A/D/E |
+| A2 | Split `emitNativeBinary` into `emitObjectFile(module) → .o` + `linkObjects([.o]) → bin` | ✅ done | `perf/incremental-cache` (736b03b) | temp object unique per pid |
+| A3 | Two-unit split emission: deps unit (std + `--module-path` deps, cached object) × entry unit (project code, always emitted) | 🔄 **in progress** | `perf/incremental-cache` (**uncommitted**) | see sub-tasks below |
 | A4 | Per-module object cache wired into default build/run path (relink only changed modules) | ⬜ pending | | target: warm edit-run ≤ 0.3s |
 | A5 | (optional) Serialized type-check cache for std/deps modules; export-data-based invalidation (comment-only changes don't rebuild dependents) | ⬜ pending | | measure first |
 
-**Current focus:** A2 (split emit/link). Guardrail after each step:
-`zig build && zig build test && ./bin/eiwac test` (must stay 95/95) +
-benchmark on `example/home`.
+**Current focus:** A3 — **implementado e funcional**. Guardrail pegou **1 falha**
+(`cli_integration_test`: build standalone `.ei`) → root cause = **deps.o instável**
+(vtables de pool types). Corrigido com pool signature no hash. **Validando + commit pendente.**
+
+### A3 sub-tasks
+
+| # | Sub-task | Status |
+|---|----------|--------|
+| A3.1 | Emitter unit-ownership fields (`unit_modules`, `unit_is_entry`) + `unitOwns` | ✅ |
+| A3.2 | Prologue gates: GC ctor entry-only; exception globals entry-defined/others-extern; helpers `internal` linkage | ✅ |
+| A3.3 | `declareEnum`/`declareType`/Pass 1d: define own, declare extern others | ✅ |
+| A3.4 | Reachability skip in split; body loops filtered by ownership + owned/foreign name sets | ✅ |
+| A3.5 | Vtable pass: own defines, others extern-declared (whole-program vtable set visible in every unit for `when is` checks); `isRealVtable` accepts extern constant decls | ✅ |
+| A3.6 | Stub pass: only stub own symbols (entry also stubs leftover synthetics) | ✅ |
+| A3.7 | Epilogue gates: `emitArgvSupport`/`emitEntryShim` entry-only | ✅ |
+| A3.8 | `main.zig` orchestration: module partition (`isDepModulePath`), deps object at `~/.eiwa/cache/objects/<hash>.o`, two-emitter flow + `linkObjects` | ✅ |
+| A3.9 | `zig build` + fix compile errors | ✅ |
+| A3.10 | **Link-collision fixes** (bugs encontrados ao validar): | ✅ |
+| | ① use-after-free no pool loop (`owned_names.put(fname)` com `defer free`) | ✅ |
+| | ② helpers `.N` renomeados ainda externos → sweep internaliza `base.N` | ✅ |
+| | ③ `lambda_anon_N` colide entre units (contador global) → `internal` | ✅ |
+| | ④ `main` duplicado: Pass 3 hybrid-main roda no deps unit → gated por ownership | ✅ |
+| | ⑤ stub pass stubbava símbolos dos deps (`coroutines_StackTask`, métodos derivados `log_Logger_error_...`) → set `dep_owned_fns` | ✅ |
+| | ⑥ dedupe `seen_types` (clones monomorfizados espalhados por módulos) | ✅ |
+| | ⑦ types genéricos base (`List`, `StackTask`) — ctor de template também dep-owned | ✅ |
+| | ⑧ **deps.o instável**: `is List<T>` no `equals` genérico referencia vtables de TODAS as instâncias do pool → **pool signature** (nomes ordenados de `classes_ast`) no hash do deps.o (invalida só quando o set de tipos instanciados muda) | ✅ |
+| A3.11 | Functional test: `home` HTTP 200 ✅, `hello` HTML ✅, JIT-vs-AOT MATCH (`hello`, `arrays_and_loops`) ✅, `make build` ✅, `eiwa build app.ei` standalone ✅ (após ⑧) | ✅ |
+| A3.12 | **Guardrail**: `zig build test` ✅; `eiwac test` **94/95** — a falha (`cli_integration_test`) foi DIAGNOSTICADA como o bug ⑧ e corrigida; **rerun pendente** | 🔄 |
+| A3.13 | Benchmark entry-change rebuild = 0,27s (deps.o reutilizado quando pool estável) ✅; commit A3 | ⬜ |
+
+> **Nota A3.12:** o guardrail `eiwac test` é JIT e não cobre o caminho split — a falha
+> apareceu porque o teste invoca `eiwac build` do CLI (que usa split). A correção ⑧
+> garante que o deps.o cache seja invalidado corretamente quando o pool muda.
 
 ### Resume checklist (next session)
 
 1. `git checkout perf/incremental-cache && zig build`
-2. Guardrail baseline: `./bin/eiwac test` (95/95, ~57s)
-3. Continue from "Current focus" above.
+2. A3 state is **uncommitted** in the working tree (`src/main.zig`, `src/backend/llvm_emitter/core.zig`, `expression.zig`, `docs/perf-plan-incremental-cache.md`) — continue from A3.12/A3.13.
+3. Guardrail: `./bin/eiwac test` (95/95, ~57s) — JIT path, unaffected by A3; A3 needs its own AOT verification (A3.11) + benchmark (A3.13).
 
 ---
 
@@ -56,9 +86,15 @@ coroutines ~0.05s, `emitModule` ~0.15s, LLVM `.o` emit ~0.25s, `cc` link ~0.1s.
 
 | Category | Examples | Solution |
 |----------|----------|----------|
-| Shared **mutable** runtime state | `eiwa_exception_stack`, `eiwa_active_exception`, `eiwa_argc`/`eiwa_argv` | **`eiwa_runtime.o`** — emitted once, keyed by (compiler version + flags). `linkonce_odr` on mutable globals is unsafe (linker may pick any copy). |
-| Pure helpers/intrinsics | `eiwa_to_string`, `eiwa_str_replace` | **`internal` linkage** per object — private copies, stripped by linker, zero collision risk. |
-| `llvm.global_ctors` (GC init) | `__eiwa_gc_init_ctor` | Emitted **only in the entry module's object** (owns `main`). |
+| Shared **mutable** runtime state | `eiwa_exception_stack`, `eiwa_active_exception`, `eiwa_argc`/`eiwa_argv` | ~~`eiwa_runtime.o`~~ → **implemented as: owned by the entry unit** (it owns `main`); other units reference them as extern declarations. Same single-definition guarantee, one less object to version. |
+| Pure helpers/intrinsics | `eiwa_to_string`, `eiwa_str_replace`, `GC_MALLOC`/`GC_REALLOC` wrappers | **`internal` linkage** per object — private copies, stripped by linker, zero collision risk. |
+| `llvm.global_ctors` (GC init) | `__eiwa_gc_init_ctor` | Emitted **only in the entry unit** (owns `main`). |
+
+> **A3 scope note:** the implementation splits into **two units** (deps+std ×
+> project) instead of N per-module objects. The mechanisms are identical;
+> two units capture ~90% of the win (deps dominate emitted code and rarely
+> change) with far less link surface. N-way remains possible in A4 if
+> benchmarks justify it.
 
 ### B. Transitive invalidation
 
@@ -78,14 +114,20 @@ export-data hashing is A5.
 
 ### D. Vtables under `-dead_strip` / `--gc-sections`
 
-Register vtable globals in `llvm.used` (Mach-O `no_dead_strip`); the linker
-keeps initializer-referenced methods transitively — no per-method marking
-needed.
+~~Register vtable globals in `llvm.used`~~ → **implemented as: whole-program
+vtable protocol.** `when (x) is Contract` checks iterate every `_vtable`
+global in the module, so each unit pre-declares the *complete* vtable set:
+the owning unit defines it (`constant`, with initializer), other units
+declare it extern (`constant`, no initializer — accepted as real by
+`isRealVtable`). No dead-strip attributes needed because all vtables stay
+referenced.
 
 ### E. Monomorphized generics & coroutine trampolines
 
-Instantiations emitted in the using module's object with **`linkonce_odr`**
-(LLVM maps to COMDAT on COFF/Windows) so duplicates across objects merge.
+~~`linkonce_odr`~~ → **implemented as: entry-unit ownership.** Pool types
+(`classes_ast`) are defined only by the entry unit; dep units reference them
+extern. No duplicates → no ODR merging needed. (If A4 goes N-way per-module,
+this decision must be revisited — `linkonce_odr` becomes necessary again.)
 
 ### Linker strategy
 
