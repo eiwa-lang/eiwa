@@ -1273,17 +1273,35 @@ fn buildResume(
 
     // result store: this.task.result = <last> (only when the task has a value)
     const task_get = mkGetExpr(mkIdent("this"), "task");
+    try stmts.appendSlice(rewritten.items);
+
+    // The completion (result store + done=true + waiter-chain drain) must be
+    // atomic with `StackTask.awaitCoop`, which registers waiters under
+    // `task.mutex`. Without this lock a waiter appended between the `done=true`
+    // write and the drain is orphaned forever → its awaiter busy-loops at 100%
+    // CPU. `task.mutex` is never held while a scheduler lock is acquired, so
+    // this cannot deadlock with Scheduler.schedule below.
+    const task_mutex = mkGetExpr(task_get, "mutex");
+    try stmts.append(mkExprStmt(mkCall(mkGetExpr(task_mutex, "lock"), &.{})));
     if (result_expr) |re| {
         const result_set = mkSetExpr(task_get, "result", re);
-        try stmts.appendSlice(rewritten.items);
         try stmts.append(result_set);
-    } else {
-        try stmts.appendSlice(rewritten.items);
     }
 
     // this.task.done = true
-    const done_set = mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "done", mkBoolLit(true));
+    const done_set = mkSetExpr(task_get, "done", mkBoolLit(true));
     try stmts.append(done_set);
+
+    // Snapshot and clear the waiter chain under the lock, then unlock before
+    // scheduling them (after done=true no new waiter can be appended, so the
+    // drain is race-free without holding the task lock).
+    const waiter_name = try std.fmt.allocPrint(allocator, "__waiter{d}", .{counter.*});
+    const waiter_var = mkVarDecl(waiter_name, mkGetExpr(task_get, "waiters"));
+    waiter_var.data.var_decl.is_mut = true;
+    try stmts.append(waiter_var);
+    const waiters_null = mkSetExpr(task_get, "waiters", mkNullLit());
+    try stmts.append(waiters_null);
+    try stmts.append(mkExprStmt(mkCall(mkGetExpr(task_mutex, "unlock"), &.{})));
 
     // Reschedule waiter chain (mirrors SpecBlockCont):
     //   var __waiter = this.task.waiters
@@ -1291,12 +1309,6 @@ fn buildResume(
     //       Scheduler.schedule(__waiter!!.cont)
     //       __waiter = __waiter!!.next
     //   }
-    //   this.task.waiters = null
-    const waiter_name = try std.fmt.allocPrint(allocator, "__waiter{d}", .{counter.*});
-    const waiter_var = mkVarDecl(waiter_name, mkGetExpr(mkGetExpr(mkIdent("this"), "task"), "waiters"));
-    waiter_var.data.var_decl.is_mut = true;
-    try stmts.append(waiter_var);
-
     const while_body = mkBlock(&.{
         mkCall(
             mkGetExpr(mkIdent("Scheduler"), "schedule"),
@@ -1309,9 +1321,6 @@ fn buildResume(
         while_body,
     );
     try stmts.append(while_stmt);
-
-    const waiters_null = mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "waiters", mkNullLit());
-    try stmts.append(waiters_null);
 
     const block_body = mkBlock(try stmts.toOwnedSlice());
     return mkFunDecl("resume", &.{}, block_body, false, &.{.kw_implement});
@@ -2277,16 +2286,25 @@ fn buildResumeStateMachine(
     const entry = try machineBuildStmts(&m, leading.items, done_label);
     entry_out.* = entry;
 
-    // 5. Done state: result store, done=true, reschedule waiter chain.
+    // 5. Done state: result store, done=true, reschedule waiter chain. This must
+    //    be atomic with `StackTask.awaitCoop` (which appends waiters under
+    //    `task.mutex`); otherwise a waiter added between `done=true` and the
+    //    drain is orphaned → its awaiter busy-loops at 100% CPU. The waiter
+    //    snapshot is taken under the lock and rescheduled after unlock.
+    const task_get = mkGetExpr(mkIdent("this"), "task");
+    const task_mutex = mkGetExpr(task_get, "mutex");
+    try m.append(done_label, mkExprStmt(mkCall(mkGetExpr(task_mutex, "lock"), &.{})));
     if (trailing) |tv| {
-        try m.append(done_label, mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "result", tv));
+        try m.append(done_label, mkSetExpr(task_get, "result", tv));
     }
-    try m.append(done_label, mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "done", mkBoolLit(true)));
+    try m.append(done_label, mkSetExpr(task_get, "done", mkBoolLit(true)));
     const waiter_name = try std.fmt.allocPrint(allocator, "__waiter{d}", .{counter.*});
     counter.* += 1;
-    const waiter_var = mkVarDecl(waiter_name, mkGetExpr(mkGetExpr(mkIdent("this"), "task"), "waiters"));
+    const waiter_var = mkVarDecl(waiter_name, mkGetExpr(task_get, "waiters"));
     waiter_var.data.var_decl.is_mut = true;
     try m.append(done_label, waiter_var);
+    try m.append(done_label, mkSetExpr(task_get, "waiters", mkNullLit()));
+    try m.append(done_label, mkExprStmt(mkCall(mkGetExpr(task_mutex, "unlock"), &.{})));
     const while_body = mkBlock(&.{
         mkCall(
             mkGetExpr(mkIdent("Scheduler"), "schedule"),
@@ -2298,7 +2316,6 @@ fn buildResumeStateMachine(
         mkBinary(.bang_eq, mkIdent(waiter_name), mkNullLit()),
         while_body,
     ));
-    try m.append(done_label, mkSetExpr(mkGetExpr(mkIdent("this"), "task"), "waiters", mkNullLit()));
     try m.append(done_label, mkReturnVoid());
 
     // 6. Assemble resume().

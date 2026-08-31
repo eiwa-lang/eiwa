@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -47,10 +47,28 @@ jobs:
         run: zig build
 
       - name: Build eiwa CLI
-        run: ./bin/eiwac build -o bin/eiwa cli/src/main.ei
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bin/eiwac.exe build -o bin/eiwa.exe cli/src/main.ei
+          else
+            ./bin/eiwac build -o bin/eiwa cli/src/main.ei
+          fi
 
       - name: Native test suite
-        run: ./bin/eiwac test
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bin/eiwac.exe test
+          else
+            ./bin/eiwac test
+          fi
 
       - name: Smoke test (run sample)
-        run: ./bin/eiwac run samples/main.ei
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bin/eiwac.exe run samples/main.ei
+          else
+            ./bin/eiwac run samples/main.ei
+          fi

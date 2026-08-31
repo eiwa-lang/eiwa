@@ -43,6 +43,111 @@ fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     return buf.toOwnedSlice();
 }
 
+// --- Parallel test harness helpers -------------------------------------------
+// `eiwac test` spawns one child `eiwac test <file>` per `*_test.ei`. Each child
+// compiles the file and runs its `test "name" { }` blocks, printing `[PASS]`/
+// `*[FAIL]` per block plus a final `[SUMMARY] <n> passed, <m> failed` line, and
+// exits with the failed-block count. The parent spawns children concurrently
+// (bounded by CPU count so tests don't wait on each other to start) and counts
+// test BLOCKS from each child's `[SUMMARY]`, not whole files.
+
+const TestProc = struct {
+    tfile: []const u8,
+    child: std.process.Child,
+};
+
+const ChildResult = struct {
+    term: std.process.Child.Term,
+    output: []u8,
+    /// True when the child was killed for exceeding the per-test deadline
+    /// (a hung test must be reported, not allowed to freeze the whole suite).
+    timed_out: bool = false,
+};
+
+/// Reads a spawned child's stdout+stderr pipes to EOF (concurrently, to avoid
+/// pipe-buffer deadlocks) and waits for it. If the child has not finished by
+/// `deadline` it is killed and the output collected so far is returned with
+/// `timed_out` set. Caller owns result.output.
+fn collectChild(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child, deadline: std.Io.Clock.Timestamp) !ChildResult {
+    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: std.Io.File.MultiReader = undefined;
+    multi_reader.init(allocator, io, multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer multi_reader.deinit();
+
+    var timed_out = false;
+    while (true) {
+        multi_reader.fill(4096, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.EndOfStream => break,
+            error.Timeout => {
+                timed_out = true;
+                break;
+            },
+            else => |e| return e,
+        };
+    }
+
+    // On timeout, terminate the child. `kill` also closes/nulls the pipes, but
+    // everything read so far is already buffered inside `multi_reader`.
+    if (timed_out) child.kill(io);
+    try multi_reader.checkAnyError();
+
+    const term = if (timed_out) std.process.Child.Term{ .unknown = 0 } else try child.wait(io);
+    const stdout_slice = try multi_reader.toOwnedSlice(0);
+    defer allocator.free(stdout_slice);
+    const stderr_slice = try multi_reader.toOwnedSlice(1);
+    defer allocator.free(stderr_slice);
+
+    const out = try allocator.alloc(u8, stdout_slice.len + stderr_slice.len);
+    @memcpy(out[0..stdout_slice.len], stdout_slice);
+    @memcpy(out[stdout_slice.len..], stderr_slice);
+    return .{ .term = term, .output = out, .timed_out = timed_out };
+}
+
+const Summary = struct {
+    passed: usize,
+    failed: usize,
+};
+
+/// Extracts the `[SUMMARY] <passed> passed, <failed> failed` line emitted by the
+/// compiled test runner. Returns null when the child produced none (e.g. a
+/// compile error or a crash before the runner finished).
+fn parseSummary(output: []const u8) ?Summary {
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "[SUMMARY] ")) continue;
+        const rest = line["[SUMMARY] ".len..];
+        var parts = std.mem.splitSequence(u8, rest, " passed, ");
+        const passed_str = parts.next() orelse continue;
+        const failed_str = parts.next() orelse continue;
+        if (!std.mem.endsWith(u8, failed_str, " failed")) continue;
+        const failed_num = failed_str[0 .. failed_str.len - " failed".len];
+        const passed = std.fmt.parseInt(usize, passed_str, 10) catch continue;
+        const failed = std.fmt.parseInt(usize, failed_num, 10) catch continue;
+        return .{ .passed = passed, .failed = failed };
+    }
+    return null;
+}
+
+fn countLines(output: []const u8, prefix: []const u8) usize {
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |line| {
+        if (std.mem.startsWith(u8, line, prefix)) count += 1;
+    }
+    return count;
+}
+
+/// Spawns `eiwac test <file>` with piped stdio so the parent can capture and
+/// count the child's per-test-block output.
+fn spawnTestChild(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, tfile: []const u8, is_release: bool) !TestProc {
+    var child_args = ArrayList([]const u8).init(allocator);
+    defer child_args.deinit();
+    try child_args.appendSlice(&[_][]const u8{ args[0], "test", tfile });
+    if (is_release) try child_args.append("--release");
+    const child = try std.process.spawn(io, .{ .argv = child_args.items, .stdout = .pipe, .stderr = .pipe });
+    return .{ .tfile = tfile, .child = child };
+}
+
 /// Main entry point for the Eiwa CLI.
 /// Orchestrates the pipeline: Source -> Lexer -> Parser -> AST -> C Transpiler -> Binary.
 
@@ -347,6 +452,12 @@ fn run(init: std.process.Init) !void {
             \\Extra positional arguments after the file are forwarded to
             \\the program when using the run command.
             \\
+            \\Test runner (test command, no file):
+            \\  Tests run in parallel (one child per CPU core). A hung test is
+            \\  killed and reported after a timeout instead of freezing the suite.
+            \\  EIWA_TEST_JOBS        override the parallel window (1 = sequential)
+            \\  EIWA_TEST_TIMEOUT_MS  per-test timeout in ms (default 120000)
+            \\
             \\Incremental cache: unchanged builds reuse artifacts under
             \\EIWA_CACHE_DIR (default ~/.eiwa/cache) keyed by content hashes.
             \\
@@ -477,23 +588,82 @@ fn run(init: std.process.Init) !void {
 
             var total_passed: usize = 0;
             var total_failed: usize = 0;
+            var files_failed: usize = 0;
 
             var start_ts: CTimeSpec = undefined;
             _ = c_clock.clock_gettime(0, &start_ts);
 
-            for (test_files.items) |tfile| {
-                var child_args = ArrayList([]const u8).init(allocator);
-                defer child_args.deinit();
-                try child_args.appendSlice(&[_][]const u8{ args[0], "test", tfile });
-                if (is_release) try child_args.append("--release");
+            // Bounded concurrency: run up to one test child per CPU core. Every
+            // child starts immediately (none waits for a previous test to
+            // finish) while keeping the machine from being overwhelmed by ~100
+            // concurrent compilers. As one child completes the next is spawned.
+            // `EIWA_TEST_JOBS` overrides the window (e.g. 1 = fully sequential).
+            const cpu_count = std.Thread.getCpuCount() catch 4;
+            const jobs = if (std.c.getenv("EIWA_TEST_JOBS")) |v|
+                std.fmt.parseInt(usize, std.mem.span(v), 10) catch cpu_count
+            else
+                cpu_count;
+            const window = @min(jobs, test_files.items.len);
 
-                var child = try std.process.spawn(io, .{ .argv = child_args.items });
-                const term = try child.wait(io);
-                if (term == .exited and term.exited == 0) {
-                    total_passed += 1;
-                } else {
-                    std.debug.print("*[FAIL] {s}\n", .{tfile});
+            // Per-test deadline: a hung test (e.g. a busy-looping coroutine) is
+            // killed and reported as a failure instead of freezing the suite.
+            // `EIWA_TEST_TIMEOUT_MS` overrides the default 120s.
+            const default_timeout_ms: i64 = 120 * 1000;
+            const timeout_ms = if (std.c.getenv("EIWA_TEST_TIMEOUT_MS")) |v|
+                std.fmt.parseInt(i64, std.mem.span(v), 10) catch default_timeout_ms
+            else
+                default_timeout_ms;
+            const timeout_duration = std.Io.Duration.fromMilliseconds(timeout_ms);
+
+            var running: std.ArrayList(TestProc) = .empty;
+            defer {
+                for (running.items) |*p| p.child.kill(io);
+                running.deinit(allocator);
+            }
+
+            var next_idx: usize = 0;
+            while (running.items.len < window and next_idx < test_files.items.len) : (next_idx += 1) {
+                try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release));
+            }
+
+            while (running.items.len > 0) {
+                var p = running.orderedRemove(0);
+                const deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+                    .raw = timeout_duration,
+                    .clock = .real,
+                });
+                const res = try collectChild(allocator, io, &p.child, deadline);
+                defer allocator.free(res.output);
+
+                // Print each file's output under a header so parallel (and
+                // out-of-order) runs stay attributable.
+                const basename = std.fs.path.basename(p.tfile);
+                std.debug.print("--- {s} ---\n", .{basename});
+                std.debug.print("{s}", .{res.output});
+
+                if (res.timed_out) {
+                    std.debug.print("*[FAIL] {s} (timeout after {d}s)\n", .{ basename, @divTrunc(timeout_ms, 1000) });
                     total_failed += 1;
+                    files_failed += 1;
+                } else if (parseSummary(res.output)) |sum| {
+                    total_passed += sum.passed;
+                    total_failed += sum.failed;
+                    if (sum.failed > 0) files_failed += 1;
+                } else {
+                    // No [SUMMARY] (compile error / crash / no tests). A non-zero exit
+                    // means the file failed as a whole; still credit any test
+                    // blocks that did run before it died.
+                    const passed = countLines(res.output, "[PASS] ");
+                    var failed = countLines(res.output, "*[FAIL] ");
+                    if (!(res.term == .exited and res.term.exited == 0)) failed += 1;
+                    total_passed += passed;
+                    total_failed += failed;
+                    if (failed > 0) files_failed += 1;
+                }
+
+                if (next_idx < test_files.items.len) {
+                    try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release));
+                    next_idx += 1;
                 }
             }
 
@@ -503,7 +673,7 @@ fn run(init: std.process.Init) !void {
                 @as(f64, @floatFromInt(end_ts.tv_nsec - start_ts.tv_nsec)) / 1_000_000_000.0;
 
             if (total_failed > 0) {
-                std.debug.print("\nLLVM Test Suite: {d} PASSED, {d} FAILED in {d:.2}s\n", .{ total_passed, total_failed, elapsed_sec });
+                std.debug.print("\nLLVM Test Suite: {d} PASSED, {d} FAILED in {d:.2}s ({d} file(s) with failures)\n", .{ total_passed, total_failed, elapsed_sec, files_failed });
                 std.process.exit(1);
             } else {
                 std.debug.print("\nLLVM Test Suite: ALL {d} TESTS PASSED in {d:.2}s!\n", .{ total_passed, elapsed_sec });

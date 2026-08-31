@@ -52,6 +52,25 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             .lib_path = "/usr/lib/llvm-21/lib",
         };
     }
+    // Check Windows standard LLVM paths
+    if (fileExists(b, "C:/Program Files/LLVM/include/llvm-c/Core.h")) {
+        return .{
+            .include_path = "C:/Program Files/LLVM/include",
+            .lib_path = "C:/Program Files/LLVM/lib",
+        };
+    }
+    if (fileExists(b, "C:/Program Files (x86)/LLVM/include/llvm-c/Core.h")) {
+        return .{
+            .include_path = "C:/Program Files (x86)/LLVM/include",
+            .lib_path = "C:/Program Files (x86)/LLVM/lib",
+        };
+    }
+    if (fileExists(b, "C:/LLVM/include/llvm-c/Core.h")) {
+        return .{
+            .include_path = "C:/LLVM/include",
+            .lib_path = "C:/LLVM/lib",
+        };
+    }
 
     return null;
 }

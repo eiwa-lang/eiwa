@@ -1159,6 +1159,8 @@ pub const LLVMEmitter = struct {
                 // test run signals failure without dying on the first throw.
                 const failed_var = llvm.LLVMBuildAlloca(self.builder, i32_type, "test_failed");
                 _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i32_type, 0, 0), failed_var);
+                const passed_var = llvm.LLVMBuildAlloca(self.builder, i32_type, "test_passed");
+                _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i32_type, 0, 0), passed_var);
 
                 for (test_funcs.items, 0..) |test_fn, i| {
                     const test_fn_type_call = llvm.LLVMGlobalGetValueType(test_fn);
@@ -1202,6 +1204,9 @@ pub const LLVMEmitter = struct {
                     const pass_str = llvm.LLVMBuildGlobalStringPtr(self.builder, pass_fmt.ptr, "pass_msg");
                     var pass_args = [_]llvm.LLVMValueRef{pass_str};
                     _ = llvm.LLVMBuildCall2(self.builder, puts_call_type, puts_fn, &pass_args, 1, "");
+                    const passed_prev = llvm.LLVMBuildLoad2(self.builder, i32_type, passed_var, "passed_prev");
+                    const passed_inc = llvm.LLVMBuildAdd(self.builder, passed_prev, llvm.LLVMConstInt(i32_type, 1, 0), "passed_inc");
+                    _ = llvm.LLVMBuildStore(self.builder, passed_inc, passed_var);
                     if (fflush_fn_opt != null) {
                         var null_arg = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(ptr_type_rt)};
                         _ = llvm.LLVMBuildCall2(self.builder, fflush_ft_opt.?, fflush_fn_opt.?, &null_arg, 1, "");
@@ -1246,7 +1251,26 @@ pub const LLVMEmitter = struct {
                     llvm.LLVMPositionBuilderAtEnd(self.builder, after_bb);
                 }
 
+                const passed_final = llvm.LLVMBuildLoad2(self.builder, i32_type, passed_var, "passed_final");
                 const failed_final = llvm.LLVMBuildLoad2(self.builder, i32_type, failed_var, "failed_final");
+
+                // Machine-parseable per-run summary so the parent test harness
+                // counts test BLOCKS (not files) across parallel child processes.
+                const printf_fn = llvm.LLVMGetNamedFunction(mod, "printf") orelse blk: {
+                    var sum_params = [_]llvm.LLVMTypeRef{ptr_type_rt};
+                    const ft = llvm.LLVMFunctionType(i32_type, &sum_params, 1, 1);
+                    break :blk llvm.LLVMAddFunction(mod, "printf", ft);
+                };
+                const sum_printf_type = llvm.LLVMGlobalGetValueType(printf_fn);
+                const sum_fmt = try self.allocator.dupeZ(u8, "[SUMMARY] %d passed, %d failed\n");
+                defer self.allocator.free(sum_fmt);
+                const sum_str = llvm.LLVMBuildGlobalStringPtr(self.builder, sum_fmt.ptr, "summary_msg");
+                var sum_args = [_]llvm.LLVMValueRef{ sum_str, passed_final, failed_final };
+                _ = llvm.LLVMBuildCall2(self.builder, sum_printf_type, printf_fn, &sum_args, 3, "");
+                if (fflush_fn_opt != null) {
+                    var null_arg = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(ptr_type_rt)};
+                    _ = llvm.LLVMBuildCall2(self.builder, fflush_ft_opt.?, fflush_fn_opt.?, &null_arg, 1, "");
+                }
                 _ = llvm.LLVMBuildRet(self.builder, failed_final);
 
             } else {

@@ -23,6 +23,8 @@ jobs:
             target: darwin-arm64
           - os: macos-15-intel
             target: darwin-x86_64
+          - os: windows-latest
+            target: windows-x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +48,13 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install bdw-gc llvm@21
 
+      - name: Install deps (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # LLVM comes pre-installed on GitHub Actions windows-latest under C:\Program Files\LLVM
+          echo "LLVM search path ready on Windows."
+
       - name: Build eiwac
         # Baseline CPU: release binaries must run on any x86_64/arm64 (incl.
         # emulators like Rosetta 2, which lack AVX-512). `zig build` defaults to
@@ -55,20 +64,44 @@ jobs:
       - name: Build eiwa CLI
         # eiwac emits with the host CPU by default; force a portable binary for
         # the shipped CLI (see EIWA_BASELINE_CPU in the LLVM emitter).
-        run: EIWA_BASELINE_CPU=1 ./bin/eiwac build -o bin/eiwa cli/src/main.ei
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EIWA_BASELINE_CPU=1 ./bin/eiwac.exe build -o bin/eiwa.exe cli/src/main.ei
+          else
+            EIWA_BASELINE_CPU=1 ./bin/eiwac build -o bin/eiwa cli/src/main.ei
+          fi
 
-      - name: Package tarball
+      - name: Package tarball & zip
+        shell: bash
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           PKG="eiwa-$VERSION-${{ matrix.target }}"
           STAGE="dist/$PKG"
           mkdir -p "$STAGE/bin"
-          cp bin/eiwac bin/eiwa "$STAGE/bin/"
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            [ -f bin/eiwac.exe ] && cp bin/eiwac.exe "$STAGE/bin/" || cp bin/eiwac "$STAGE/bin/eiwac.exe"
+            [ -f bin/eiwa.exe ] && cp bin/eiwa.exe "$STAGE/bin/" || cp bin/eiwa "$STAGE/bin/eiwa.exe"
+            [ -f install.ps1 ] && cp install.ps1 "$STAGE/"
+          else
+            cp bin/eiwac bin/eiwa "$STAGE/bin/"
+            [ -f install.sh ] && cp install.sh "$STAGE/"
+          fi
+
           cp -R src "$STAGE/src"
           cp README.md "$STAGE/"
+
+          # Produce tar.gz for all targets
           tar -czf "$PKG.tar.gz" -C dist "$PKG"
           sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256"
+
+          # Produce .zip for Windows
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            (cd dist && 7z a -r "../$PKG.zip" "$PKG")
+            sha256sum "$PKG.zip" > "$PKG.zip.sha256"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -76,7 +109,8 @@ jobs:
           name: eiwa-${{ matrix.target }}
           path: |
             eiwa-*.tar.gz
-            eiwa-*.tar.gz.sha256
+            eiwa-*.zip
+            eiwa-*.sha256
           if-no-files-found: error
 
   release:
@@ -99,12 +133,12 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          find dist-assets -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} . \;
-          cat eiwa-*.tar.gz.sha256 > SHA256SUMS
+          find dist-assets -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -exec cp {} . \;
+          cat eiwa-*.sha256 > SHA256SUMS
           gh release create "$GITHUB_REF_NAME" \
             --title "Eiwa $VERSION" \
             --generate-notes \
-            eiwa-*.tar.gz eiwa-*.tar.gz.sha256 SHA256SUMS
+            eiwa-*.tar.gz eiwa-*.zip eiwa-*.sha256 SHA256SUMS
 
   docker:
     name: Build & Push Docker image
