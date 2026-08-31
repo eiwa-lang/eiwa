@@ -90,11 +90,22 @@ para o entry unit dominar o tempo (medir: `time eiwac build --no-cache` num
 projeto grande). A A5 (cache de typecheck) tem prioridade — é o próximo
 gargalo fixo.
 
-### A5 — Cache de typecheck (próximo)
+### A5 — Cache de typecheck (medido, ADIADO)
 
-Serializar o resultado do type-check de módulos de std/deps (AST resolvida +
-símbolos) keyed por hash de source, reutilizando entre builds. Meta: derrubar
-o `~0.15s` de frontend+typecheck do entry-change rebuild (0,27s → ~0,12s).
+Medido no `example/home` (entry source changed, `EIWA_TIMING`):
+
+| Fase | Tempo | % |
+|------|-------|---|
+| parse + load | 12ms | 4% |
+| typecheck (passes 2a-3) | 49ms | 18% |
+| emit + link (entry emit + LLVM codegen + `cc` link) | 211ms | 78% |
+| **Total** | **~272ms** | |
+
+**Conclusão:** o typecheck não é o gargalo (18%). O A5 (serializar typecheck de
+std/deps) economizaria ~49ms → 0,27s → 0,22s, com risco alto (serializar AST +
+symbols inter-module). **ADIADO.** O piso real é emit+link (~210ms), dominado
+pelo link (~100ms) e o entry codegen. Se o projeto crescer e o entry unit
+dominar, reavaliar N-way (A4) antes do A5.
 
 ---
 
