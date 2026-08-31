@@ -504,9 +504,6 @@ pub const LLVMEmitter = struct {
         try self.emitRandomBytesHelper(mod);
         try self.emitNowMillisHelper(mod);
 
-        // Split mode: helper bodies are private to each unit's object.
-        self.makeHelpersInternal(mod);
-
         expression.global_contracts_ast_ptr = self.contracts_ast;
         expression.global_classes_ast_ptr = self.classes_ast;
 
@@ -1357,6 +1354,10 @@ pub const LLVMEmitter = struct {
         }
 
         try self.emitNonGCHelpers(mod);
+        // Split mode: helpers/intrinsics and anonymous lambdas (all created
+        // during body emission) become internal so each unit's object carries
+        // a private copy — run AFTER every body is emitted.
+        self.makeHelpersInternal(mod);
         // Split mode: program entry (argv support + main shim) lives only in
         // the entry unit.
         if (!split or is_entry) {
