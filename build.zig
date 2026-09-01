@@ -1,6 +1,11 @@
 const std = @import("std");
 
 fn fileExists(b: *std.Build, path: []const u8) bool {
+    if (std.fs.path.isAbsolute(path)) {
+        var file = std.Io.Dir.openFileAbsolute(b.graph.io, path, .{}) catch return false;
+        file.close(b.graph.io);
+        return true;
+    }
     var file = std.Io.Dir.cwd().openFile(b.graph.io, path, .{}) catch return false;
     file.close(b.graph.io);
     return true;
@@ -9,24 +14,30 @@ fn fileExists(b: *std.Build, path: []const u8) bool {
 fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[]const u8 } {
     if (b.option([]const u8, "llvm-path", "Custom path to LLVM installation")) |p| {
         return .{
-            .include_path = b.fmt("{s}/include", .{p}),
-            .lib_path = b.fmt("{s}/lib", .{p}),
+            .include_path = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p}),
+            .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
         };
     }
     // Check LLVM_PATH / LLVM_HOME env var (e.g. GitHub Actions or manual install)
     if (b.graph.environ_map.get("LLVM_PATH")) |p| {
-        if (fileExists(b, b.fmt("{s}/include/llvm-c/Core.h", .{p}))) {
+        const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p});
+        const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p});
+        const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch b.fmt("{s}/llvm-c/Core.h", .{inc});
+        if (fileExists(b, header)) {
             return .{
-                .include_path = b.fmt("{s}/include", .{p}),
-                .lib_path = b.fmt("{s}/lib", .{p}),
+                .include_path = inc,
+                .lib_path = lib,
             };
         }
     }
     if (b.graph.environ_map.get("LLVM_HOME")) |p| {
-        if (fileExists(b, b.fmt("{s}/include/llvm-c/Core.h", .{p}))) {
+        const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p});
+        const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p});
+        const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch b.fmt("{s}/llvm-c/Core.h", .{inc});
+        if (fileExists(b, header)) {
             return .{
-                .include_path = b.fmt("{s}/include", .{p}),
-                .lib_path = b.fmt("{s}/lib", .{p}),
+                .include_path = inc,
+                .lib_path = lib,
             };
         }
     }
@@ -70,23 +81,16 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
         };
     }
     // Check Windows standard LLVM paths
-    if (fileExists(b, "C:/Program Files/LLVM/include/llvm-c/Core.h")) {
-        return .{
-            .include_path = "C:/Program Files/LLVM/include",
-            .lib_path = "C:/Program Files/LLVM/lib",
-        };
-    }
-    if (fileExists(b, "C:/Program Files (x86)/LLVM/include/llvm-c/Core.h")) {
-        return .{
-            .include_path = "C:/Program Files (x86)/LLVM/include",
-            .lib_path = "C:/Program Files (x86)/LLVM/lib",
-        };
-    }
-    if (fileExists(b, "C:/LLVM/include/llvm-c/Core.h")) {
-        return .{
-            .include_path = "C:/LLVM/include",
-            .lib_path = "C:/LLVM/lib",
-        };
+    for ([_][]const u8{ "C:/Program Files/LLVM", "C:/Program Files (x86)/LLVM", "C:/LLVM", "C:\\Program Files\\LLVM", "C:\\Program Files (x86)\\LLVM", "C:\\LLVM" }) |p| {
+        const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch continue;
+        const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
+        const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
+        if (fileExists(b, header)) {
+            return .{
+                .include_path = inc,
+                .lib_path = lib,
+            };
+        }
     }
 
     return null;
