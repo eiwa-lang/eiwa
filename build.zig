@@ -130,7 +130,12 @@ fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{
+        .default_target = if (builtin.os.tag == .windows) .{
+            .os_tag = .windows,
+            .abi = .gnu,
+        } else .{},
+    });
     // Default to ReleaseSafe: `zig build` is how eiwac is normally produced
     // (see AGENTS.md), and a Debug compiler is several times slower on every
     // `eiwa run`/`build`. Safety checks stay on; pass -Doptimize=Debug for
