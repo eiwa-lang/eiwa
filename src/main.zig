@@ -43,6 +43,14 @@ fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     return buf.toOwnedSlice();
 }
 
+fn getProcessId() u32 {
+    if (builtin.os.tag == .windows) {
+        return @intCast(std.os.windows.kernel32.GetCurrentProcessId());
+    } else {
+        return @intCast(std.c.getpid());
+    }
+}
+
 // --- Parallel test harness helpers -------------------------------------------
 // `eiwac test` spawns one child `eiwac test <file>` per `*_test.ei`. Each child
 // compiles the file and runs its `test "name" { }` blocks, printing `[PASS]`/
@@ -1014,7 +1022,7 @@ fn run(init: std.process.Init) !void {
     // the GC runtime linked, not the non-GC helper stubs).
     var linked_split = false;
     const aot_tmp: ?[]const u8 = if (!is_build and aot_run and cache_bin_path != null and !is_test)
-        try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ cache_bin_path.?, std.c.getpid() })
+        try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ cache_bin_path.?, getProcessId() })
     else
         null;
 
@@ -1056,7 +1064,7 @@ fn run(init: std.process.Init) !void {
                 deps_emitter.unit_modules = &dep_module_set;
                 deps_emitter.unit_is_entry = false;
                 try deps_emitter.emitModule(ast_root);
-                const dtmp = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ deps_obj, std.c.getpid() });
+                const dtmp = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ deps_obj, getProcessId() });
                 try deps_emitter.emitObjectFile(dtmp);
                 std.Io.Dir.renameAbsolute(dtmp, deps_obj, io) catch {
                     std.Io.Dir.cwd().deleteFile(io, dtmp) catch {};
@@ -1068,7 +1076,7 @@ fn run(init: std.process.Init) !void {
             emitter.unit_modules = &entry_module_set;
             emitter.unit_is_entry = true;
             try emitter.emitModule(ast_root);
-            const etmp = try std.fmt.allocPrint(allocator, "{s}.entry.{d}.{s}", .{ deps_obj, std.c.getpid(), obj_ext });
+            const etmp = try std.fmt.allocPrint(allocator, "{s}.entry.{d}.{s}", .{ deps_obj, getProcessId(), obj_ext });
             try emitter.emitObjectFile(etmp);
             defer std.Io.Dir.cwd().deleteFile(io, etmp) catch {};
             const out_path = if (is_build) final_bin.? else aot_tmp.?;

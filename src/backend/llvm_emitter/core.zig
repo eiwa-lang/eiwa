@@ -3658,6 +3658,14 @@ if (define_body) {
         }
     }
 
+    fn getProcessId() u32 {
+        if (builtin.os.tag == .windows) {
+            return @intCast(std.os.windows.kernel32.GetCurrentProcessId());
+        } else {
+            return @intCast(std.c.getpid());
+        }
+    }
+
     /// Direct native binary emission using LLVMTargetMachineEmitToFile.
     /// Thin wrapper: emit the module to a temp object file, then link.
     /// (Split into emitObjectFile/linkObjects for the incremental cache —
@@ -3667,7 +3675,7 @@ if (define_body) {
         const obj_ext = if (is_windows) "obj" else "o";
         // Unique per process so concurrent eiwac runs in the same directory
         // (e.g. two `eiwa run` builds) never collide on the temp object.
-        const obj_filename = try std.fmt.allocPrint(self.allocator, "temp_llvm_{d}.{s}", .{ std.c.getpid(), obj_ext });
+        const obj_filename = try std.fmt.allocPrint(self.allocator, "temp_llvm_{d}.{s}", .{ getProcessId(), obj_ext });
         defer self.allocator.free(obj_filename);
 
         try self.emitObjectFile(obj_filename);
