@@ -50,10 +50,10 @@ jobs:
 
       - name: Install deps (Windows)
         if: runner.os == 'Windows'
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          location: 'C:\msys64'
           update: true
           path-type: inherit
           install: >-
@@ -65,10 +65,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          echo "LLVM_PATH=C:/msys64/ucrt64" >> $GITHUB_ENV
-          echo "C:/msys64/ucrt64/bin" >> $GITHUB_PATH
-          ls -la C:/msys64/ucrt64/lib/libLLVM* || true
-          ls -la C:/msys64/ucrt64/lib/libgc* || true
+          MSYS2_DIR="${{ steps.msys2.outputs.msys2-location }}"
+          UCRT64_DIR="${MSYS2_DIR//\\//}/ucrt64"
+          echo "LLVM_PATH=${UCRT64_DIR}" >> $GITHUB_ENV
+          echo "GC_PATH=${UCRT64_DIR}" >> $GITHUB_ENV
+          echo "${UCRT64_DIR}/bin" >> $GITHUB_PATH
+          ls -la "${UCRT64_DIR}/lib/libLLVM"* || true
+          ls -la "${UCRT64_DIR}/lib/libgc"* || true
 
       - name: Build eiwac
         # Baseline CPU: release binaries must run on any x86_64/arm64 (incl.
