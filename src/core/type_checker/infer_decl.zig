@@ -41,7 +41,7 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "money.ei", @embedFile("../../std/money.ei") },
 });
 
-pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines", "std.uuid", "std.ulid", "std.random" };
+pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines", "std.thread", "std.atomic", "std.uuid", "std.ulid", "std.random" };
 pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions" };
 pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 
@@ -181,6 +181,19 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                 found = true;
             } else if (tc.global_scope.lookupVariable(sym)) |variable| {
                 try self.global_scope.define(sym, variable, false, false);
+                if (tc.lib_symbols.contains(sym)) {
+                    try self.lib_symbols.put(sym, {});
+                    var sym_it = tc.global_scope.symbols.iterator();
+                    while (sym_it.next()) |entry| {
+                        const k = entry.key_ptr.*;
+                        if (std.mem.startsWith(u8, k, sym) and k.len > sym.len and k[sym.len] == '.') {
+                            try self.global_scope.symbols.put(k, entry.value_ptr.*);
+                            if (tc.alias_map.get(k)) |aliased| {
+                                try self.alias_map.put(k, aliased);
+                            }
+                        }
+                    }
+                }
                 found = true;
             } else if (tc.generic_functions_ast.get(sym)) |list| {
                 // Generic functions are not in global_scope; importing one
@@ -971,6 +984,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         } else {
             try my_list.?.append(node);
         }
+        try self.local_symbols.put(f.name, {});
         t.* = .Void;
         return;
     }

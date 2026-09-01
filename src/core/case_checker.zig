@@ -14,7 +14,6 @@ pub const CaseCheckResult = union(enum) {
 /// or Windows NTFS).
 pub fn checkPathCasing(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !CaseCheckResult {
     if (std.mem.startsWith(u8, path, "std/")) return .ok;
-    if (std.mem.eql(u8, path, "synthetic_test.ei")) return .ok;
 
     var cur_dir_path: []const u8 = try allocator.alloc(u8, 0);
     defer allocator.free(cur_dir_path);

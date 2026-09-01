@@ -504,6 +504,11 @@ fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void 
     // std.core itself has absolutely no implicit imports
     if (std.mem.eql(u8, basename, "core.ei")) return;
 
+    if (node.data != .program) return;
+    if (node.data.program.statements.len > 0 and node.data.program.statements[0].line == 0 and node.data.program.statements[0].column == 0 and node.data.program.statements[0].data == .import_stmt) {
+        return;
+    }
+
     const implicit_imports = if (std.mem.eql(u8, basename, "io.ei"))
         &[_][]const u8{"std.core"}
     else if (std.mem.eql(u8, basename, "system.ei") or std.mem.eql(u8, basename, "exceptions.ei"))
@@ -801,14 +806,7 @@ fn core_declareSignatures(self: *TypeChecker, node: *ASTNode) anyerror!void {
             }
         }
 
-        // Copy imported symbols into self (resolve imports)
-        for (node.data.program.statements) |stmt| {
-            if (stmt.data == .import_stmt) {
-                _ = try self.inferNode(stmt, &self.global_scope);
-            }
-        }
-
-        // Declare local signatures
+        // Declare local signatures first so dependencies and mutual imports can see them
         for (node.data.program.statements) |stmt| {
             if (stmt.data == .lib_decl) {
                 if (!self.matchesTarget(stmt.data.lib_decl.platform_targets)) continue;
@@ -850,7 +848,6 @@ fn core_resolveImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
                     const mod_path = try resolveModulePath(self.allocator, dir_path, actual_module_path);
                     if (reg.modules.get(mod_path)) |m| {
                         try m.checker.resolveImports(m.ast_root);
-                        try m.checker.validate(m.ast_root);
                     }
                 }
             }
@@ -920,7 +917,7 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
 fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*const EiwaType {
     if (self.pass == .validation) {
         switch (node.data) {
-            .program, .type_decl, .object_decl, .enum_decl, .fun_decl => {},
+            .program, .type_decl, .object_decl, .enum_decl, .fun_decl, .import_stmt => {},
             else => {
                 if (node.resolved_type) |rt| {
                     return rt;
@@ -928,7 +925,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
             },
         }
     } else {
-        if (node.data != .fun_decl) {
+        if (node.data != .fun_decl and node.data != .import_stmt) {
             if (node.resolved_type) |rt| {
                 return rt;
             }

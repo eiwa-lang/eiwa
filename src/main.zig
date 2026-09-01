@@ -14,37 +14,7 @@ const target_mod = @import("core/target.zig");
 const build_options = @import("build_options");
 const llvm_emitter = if (build_options.has_llvm) @import("backend/llvm_emitter/core.zig") else struct {};
 
-/// Converts a filesystem path (relative to the module root) into a
-/// root-relative dot import path. e.g. "samples/tests/foo_test.ei" -> ".samples.tests.foo_test".
-fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    var rel = path;
-    while (std.mem.startsWith(u8, rel, "./") or std.mem.startsWith(u8, rel, ".\\")) {
-        rel = rel[2..];
-    }
-    const root = type_checker.module_root;
-    if (!std.mem.eql(u8, root, ".")) {
-        if (std.mem.startsWith(u8, rel, root)) {
-            const rest = rel[root.len..];
-            if (rest.len > 0 and (std.mem.startsWith(u8, rest, "/") or std.mem.startsWith(u8, rest, "\\"))) {
-                rel = rest[1..];
-            }
-        }
-    }
-    while (std.mem.startsWith(u8, rel, "/") or std.mem.startsWith(u8, rel, "\\")) {
-        rel = rel[1..];
-    }
-    var name = rel;
-    if (std.mem.endsWith(u8, name, ".ei")) {
-        name = name[0 .. name.len - 3];
-    }
-    var buf = ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    try buf.append('.');
-    for (name) |c| {
-        try buf.append(if (c == '/' or c == '\\') '.' else c);
-    }
-    return buf.toOwnedSlice();
-}
+
 
 fn getProcessId() u32 {
     if (builtin.os.tag == .windows) {
@@ -490,7 +460,7 @@ fn run(init: std.process.Init) !void {
     var source_alloc = ArrayList(u8).init(allocator);
     defer source_alloc.deinit();
 
-    var filename: []const u8 = "synthetic_test.ei";
+    var filename: []const u8 = undefined;
 
     const io = init.io;
     eiwa_home.io = io;
@@ -696,10 +666,11 @@ fn run(init: std.process.Init) !void {
             }
         }
 
+        filename = search_path;
         type_checker.module_root = ".";
-        const dot_path = try toRootDotPath(allocator, search_path);
-        defer allocator.free(dot_path);
-        try source_alloc.print("import {{}} from \"{s}\"\n", .{dot_path});
+        const file_content = try std.Io.Dir.cwd().readFileAlloc(io, filename, allocator, .limited(1024 * 1024));
+        defer allocator.free(file_content);
+        try source_alloc.appendSlice(file_content);
     } else {
         if (positionals.items.len == 0) {
             std.debug.print("Error: Missing file argument.\n", .{});
@@ -759,7 +730,7 @@ fn run(init: std.process.Init) !void {
                 std.debug.print("Error: Unknown standard library package 'std.{s}'\n", .{pkg_name});
                 std.process.exit(1);
             }
-        } else if (std.mem.eql(u8, cur_path, "synthetic_test.ei")) {
+        } else if (queue_idx == 0) {
             source_content = source;
         } else {
             source_content = std.Io.Dir.cwd().readFileAlloc(io, cur_path, arena.allocator(), .limited(1024 * 1024)) catch |err| {

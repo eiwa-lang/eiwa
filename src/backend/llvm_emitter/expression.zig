@@ -2011,30 +2011,41 @@ pub fn emitExpression(
                                             if (ebase.* == .Custom) contract_c_name = ebase.Custom;
                                         }
                                         if (contract_c_name.len == 0) {
-                                            if (call.callee.resolved_type) |crt| {
-                                                if (crt.* == .Function and idx < crt.Function.params.len) {
-                                                    switch (crt.Function.params[idx].*) {
+                                            const target_type_rt = node.resolved_type orelse call.callee.resolved_type;
+                                            if (target_type_rt) |crt| {
+                                                const base_crt = ts.extractBaseType(crt);
+                                                if (base_crt.* == .Function and idx < base_crt.Function.params.len) {
+                                                    switch (ts.extractBaseType(base_crt.Function.params[idx]).*) {
                                                         .Custom => |n| contract_c_name = n,
                                                         .GenericInstance => |gi| contract_c_name = gi.base_name,
                                                         else => {},
+                                                    }
+                                                } else if (global_classes_ast_ptr) |ca| {
+                                                    const cname = switch (base_crt.*) {
+                                                        .Custom => |n| n,
+                                                        .GenericInstance => |gi| gi.base_name,
+                                                        else => "",
+                                                    };
+                                                    if (cname.len > 0) {
+                                                        if (ca.get(cname)) |cnode| {
+                                                            if (cnode.data == .type_decl and idx < cnode.data.type_decl.primary_constructor.len) {
+                                                                const prop = cnode.data.type_decl.primary_constructor[idx];
+                                                                const prt = prop.resolved_type orelse prop.type_ref.resolved_type;
+                                                                if (prt) |p| {
+                                                                    switch (ts.extractBaseType(p).*) {
+                                                                        .Custom => |n| contract_c_name = n,
+                                                                        .GenericInstance => |gi| contract_c_name = gi.base_name,
+                                                                        else => {},
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                         if (arg_c_name.len > 0) {
-                                            if (contract_c_name.len == 0) {
-                                                if (global_contracts_ast_ptr) |ca| {
-                                                    var it = ca.iterator();
-                                                    while (it.next()) |entry| {
-                                                        const c_name = entry.key_ptr.*;
-                                                        const test_fat = coerceToContractChecked(ctx, mod, builder, arg_val, arg_c_name, c_name) catch continue;
-                                                        if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(test_fat)) == llvm.LLVMStructTypeKind) {
-                                                             arg_val = test_fat;
-                                                             break;
-                                                        }
-                                                    }
-                                                }
-                                            } else {
+                                            if (contract_c_name.len > 0) {
                                                 arg_val = try coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name);
                                             }
                                         }
@@ -2241,7 +2252,8 @@ pub fn emitExpression(
                                                         if (ebase.* == .Custom) contract_c_name = ebase.Custom;
                                                     }
                                                     if (contract_c_name.len == 0) {
-                                                        if (call.callee.resolved_type) |crt| {
+                                                        const target_type_rt = node.resolved_type orelse call.callee.resolved_type;
+                                                        if (target_type_rt) |crt| {
                                                             const base_crt = ts.extractBaseType(crt);
                                                             if (base_crt.* == .Function and idx < base_crt.Function.params.len) {
                                                                 switch (ts.extractBaseType(base_crt.Function.params[idx]).*) {
@@ -2249,21 +2261,32 @@ pub fn emitExpression(
                                                                     .GenericInstance => |gi| contract_c_name = gi.base_name,
                                                                     else => {},
                                                                 }
+                                                            } else if (global_classes_ast_ptr) |ca| {
+                                                                const cname = switch (base_crt.*) {
+                                                                    .Custom => |n| n,
+                                                                    .GenericInstance => |gi| gi.base_name,
+                                                                    else => "",
+                                                                };
+                                                                if (cname.len > 0) {
+                                                                    if (ca.get(cname)) |cnode| {
+                                                                        if (cnode.data == .type_decl and idx < cnode.data.type_decl.primary_constructor.len) {
+                                                                            const prop = cnode.data.type_decl.primary_constructor[idx];
+                                                                            const prt = prop.resolved_type orelse prop.type_ref.resolved_type;
+                                                                            if (prt) |p| {
+                                                                                switch (ts.extractBaseType(p).*) {
+                                                                                    .Custom => |n| contract_c_name = n,
+                                                                                    .GenericInstance => |gi| contract_c_name = gi.base_name,
+                                                                                    else => {},
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
                                                     if (contract_c_name.len > 0) {
                                                         arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
-                                                    } else if (global_contracts_ast_ptr) |ca| {
-                                                        var it = ca.iterator();
-                                                        while (it.next()) |entry| {
-                                                            const c_name = entry.key_ptr.*;
-                                                            const test_fat = coerceToContractChecked(ctx, mod, builder, arg_val, arg_c_name, c_name) catch continue;
-                                                            if (llvm.LLVMTypeOf(test_fat) == ptype) {
-                                                                arg_val = test_fat;
-                                                                break;
-                                                            }
-                                                        }
                                                     }
                                                 }
                                             }

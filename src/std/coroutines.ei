@@ -5,7 +5,7 @@
 
 import { mod } from "std.math"
 import { NativeMemory, Standard } from "std.core"
-import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, sync } from "std.thread"
+import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC } from "std.thread"
 import { AtomicBool } from "std.atomic"
 import { MutableList } from "std.collections"
 
