@@ -20,35 +20,13 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
         };
     }
-    // Check environment variables for LLVM / MSYS2 prefixes
+    // Check environment variables for LLVM / MSYS2 prefixes (trust explicit environment variables)
     for ([_][]const u8{ "LLVM_PATH", "LLVM_HOME", "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
         if (b.graph.environ_map.get(key)) |p| {
-            const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch continue;
-            const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
-            const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
-            if (fileExists(b, header)) {
-                return .{
-                    .include_path = inc,
-                    .lib_path = lib,
-                };
-            }
-        }
-    }
-    // Scan PATH entries (e.g. C:\msys64\ucrt64\bin or /opt/homebrew/bin)
-    if (b.graph.environ_map.get("PATH")) |path_val| {
-        const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
-        var it = std.mem.tokenizeScalar(u8, path_val, sep);
-        while (it.next()) |dir| {
-            const parent = std.fs.path.dirname(dir) orelse continue;
-            const inc = std.fs.path.join(b.allocator, &.{ parent, "include" }) catch continue;
-            const lib = std.fs.path.join(b.allocator, &.{ parent, "lib" }) catch continue;
-            const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
-            if (fileExists(b, header)) {
-                return .{
-                    .include_path = inc,
-                    .lib_path = lib,
-                };
-            }
+            return .{
+                .include_path = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p}),
+                .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
+            };
         }
     }
     // macOS Homebrew paths
@@ -90,26 +68,12 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             };
         }
     }
-    // Windows standard LLVM and MSYS2/UCRT64 paths
+    // Windows standard fallback paths
     if (builtin.os.tag == .windows) {
-        for ([_][]const u8{
-            "C:/msys64/ucrt64",
-            "C:/msys64/mingw64",
-            "C:/msys64/clang64",
-            "C:/Program Files/LLVM",
-            "C:/Program Files (x86)/LLVM",
-            "C:/LLVM",
-        }) |p| {
-            const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch continue;
-            const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
-            const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
-            if (fileExists(b, header)) {
-                return .{
-                    .include_path = inc,
-                    .lib_path = lib,
-                };
-            }
-        }
+        return .{
+            .include_path = "C:/msys64/ucrt64/include",
+            .lib_path = "C:/msys64/ucrt64/lib",
+        };
     }
 
     return null;
@@ -123,31 +87,9 @@ fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
     if (b.option([]const u8, "gc-path", "Custom path to Boehm GC (libgc) installation")) |p| {
         return .{ .lib_path = b.fmt("{s}/lib", .{p}) };
     }
-    // Check MSYS2 / environment prefixes for libgc
-    for ([_][]const u8{ "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
+    for ([_][]const u8{ "GC_PATH", "LIBGC_PATH", "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
         if (b.graph.environ_map.get(key)) |p| {
-            const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
-            if (fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "libgc.dll.a" }) catch "") or
-                fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "libgc.a" }) catch "") or
-                fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "gc.lib" }) catch ""))
-            {
-                return .{ .lib_path = lib };
-            }
-        }
-    }
-    // Scan PATH entries for libgc
-    if (b.graph.environ_map.get("PATH")) |path_val| {
-        const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
-        var it = std.mem.tokenizeScalar(u8, path_val, sep);
-        while (it.next()) |dir| {
-            const parent = std.fs.path.dirname(dir) orelse continue;
-            const lib = std.fs.path.join(b.allocator, &.{ parent, "lib" }) catch continue;
-            if (fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "libgc.dll.a" }) catch "") or
-                fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "libgc.a" }) catch "") or
-                fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "gc.lib" }) catch ""))
-            {
-                return .{ .lib_path = lib };
-            }
+            return .{ .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}) };
         }
     }
     // macOS Homebrew (Apple Silicon / Intel)
@@ -159,14 +101,9 @@ fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
             return .{ .lib_path = "/usr/local/lib" };
         }
     }
-    // Windows MSYS2 / UCRT64 & MinGW64
+    // Windows MSYS2 / UCRT64 fallback
     if (builtin.os.tag == .windows) {
-        if (fileExists(b, "C:/msys64/ucrt64/lib/libgc.dll.a") or fileExists(b, "C:/msys64/ucrt64/lib/libgc.a")) {
-            return .{ .lib_path = "C:/msys64/ucrt64/lib" };
-        }
-        if (fileExists(b, "C:/msys64/mingw64/lib/libgc.dll.a") or fileExists(b, "C:/msys64/mingw64/lib/libgc.a")) {
-            return .{ .lib_path = "C:/msys64/mingw64/lib" };
-        }
+        return .{ .lib_path = "C:/msys64/ucrt64/lib" };
     }
     // Linux standard paths
     if (builtin.os.tag == .linux) {
