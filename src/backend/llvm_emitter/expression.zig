@@ -2243,8 +2243,8 @@ pub fn emitExpression(
                                                     if (contract_c_name.len == 0) {
                                                         if (call.callee.resolved_type) |crt| {
                                                             const base_crt = ts.extractBaseType(crt);
-                                                            if (base_crt.* == .Function and idx + arg_base < base_crt.Function.params.len) {
-                                                                switch (ts.extractBaseType(base_crt.Function.params[idx + arg_base]).*) {
+                                                            if (base_crt.* == .Function and idx < base_crt.Function.params.len) {
+                                                                switch (ts.extractBaseType(base_crt.Function.params[idx]).*) {
                                                                     .Custom => |n| contract_c_name = n,
                                                                     .GenericInstance => |gi| contract_c_name = gi.base_name,
                                                                     else => {},
