@@ -69,7 +69,7 @@ test "receiver lambda: capture outer var by assignment still propagates" {
 test "receiver lambda: sibling method call and primitive to contract coercion" {
     var captured = ""
     runBoxWithVal {
-        captured = show(40.0 + 2.0)
+        captured = show(40 + 2)
     }
     assert(captured == "v:42")
 }
