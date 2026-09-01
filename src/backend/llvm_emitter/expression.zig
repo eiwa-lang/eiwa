@@ -3396,7 +3396,7 @@ pub fn emitExpression(
             const else_bb = if (i.else_branch != null) llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "expr_if.else") else null;
             const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "expr_if.merge");
 
-            const res_ptr = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "expr_if_res") else null;
+            const res_ptr: llvm.LLVMValueRef = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "expr_if_res") else null;
             _ = llvm.LLVMBuildCondBr(builder, cond_val, then_bb, else_bb orelse merge_bb);
 
             llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
@@ -3452,7 +3452,7 @@ pub fn emitExpression(
                 _ = llvm.LLVMBuildStore(builder, subj_val, subj_ptr.?);
             }
 
-            const res_ptr = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "when_res") else null;
+            const res_ptr: llvm.LLVMValueRef = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "when_res") else null;
 
             const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "when.merge");
 
@@ -5266,7 +5266,7 @@ fn emitBlockOrExpr(
     structs: *std.StringHashMap(core.StructInfo),
     libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
     node: *ast.ASTNode,
-    res_ptr: ?llvm.LLVMValueRef,
+    res_ptr: llvm.LLVMValueRef,
 ) !void {
     if (node.data == .block) {
         const stmts = node.data.block.statements;
