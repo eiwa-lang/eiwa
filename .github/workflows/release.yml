@@ -58,6 +58,7 @@ jobs:
           path-type: inherit
           install: >-
             mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-llvm-libs
             mingw-w64-ucrt-x86_64-gc
 
       - name: Setup Windows Paths

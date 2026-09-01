@@ -40,14 +40,21 @@ fn findLlvm(b: *std.Build) ?Dependency {
     }
     for ([_][]const u8{ "LLVM_PATH", "LLVM_HOME", "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
         if (b.graph.environ_map.get(key)) |p| {
+            var import_lib: ?[]const u8 = null;
+            if (builtin.os.tag == .windows) {
+                for ([_][]const u8{ "libLLVM.dll.a", "libLLVM-19.dll.a", "libLLVM-20.dll.a", "libLLVM-21.dll.a", "libLLVM.a", "LLVM.lib" }) |cand| {
+                    const full = std.fs.path.join(b.allocator, &.{ p, "lib", cand }) catch continue;
+                    if (fileExists(b, full)) {
+                        import_lib = full;
+                        break;
+                    }
+                }
+            }
             return .{
                 .name = "LLVM",
                 .include_path = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p}),
                 .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
-                .import_lib = if (builtin.os.tag == .windows)
-                    std.fs.path.join(b.allocator, &.{ p, "lib", "libLLVM.dll.a" }) catch null
-                else
-                    null,
+                .import_lib = import_lib,
             };
         }
     }
@@ -78,7 +85,6 @@ fn findLlvm(b: *std.Build) ?Dependency {
             .name = "LLVM",
             .include_path = "C:/msys64/ucrt64/include",
             .lib_path = "C:/msys64/ucrt64/lib",
-            .import_lib = "C:/msys64/ucrt64/lib/libLLVM.dll.a",
         };
     }
     return null;
@@ -90,13 +96,20 @@ fn findLibgc(b: *std.Build) ?Dependency {
     }
     for ([_][]const u8{ "GC_PATH", "LIBGC_PATH", "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
         if (b.graph.environ_map.get(key)) |p| {
+            var import_lib: ?[]const u8 = null;
+            if (builtin.os.tag == .windows) {
+                for ([_][]const u8{ "libgc.dll.a", "libgc.a", "gc.lib" }) |cand| {
+                    const full = std.fs.path.join(b.allocator, &.{ p, "lib", cand }) catch continue;
+                    if (fileExists(b, full)) {
+                        import_lib = full;
+                        break;
+                    }
+                }
+            }
             return .{
                 .name = "gc",
                 .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
-                .import_lib = if (builtin.os.tag == .windows)
-                    std.fs.path.join(b.allocator, &.{ p, "lib", "libgc.dll.a" }) catch null
-                else
-                    null,
+                .import_lib = import_lib,
             };
         }
     }
@@ -109,7 +122,6 @@ fn findLibgc(b: *std.Build) ?Dependency {
         return .{
             .name = "gc",
             .lib_path = "C:/msys64/ucrt64/lib",
-            .import_lib = "C:/msys64/ucrt64/lib/libgc.dll.a",
         };
     }
     if (builtin.os.tag == .linux) {
