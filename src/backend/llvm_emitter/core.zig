@@ -3786,7 +3786,7 @@ if (define_body) {
 
     fn executableOnPath(self: *LLVMEmitter, io: std.Io, name: []const u8) bool {
         const path_env = (std.c.getenv("PATH") orelse return false);
-        var it = std.mem.splitScalar(u8, std.mem.span(path_env), ':');
+        var it = std.mem.splitScalar(u8, std.mem.span(path_env), std.fs.path.delimiter);
         while (it.next()) |dir| {
             if (dir.len == 0) continue;
             const full = std.fs.path.join(self.allocator, &.{ dir, name }) catch continue;
@@ -3796,6 +3796,17 @@ if (define_body) {
             };
             self.allocator.free(full);
             if (found) return true;
+            if (builtin.os.tag == .windows) {
+                const exe_name = std.fmt.allocPrint(self.allocator, "{s}.exe", .{name}) catch continue;
+                defer self.allocator.free(exe_name);
+                const full_exe = std.fs.path.join(self.allocator, &.{ dir, exe_name }) catch continue;
+                const found_exe = blk: {
+                    std.Io.Dir.cwd().access(io, full_exe, .{}) catch break :blk false;
+                    break :blk true;
+                };
+                self.allocator.free(full_exe);
+                if (found_exe) return true;
+            }
         }
         return false;
     }
@@ -4058,12 +4069,36 @@ if (define_body) {
         }
         const key = h.final();
 
-        const ext = if (builtin.target.os.tag == .macos) ".dylib" else ".so";
-        const lib_filename = try std.fmt.allocPrint(self.allocator, "/tmp/eiwa_llvm_libs_{x}{s}", .{ key, ext });
+        // POSIX /tmp does not exist on Windows and mingw's native ld.exe cannot
+        // write there, so build the JIT shared lib inside the OS temp dir with a
+        // platform-appropriate extension so both the linker and the dynamic
+        // loader (LoadLibraryA / dlopen) can reach it.
+        const ext = if (builtin.target.os.tag == .macos) ".dylib" else if (builtin.target.os.tag == .windows) ".dll" else ".so";
+        const lib_basename = try std.fmt.allocPrint(self.allocator, "eiwa_llvm_libs_{x}{s}", .{ key, ext });
+        defer self.allocator.free(lib_basename);
+        const temp_dir = temp_dir: {
+            if (builtin.target.os.tag == .windows) {
+                for ([_][*:0]const u8{ "TMP", "TEMP" }) |env_key| {
+                    if (std.c.getenv(env_key)) |p_z| {
+                        const p = std.mem.sliceTo(p_z, 0);
+                        if (p.len > 0) break :temp_dir try self.allocator.dupe(u8, p);
+                    }
+                }
+                break :temp_dir try self.allocator.dupe(u8, "C:/Windows/Temp");
+            } else {
+                if (std.c.getenv("TMPDIR")) |p_z| {
+                    const p = std.mem.sliceTo(p_z, 0);
+                    if (p.len > 0) break :temp_dir try self.allocator.dupe(u8, p);
+                }
+                break :temp_dir try self.allocator.dupe(u8, "/tmp");
+            }
+        };
+        defer self.allocator.free(temp_dir);
+        const lib_filename = try std.fs.path.join(self.allocator, &.{ temp_dir, lib_basename });
         defer self.allocator.free(lib_filename);
 
         const cached = blk: {
-            var f = std.Io.Dir.cwd().openFile(io, lib_filename, .{}) catch break :blk false;
+            var f = std.Io.Dir.openFileAbsolute(io, lib_filename, .{}) catch break :blk false;
             f.close(io);
             break :blk true;
         };
@@ -4089,6 +4124,23 @@ if (define_body) {
             const inc_third_party = try std.fs.path.join(self.allocator, &.{ repo_root, "src/runtime/third_party" });
             try cc_argv.appendSlice(&[_][]const u8{ "-I", inc_third_party });
 
+            if (builtin.target.os.tag == .windows) {
+                var found = false;
+                for ([_][*:0]const u8{ "GC_PATH", "LLVM_PATH", "MINGW_PREFIX", "MSYSTEM_PREFIX" }) |env_key| {
+                    if (std.c.getenv(env_key)) |p_z| {
+                        const p = std.mem.sliceTo(p_z, 0);
+                        const inc = try std.fmt.allocPrint(self.allocator, "{s}/include", .{p});
+                        const lib = try std.fmt.allocPrint(self.allocator, "{s}/lib", .{p});
+                        try cc_argv.appendSlice(&[_][]const u8{ "-I", inc, "-L", lib });
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try cc_argv.appendSlice(&[_][]const u8{ "-I", "C:/msys64/ucrt64/include", "-L", "C:/msys64/ucrt64/lib" });
+                }
+            }
+
             var inc_it = self.c_includes.keyIterator();
             while (inc_it.next()) |dir| {
                 try cc_argv.append(try std.fmt.allocPrint(self.allocator, "-I{s}", .{dir.*}));
@@ -4102,7 +4154,11 @@ if (define_body) {
                 try cc_argv.append(src.*);
             }
             if (self.c_sources.count() == 0) {
-                try cc_argv.appendSlice(&[_][]const u8{ "-x", "c", "/dev/null" });
+                if (builtin.target.os.tag == .windows) {
+                    try cc_argv.appendSlice(&[_][]const u8{ "-x", "c", "NUL" });
+                } else {
+                    try cc_argv.appendSlice(&[_][]const u8{ "-x", "c", "/dev/null" });
+                }
             }
 
             try cc_argv.append("-lgc");
