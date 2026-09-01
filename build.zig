@@ -3,15 +3,14 @@ const builtin = @import("builtin");
 
 fn fileExists(b: *std.Build, path: []const u8) bool {
     if (path.len == 0) return false;
-    if (std.Io.Dir.openFileAbsolute(b.graph.io, path, .{})) |file| {
+    if (std.fs.path.isAbsolute(path)) {
+        var file = std.Io.Dir.openFileAbsolute(b.graph.io, path, .{}) catch return false;
         file.close(b.graph.io);
         return true;
-    } else |_| {}
-    if (std.Io.Dir.cwd().openFile(b.graph.io, path, .{})) |file| {
-        file.close(b.graph.io);
-        return true;
-    } else |_| {}
-    return false;
+    }
+    var file = std.Io.Dir.cwd().openFile(b.graph.io, path, .{}) catch return false;
+    file.close(b.graph.io);
+    return true;
 }
 
 fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[]const u8 } {
@@ -52,62 +51,64 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             }
         }
     }
-    // Check macOS Homebrew llvm@21
-    if (fileExists(b, "/opt/homebrew/opt/llvm@21/include/llvm-c/Core.h")) {
-        return .{
-            .include_path = "/opt/homebrew/opt/llvm@21/include",
-            .lib_path = "/opt/homebrew/opt/llvm@21/lib",
-        };
-    }
-    // Check macOS Homebrew default llvm
-    if (fileExists(b, "/opt/homebrew/opt/llvm/include/llvm-c/Core.h")) {
-        return .{
-            .include_path = "/opt/homebrew/opt/llvm/include",
-            .lib_path = "/opt/homebrew/opt/llvm/lib",
-        };
-    }
-    // Check Intel macOS Homebrew (under /usr/local) llvm@21
-    if (fileExists(b, "/usr/local/opt/llvm@21/include/llvm-c/Core.h")) {
-        return .{
-            .include_path = "/usr/local/opt/llvm@21/include",
-            .lib_path = "/usr/local/opt/llvm@21/lib",
-        };
-    }
-    // Check Intel macOS Homebrew default llvm
-    if (fileExists(b, "/usr/local/opt/llvm/include/llvm-c/Core.h")) {
-        return .{
-            .include_path = "/usr/local/opt/llvm/include",
-            .lib_path = "/usr/local/opt/llvm/lib",
-        };
-    }
-    // Check system default /usr/include/llvm-c/Core.h
-    if (fileExists(b, "/usr/include/llvm-c/Core.h")) {
-        return .{ .include_path = null, .lib_path = null };
-    }
-    // Check Ubuntu/Debian /usr/lib/llvm-21/include/llvm-c/Core.h
-    if (fileExists(b, "/usr/lib/llvm-21/include/llvm-c/Core.h")) {
-        return .{
-            .include_path = "/usr/lib/llvm-21/include",
-            .lib_path = "/usr/lib/llvm-21/lib",
-        };
-    }
-    // Check Windows standard LLVM and MSYS2/UCRT64 paths
-    for ([_][]const u8{
-        "C:/msys64/ucrt64",
-        "C:/msys64/mingw64",
-        "C:/msys64/clang64",
-        "C:/Program Files/LLVM",
-        "C:/Program Files (x86)/LLVM",
-        "C:/LLVM",
-    }) |p| {
-        const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch continue;
-        const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
-        const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
-        if (fileExists(b, header)) {
+    // macOS Homebrew paths
+    if (builtin.os.tag == .macos) {
+        if (fileExists(b, "/opt/homebrew/opt/llvm@21/include/llvm-c/Core.h")) {
             return .{
-                .include_path = inc,
-                .lib_path = lib,
+                .include_path = "/opt/homebrew/opt/llvm@21/include",
+                .lib_path = "/opt/homebrew/opt/llvm@21/lib",
             };
+        }
+        if (fileExists(b, "/opt/homebrew/opt/llvm/include/llvm-c/Core.h")) {
+            return .{
+                .include_path = "/opt/homebrew/opt/llvm/include",
+                .lib_path = "/opt/homebrew/opt/llvm/lib",
+            };
+        }
+        if (fileExists(b, "/usr/local/opt/llvm@21/include/llvm-c/Core.h")) {
+            return .{
+                .include_path = "/usr/local/opt/llvm@21/include",
+                .lib_path = "/usr/local/opt/llvm@21/lib",
+            };
+        }
+        if (fileExists(b, "/usr/local/opt/llvm/include/llvm-c/Core.h")) {
+            return .{
+                .include_path = "/usr/local/opt/llvm/include",
+                .lib_path = "/usr/local/opt/llvm/lib",
+            };
+        }
+    }
+    // Linux standard paths
+    if (builtin.os.tag == .linux) {
+        if (fileExists(b, "/usr/include/llvm-c/Core.h")) {
+            return .{ .include_path = null, .lib_path = null };
+        }
+        if (fileExists(b, "/usr/lib/llvm-21/include/llvm-c/Core.h")) {
+            return .{
+                .include_path = "/usr/lib/llvm-21/include",
+                .lib_path = "/usr/lib/llvm-21/lib",
+            };
+        }
+    }
+    // Windows standard LLVM and MSYS2/UCRT64 paths
+    if (builtin.os.tag == .windows) {
+        for ([_][]const u8{
+            "C:/msys64/ucrt64",
+            "C:/msys64/mingw64",
+            "C:/msys64/clang64",
+            "C:/Program Files/LLVM",
+            "C:/Program Files (x86)/LLVM",
+            "C:/LLVM",
+        }) |p| {
+            const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch continue;
+            const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
+            const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
+            if (fileExists(b, header)) {
+                return .{
+                    .include_path = inc,
+                    .lib_path = lib,
+                };
+            }
         }
     }
 
@@ -149,43 +150,44 @@ fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
             }
         }
     }
-    // macOS Homebrew (Apple Silicon)
-    if (fileExists(b, "/opt/homebrew/lib/libgc.dylib")) {
-        return .{ .lib_path = "/opt/homebrew/lib" };
-    }
-    // macOS Homebrew (Intel, under /usr/local)
-    if (fileExists(b, "/usr/local/lib/libgc.dylib")) {
-        return .{ .lib_path = "/usr/local/lib" };
+    // macOS Homebrew (Apple Silicon / Intel)
+    if (builtin.os.tag == .macos) {
+        if (fileExists(b, "/opt/homebrew/lib/libgc.dylib")) {
+            return .{ .lib_path = "/opt/homebrew/lib" };
+        }
+        if (fileExists(b, "/usr/local/lib/libgc.dylib")) {
+            return .{ .lib_path = "/usr/local/lib" };
+        }
     }
     // Windows MSYS2 / UCRT64 & MinGW64
-    if (fileExists(b, "C:/msys64/ucrt64/lib/libgc.dll.a") or fileExists(b, "C:/msys64/ucrt64/lib/libgc.a")) {
-        return .{ .lib_path = "C:/msys64/ucrt64/lib" };
+    if (builtin.os.tag == .windows) {
+        if (fileExists(b, "C:/msys64/ucrt64/lib/libgc.dll.a") or fileExists(b, "C:/msys64/ucrt64/lib/libgc.a")) {
+            return .{ .lib_path = "C:/msys64/ucrt64/lib" };
+        }
+        if (fileExists(b, "C:/msys64/mingw64/lib/libgc.dll.a") or fileExists(b, "C:/msys64/mingw64/lib/libgc.a")) {
+            return .{ .lib_path = "C:/msys64/mingw64/lib" };
+        }
     }
-    if (fileExists(b, "C:/msys64/mingw64/lib/libgc.dll.a") or fileExists(b, "C:/msys64/mingw64/lib/libgc.a")) {
-        return .{ .lib_path = "C:/msys64/mingw64/lib" };
-    }
-    // Ubuntu/Debian x86_64
-    if (fileExists(b, "/usr/lib/x86_64-linux-gnu/libgc.so")) {
-        return .{ .lib_path = "/usr/lib/x86_64-linux-gnu" };
-    }
-    // Ubuntu/Debian arm64 / aarch64
-    if (fileExists(b, "/usr/lib/aarch64-linux-gnu/libgc.so")) {
-        return .{ .lib_path = "/usr/lib/aarch64-linux-gnu" };
-    }
-    // Linux armhf
-    if (fileExists(b, "/usr/lib/arm-linux-gnueabihf/libgc.so")) {
-        return .{ .lib_path = "/usr/lib/arm-linux-gnueabihf" };
-    }
-    // Linux riscv64
-    if (fileExists(b, "/usr/lib/riscv64-linux-gnu/libgc.so")) {
-        return .{ .lib_path = "/usr/lib/riscv64-linux-gnu" };
-    }
-    // Linux generic (/usr/lib, /usr/lib64) and /usr/local — linker default search paths
-    if (fileExists(b, "/usr/lib/libgc.so") or fileExists(b, "/usr/lib64/libgc.so")) {
-        return .{ .lib_path = null };
-    }
-    if (fileExists(b, "/usr/local/lib/libgc.so")) {
-        return .{ .lib_path = "/usr/local/lib" };
+    // Linux standard paths
+    if (builtin.os.tag == .linux) {
+        if (fileExists(b, "/usr/lib/x86_64-linux-gnu/libgc.so")) {
+            return .{ .lib_path = "/usr/lib/x86_64-linux-gnu" };
+        }
+        if (fileExists(b, "/usr/lib/aarch64-linux-gnu/libgc.so")) {
+            return .{ .lib_path = "/usr/lib/aarch64-linux-gnu" };
+        }
+        if (fileExists(b, "/usr/lib/arm-linux-gnueabihf/libgc.so")) {
+            return .{ .lib_path = "/usr/lib/arm-linux-gnueabihf" };
+        }
+        if (fileExists(b, "/usr/lib/riscv64-linux-gnu/libgc.so")) {
+            return .{ .lib_path = "/usr/lib/riscv64-linux-gnu" };
+        }
+        if (fileExists(b, "/usr/lib/libgc.so") or fileExists(b, "/usr/lib64/libgc.so")) {
+            return .{ .lib_path = null };
+        }
+        if (fileExists(b, "/usr/local/lib/libgc.so")) {
+            return .{ .lib_path = "/usr/local/lib" };
+        }
     }
     return null;
 }
