@@ -3804,6 +3804,21 @@ if (define_body) {
         if (is_host and builtin.target.os.tag == .macos) {
             const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
             try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
+        } else if (is_host and (builtin.target.os.tag == .windows or builtin.os.tag == .windows)) {
+            var found = false;
+            for ([_][*:0]const u8{ "GC_PATH", "LLVM_PATH", "MINGW_PREFIX", "MSYSTEM_PREFIX" }) |key| {
+                if (std.c.getenv(key)) |p_z| {
+                    const p = std.mem.sliceTo(p_z, 0);
+                    const inc = try std.fmt.allocPrint(self.allocator, "{s}/include", .{p});
+                    const lib = try std.fmt.allocPrint(self.allocator, "{s}/lib", .{p});
+                    try cc_argv.appendSlice(&[_][]const u8{ "-I", inc, "-L", lib });
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try cc_argv.appendSlice(&[_][]const u8{ "-I", "C:/msys64/ucrt64/include", "-L", "C:/msys64/ucrt64/lib" });
+            }
         }
         for (obj_paths) |p| try cc_argv.append(p);
         try cc_argv.appendSlice(&[_][]const u8{ "-o", output_filename });

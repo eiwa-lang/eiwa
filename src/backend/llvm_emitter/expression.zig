@@ -4732,6 +4732,10 @@ pub fn coerceToContractChecked(
     var data_ptr = data_val;
     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(data_val)) == llvm.LLVMIntegerTypeKind) {
         data_ptr = llvm.LLVMBuildIntToPtr(builder, data_val, ptr_type, "fat_data_box");
+    } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(data_val)) == llvm.LLVMDoubleTypeKind) {
+        const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+        const i64_val = llvm.LLVMBuildBitCast(builder, data_val, i64_t, "dbl_bits");
+        data_ptr = llvm.LLVMBuildIntToPtr(builder, i64_val, ptr_type, "fat_data_box");
     }
     const vtable_global = try findVtableGlobal(ctx, mod, concrete_c_name, contract_c_name) orelse return error.ContractVtableNotFound;
     var fat_val = llvm.LLVMGetUndef(fat_type);
