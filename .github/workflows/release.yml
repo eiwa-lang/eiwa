@@ -67,6 +67,8 @@ jobs:
         run: |
           echo "LLVM_PATH=C:/msys64/ucrt64" >> $GITHUB_ENV
           echo "C:/msys64/ucrt64/bin" >> $GITHUB_PATH
+          ls -la C:/msys64/ucrt64/lib/libLLVM* || true
+          ls -la C:/msys64/ucrt64/lib/libgc* || true
 
       - name: Build eiwac
         # Baseline CPU: release binaries must run on any x86_64/arm64 (incl.
