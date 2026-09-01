@@ -355,7 +355,26 @@ fun parseJson(source: String): JsonValue {
 
 skill Json : Serializable {
     fun escapeJsonString(s: String): String {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"")
+        var out = ""
+        var i = 0
+        while (i < s.length) {
+            val c = s.substring(i, i + 1)
+            if (c == "\"") {
+                out = out + "\\\""
+            } else if (c == "\\") {
+                out = out + "\\\\"
+            } else if (c == "\n") {
+                out = out + "\\n"
+            } else if (c == "\t") {
+                out = out + "\\t"
+            } else if (c == "\r") {
+                out = out + "\\r"
+            } else {
+                out = out + c
+            }
+            i = i + 1
+        }
+        return out
     }
 
     fun toJson(): String {
