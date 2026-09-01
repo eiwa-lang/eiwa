@@ -13,129 +13,122 @@ fn fileExists(b: *std.Build, path: []const u8) bool {
     return true;
 }
 
-fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[]const u8 } {
+const Dependency = struct {
+    name: []const u8,
+    include_path: ?[]const u8 = null,
+    lib_path: ?[]const u8 = null,
+    import_lib: ?[]const u8 = null,
+
+    fn applyTo(self: Dependency, module: *std.Build.Module) void {
+        if (self.include_path) |inc| module.addIncludePath(.{ .cwd_relative = inc });
+        if (self.lib_path) |lib| module.addLibraryPath(.{ .cwd_relative = lib });
+        if (self.import_lib) |file| {
+            module.addObjectFile(.{ .cwd_relative = file });
+        } else {
+            module.linkSystemLibrary(self.name, .{});
+        }
+    }
+};
+
+fn findLlvm(b: *std.Build) ?Dependency {
     if (b.option([]const u8, "llvm-path", "Custom path to LLVM installation")) |p| {
         return .{
+            .name = "LLVM",
             .include_path = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p}),
             .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
         };
     }
-    // Check environment variables for LLVM / MSYS2 prefixes (trust explicit environment variables)
     for ([_][]const u8{ "LLVM_PATH", "LLVM_HOME", "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
         if (b.graph.environ_map.get(key)) |p| {
             return .{
+                .name = "LLVM",
                 .include_path = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p}),
                 .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
+                .import_lib = if (builtin.os.tag == .windows)
+                    std.fs.path.join(b.allocator, &.{ p, "lib", "libLLVM.dll.a" }) catch null
+                else
+                    null,
             };
         }
     }
-    // macOS Homebrew paths
     if (builtin.os.tag == .macos) {
-        if (fileExists(b, "/opt/homebrew/opt/llvm@21/include/llvm-c/Core.h")) {
-            return .{
-                .include_path = "/opt/homebrew/opt/llvm@21/include",
-                .lib_path = "/opt/homebrew/opt/llvm@21/lib",
-            };
-        }
-        if (fileExists(b, "/opt/homebrew/opt/llvm/include/llvm-c/Core.h")) {
-            return .{
-                .include_path = "/opt/homebrew/opt/llvm/include",
-                .lib_path = "/opt/homebrew/opt/llvm/lib",
-            };
-        }
-        if (fileExists(b, "/usr/local/opt/llvm@21/include/llvm-c/Core.h")) {
-            return .{
-                .include_path = "/usr/local/opt/llvm@21/include",
-                .lib_path = "/usr/local/opt/llvm@21/lib",
-            };
-        }
-        if (fileExists(b, "/usr/local/opt/llvm/include/llvm-c/Core.h")) {
-            return .{
-                .include_path = "/usr/local/opt/llvm/include",
-                .lib_path = "/usr/local/opt/llvm/lib",
-            };
+        for ([_][]const u8{ "/opt/homebrew/opt/llvm@21", "/opt/homebrew/opt/llvm", "/usr/local/opt/llvm@21", "/usr/local/opt/llvm" }) |p| {
+            const header = std.fs.path.join(b.allocator, &.{ p, "include", "llvm-c", "Core.h" }) catch continue;
+            if (fileExists(b, header)) {
+                return .{
+                    .name = "LLVM",
+                    .include_path = std.fs.path.join(b.allocator, &.{ p, "include" }) catch null,
+                    .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch null,
+                };
+            }
         }
     }
-    // Linux standard paths
     if (builtin.os.tag == .linux) {
-        if (fileExists(b, "/usr/include/llvm-c/Core.h")) {
-            return .{ .include_path = null, .lib_path = null };
-        }
+        if (fileExists(b, "/usr/include/llvm-c/Core.h")) return .{ .name = "LLVM" };
         if (fileExists(b, "/usr/lib/llvm-21/include/llvm-c/Core.h")) {
             return .{
+                .name = "LLVM",
                 .include_path = "/usr/lib/llvm-21/include",
                 .lib_path = "/usr/lib/llvm-21/lib",
             };
         }
     }
-    // Windows standard fallback paths
     if (builtin.os.tag == .windows) {
         return .{
+            .name = "LLVM",
             .include_path = "C:/msys64/ucrt64/include",
             .lib_path = "C:/msys64/ucrt64/lib",
+            .import_lib = "C:/msys64/ucrt64/lib/libLLVM.dll.a",
         };
     }
-
     return null;
 }
 
-/// Locates the Boehm GC (libgc) installation. When found, the `eiwac` host
-/// links libgc and the LLVM JIT can use real GC_malloc/GC_realloc.
-/// When absent, the JIT keeps the malloc-first
-/// fallback and everything behaves as before.
-fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
+fn findLibgc(b: *std.Build) ?Dependency {
     if (b.option([]const u8, "gc-path", "Custom path to Boehm GC (libgc) installation")) |p| {
-        return .{ .lib_path = b.fmt("{s}/lib", .{p}) };
+        return .{ .name = "gc", .lib_path = b.fmt("{s}/lib", .{p}) };
     }
     for ([_][]const u8{ "GC_PATH", "LIBGC_PATH", "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
         if (b.graph.environ_map.get(key)) |p| {
-            return .{ .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}) };
+            return .{
+                .name = "gc",
+                .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
+                .import_lib = if (builtin.os.tag == .windows)
+                    std.fs.path.join(b.allocator, &.{ p, "lib", "libgc.dll.a" }) catch null
+                else
+                    null,
+            };
         }
     }
-    // macOS Homebrew (Apple Silicon / Intel)
     if (builtin.os.tag == .macos) {
-        if (fileExists(b, "/opt/homebrew/lib/libgc.dylib")) {
-            return .{ .lib_path = "/opt/homebrew/lib" };
-        }
-        if (fileExists(b, "/usr/local/lib/libgc.dylib")) {
-            return .{ .lib_path = "/usr/local/lib" };
+        for ([_][]const u8{ "/opt/homebrew/lib/libgc.dylib", "/usr/local/lib/libgc.dylib" }) |p| {
+            if (fileExists(b, p)) return .{ .name = "gc", .lib_path = std.fs.path.dirname(p) };
         }
     }
-    // Windows MSYS2 / UCRT64 fallback
     if (builtin.os.tag == .windows) {
-        return .{ .lib_path = "C:/msys64/ucrt64/lib" };
+        return .{
+            .name = "gc",
+            .lib_path = "C:/msys64/ucrt64/lib",
+            .import_lib = "C:/msys64/ucrt64/lib/libgc.dll.a",
+        };
     }
-    // Linux standard paths
     if (builtin.os.tag == .linux) {
-        if (fileExists(b, "/usr/lib/x86_64-linux-gnu/libgc.so")) {
-            return .{ .lib_path = "/usr/lib/x86_64-linux-gnu" };
-        }
-        if (fileExists(b, "/usr/lib/aarch64-linux-gnu/libgc.so")) {
-            return .{ .lib_path = "/usr/lib/aarch64-linux-gnu" };
-        }
-        if (fileExists(b, "/usr/lib/arm-linux-gnueabihf/libgc.so")) {
-            return .{ .lib_path = "/usr/lib/arm-linux-gnueabihf" };
-        }
-        if (fileExists(b, "/usr/lib/riscv64-linux-gnu/libgc.so")) {
-            return .{ .lib_path = "/usr/lib/riscv64-linux-gnu" };
-        }
-        if (fileExists(b, "/usr/lib/libgc.so") or fileExists(b, "/usr/lib64/libgc.so")) {
-            return .{ .lib_path = null };
-        }
-        if (fileExists(b, "/usr/local/lib/libgc.so")) {
-            return .{ .lib_path = "/usr/local/lib" };
+        for ([_][]const u8{
+            "/usr/lib/x86_64-linux-gnu/libgc.so",
+            "/usr/lib/aarch64-linux-gnu/libgc.so",
+            "/usr/lib/arm-linux-gnueabihf/libgc.so",
+            "/usr/lib/riscv64-linux-gnu/libgc.so",
+            "/usr/lib/libgc.so",
+            "/usr/local/lib/libgc.so",
+        }) |p| {
+            if (fileExists(b, p)) return .{ .name = "gc", .lib_path = std.fs.path.dirname(p) };
         }
     }
     return null;
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{
-        .default_target = if (builtin.os.tag == .windows) .{
-            .os_tag = .windows,
-            .abi = .gnu,
-        } else .{},
-    });
+    const target = b.standardTargetOptions(.{});
     // Default to ReleaseSafe: `zig build` is how eiwac is normally produced
     // (see AGENTS.md), and a Debug compiler is several times slower on every
     // `eiwa run`/`build`. Safety checks stay on; pass -Doptimize=Debug for
@@ -146,19 +139,12 @@ pub fn build(b: *std.Build) void {
         "Prioritize performance, safety, or binary size",
     ) orelse .ReleaseSafe;
 
-    const llvm_info = findLlvmPath(b);
-    const has_llvm = llvm_info != null;
-    if (has_llvm) {
-        std.debug.print("LLVM status: ENABLED (include: {s}, lib: {s})\n", .{ llvm_info.?.include_path orelse "(system)", llvm_info.?.lib_path orelse "(system)" });
-    } else {
-        std.debug.print("LLVM status: NOT FOUND (building without LLVM)\n", .{});
-    }
-    const gc_info = findLibgcPath(b);
-    const has_gc = gc_info != null;
+    const llvm_dep = findLlvm(b);
+    const gc_dep = findLibgc(b);
 
     const options = b.addOptions();
-    options.addOption(bool, "has_llvm", has_llvm);
-    options.addOption(bool, "has_gc", has_gc);
+    options.addOption(bool, "has_llvm", llvm_dep != null);
+    options.addOption(bool, "has_gc", gc_dep != null);
     options.addOption([]const u8, "eiwa_home", b.path("src").getPath(b));
 
     const exe_module = b.createModule(.{
@@ -168,23 +154,8 @@ pub fn build(b: *std.Build) void {
     });
     exe_module.addOptions("build_options", options);
     exe_module.link_libc = true;
-
-    if (has_llvm) {
-        const info = llvm_info.?;
-        if (info.include_path) |inc| {
-            exe_module.addIncludePath(.{ .cwd_relative = inc });
-        }
-        if (info.lib_path) |lib| {
-            exe_module.addLibraryPath(.{ .cwd_relative = lib });
-        }
-        exe_module.linkSystemLibrary("LLVM", .{});
-    }
-    if (gc_info) |info| {
-        if (info.lib_path) |lib| {
-            exe_module.addLibraryPath(.{ .cwd_relative = lib });
-        }
-        exe_module.linkSystemLibrary("gc", .{});
-    }
+    if (llvm_dep) |dep| dep.applyTo(exe_module);
+    if (gc_dep) |dep| dep.applyTo(exe_module);
 
     const exe = b.addExecutable(.{
         .name = "eiwac",
@@ -213,23 +184,8 @@ pub fn build(b: *std.Build) void {
     });
     test_module.addOptions("build_options", options);
     test_module.link_libc = true;
-
-    if (has_llvm) {
-        const info = llvm_info.?;
-        if (info.include_path) |inc| {
-            test_module.addIncludePath(.{ .cwd_relative = inc });
-        }
-        if (info.lib_path) |lib| {
-            test_module.addLibraryPath(.{ .cwd_relative = lib });
-        }
-        test_module.linkSystemLibrary("LLVM", .{});
-    }
-    if (gc_info) |info| {
-        if (info.lib_path) |lib| {
-            test_module.addLibraryPath(.{ .cwd_relative = lib });
-        }
-        test_module.linkSystemLibrary("gc", .{});
-    }
+    if (llvm_dep) |dep| dep.applyTo(test_module);
+    if (gc_dep) |dep| dep.applyTo(test_module);
 
     const exe_unit_tests = b.addTest(.{
         .root_module = test_module,
