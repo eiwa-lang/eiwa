@@ -66,18 +66,18 @@ test "cooperative await returns a string value" {
 fun multiWaiter(): String {
     CoopLog.log = ""
     val shared = task {
-        sleepMs(10)
+        sleepMs(50)
         CoopLog.log = CoopLog.log + "S"
         42
     }
     val t1 = task {
-        sleepMs(1)
+        sleepMs(5)
         val r = shared.await() + 1
         CoopLog.log = CoopLog.log + "1"
         r
     }
     val t2 = task {
-        sleepMs(2)
+        sleepMs(10)
         val r = shared.await() + 2
         CoopLog.log = CoopLog.log + "2"
         r

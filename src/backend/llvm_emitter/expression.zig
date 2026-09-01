@@ -4657,13 +4657,17 @@ pub fn findVtableGlobal(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, concr
         if (lookupNamedVtable(mod, name_z)) |g| return g;
     } else |_| {}
 
-    // Fallback: search for any vtable belonging to this concrete type
+    // Fallback: search for a vtable belonging to this concrete type AND contract
     var g_it = llvm.LLVMGetFirstGlobal(mod);
     while (g_it) |g| : (g_it = llvm.LLVMGetNextGlobal(g)) {
         const g_name_ptr = llvm.LLVMGetValueName(g);
         const g_name_s = std.mem.span(g_name_ptr);
-        if (std.mem.endsWith(u8, g_name_s, "_vtable") and (std.mem.startsWith(u8, g_name_s, concrete_c_name) or std.mem.startsWith(u8, g_name_s, short_concrete))) {
-            return g;
+        if (std.mem.endsWith(u8, g_name_s, "_vtable") and
+            (std.mem.startsWith(u8, g_name_s, concrete_c_name) or std.mem.startsWith(u8, g_name_s, short_concrete)))
+        {
+            if (short_contract.len == 0 or std.mem.containsAtLeast(u8, g_name_s, 1, short_contract)) {
+                return g;
+            }
         }
     }
 
