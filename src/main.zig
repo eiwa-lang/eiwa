@@ -18,17 +18,20 @@ const llvm_emitter = if (build_options.has_llvm) @import("backend/llvm_emitter/c
 /// root-relative dot import path. e.g. "samples/tests/foo_test.ei" -> ".samples.tests.foo_test".
 fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     var rel = path;
-    if (std.mem.startsWith(u8, rel, "./")) {
+    while (std.mem.startsWith(u8, rel, "./") or std.mem.startsWith(u8, rel, ".\\")) {
         rel = rel[2..];
     }
     const root = type_checker.module_root;
     if (!std.mem.eql(u8, root, ".")) {
         if (std.mem.startsWith(u8, rel, root)) {
             const rest = rel[root.len..];
-            if (rest.len > 0 and std.mem.startsWith(u8, rest, "/")) {
+            if (rest.len > 0 and (std.mem.startsWith(u8, rest, "/") or std.mem.startsWith(u8, rest, "\\"))) {
                 rel = rest[1..];
             }
         }
+    }
+    while (std.mem.startsWith(u8, rel, "/") or std.mem.startsWith(u8, rel, "\\")) {
+        rel = rel[1..];
     }
     var name = rel;
     if (std.mem.endsWith(u8, name, ".ei")) {
@@ -38,7 +41,7 @@ fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     errdefer buf.deinit();
     try buf.append('.');
     for (name) |c| {
-        try buf.append(if (c == '/') '.' else c);
+        try buf.append(if (c == '/' or c == '\\') '.' else c);
     }
     return buf.toOwnedSlice();
 }
