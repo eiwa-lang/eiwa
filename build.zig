@@ -206,6 +206,11 @@ pub fn build(b: *std.Build) void {
 
     const llvm_info = findLlvmPath(b);
     const has_llvm = llvm_info != null;
+    if (has_llvm) {
+        std.debug.print("LLVM status: ENABLED (include: {s}, lib: {s})\n", .{ llvm_info.?.include_path orelse "(system)", llvm_info.?.lib_path orelse "(system)" });
+    } else {
+        std.debug.print("LLVM status: NOT FOUND (building without LLVM)\n", .{});
+    }
     const gc_info = findLibgcPath(b);
     const has_gc = gc_info != null;
 

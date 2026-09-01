@@ -53,11 +53,19 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
+          location: 'C:\msys64'
           update: true
           path-type: inherit
           install: >-
             mingw-w64-ucrt-x86_64-llvm
             mingw-w64-ucrt-x86_64-gc
+
+      - name: Setup Windows Paths
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "LLVM_PATH=C:/msys64/ucrt64" >> $GITHUB_ENV
+          echo "C:/msys64/ucrt64/bin" >> $GITHUB_PATH
 
       - name: Build eiwac
         # Baseline CPU: release binaries must run on any x86_64/arm64 (incl.
