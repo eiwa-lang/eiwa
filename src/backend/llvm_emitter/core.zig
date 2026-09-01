@@ -901,7 +901,51 @@ pub const LLVMEmitter = struct {
                                 }
                             }
                             if (impl_fn) |fn_val| {
-                                try vtable_funcs.append(fn_val);
+                                var vtable_fn = fn_val;
+                                const fn_t = llvm.LLVMGlobalGetValueType(fn_val);
+                                const pcount = llvm.LLVMCountParamTypes(fn_t);
+                                if (pcount > 0) {
+                                    var ptypes = try self.allocator.alloc(llvm.LLVMTypeRef, pcount);
+                                    defer self.allocator.free(ptypes);
+                                    llvm.LLVMGetParamTypes(fn_t, ptypes.ptr);
+                                    const this_t = ptypes[0];
+                                    if (llvm.LLVMGetTypeKind(this_t) == llvm.LLVMDoubleTypeKind or
+                                        llvm.LLVMGetTypeKind(this_t) == llvm.LLVMIntegerTypeKind)
+                                    {
+                                        ptypes[0] = ptr_type;
+                                        const ret_t = llvm.LLVMGetReturnType(fn_t);
+                                        const thunk_type = llvm.LLVMFunctionType(ret_t, ptypes.ptr, @intCast(pcount), 0);
+                                        const thunk_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_{s}_thunk\x00", .{ type_c_name, c_decl.name, cm_name });
+                                        defer self.allocator.free(thunk_name);
+                                        const thunk_fn = llvm.LLVMAddFunction(mod, thunk_name.ptr, thunk_type);
+                                        const bb = llvm.LLVMAppendBasicBlockInContext(self.context, thunk_fn, "entry");
+                                        const thunk_builder = llvm.LLVMCreateBuilderInContext(self.context);
+                                        defer llvm.LLVMDisposeBuilder(thunk_builder);
+                                        llvm.LLVMPositionBuilderAtEnd(thunk_builder, bb);
+
+                                        var call_args = try self.allocator.alloc(llvm.LLVMValueRef, pcount);
+                                        defer self.allocator.free(call_args);
+                                        const raw_this = llvm.LLVMGetParam(thunk_fn, 0);
+                                        if (llvm.LLVMGetTypeKind(this_t) == llvm.LLVMDoubleTypeKind) {
+                                            const i64_t = llvm.LLVMInt64TypeInContext(self.context);
+                                            const i64_val = llvm.LLVMBuildPtrToInt(thunk_builder, raw_this, i64_t, "dbl_raw_bits");
+                                            call_args[0] = llvm.LLVMBuildBitCast(thunk_builder, i64_val, this_t, "dbl_this");
+                                        } else {
+                                            call_args[0] = llvm.LLVMBuildPtrToInt(thunk_builder, raw_this, this_t, "int_this");
+                                        }
+                                        for (1..pcount) |pi| {
+                                            call_args[pi] = llvm.LLVMGetParam(thunk_fn, @intCast(pi));
+                                        }
+                                        const call_res = llvm.LLVMBuildCall2(thunk_builder, fn_t, fn_val, call_args.ptr, @intCast(pcount), if (llvm.LLVMGetTypeKind(ret_t) == llvm.LLVMVoidTypeKind) "" else "res");
+                                        if (llvm.LLVMGetTypeKind(ret_t) == llvm.LLVMVoidTypeKind) {
+                                            _ = llvm.LLVMBuildRetVoid(thunk_builder);
+                                        } else {
+                                            _ = llvm.LLVMBuildRet(thunk_builder, call_res);
+                                        }
+                                        vtable_fn = thunk_fn;
+                                    }
+                                }
+                                try vtable_funcs.append(vtable_fn);
                             } else {
                                 try vtable_funcs.append(llvm.LLVMConstNull(ptr_type));
                             }
