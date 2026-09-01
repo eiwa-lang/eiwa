@@ -34,6 +34,7 @@ fun println(value: Stringable?) {
     } else {
         Console.puts(value!!.toString().ptr)
     }
+    Console.fflush(0)
 }
 
 fun printWelcome() {

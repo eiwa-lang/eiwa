@@ -721,9 +721,8 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
 
     for (c.arguments, 0..) |arg, arg_i| {
         const expected = mono_decl.primary_constructor[arg_i].resolved_type orelse try self.resolveTypeRef(mono_decl.primary_constructor[arg_i].type_ref);
+        arg.expected_type = expected;
         if (arg.resolved_type == null) {
-            // Lambdas are not pre-inferred; give them the param type as context
-            arg.expected_type = expected;
             _ = try self.inferNode(arg, scope);
         }
         if (arg.resolved_type == null or !self.isCompatible(expected, arg.resolved_type.?)) {

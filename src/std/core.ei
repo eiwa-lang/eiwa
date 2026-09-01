@@ -304,7 +304,7 @@ type Int : Stringable, Equatable, Hashable {
         return this
     }
 
-    implement operator fun equals(other: Stringable): Bool {
+    implement operator fun equals(other: Equatable): Bool {
         if (other is Int) {
             return this == other
         }
@@ -330,7 +330,7 @@ type Double : Stringable, Equatable, Hashable {
         return this as Int
     }
 
-    implement operator fun equals(other: Stringable): Bool {
+    implement operator fun equals(other: Equatable): Bool {
         if (other is Double) {
             return this == (other as Double)
         }
@@ -360,7 +360,7 @@ type Bool : Stringable, Equatable, Hashable {
         return if (this) 1 else 0
     }
 
-    implement operator fun equals(other: Stringable): Bool {
+    implement operator fun equals(other: Equatable): Bool {
         if (other is Bool) {
             return this == other
         }

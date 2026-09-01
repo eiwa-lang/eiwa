@@ -850,6 +850,12 @@ fun compilerCommand(cmd: String) {
     val args = parseArgs()
     val target: String? = positional(args, 0)
     enterProjectDir(target)
+    if (File.exists("eiwa.yaml") == false) {
+        if (cmd == "test") {
+            delegateToEiwac(cmd)
+            return
+        }
+    }
     val ctx = loadProject(eiwacResolved)
 
     val entry = "src/main.ei"

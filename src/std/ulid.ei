@@ -105,7 +105,7 @@ type Ulid(val bytes: List<Int>) : Identifier {
         return (high24 * 16777216) + low24
     }
 
-    implement operator fun equals(other: Stringable): Bool {
+    implement operator fun equals(other: Equatable): Bool {
         if (other is Ulid) {
             var i = 0
             while (i < 16) {

@@ -18,6 +18,20 @@ const core = @import("core.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 
+fn isCoreAutoContract(name: []const u8) bool {
+    var short_name = name;
+    if (std.mem.lastIndexOfScalar(u8, name, '_')) |idx| {
+        short_name = name[idx + 1 ..];
+    }
+    return std.mem.eql(u8, short_name, "Stringable") or
+        std.mem.eql(u8, short_name, "Equatable") or
+        std.mem.eql(u8, short_name, "Hashable") or
+        std.mem.eql(u8, short_name, "Echoable") or
+        std.mem.eql(u8, short_name, "Serializable") or
+        std.mem.eql(u8, short_name, "SerdeList") or
+        std.mem.eql(u8, short_name, "SerdeMap");
+}
+
 // ---------------------------------------------------------------------------
 // Closure fat-pointer helpers
 // ---------------------------------------------------------------------------
@@ -893,25 +907,52 @@ pub fn emitExpression(
 
             // The type checker types array literals as the monomorphized
             // `List<T>` struct (`type List<T>(val items: NativeArray<T>)`),
-            // and downstream code (for-in desugar, index access, methods)
-            // reads the `.items` field. Wrap the raw buffer in the struct so
-            // the value matches its resolved type.
-            if (node.resolved_type) |rt| {
-                if (rt.* == .Custom) {
-                    if (structs.get(rt.Custom)) |s_info| {
-                        for (s_info.field_names, 0..) |f_name, f_idx| {
-                            if (std.mem.eql(u8, f_name, "items")) {
-                                const malloc_fn2 = core.getHeapAllocFn(mod);
-                                const malloc_type2 = llvm.LLVMGlobalGetValueType(malloc_fn2);
-                                var size_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 128, 0)};
-                                const struct_ptr = llvm.LLVMBuildCall2(builder, malloc_type2, malloc_fn2, &size_args, 1, "list_alloc");
-                                const field_name_z = try std.heap.page_allocator.dupeZ(u8, f_name);
-                                defer std.heap.page_allocator.free(field_name_z);
-                                const items_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, struct_ptr, @intCast(f_idx), field_name_z.ptr);
-                                _ = llvm.LLVMBuildStore(builder, arr_ptr, items_ptr);
-                                return struct_ptr;
+            // If the literal is expected/resolved as a List wrapper (type List<T>(val items: NativeArray<T>)),
+            // allocate the List struct and store the raw array buffer into its `.items` field.
+            const target_rt = node.resolved_type orelse node.expected_type;
+            if (target_rt) |rt| {
+                const base_rt = ts.extractBaseType(rt);
+                if (base_rt.* != .Array) {
+                    var mangled_buf: [128]u8 = undefined;
+                    var type_name: ?[]const u8 = null;
+                    var dyn_buf: ?[]u8 = null;
+                    defer if (dyn_buf) |b| std.heap.page_allocator.free(b);
+
+                    switch (base_rt.*) {
+                        .Custom => |cn| type_name = cn,
+                        .GenericInstance => {
+                            var buf = compat.ArrayList(u8).init(std.heap.page_allocator);
+                            defer buf.deinit();
+                            base_rt.formatSafe(buf.writer()) catch {};
+                            if (buf.items.len > 0) {
+                                dyn_buf = buf.toOwnedSlice() catch null;
+                                if (dyn_buf) |d| type_name = d;
                             }
-                        }
+                        },
+                        else => {},
+                    }
+
+                    const is_list = if (type_name) |tn| (std.mem.indexOf(u8, tn, "List") != null) else false;
+                    if (is_list) {
+                        const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+                        const s_type = blk: {
+                            if (type_name) |tn| {
+                                if (structs.get(tn)) |si| break :blk si.struct_type;
+                                if (std.fmt.bufPrint(&mangled_buf, "collections_{s}", .{tn})) |pref| {
+                                    if (structs.get(pref)) |si| break :blk si.struct_type;
+                                } else |_| {}
+                            }
+                            var fields = [_]llvm.LLVMTypeRef{ptr_t};
+                            break :blk llvm.LLVMStructTypeInContext(ctx, &fields, 1, 0);
+                        };
+
+                        const malloc_fn2 = core.getHeapAllocFn(mod);
+                        const malloc_type2 = llvm.LLVMGlobalGetValueType(malloc_fn2);
+                        var size_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
+                        const struct_ptr = llvm.LLVMBuildCall2(builder, malloc_type2, malloc_fn2, &size_args, 1, "list_alloc");
+                        const items_ptr = llvm.LLVMBuildStructGEP2(builder, s_type, struct_ptr, 0, "items");
+                        _ = llvm.LLVMBuildStore(builder, arr_ptr, items_ptr);
+                        return struct_ptr;
                     }
                 }
             }
@@ -2011,41 +2052,30 @@ pub fn emitExpression(
                                             if (ebase.* == .Custom) contract_c_name = ebase.Custom;
                                         }
                                         if (contract_c_name.len == 0) {
-                                            const target_type_rt = node.resolved_type orelse call.callee.resolved_type;
-                                            if (target_type_rt) |crt| {
-                                                const base_crt = ts.extractBaseType(crt);
-                                                if (base_crt.* == .Function and idx < base_crt.Function.params.len) {
-                                                    switch (ts.extractBaseType(base_crt.Function.params[idx]).*) {
+                                            if (call.callee.resolved_type) |crt| {
+                                                if (crt.* == .Function and idx < crt.Function.params.len) {
+                                                    switch (crt.Function.params[idx].*) {
                                                         .Custom => |n| contract_c_name = n,
                                                         .GenericInstance => |gi| contract_c_name = gi.base_name,
                                                         else => {},
-                                                    }
-                                                } else if (global_classes_ast_ptr) |ca| {
-                                                    const cname = switch (base_crt.*) {
-                                                        .Custom => |n| n,
-                                                        .GenericInstance => |gi| gi.base_name,
-                                                        else => "",
-                                                    };
-                                                    if (cname.len > 0) {
-                                                        if (ca.get(cname)) |cnode| {
-                                                            if (cnode.data == .type_decl and idx < cnode.data.type_decl.primary_constructor.len) {
-                                                                const prop = cnode.data.type_decl.primary_constructor[idx];
-                                                                const prt = prop.resolved_type orelse prop.type_ref.resolved_type;
-                                                                if (prt) |p| {
-                                                                    switch (ts.extractBaseType(p).*) {
-                                                                        .Custom => |n| contract_c_name = n,
-                                                                        .GenericInstance => |gi| contract_c_name = gi.base_name,
-                                                                        else => {},
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                         if (arg_c_name.len > 0) {
-                                            if (contract_c_name.len > 0) {
+                                            if (contract_c_name.len == 0) {
+                                                if (global_contracts_ast_ptr) |ca| {
+                                                    var it = ca.iterator();
+                                                    while (it.next()) |entry| {
+                                                        const c_name = entry.key_ptr.*;
+                                                        const test_fat = coerceToContractChecked(ctx, mod, builder, arg_val, arg_c_name, c_name) catch continue;
+                                                        if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(test_fat)) == llvm.LLVMStructTypeKind) {
+                                                             arg_val = test_fat;
+                                                             break;
+                                                        }
+                                                    }
+                                                }
+                                            } else {
                                                 arg_val = try coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name);
                                             }
                                         }
@@ -2252,35 +2282,13 @@ pub fn emitExpression(
                                                         if (ebase.* == .Custom) contract_c_name = ebase.Custom;
                                                     }
                                                     if (contract_c_name.len == 0) {
-                                                        const target_type_rt = node.resolved_type orelse call.callee.resolved_type;
-                                                        if (target_type_rt) |crt| {
+                                                        if (call.callee.resolved_type) |crt| {
                                                             const base_crt = ts.extractBaseType(crt);
                                                             if (base_crt.* == .Function and idx < base_crt.Function.params.len) {
                                                                 switch (ts.extractBaseType(base_crt.Function.params[idx]).*) {
                                                                     .Custom => |n| contract_c_name = n,
                                                                     .GenericInstance => |gi| contract_c_name = gi.base_name,
                                                                     else => {},
-                                                                }
-                                                            } else if (global_classes_ast_ptr) |ca| {
-                                                                const cname = switch (base_crt.*) {
-                                                                    .Custom => |n| n,
-                                                                    .GenericInstance => |gi| gi.base_name,
-                                                                    else => "",
-                                                                };
-                                                                if (cname.len > 0) {
-                                                                    if (ca.get(cname)) |cnode| {
-                                                                        if (cnode.data == .type_decl and idx < cnode.data.type_decl.primary_constructor.len) {
-                                                                            const prop = cnode.data.type_decl.primary_constructor[idx];
-                                                                            const prt = prop.resolved_type orelse prop.type_ref.resolved_type;
-                                                                            if (prt) |p| {
-                                                                                switch (ts.extractBaseType(p).*) {
-                                                                                    .Custom => |n| contract_c_name = n,
-                                                                                    .GenericInstance => |gi| contract_c_name = gi.base_name,
-                                                                                    else => {},
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -3466,8 +3474,22 @@ pub fn emitExpression(
                             const type_cond = cond.data.is_type_cond;
                             const target_t = if (type_cond.type_ref.resolved_type) |rt| rt.* else ts.EiwaType.Unknown;
                             var target_c_name: []const u8 = type_cond.type_ref.name;
+                            var target_c_name_dyn: ?[]const u8 = null;
+                            defer if (target_c_name_dyn) |s| std.heap.page_allocator.free(s);
                             switch (target_t) {
                                 .Custom => |cn| target_c_name = cn,
+                                .GenericInstance => {
+                                    if (type_cond.type_ref.resolved_type) |rt| {
+                                        var buf = compat.ArrayList(u8).init(std.heap.page_allocator);
+                                        rt.formatSafe(buf.writer()) catch {};
+                                        if (buf.items.len > 0) {
+                                            target_c_name_dyn = buf.toOwnedSlice() catch null;
+                                            if (target_c_name_dyn) |dyn| target_c_name = dyn;
+                                        } else {
+                                            buf.deinit();
+                                        }
+                                    }
+                                },
                                 .Int => target_c_name = "core_Int",
                                 .Double => target_c_name = "core_Double",
                                 .Bool => target_c_name = "core_Bool",
@@ -3575,18 +3597,16 @@ pub fn emitExpression(
                                     const svt_ptr = llvm.LLVMBuildBitCast(builder, svt, ptr_type, "when_vt_subj");
                                     var vt_match_or = llvm.LLVMConstInt(i1_type, 0, 0);
 
-                                    var short_target = target_c_name;
-                                    if (std.mem.lastIndexOfScalar(u8, target_c_name, '_')) |idx| short_target = target_c_name[idx + 1 ..];
-
-                                    var g_iter = llvm.LLVMGetFirstGlobal(mod);
-                                    while (g_iter != null) : (g_iter = llvm.LLVMGetNextGlobal(g_iter.?)) {
-                                        const g_name_ptr = llvm.LLVMGetValueName(g_iter.?);
-                                        const g_name_s = std.mem.span(g_name_ptr);
-                                        if (std.mem.endsWith(u8, g_name_s, "_vtable") and (std.mem.indexOf(u8, g_name_s, target_c_name) != null or std.mem.indexOf(u8, g_name_s, short_target) != null)) {
-                                            const exp_vt_ptr = llvm.LLVMBuildPointerCast(builder, g_iter.?, ptr_type, "exp_vt_ptr");
-                                            const vt_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, svt_ptr, exp_vt_ptr, "when_is_vt_eq");
-                                            vt_match_or = llvm.LLVMBuildOr(builder, vt_match_or, vt_eq, "vt_match_or");
-                                        }
+                                    var target_vt_opt: ?llvm.LLVMValueRef = null;
+                                    if (subj_contract.len > 0) {
+                                        target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, subj_contract);
+                                    }
+                                    if (target_vt_opt == null) {
+                                        target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, "Throwable");
+                                    }
+                                    if (target_vt_opt) |tvt| {
+                                        const exp_vt_ptr = llvm.LLVMBuildPointerCast(builder, tvt, ptr_type, "exp_vt_ptr");
+                                        vt_match_or = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, svt_ptr, exp_vt_ptr, "when_is_vt_eq");
                                     }
                                     const data_not_null = llvm.LLVMBuildIsNotNull(builder, subj_data, "fat_data_not_null");
                                     is_match = llvm.LLVMBuildAnd(builder, data_not_null, vt_match_or, "is_match_fat");
@@ -3750,9 +3770,20 @@ pub fn emitExpression(
                 }
             }
 
+            var is_target_dyn: ?[]const u8 = null;
+            defer if (is_target_dyn) |s| std.heap.page_allocator.free(s);
             const target_c_name = if (i.type_ref.resolved_type) |rt| switch (rt.*) {
                 .Custom => |cn| cn,
-                .GenericInstance => |gi| gi.base_name,
+                .GenericInstance => blk: {
+                    var buf = compat.ArrayList(u8).init(std.heap.page_allocator);
+                    rt.formatSafe(buf.writer()) catch break :blk i.type_ref.name;
+                    if (buf.items.len > 0) {
+                        is_target_dyn = buf.toOwnedSlice() catch null;
+                        if (is_target_dyn) |dyn| break :blk dyn;
+                    }
+                    buf.deinit();
+                    break :blk i.type_ref.name;
+                },
                 .Int => "Int",
                 .String => "String",
                 .Bool => "Bool",
@@ -3760,22 +3791,15 @@ pub fn emitExpression(
                 else => i.type_ref.name,
             } else i.type_ref.name;
 
-            const is_target_int = std.mem.eql(u8, target_c_name, "Int") or std.mem.endsWith(u8, target_c_name, "_Int") or target_type == .Int;
-            const is_target_str = std.mem.eql(u8, target_c_name, "String") or std.mem.endsWith(u8, target_c_name, "_String") or target_type == .String;
-            const is_target_bool = std.mem.eql(u8, target_c_name, "Bool") or std.mem.endsWith(u8, target_c_name, "_Bool") or target_type == .Bool;
-            const is_target_double = std.mem.eql(u8, target_c_name, "Double") or std.mem.endsWith(u8, target_c_name, "_Double") or target_type == .Double;
+            const is_target_int = std.mem.eql(u8, target_c_name, "Int") or std.mem.eql(u8, target_c_name, "core_Int") or target_type == .Int;
+            const is_target_str = std.mem.eql(u8, target_c_name, "String") or std.mem.eql(u8, target_c_name, "core_String") or target_type == .String;
+            const is_target_bool = std.mem.eql(u8, target_c_name, "Bool") or std.mem.eql(u8, target_c_name, "core_Bool") or target_type == .Bool;
+            const is_target_double = std.mem.eql(u8, target_c_name, "Double") or std.mem.eql(u8, target_c_name, "core_Double") or target_type == .Double;
 
             const val = try emitExpression(ctx, mod, builder, scope, structs, libs, i.value);
 
             const type_ref_name = i.type_ref.name;
-            const is_core_contract = std.mem.indexOf(u8, target_c_name, "Stringable") != null or
-                std.mem.indexOf(u8, type_ref_name, "Stringable") != null or
-                std.mem.indexOf(u8, target_c_name, "Equatable") != null or
-                std.mem.indexOf(u8, type_ref_name, "Equatable") != null or
-                std.mem.indexOf(u8, target_c_name, "Hashable") != null or
-                std.mem.indexOf(u8, type_ref_name, "Hashable") != null or
-                std.mem.indexOf(u8, target_c_name, "Echoable") != null or
-                std.mem.indexOf(u8, type_ref_name, "Echoable") != null;
+            const is_core_contract = isCoreAutoContract(target_c_name) or isCoreAutoContract(type_ref_name);
 
             if (is_core_contract) {
                 const res_c = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), if (i.is_not) 0 else 1, 0);
@@ -3801,22 +3825,18 @@ pub fn emitExpression(
                 } else if (is_target_str) {
                     res = llvm.LLVMBuildIsNotNull(builder, data_ptr, "is_str_res");
                 } else if (target_c_name.len > 0) {
-                    var target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, "Throwable");
-                    if (target_vt_opt == null) {
-                        target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, "");
+                    const val_contract_name = if (i.value.resolved_type) |vrt| switch (vrt.*) {
+                        .Custom => |cn| cn,
+                        .GenericInstance => |gi| gi.base_name,
+                        else => "",
+                    } else "";
+
+                    var target_vt_opt: ?llvm.LLVMValueRef = null;
+                    if (val_contract_name.len > 0) {
+                        target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, val_contract_name);
                     }
                     if (target_vt_opt == null) {
-                        var glob = llvm.LLVMGetFirstGlobal(mod);
-                        while (glob) |g_val| : (glob = llvm.LLVMGetNextGlobal(g_val)) {
-                            const g_name_c = llvm.LLVMGetValueName(g_val);
-                            const g_name = std.mem.span(g_name_c);
-                            if (std.mem.endsWith(u8, g_name, "_vtable")) {
-                                if (std.mem.startsWith(u8, g_name, target_c_name) or std.mem.indexOf(u8, g_name, target_c_name) != null) {
-                                    target_vt_opt = g_val;
-                                    break;
-                                }
-                            }
-                        }
+                        target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, "Throwable");
                     }
                     if (target_vt_opt) |target_vt| {
                         const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
@@ -4643,40 +4663,43 @@ pub fn findVtableGlobal(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, concr
     _ = ctx;
     var buf: [256]u8 = undefined;
 
-    if (std.fmt.bufPrintZ(&buf, "{s}_{s}_vtable", .{ concrete_c_name, contract_c_name })) |name_z| {
-        if (lookupNamedVtable(mod, name_z)) |g| return g;
-    } else |_| {}
-
     var short_contract = contract_c_name;
     if (std.mem.lastIndexOfScalar(u8, contract_c_name, '_')) |idx| short_contract = contract_c_name[idx + 1 ..];
     var short_concrete = concrete_c_name;
     if (std.mem.lastIndexOfScalar(u8, concrete_c_name, '_')) |idx| short_concrete = concrete_c_name[idx + 1 ..];
 
+    // Priority 1: Check known module prefixes with short_concrete / concrete_c_name
+    const mod_prefixes = [_][]const u8{ "collections_", "serde_", "json_", "time_", "std_core_", "core_", "ulid_", "uuid_", "math_", "io_", "fs_", "atomic_" };
+    for (mod_prefixes) |p| {
+        if (std.mem.startsWith(u8, concrete_c_name, p)) {
+            // Already prefixed: try exact and short_contract
+            if (std.fmt.bufPrintZ(&buf, "{s}_{s}_vtable", .{ concrete_c_name, short_contract })) |name_z| {
+                if (lookupNamedVtable(mod, name_z)) |g| return g;
+            } else |_| {}
+            if (std.fmt.bufPrintZ(&buf, "{s}_{s}_vtable", .{ concrete_c_name, contract_c_name })) |name_z| {
+                if (lookupNamedVtable(mod, name_z)) |g| return g;
+            } else |_| {}
+        } else {
+            // Unprefixed: try attaching prefix
+            if (std.fmt.bufPrintZ(&buf, "{s}{s}_{s}_vtable", .{ p, concrete_c_name, short_contract })) |name_z| {
+                if (lookupNamedVtable(mod, name_z)) |g| return g;
+            } else |_| {}
+            if (std.fmt.bufPrintZ(&buf, "{s}{s}_{s}_vtable", .{ p, short_concrete, short_contract })) |name_z| {
+                if (lookupNamedVtable(mod, name_z)) |g| return g;
+            } else |_| {}
+        }
+    }
+
+    // Priority 2: Direct name lookups
     if (std.fmt.bufPrintZ(&buf, "{s}_{s}_vtable", .{ concrete_c_name, short_contract })) |name_z| {
         if (lookupNamedVtable(mod, name_z)) |g| return g;
     } else |_| {}
 
+    if (std.fmt.bufPrintZ(&buf, "{s}_{s}_vtable", .{ concrete_c_name, contract_c_name })) |name_z| {
+        if (lookupNamedVtable(mod, name_z)) |g| return g;
+    } else |_| {}
+
     if (std.fmt.bufPrintZ(&buf, "{s}_{s}_vtable", .{ short_concrete, short_contract })) |name_z| {
-        if (lookupNamedVtable(mod, name_z)) |g| return g;
-    } else |_| {}
-
-    if (std.fmt.bufPrintZ(&buf, "core_{s}_{s}_vtable", .{ short_concrete, short_contract })) |name_z| {
-        if (lookupNamedVtable(mod, name_z)) |g| return g;
-    } else |_| {}
-
-    if (std.fmt.bufPrintZ(&buf, "std_core_{s}_{s}_vtable", .{ short_concrete, short_contract })) |name_z| {
-        if (lookupNamedVtable(mod, name_z)) |g| return g;
-    } else |_| {}
-
-    if (std.fmt.bufPrintZ(&buf, "core_{s}_core_{s}_vtable", .{ short_concrete, short_contract })) |name_z| {
-        if (lookupNamedVtable(mod, name_z)) |g| return g;
-    } else |_| {}
-
-    if (std.fmt.bufPrintZ(&buf, "std_core_{s}_core_{s}_vtable", .{ short_concrete, short_contract })) |name_z| {
-        if (lookupNamedVtable(mod, name_z)) |g| return g;
-    } else |_| {}
-
-    if (std.fmt.bufPrintZ(&buf, "std_core_{s}_std_core_{s}_vtable", .{ short_concrete, short_contract })) |name_z| {
         if (lookupNamedVtable(mod, name_z)) |g| return g;
     } else |_| {}
 
@@ -4812,6 +4835,8 @@ fn customEqualsClass(node: *ast.ASTNode, mod: llvm.LLVMModuleRef) ?[]const u8 {
             .Union => |u| {
                 if (u.right.* == .Null) {
                     base = ts.extractBaseType(u.left);
+                } else if (u.left.* == .Null) {
+                    base = ts.extractBaseType(u.right);
                 } else {
                     return null;
                 }
@@ -4820,18 +4845,55 @@ fn customEqualsClass(node: *ast.ASTNode, mod: llvm.LLVMModuleRef) ?[]const u8 {
             else => break,
         }
     }
-    if (base.* != .Custom) return null;
-    const cn = base.Custom;
+    var cn_dyn: ?[]const u8 = null;
+    var cn: []const u8 = "";
+    if (base.* == .Custom) {
+        cn = base.Custom;
+    } else if (base.* == .GenericInstance) {
+        var buf = compat.ArrayList(u8).init(std.heap.page_allocator);
+        base.formatSafe(buf.writer()) catch {};
+        if (buf.items.len > 0) {
+            cn_dyn = buf.toOwnedSlice() catch null;
+            if (cn_dyn) |dyn| cn = dyn;
+        } else {
+            buf.deinit();
+            return null;
+        }
+    } else {
+        return null;
+    }
+    defer if (cn_dyn) |dyn| std.heap.page_allocator.free(dyn);
+
     if (std.mem.eql(u8, cn, "core_String") or std.mem.eql(u8, cn, "String") or std.mem.eql(u8, cn, "std_core_String") or
         std.mem.eql(u8, cn, "core_Int") or std.mem.eql(u8, cn, "Int") or
         std.mem.eql(u8, cn, "core_Double") or std.mem.eql(u8, cn, "Double") or
         std.mem.eql(u8, cn, "core_Bool") or std.mem.eql(u8, cn, "Bool")) return null;
-    const fn_name = std.fmt.allocPrint(std.heap.page_allocator, "{s}_equals", .{cn}) catch return null;
-    defer std.heap.page_allocator.free(fn_name);
-    const fn_z = std.heap.page_allocator.dupeZ(u8, fn_name) catch return null;
-    defer std.heap.page_allocator.free(fn_z);
-    if (llvm.LLVMGetNamedFunction(mod, fn_z.ptr) == null) return null;
-    return cn;
+
+    const mod_prefixes = [_][]const u8{ "", "collections_", "serde_", "json_", "time_", "std_core_", "core_", "ulid_", "uuid_", "math_", "io_", "fs_", "atomic_" };
+    for (mod_prefixes) |p| {
+        const full_cn = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ p, cn }) catch continue;
+        defer std.heap.page_allocator.free(full_cn);
+        const fn_name = std.fmt.allocPrint(std.heap.page_allocator, "{s}_equals", .{full_cn}) catch continue;
+        defer std.heap.page_allocator.free(fn_name);
+        const fn_z = std.heap.page_allocator.dupeZ(u8, fn_name) catch continue;
+        defer std.heap.page_allocator.free(fn_z);
+        if (llvm.LLVMGetNamedFunction(mod, fn_z.ptr)) |f| {
+            const fname = std.mem.span(llvm.LLVMGetValueName(f));
+            return fname[0 .. fname.len - 7];
+        }
+    }
+
+    var g_it = llvm.LLVMGetFirstFunction(mod);
+    while (g_it) |f| : (g_it = llvm.LLVMGetNextFunction(f)) {
+        const fname = std.mem.span(llvm.LLVMGetValueName(f));
+        if (std.mem.endsWith(u8, fname, "_equals")) {
+            const prefix = fname[0 .. fname.len - 7];
+            if (std.mem.eql(u8, prefix, cn) or (prefix.len > cn.len and prefix[prefix.len - cn.len - 1] == '_' and std.mem.endsWith(u8, prefix, cn))) {
+                return prefix;
+            }
+        }
+    }
+    return null;
 }
 
 /// Emits the custom-type `==` short-circuit used by the C backend:
@@ -4879,7 +4941,7 @@ fn emitCustomEquals(
     if (param_count >= 2) {
         arg0 = coerceArg(builder, left_val, param_types[0]);
         if (llvm.LLVMGetTypeKind(param_types[1]) == llvm.LLVMStructTypeKind) {
-            arg1 = try coerceToContract(ctx, mod, builder, right_val, class_name, "");
+            arg1 = try coerceToContract(ctx, mod, builder, right_val, class_name, "Equatable");
         } else {
             arg1 = coerceArg(builder, right_val, param_types[1]);
         }
@@ -5087,13 +5149,20 @@ fn emitArrayLvalue(
         .get_expr => |get| {
             const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
             if (get.object.resolved_type) |rt| {
-                var type_name: []const u8 = "";
-                if (rt.* == .Custom) {
-                    type_name = rt.Custom;
-                } else if (rt.* == .Pointer and rt.Pointer.* == .Custom) {
-                    type_name = rt.Pointer.Custom;
+                const base_rt = ts.extractBaseType(rt);
+                const type_name = switch (base_rt.*) {
+                    .Custom => |cn| cn,
+                    .GenericInstance => |gi| gi.base_name,
+                    else => "",
+                };
+                var s_info_opt = structs.get(type_name);
+                if (s_info_opt == null and type_name.len > 0) {
+                    var name_buf: [128]u8 = undefined;
+                    if (std.fmt.bufPrint(&name_buf, "collections_{s}", .{type_name})) |prefixed| {
+                        s_info_opt = structs.get(prefixed);
+                    } else |_| {}
                 }
-                if (structs.get(type_name)) |s_info| {
+                if (s_info_opt) |s_info| {
                     for (s_info.field_names, 0..) |f_name, f_idx| {
                         if (std.mem.eql(u8, f_name, get.name)) {
                             const field_name_z = try std.heap.page_allocator.dupeZ(u8, f_name);

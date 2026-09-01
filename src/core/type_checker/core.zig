@@ -67,6 +67,7 @@ pub const TypeChecker = struct {
     contracts_ast: std.StringHashMap(*ASTNode),
     skills_ast: std.StringHashMap(*ASTNode),
     enums_ast: std.StringHashMap(*ASTNode),
+    libs_ast: std.StringHashMap(*ASTNode),
     functions_ast: std.StringHashMap(*ASTNode),
     generic_functions_ast: std.StringHashMap(ArrayList(*ASTNode)),
     extension_functions: std.StringHashMap(ArrayList(*ASTNode)),
@@ -127,6 +128,7 @@ pub const TypeChecker = struct {
             .contracts_ast = std.StringHashMap(*ASTNode).init(allocator),
             .skills_ast = std.StringHashMap(*ASTNode).init(allocator),
             .enums_ast = std.StringHashMap(*ASTNode).init(allocator),
+            .libs_ast = std.StringHashMap(*ASTNode).init(allocator),
             .functions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .generic_functions_ast = std.StringHashMap(ArrayList(*ASTNode)).init(allocator),
             .extension_functions = std.StringHashMap(ArrayList(*ASTNode)).init(allocator),
@@ -151,6 +153,7 @@ pub const TypeChecker = struct {
         self.contracts_ast.deinit();
         self.skills_ast.deinit();
         self.enums_ast.deinit();
+        self.libs_ast.deinit();
         self.functions_ast.deinit();
         var gen_it = self.generic_functions_ast.iterator();
         while (gen_it.next()) |entry| {
@@ -504,11 +507,6 @@ fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void 
     // std.core itself has absolutely no implicit imports
     if (std.mem.eql(u8, basename, "core.ei")) return;
 
-    if (node.data != .program) return;
-    if (node.data.program.statements.len > 0 and node.data.program.statements[0].line == 0 and node.data.program.statements[0].column == 0 and node.data.program.statements[0].data == .import_stmt) {
-        return;
-    }
-
     const implicit_imports = if (std.mem.eql(u8, basename, "io.ei"))
         &[_][]const u8{"std.core"}
     else if (std.mem.eql(u8, basename, "system.ei") or std.mem.eql(u8, basename, "exceptions.ei"))
@@ -600,6 +598,10 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         var object_ast_it = m.checker.objects_ast.iterator();
                         while (object_ast_it.next()) |entry| {
                             try self.objects_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+                        }
+                        var lib_ast_it = m.checker.libs_ast.iterator();
+                        while (lib_ast_it.next()) |entry| {
+                            try self.libs_ast.put(entry.key_ptr.*, entry.value_ptr.*);
                         }
                         var alias_it = m.checker.alias_map.iterator();
                         while (alias_it.next()) |entry| {

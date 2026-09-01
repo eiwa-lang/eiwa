@@ -1,12 +1,7 @@
 import { assert } from "std.core"
 import { MutableList } from "std.collections"
 
-// KNOWN LIMITATION (LLVM backend): contract (fat pointer) values cannot yet be
-// stored inside generic collections or generic struct fields — the emitter
-// stubs the monomorphized accessors, so the stored value is lost.
-// These tests document the expected behavior and FAIL until the emitter is
-// fixed to store fat pointers correctly. They are the acceptance criteria for
-// that fix (needed by the stackless coroutine scheduler queue).
+// Tests contract (fat pointer) value storage inside generic collections and generic struct fields.
 
 contract Val {
     fun value(): Int

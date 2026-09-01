@@ -22,7 +22,7 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
                     expected_base = expected_base.Union.right;
                 }
             }
-            if (expected_base.* == .Array or expected_base.* == .Custom) {
+            if (expected_base.* == .Array or expected_base.* == .Custom or expected_base.* == .GenericInstance) {
                 t.* = expected_base.*;
                 return;
             }

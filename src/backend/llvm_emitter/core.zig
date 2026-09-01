@@ -29,6 +29,56 @@ fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     return try std.fs.path.join(allocator, &.{ repo_root, path });
 }
 
+fn isDepTypePrefix(name: []const u8) bool {
+    const prefixes = [_][]const u8{
+        "std_", "core_", "collections_", "serde_", "json_", "time_",
+        "math_", "fs_", "io_", "thread_", "atomic_", "random_", "uuid_", "ulid_",
+        "log_", "exceptions_", "coroutines_", "crypto_", "compress_",
+        "net_", "http_", "test_", "process_",
+    };
+    for (prefixes) |p| {
+        if (std.mem.startsWith(u8, name, p) and !std.mem.startsWith(u8, name, "cli_src_")) return true;
+    }
+    return false;
+}
+
+fn stripModulePrefix(name: []const u8) ?[]const u8 {
+    const prefixes = [_][]const u8{
+        "std_core_", "core_", "collections_", "serde_", "json_", "time_",
+        "math_", "fs_", "io_", "thread_", "atomic_", "random_", "uuid_", "ulid_",
+        "log_", "exceptions_", "coroutines_", "crypto_", "compress_",
+        "net_", "http_", "test_", "process_",
+    };
+    for (prefixes) |p| {
+        if (std.mem.startsWith(u8, name, p) and name.len > p.len) {
+            return name[p.len..];
+        }
+    }
+    return null;
+}
+
+fn stripCorePrefixes(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    if (std.mem.indexOf(u8, name, "_core_") != null or std.mem.startsWith(u8, name, "core_") or std.mem.indexOf(u8, name, "_std_core_") != null or std.mem.startsWith(u8, name, "std_core_")) {
+        var res = ArrayList(u8).init(allocator);
+        var rem = name;
+        if (std.mem.startsWith(u8, rem, "core_")) rem = rem[5..];
+        if (std.mem.startsWith(u8, rem, "std_core_")) rem = rem[9..];
+        while (std.mem.indexOf(u8, rem, "_core_")) |idx| {
+            res.appendSlice(rem[0..idx]) catch return null;
+            res.appendSlice("_") catch return null;
+            rem = rem[idx + 6 ..];
+        }
+        while (std.mem.indexOf(u8, rem, "_std_core_")) |idx| {
+            res.appendSlice(rem[0..idx]) catch return null;
+            res.appendSlice("_") catch return null;
+            rem = rem[idx + 10 ..];
+        }
+        res.appendSlice(rem) catch return null;
+        return res.toOwnedSlice() catch null;
+    }
+    return null;
+}
+
 /// In-Memory LLVM IR Emitter and Execution Driver.
 /// When true, the LLVM emitter prints diagnostic logs (per-function emit
 /// errors, PropertyNotFound debugging, stub fallbacks). Defaults to false so
@@ -525,10 +575,11 @@ pub const LLVMEmitter = struct {
         defer dep_owned_types.deinit();
         var dep_owned_fns = std.StringHashMap(void).init(self.allocator);
         defer dep_owned_fns.deinit();
-        if (split and is_entry) {
+        if (split) {
             for (modules.items) |m| {
                 if (m.data != .program) continue;
-                if (self.unitOwns(m)) continue;
+                const is_dep_m = if (is_entry) !self.unitOwns(m) else self.unitOwns(m);
+                if (!is_dep_m) continue;
                 for (m.data.program.statements) |stmt| {
                     if (stmt.data == .type_decl) {
                         const t = stmt.data.type_decl;
@@ -564,8 +615,8 @@ pub const LLVMEmitter = struct {
         // lists; LLVMAddFunction re-adds under a `.N` rename, and two units
         // producing the same `.N` collide at link. Dedupe by resolved name —
         // first declaration wins (same semantics as the existing function).
-        var seen_types = std.StringHashMap(void).init(self.allocator);
-        defer seen_types.deinit();
+        var defined_types = std.StringHashMap(void).init(self.allocator);
+        defer defined_types.deinit();
         for (modules.items) |m| {
             if (m.data != .program) continue;
             const own = self.unitOwns(m);
@@ -573,12 +624,13 @@ pub const LLVMEmitter = struct {
                 if (stmt.data == .type_decl) {
                     const t = stmt.data.type_decl;
                     const t_c_name = t.resolved_c_name orelse t.name;
-                    if (split) {
-                        if (seen_types.contains(t_c_name)) continue;
-                        try seen_types.put(t_c_name, {});
-                    }
                     const dep_owned = split and is_entry and dep_owned_types.contains(t_c_name);
-                    try self.declareType(mod, stmt, own and !dep_owned);
+                    const should_define = own and !dep_owned;
+                    if (split) {
+                        if (defined_types.contains(t_c_name)) continue;
+                        if (should_define) try defined_types.put(t_c_name, {});
+                    }
+                    try self.declareType(mod, stmt, should_define);
                 } else if (stmt.data == .enum_decl) {
                     try self.declareEnum(mod, stmt, own);
                 }
@@ -589,17 +641,15 @@ pub const LLVMEmitter = struct {
             while (c_it.next()) |entry| {
                 const c_node = entry.value_ptr.*;
                 if (c_node.data == .type_decl) {
-                    // Dep-owned pool types are defined by the deps unit.
                     const t = c_node.data.type_decl;
                     const t_c_name = t.resolved_c_name orelse t.name;
-                    if (split and is_entry and dep_owned_types.contains(t_c_name)) continue;
+                    const dep_owned = split and is_entry and dep_owned_types.contains(t_c_name);
+                    const should_define = (!split or is_entry) and !dep_owned;
                     if (split) {
-                        if (seen_types.contains(t_c_name)) continue;
-                        try seen_types.put(t_c_name, {});
+                        if (defined_types.contains(t_c_name)) continue;
+                        if (should_define) try defined_types.put(t_c_name, {});
                     }
-                    // Monomorphized pool types belong to the entry unit in
-                    // split mode (linker resolves cross-unit references).
-                    try self.declareType(mod, c_node, !split or is_entry);
+                    try self.declareType(mod, c_node, should_define);
                 }
             }
         }
@@ -804,128 +854,238 @@ pub const LLVMEmitter = struct {
         // it extern (constant, no initializer) so `when (x) is Contract`
         // checks — which iterate every `_vtable` global in the module — see
         // the complete whole-program set in every unit.
+        var seen_vtable_types = std.StringHashMap(void).init(self.allocator);
+        defer seen_vtable_types.deinit();
+
+        var type_nodes_to_emit = ArrayList(struct { node: *ast.ASTNode, own: bool }).init(self.allocator);
+        defer type_nodes_to_emit.deinit();
+
         for (modules.items) |m| {
             if (m.data != .program) continue;
-            const own_body_vt = self.unitOwns(m);
+            const own_m = self.unitOwns(m);
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .type_decl) {
                     const t = stmt.data.type_decl;
                     if (t.generic_params.len > 0) continue;
                     const type_c_name = t.resolved_c_name orelse t.name;
-                    const own_vt = own_body_vt and !(split and is_entry and dep_owned_types.contains(type_c_name));
+                    if (seen_vtable_types.contains(type_c_name)) continue;
+                    try seen_vtable_types.put(type_c_name, {});
+                    const own_vt = !split or own_m;
+                    try type_nodes_to_emit.append(.{ .node = stmt, .own = own_vt });
+                }
+            }
+        }
+        if (self.classes_ast) |ca| {
+            var c_it = ca.iterator();
+            while (c_it.next()) |entry| {
+                const c_node = entry.value_ptr.*;
+                if (c_node.data == .type_decl) {
+                    const t = c_node.data.type_decl;
+                    if (t.generic_params.len > 0) continue;
+                    const type_c_name = t.resolved_c_name orelse t.name;
+                    if (seen_vtable_types.contains(type_c_name)) continue;
+                    try seen_vtable_types.put(type_c_name, {});
+                    const is_dep_type = dep_owned_types.contains(type_c_name) or isDepTypePrefix(type_c_name);
+                    const own_vt = !split or (if (is_entry) !is_dep_type else is_dep_type);
+                    try type_nodes_to_emit.append(.{ .node = c_node, .own = own_vt });
+                }
+            }
+        }
+
+        for (type_nodes_to_emit.items) |item| {
+            const stmt = item.node;
+            const own_vt = item.own;
+            const t = stmt.data.type_decl;
+            const type_c_name = t.resolved_c_name orelse t.name;
 
 
-                    for (t.contracts) |contract_src| {
-                        var contract_node = if (self.contracts_ast) |ca| ca.get(contract_src) else null;
-                        if (contract_node == null) {
-                            if (std.mem.lastIndexOfScalar(u8, contract_src, '_')) |cidx| {
-                                const short_c = contract_src[cidx + 1 ..];
-                                contract_node = if (self.contracts_ast) |ca| ca.get(short_c) else null;
+            var contract_list = ArrayList([]const u8).init(self.allocator);
+            defer contract_list.deinit();
+            var seen_c = std.StringHashMap(void).init(self.allocator);
+            defer seen_c.deinit();
+
+            for (t.contracts) |cs| {
+                if (!seen_c.contains(cs)) {
+                    try seen_c.put(cs, {});
+                    try contract_list.append(cs);
+                }
+            }
+
+            const auto_contracts = [_][]const u8{ "Equatable", "Stringable", "Hashable" };
+            for (auto_contracts) |ac| {
+                if (!seen_c.contains(ac)) {
+                    try seen_c.put(ac, {});
+                    try contract_list.append(ac);
+                }
+            }
+
+            for (contract_list.items) |contract_src| {
+                var contract_node = if (self.contracts_ast) |ca| ca.get(contract_src) else null;
+                if (contract_node == null) {
+                    if (std.mem.lastIndexOfScalar(u8, contract_src, '_')) |cidx| {
+                        const short_c = contract_src[cidx + 1 ..];
+                        contract_node = if (self.contracts_ast) |ca| ca.get(short_c) else null;
+                    }
+                }
+                if (contract_node == null or contract_node.?.data != .contract_decl) continue;
+                const c_decl = contract_node.?.data.contract_decl;
+
+                // Non-owning split unit: extern declaration only.
+                if (split and !own_vt) {
+                    var method_count: usize = 0;
+                    for (c_decl.methods) |cm| {
+                        if (cm.data == .fun_decl) method_count += 1;
+                    }
+                    const slot_types = try self.allocator.alloc(llvm.LLVMTypeRef, method_count);
+                    defer self.allocator.free(slot_types);
+                    for (slot_types) |*st| st.* = ptr_type;
+                    const ext_type = llvm.LLVMStructTypeInContext(self.context, slot_types.ptr, @intCast(method_count), 0);
+
+                    const ext_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, c_decl.name });
+                    defer self.allocator.free(ext_name);
+                    const ext_name_z = try self.allocator.dupeZ(u8, ext_name);
+                    defer self.allocator.free(ext_name_z);
+                    if (llvm.LLVMGetNamedGlobal(mod, ext_name_z.ptr) == null) {
+                        const g = llvm.LLVMAddGlobal(mod, ext_type, ext_name_z.ptr);
+                        llvm.LLVMSetGlobalConstant(g, 1);
+                    }
+                    var alt_names = ArrayList([]const u8).init(self.allocator);
+                    defer alt_names.deinit();
+
+                    if (!std.mem.eql(u8, contract_src, c_decl.name)) {
+                        const alt_n = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, contract_src });
+                        try alt_names.append(alt_n);
+                    }
+                    if (!std.mem.eql(u8, t.name, type_c_name)) {
+                        const unaliased_n = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ t.name, c_decl.name });
+                        try alt_names.append(unaliased_n);
+                    }
+                    if (stripCorePrefixes(self.allocator, type_c_name)) |short_t| {
+                        defer self.allocator.free(short_t);
+                        const short_vn = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ short_t, c_decl.name });
+                        try alt_names.append(short_vn);
+                        if (stripModulePrefix(short_t)) |mod_s| {
+                            const mod_vn = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ mod_s, c_decl.name });
+                            try alt_names.append(mod_vn);
+                        }
+                    }
+                    if (stripModulePrefix(type_c_name)) |mod_s| {
+                        const mod_vn = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ mod_s, c_decl.name });
+                        try alt_names.append(mod_vn);
+                    }
+                    if (stripModulePrefix(t.name)) |mod_s| {
+                        const mod_vn = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ mod_s, c_decl.name });
+                        try alt_names.append(mod_vn);
+                    }
+
+                    for (alt_names.items) |an| {
+                        defer self.allocator.free(an);
+                        const an_z = try self.allocator.dupeZ(u8, an);
+                        defer self.allocator.free(an_z);
+                        if (llvm.LLVMGetNamedGlobal(mod, an_z.ptr) == null) {
+                            const g = llvm.LLVMAddGlobal(mod, ext_type, an_z.ptr);
+                            llvm.LLVMSetGlobalConstant(g, 1);
+                        }
+                    }
+                    continue;
+                }
+
+                var vtable_funcs = ArrayList(llvm.LLVMValueRef).init(self.allocator);
+                defer vtable_funcs.deinit();
+
+                for (c_decl.methods) |cm| {
+                    if (cm.data != .fun_decl) continue;
+                    const cm_name = cm.data.fun_decl.name;
+                    var impl_fn: ?llvm.LLVMValueRef = null;
+
+                    // Look for matching method implementation in the type.
+                    // `startsWith` covers the exact method plus overload
+                    // suffixes, but the character after the prefix MUST be
+                    // an overload separator (`_`) — otherwise a longer
+                    // method name that merely starts with this one would
+                    // match (`rows` must not pick `rowsAffected`). Neither
+                    // a bare `endsWith` (a monomorphized method of another
+                    // type can end with this prefix via its type arg).
+                    const target_prefix = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_c_name, cm_name });
+                    defer self.allocator.free(target_prefix);
+
+                    if (try self.fnCandidates(target_prefix)) |candidates| {
+                        for (candidates) |fk| {
+                            if (std.mem.eql(u8, fk, target_prefix) or
+                                (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_'))
+                            {
+                                impl_fn = self.functions.get(fk);
+                                if (!split) try self.markReachable(fk, &reachable, &worklist);
+                                break;
                             }
                         }
-                        if (contract_node == null or contract_node.?.data != .contract_decl) continue;
-                        const c_decl = contract_node.?.data.contract_decl;
-
-                        // Non-owning split unit: extern declaration only.
-                        if (split and !own_vt) {
-                            var method_count: usize = 0;
-                            for (c_decl.methods) |cm| {
-                                if (cm.data == .fun_decl) method_count += 1;
-                            }
-                            const slot_types = try self.allocator.alloc(llvm.LLVMTypeRef, method_count);
-                            defer self.allocator.free(slot_types);
-                            for (slot_types) |*st| st.* = ptr_type;
-                            const ext_type = llvm.LLVMStructTypeInContext(self.context, slot_types.ptr, @intCast(method_count), 0);
-
-                            const ext_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, c_decl.name });
-                            defer self.allocator.free(ext_name);
-                            const ext_name_z = try self.allocator.dupeZ(u8, ext_name);
-                            defer self.allocator.free(ext_name_z);
-                            if (llvm.LLVMGetNamedGlobal(mod, ext_name_z.ptr) == null) {
-                                const g = llvm.LLVMAddGlobal(mod, ext_type, ext_name_z.ptr);
-                                llvm.LLVMSetGlobalConstant(g, 1);
-                            }
-                            if (!std.mem.eql(u8, contract_src, c_decl.name)) {
-                                const alt_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, contract_src });
-                                defer self.allocator.free(alt_name);
-                                const alt_name_z = try self.allocator.dupeZ(u8, alt_name);
-                                defer self.allocator.free(alt_name_z);
-                                if (llvm.LLVMGetNamedGlobal(mod, alt_name_z.ptr) == null) {
-                                    const g2 = llvm.LLVMAddGlobal(mod, ext_type, alt_name_z.ptr);
-                                    llvm.LLVMSetGlobalConstant(g2, 1);
-                                }
-                            }
-                            continue;
-                        }
-
-                        var vtable_funcs = ArrayList(llvm.LLVMValueRef).init(self.allocator);
-                        defer vtable_funcs.deinit();
-
-                        for (c_decl.methods) |cm| {
-                            if (cm.data != .fun_decl) continue;
-                            const cm_name = cm.data.fun_decl.name;
-                            var impl_fn: ?llvm.LLVMValueRef = null;
-
-                            // Look for matching method implementation in the type.
-                            // `startsWith` covers the exact method plus overload
-                            // suffixes, but the character after the prefix MUST be
-                            // an overload separator (`_`) — otherwise a longer
-                            // method name that merely starts with this one would
-                            // match (`rows` must not pick `rowsAffected`). Neither
-                            // a bare `endsWith` (a monomorphized method of another
-                            // type can end with this prefix via its type arg).
-                            const target_prefix = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_c_name, cm_name });
-                            defer self.allocator.free(target_prefix);
-
-                            if (try self.fnCandidates(target_prefix)) |candidates| {
-                                for (candidates) |fk| {
-                                    if (std.mem.eql(u8, fk, target_prefix) or
-                                        (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_'))
-                                    {
-                                        impl_fn = self.functions.get(fk);
-                                        if (!split) try self.markReachable(fk, &reachable, &worklist);
-                                        break;
-                                    }
-                                }
-                            } else {
-                                var fit = self.functions.iterator();
-                                while (fit.next()) |entry| {
-                                    const fk = entry.key_ptr.*;
-                                    if (std.mem.eql(u8, fk, target_prefix) or
-                                        (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_'))
-                                    {
-                                        impl_fn = entry.value_ptr.*;
-                                        if (!split) try self.markReachable(fk, &reachable, &worklist);
-                                        break;
-                                    }
-                                }
-                            }
-                            if (impl_fn) |fn_val| {
-                                try vtable_funcs.append(fn_val);
-                            } else {
-                                try vtable_funcs.append(llvm.LLVMConstNull(ptr_type));
+                    } else {
+                        var fit = self.functions.iterator();
+                        while (fit.next()) |entry| {
+                            const fk = entry.key_ptr.*;
+                            if (std.mem.eql(u8, fk, target_prefix) or
+                                (std.mem.startsWith(u8, fk, target_prefix) and fk.len > target_prefix.len and fk[target_prefix.len] == '_'))
+                            {
+                                impl_fn = entry.value_ptr.*;
+                                if (!split) try self.markReachable(fk, &reachable, &worklist);
+                                break;
                             }
                         }
+                    }
+                    if (impl_fn) |fn_val| {
+                        try vtable_funcs.append(fn_val);
+                    } else {
+                        try vtable_funcs.append(llvm.LLVMConstNull(ptr_type));
+                    }
+                }
 
-                        const vtable_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, c_decl.name });
-                        defer self.allocator.free(vtable_name);
-                        const vtable_name_z = try self.allocator.dupeZ(u8, vtable_name);
-                        defer self.allocator.free(vtable_name_z);
+                const vtable_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, c_decl.name });
+                defer self.allocator.free(vtable_name);
+                const vtable_name_z = try self.allocator.dupeZ(u8, vtable_name);
+                defer self.allocator.free(vtable_name_z);
 
-                        const vtable_const = llvm.LLVMConstStructInContext(self.context, vtable_funcs.items.ptr, @intCast(vtable_funcs.items.len), 0);
-                        const vtable_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(vtable_const), vtable_name_z.ptr);
-                        llvm.LLVMSetInitializer(vtable_global, vtable_const);
-                        llvm.LLVMSetGlobalConstant(vtable_global, 1);
+                const vtable_const = llvm.LLVMConstStructInContext(self.context, vtable_funcs.items.ptr, @intCast(vtable_funcs.items.len), 0);
+                const vtable_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(vtable_const), vtable_name_z.ptr);
+                llvm.LLVMSetInitializer(vtable_global, vtable_const);
+                llvm.LLVMSetGlobalConstant(vtable_global, 1);
 
-                        if (!std.mem.eql(u8, contract_src, c_decl.name)) {
-                            const alt_vname = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, contract_src });
-                            defer self.allocator.free(alt_vname);
-                            const alt_vname_z = try self.allocator.dupeZ(u8, alt_vname);
-                            defer self.allocator.free(alt_vname_z);
-                            const alt_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(vtable_const), alt_vname_z.ptr);
-                            llvm.LLVMSetInitializer(alt_global, vtable_const);
-                            llvm.LLVMSetGlobalConstant(alt_global, 1);
-                        }
+                var alt_names = ArrayList([]const u8).init(self.allocator);
+                defer alt_names.deinit();
+
+                if (!std.mem.eql(u8, contract_src, c_decl.name)) {
+                    const alt_n = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ type_c_name, contract_src });
+                    try alt_names.append(alt_n);
+                }
+                if (!std.mem.eql(u8, t.name, type_c_name)) {
+                    const unaliased_n = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ t.name, c_decl.name });
+                    try alt_names.append(unaliased_n);
+                }
+                if (stripCorePrefixes(self.allocator, type_c_name)) |short_t| {
+                    defer self.allocator.free(short_t);
+                    const short_vn = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ short_t, c_decl.name });
+                    try alt_names.append(short_vn);
+                    if (stripModulePrefix(short_t)) |mod_s| {
+                        const mod_vn = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ mod_s, c_decl.name });
+                        try alt_names.append(mod_vn);
+                    }
+                }
+                if (stripModulePrefix(type_c_name)) |mod_s| {
+                    const mod_vn = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ mod_s, c_decl.name });
+                    try alt_names.append(mod_vn);
+                }
+                if (stripModulePrefix(t.name)) |mod_s| {
+                    const mod_vn = try std.fmt.allocPrint(self.allocator, "{s}_{s}_vtable", .{ mod_s, c_decl.name });
+                    try alt_names.append(mod_vn);
+                }
+
+                for (alt_names.items) |an| {
+                    defer self.allocator.free(an);
+                    const an_z = try self.allocator.dupeZ(u8, an);
+                    defer self.allocator.free(an_z);
+                    if (llvm.LLVMGetNamedGlobal(mod, an_z.ptr) == null) {
+                        const alt_g = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(vtable_const), an_z.ptr);
+                        llvm.LLVMSetInitializer(alt_g, vtable_const);
+                        llvm.LLVMSetGlobalConstant(alt_g, 1);
                     }
                 }
             }
@@ -1362,15 +1522,13 @@ pub const LLVMEmitter = struct {
                         std.mem.eql(u8, fn_name_s, "poll")
                     ));
                 if (!is_libc) {
-                    // Split mode: only stub symbols this unit owns — the other
-                    // unit holds the real definition (stubbing it here would
-                    // collide at link). The entry unit additionally stubs
-                    // leftover synthetic names owned by no module (mirrors
-                    // legacy whole-program behavior).
-                    if (split and !owned_names.contains(fn_name_s) and
-                        !(is_entry and !dep_owned_types.contains(fn_name_s) and !dep_owned_fns.contains(fn_name_s)))
-                    {
-                        continue;
+                    // Split mode: deps unit never stubs symbols (leaves them as extern);
+                    // entry unit only stubs non-dep symbols.
+                    if (split) {
+                        if (!is_entry) continue;
+                        if (dep_owned_types.contains(fn_name_s) or dep_owned_fns.contains(fn_name_s)) {
+                            continue;
+                        }
                     }
                     self.emitFunctionStub(mod, fn_name_s) catch {};
                 }
@@ -3242,13 +3400,7 @@ pub const LLVMEmitter = struct {
                     if (std.mem.lastIndexOfScalar(u8, tr.name, '_')) |sidx| {
                         tr_short = tr.name[sidx + 1 ..];
                     }
-                    if (ca.contains(tr.name) or ca.contains(tr_short) or
-                        std.mem.endsWith(u8, tr_short, "Writer") or
-                        std.mem.endsWith(u8, tr_short, "Formatter") or
-                        std.mem.endsWith(u8, tr_short, "able") or
-                        std.mem.endsWith(u8, tr_short, "Opt") or
-                        std.mem.endsWith(u8, tr_short, "Contract"))
-                    {
+                    if (ca.contains(tr.name) or ca.contains(tr_short)) {
                         break :blk types_mapping.getFatPointerType(self.context);
                     }
                 }
@@ -3296,7 +3448,7 @@ pub const LLVMEmitter = struct {
         const ctor_param_types = field_types_owned[0..ctor_param_count];
         const ctor_type = llvm.LLVMFunctionType(ptr_type, if (ctor_param_types.len > 0) ctor_param_types.ptr else null, @intCast(ctor_param_types.len), 0);
 
-        const ctor_val = llvm.LLVMAddFunction(mod, struct_name_z.ptr, ctor_type);
+        const ctor_val = llvm.LLVMGetNamedFunction(mod, struct_name_z.ptr) orelse llvm.LLVMAddFunction(mod, struct_name_z.ptr, ctor_type);
         try self.functions.put(name, ctor_val);
 
         // Split mode: the constructor body is a definition — only the owning

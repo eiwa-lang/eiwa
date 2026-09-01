@@ -181,19 +181,6 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                 found = true;
             } else if (tc.global_scope.lookupVariable(sym)) |variable| {
                 try self.global_scope.define(sym, variable, false, false);
-                if (tc.lib_symbols.contains(sym)) {
-                    try self.lib_symbols.put(sym, {});
-                    var sym_it = tc.global_scope.symbols.iterator();
-                    while (sym_it.next()) |entry| {
-                        const k = entry.key_ptr.*;
-                        if (std.mem.startsWith(u8, k, sym) and k.len > sym.len and k[sym.len] == '.') {
-                            try self.global_scope.symbols.put(k, entry.value_ptr.*);
-                            if (tc.alias_map.get(k)) |aliased| {
-                                try self.alias_map.put(k, aliased);
-                            }
-                        }
-                    }
-                }
                 found = true;
             } else if (tc.generic_functions_ast.get(sym)) |list| {
                 // Generic functions are not in global_scope; importing one
@@ -229,6 +216,34 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                 try self.objects_ast.put(lookup_sym, obj_node);
                 if (prefix.len > 0) {
                     try self.objects_ast.put(sym, obj_node);
+                }
+                found = true;
+            } else if (tc.libs_ast.get(lookup_sym) orelse (if (tc.libs_ast.get(sym)) |ln| ln else null)) |lib_node| {
+                try self.libs_ast.put(lookup_sym, lib_node);
+                if (prefix.len > 0) {
+                    try self.libs_ast.put(sym, lib_node);
+                }
+                try self.lib_symbols.put(sym, {});
+                try self.lib_symbols.put(lookup_sym, {});
+                const l = lib_node.data.lib_decl;
+                for (l.functions) |func| {
+                    const f = &func.data.fun_decl;
+                    const full_name1 = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ sym, f.name });
+                    const full_name2 = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ lookup_sym, f.name });
+                    if (tc.global_scope.lookupFunctions(full_name1) orelse tc.global_scope.lookupFunctions(full_name2)) |overloads| {
+                        for (overloads) |ov| {
+                            try self.global_scope.define(full_name1, ov, false, true);
+                            if (!std.mem.eql(u8, full_name1, full_name2)) {
+                                try self.global_scope.define(full_name2, ov, false, true);
+                            }
+                        }
+                    }
+                    if (tc.alias_map.get(full_name1) orelse tc.alias_map.get(full_name2)) |aliased| {
+                        try self.alias_map.put(full_name1, aliased);
+                        if (!std.mem.eql(u8, full_name1, full_name2)) {
+                            try self.alias_map.put(full_name2, aliased);
+                        }
+                    }
                 }
                 found = true;
             }
@@ -343,6 +358,10 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         var object_ast_it = tc.objects_ast.iterator();
         while (object_ast_it.next()) |entry| {
             try self.objects_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var lib_ast_it2 = tc.libs_ast.iterator();
+        while (lib_ast_it2.next()) |entry| {
+            try self.libs_ast.put(entry.key_ptr.*, entry.value_ptr.*);
         }
         // Also register generic template symbols so that method bodies referencing
         // sibling classes (e.g. List.mut() returns MutableList) can resolve them.
@@ -984,7 +1003,6 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         } else {
             try my_list.?.append(node);
         }
-        try self.local_symbols.put(f.name, {});
         t.* = .Void;
         return;
     }
@@ -1252,6 +1270,11 @@ pub fn inferLibDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     try scope.define(l.name, lib_type, false, false);
     try self.local_symbols.put(l.name, {});
     try self.lib_symbols.put(l.name, {});
+    try self.libs_ast.put(l.name, node);
+    if (self.module_prefix) |prefix| {
+        const aliased_lib = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, l.name });
+        try self.libs_ast.put(aliased_lib, node);
+    }
 
     for (l.functions) |func| {
         const f = &func.data.fun_decl;
@@ -1887,20 +1910,21 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
     }
 
     const param_eq_type = try self.resolveTypeName("Equatable", false);
+    const resolved_c_name = c.resolved_c_name orelse c.name;
     var case_then_body: *ASTNode = undefined;
     if (prop_count == 0) {
         case_then_body = try makeBoolLiteral(self, node.line, node.column, true);
     } else {
         var curr_expr: ?*ASTNode = null;
         const bool_type = try self.resolveTypeName("Bool", false);
-        const c_type = try self.resolveTypeName(c.name, false);
+        const c_type = try self.resolveTypeName(resolved_c_name, false);
         const this_ident = try makeIdent(self, node.line, node.column, "this");
         this_ident.resolved_type = c_type;
         const other_ident = try makeIdent(self, node.line, node.column, "other");
         other_ident.resolved_type = param_eq_type;
         const c_tr = try self.allocator.create(ast.ASTTypeRef);
         c_tr.* = .{
-            .name = c.name,
+            .name = resolved_c_name,
             .generic_args = &.{},
             .is_array = false,
             .is_nullable = false,
@@ -1938,7 +1962,7 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
                         .object = this_ident,
                         .name = prop.name,
                         .is_safe = false,
-                        .resolved_c_name = c.name,
+                        .resolved_c_name = resolved_c_name,
                     },
                 },
             };
@@ -1953,7 +1977,7 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
                         .object = other_casted,
                         .name = prop.name,
                         .is_safe = false,
-                        .resolved_c_name = c.name,
+                        .resolved_c_name = resolved_c_name,
                     },
                 },
             };
@@ -1970,7 +1994,7 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
         case_then_body = if (curr_expr) |expr| expr else try makeBoolLiteral(self, node.line, node.column, true);
     }
 
-    const is_cond = try makeIsTypeCond(self, node.line, node.column, c.name);
+    const is_cond = try makeIsTypeCond(self, node.line, node.column, resolved_c_name);
     const conds = try self.allocator.alloc(*ASTNode, 1);
     conds[0] = is_cond;
 
