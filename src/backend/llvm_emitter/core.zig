@@ -3957,21 +3957,32 @@ if (define_body) {
             }
         }
 
-        // dlopen with RTLD_GLOBAL so the MCJIT symbol resolver (dlsym
-        // RTLD_DEFAULT) finds the externs. LLVM 21 dropped the
-        // LLVMLoadLibraryPermanently C API, so use dlopen with RTLD_GLOBAL.
+        // Load with RTLD_GLOBAL (or LoadLibrary on Windows) so the MCJIT symbol
+        // resolver finds the externs. LLVM 21 dropped the LLVMLoadLibraryPermanently
+        // C API, so use platform-native dynamic library loading.
         const lib_filename_z = try self.allocator.dupeZ(u8, lib_filename);
         defer self.allocator.free(lib_filename_z);
 
-        const c_dl = struct {
-            extern "c" fn dlopen(filename: ?[*:0]const u8, flags: c_int) ?*anyopaque;
-        };
-        const rtld_lazy: c_int = 1;
-        const rtld_global: c_int = if (builtin.target.os.tag == .macos) 8 else 256;
-        const handle = c_dl.dlopen(lib_filename_z.ptr, rtld_lazy | rtld_global);
-        if (handle == null) {
-            std.debug.print("Could not load lib C sources into JIT: {s}\n", .{lib_filename});
-            return error.LibSourceLoadFailed;
+        if (builtin.os.tag == .windows) {
+            const win_c = struct {
+                extern "kernel32" fn LoadLibraryA(lpLibFileName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+            };
+            const handle = win_c.LoadLibraryA(lib_filename_z.ptr);
+            if (handle == null) {
+                std.debug.print("Could not load lib C sources into JIT: {s}\n", .{lib_filename});
+                return error.LibSourceLoadFailed;
+            }
+        } else {
+            const c_dl = struct {
+                extern "c" fn dlopen(filename: ?[*:0]const u8, flags: c_int) ?*anyopaque;
+            };
+            const rtld_lazy: c_int = 1;
+            const rtld_global: c_int = if (builtin.target.os.tag == .macos) 8 else 256;
+            const handle = c_dl.dlopen(lib_filename_z.ptr, rtld_lazy | rtld_global);
+            if (handle == null) {
+                std.debug.print("Could not load lib C sources into JIT: {s}\n", .{lib_filename});
+                return error.LibSourceLoadFailed;
+            }
         }
     }
 
