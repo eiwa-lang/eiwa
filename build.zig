@@ -18,27 +18,20 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
         };
     }
-    // Check LLVM_PATH / LLVM_HOME env var (e.g. GitHub Actions or manual install)
-    if (b.graph.environ_map.get("LLVM_PATH")) |p| {
-        const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p});
-        const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p});
-        const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch b.fmt("{s}/llvm-c/Core.h", .{inc});
-        if (fileExists(b, header)) {
-            return .{
-                .include_path = inc,
-                .lib_path = lib,
-            };
-        }
-    }
-    if (b.graph.environ_map.get("LLVM_HOME")) |p| {
-        const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p});
-        const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p});
-        const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch b.fmt("{s}/llvm-c/Core.h", .{inc});
-        if (fileExists(b, header)) {
-            return .{
-                .include_path = inc,
-                .lib_path = lib,
-            };
+    // Check environment variables case-insensitively for LLVM_PATH / LLVM_HOME
+    var env_it = b.graph.environ_map.iterator();
+    while (env_it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "LLVM_PATH") or std.ascii.eqlIgnoreCase(entry.key_ptr.*, "LLVM_HOME")) {
+            const p = entry.value_ptr.*;
+            const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p});
+            const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p});
+            const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch b.fmt("{s}/llvm-c/Core.h", .{inc});
+            if (fileExists(b, header)) {
+                return .{
+                    .include_path = inc,
+                    .lib_path = lib,
+                };
+            }
         }
     }
     // Check macOS Homebrew llvm@21
@@ -80,8 +73,15 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             .lib_path = "/usr/lib/llvm-21/lib",
         };
     }
-    // Check Windows standard LLVM paths
-    for ([_][]const u8{ "C:/Program Files/LLVM", "C:/Program Files (x86)/LLVM", "C:/LLVM", "C:\\Program Files\\LLVM", "C:\\Program Files (x86)\\LLVM", "C:\\LLVM" }) |p| {
+    // Check Windows standard LLVM and MSYS2/UCRT64 paths
+    for ([_][]const u8{
+        "C:/msys64/ucrt64",
+        "C:/msys64/mingw64",
+        "C:/msys64/clang64",
+        "C:/Program Files/LLVM",
+        "C:/Program Files (x86)/LLVM",
+        "C:/LLVM",
+    }) |p| {
         const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch continue;
         const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
         const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
@@ -111,6 +111,13 @@ fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
     // macOS Homebrew (Intel, under /usr/local)
     if (fileExists(b, "/usr/local/lib/libgc.dylib")) {
         return .{ .lib_path = "/usr/local/lib" };
+    }
+    // Windows MSYS2 / UCRT64 & MinGW64
+    if (fileExists(b, "C:/msys64/ucrt64/lib/libgc.dll.a") or fileExists(b, "C:/msys64/ucrt64/lib/libgc.a")) {
+        return .{ .lib_path = "C:/msys64/ucrt64/lib" };
+    }
+    if (fileExists(b, "C:/msys64/mingw64/lib/libgc.dll.a") or fileExists(b, "C:/msys64/mingw64/lib/libgc.a")) {
+        return .{ .lib_path = "C:/msys64/mingw64/lib" };
     }
     // Ubuntu/Debian x86_64
     if (fileExists(b, "/usr/lib/x86_64-linux-gnu/libgc.so")) {

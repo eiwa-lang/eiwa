@@ -40,11 +40,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install bdw-gc llvm@21
 
-      - name: Install LLVM (Windows)
+      - name: Install deps (Windows)
         if: runner.os == 'Windows'
-        uses: KyleMayes/install-llvm-action@v2
+        uses: msys2/setup-msys2@v2
         with:
-          version: "19.1.0"
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-gc
 
       - name: Unit tests (zig build test)
         run: zig build test
