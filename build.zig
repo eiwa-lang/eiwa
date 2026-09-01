@@ -14,8 +14,7 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
         };
     }
     // Check LLVM_PATH / LLVM_HOME env var (e.g. GitHub Actions or manual install)
-    if (std.c.getenv("LLVM_PATH")) |env_path| {
-        const p = std.mem.span(env_path);
+    if (b.graph.environ_map.get("LLVM_PATH")) |p| {
         if (fileExists(b, b.fmt("{s}/include/llvm-c/Core.h", .{p}))) {
             return .{
                 .include_path = b.fmt("{s}/include", .{p}),
@@ -23,8 +22,7 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             };
         }
     }
-    if (std.c.getenv("LLVM_HOME")) |env_path| {
-        const p = std.mem.span(env_path);
+    if (b.graph.environ_map.get("LLVM_HOME")) |p| {
         if (fileExists(b, b.fmt("{s}/include/llvm-c/Core.h", .{p}))) {
             return .{
                 .include_path = b.fmt("{s}/include", .{p}),
