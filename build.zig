@@ -1,6 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 fn fileExists(b: *std.Build, path: []const u8) bool {
+    if (path.len == 0) return false;
     if (std.fs.path.isAbsolute(path)) {
         var file = std.Io.Dir.openFileAbsolute(b.graph.io, path, .{}) catch return false;
         file.close(b.graph.io);
@@ -18,14 +20,29 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             .lib_path = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p}),
         };
     }
-    // Check environment variables case-insensitively for LLVM_PATH / LLVM_HOME
-    var env_it = b.graph.environ_map.iterator();
-    while (env_it.next()) |entry| {
-        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "LLVM_PATH") or std.ascii.eqlIgnoreCase(entry.key_ptr.*, "LLVM_HOME")) {
-            const p = entry.value_ptr.*;
-            const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch b.fmt("{s}/include", .{p});
-            const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch b.fmt("{s}/lib", .{p});
-            const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch b.fmt("{s}/llvm-c/Core.h", .{inc});
+    // Check environment variables for LLVM / MSYS2 prefixes
+    for ([_][]const u8{ "LLVM_PATH", "LLVM_HOME", "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
+        if (b.graph.environ_map.get(key)) |p| {
+            const inc = std.fs.path.join(b.allocator, &.{ p, "include" }) catch continue;
+            const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
+            const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
+            if (fileExists(b, header)) {
+                return .{
+                    .include_path = inc,
+                    .lib_path = lib,
+                };
+            }
+        }
+    }
+    // Scan PATH entries (e.g. C:\msys64\ucrt64\bin or /opt/homebrew/bin)
+    if (b.graph.environ_map.get("PATH")) |path_val| {
+        const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
+        var it = std.mem.tokenizeScalar(u8, path_val, sep);
+        while (it.next()) |dir| {
+            const parent = std.fs.path.dirname(dir) orelse continue;
+            const inc = std.fs.path.join(b.allocator, &.{ parent, "include" }) catch continue;
+            const lib = std.fs.path.join(b.allocator, &.{ parent, "lib" }) catch continue;
+            const header = std.fs.path.join(b.allocator, &.{ inc, "llvm-c", "Core.h" }) catch continue;
             if (fileExists(b, header)) {
                 return .{
                     .include_path = inc,
@@ -103,6 +120,33 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
 fn findLibgcPath(b: *std.Build) ?struct { lib_path: ?[]const u8 } {
     if (b.option([]const u8, "gc-path", "Custom path to Boehm GC (libgc) installation")) |p| {
         return .{ .lib_path = b.fmt("{s}/lib", .{p}) };
+    }
+    // Check MSYS2 / environment prefixes for libgc
+    for ([_][]const u8{ "MSYSTEM_PREFIX", "MINGW_PREFIX" }) |key| {
+        if (b.graph.environ_map.get(key)) |p| {
+            const lib = std.fs.path.join(b.allocator, &.{ p, "lib" }) catch continue;
+            if (fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "libgc.dll.a" }) catch "") or
+                fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "libgc.a" }) catch "") or
+                fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "gc.lib" }) catch ""))
+            {
+                return .{ .lib_path = lib };
+            }
+        }
+    }
+    // Scan PATH entries for libgc
+    if (b.graph.environ_map.get("PATH")) |path_val| {
+        const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
+        var it = std.mem.tokenizeScalar(u8, path_val, sep);
+        while (it.next()) |dir| {
+            const parent = std.fs.path.dirname(dir) orelse continue;
+            const lib = std.fs.path.join(b.allocator, &.{ parent, "lib" }) catch continue;
+            if (fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "libgc.dll.a" }) catch "") or
+                fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "libgc.a" }) catch "") or
+                fileExists(b, std.fs.path.join(b.allocator, &.{ lib, "gc.lib" }) catch ""))
+            {
+                return .{ .lib_path = lib };
+            }
+        }
     }
     // macOS Homebrew (Apple Silicon)
     if (fileExists(b, "/opt/homebrew/lib/libgc.dylib")) {
