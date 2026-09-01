@@ -34,8 +34,17 @@ test "cooperative non-blocking TCP server accept and client communication" {
 
     val clientTask = task {
         var clientReceived: String = ""
+        // The server task may not be listening yet when we first connect (it
+        // runs concurrently and the machine can be busy), so a connect can get
+        // ECONNREFUSED; retry instead of assuming a fixed startup delay.
         sleepMs(10)
-        val client = SocketClient.connect("127.0.0.1", 19482)
+        var attempts = 0
+        var client = SocketClient.connect("127.0.0.1", 19482)
+        while (client == null && attempts < 50) {
+            sleepMs(5)
+            client = SocketClient.connect("127.0.0.1", 19482)
+            attempts = attempts + 1
+        }
         assert(client != null, "client should connect to server")
         if (client != null) {
             val s: Socket = client!!

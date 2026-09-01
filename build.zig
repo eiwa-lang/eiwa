@@ -145,6 +145,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe_module.addOptions("build_options", options);
+    exe_module.link_libc = true;
 
     if (has_llvm) {
         const info = llvm_info.?;
@@ -155,14 +156,12 @@ pub fn build(b: *std.Build) void {
             exe_module.addLibraryPath(.{ .cwd_relative = lib });
         }
         exe_module.linkSystemLibrary("LLVM", .{});
-        exe_module.link_libc = true;
     }
     if (gc_info) |info| {
         if (info.lib_path) |lib| {
             exe_module.addLibraryPath(.{ .cwd_relative = lib });
         }
         exe_module.linkSystemLibrary("gc", .{});
-        exe_module.link_libc = true;
     }
 
     const exe = b.addExecutable(.{
@@ -191,6 +190,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_module.addOptions("build_options", options);
+    test_module.link_libc = true;
 
     if (has_llvm) {
         const info = llvm_info.?;
@@ -201,14 +201,12 @@ pub fn build(b: *std.Build) void {
             test_module.addLibraryPath(.{ .cwd_relative = lib });
         }
         test_module.linkSystemLibrary("LLVM", .{});
-        test_module.link_libc = true;
     }
     if (gc_info) |info| {
         if (info.lib_path) |lib| {
             test_module.addLibraryPath(.{ .cwd_relative = lib });
         }
         test_module.linkSystemLibrary("gc", .{});
-        test_module.link_libc = true;
     }
 
     const exe_unit_tests = b.addTest(.{

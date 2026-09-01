@@ -1,0 +1,45 @@
+import { assert } from "std.core"
+import { Exception } from "std.exceptions"
+
+// Regression guardrail: the generated state machine used to set the label AFTER
+// calling Scheduler.yield/sleep, opening a window where a concurrent worker
+// re-read the stale label and re-ran a state (the after-yield "second_ok" ran
+// twice, ~2.5% of runs under load). The fix sets the label BEFORE enqueuing.
+// Run the pattern many times so a regression fails deterministically-ish.
+fun runTryCatchPattern(): String {
+    val t = task {
+        var log = ""
+        try {
+            sleepMs(1)
+            throw Exception("first")
+        } catch (e: Exception) {
+            log = log + "first_caught;"
+        }
+
+        try {
+            yield()
+            log = log + "second_ok;"
+        } catch (e: Exception) {
+            log = log + "second_fail;"
+        }
+
+        try {
+            sleepMs(1)
+            throw Exception("third")
+        } catch (e: Exception) {
+            log = log + "third_caught"
+        }
+        log
+    }
+    return t.await()
+}
+
+test "repeated sequential try/catch with suspension points stays correct" {
+    val n = 30
+    var i = 0
+    while (i < n) {
+        val res = runTryCatchPattern()
+        assert(res == "first_caught;second_ok;third_caught", "log should match, got " + res)
+        i = i + 1
+    }
+}

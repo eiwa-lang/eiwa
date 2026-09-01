@@ -1072,6 +1072,54 @@ Semântica alvo:
 
 ---
 
+## 🐞 Known Bugs — Coroutines (Aberto)
+
+### Bug 1: `sync { ... }` com lambda que muta membro de `object` dentro de `task {}` → busy-loop 100% CPU (HANG)
+- **Status:** ABERTO (pré-existente, confirmado também com o transform de state machine sem as correções recentes).
+- **Sintoma:** a task nunca completa; a thread principal gira em `while (!done) runStep()` a 100% CPU; o processo fica congelado até o timeout do harness (`EIWA_TEST_TIMEOUT_MS`).
+- **Como reproduzir** (arquivo de teste isolado):
+  ```kotlin
+  import { assert } from "std.core"
+  import { sync } from "std.thread"
+
+  object CoopLog {
+      var log: String = ""
+  }
+
+  test "sync mutation hang" {
+      CoopLog.log = ""
+      val shared = task {
+          sleepMs(5)
+          sync {
+              CoopLog.log = CoopLog.log + "S"   // muta membro de object DENTRO do lambda
+          }
+          40
+      }
+      val r = shared.await()
+      assert(r == 40 && CoopLog.log == "S")
+  }
+  ```
+  `./bin/eiwac test samples/tests/coop_await_test.ei`-style: rodar o teste acima trava em 100% CPU sem imprimir nada.
+- **Contraste (funciona):** `sync { print("x") }` dentro de um `task {}` passa (lambda **não** muta membro de object). O disparo é especificamente a **mutação de membro de `object`** (`CoopLog.log = CoopLog.log + "S"`) dentro do lambda passado ao `sync`, num body de task cooperativo (contém `sleepMs`/`yield` → vira state machine).
+- **Sintoma relacionado (variante helper):** extrair o `sync` para uma função helper (`fun appendLog(s: String) { sync { CoopLog.log = CoopLog.log + s } }`) **não trava**, mas a escrita é **perdida** — `CoopLog.log` fica `""` mesmo com r1/r2 corretos. Ou seja, o acesso a membro de `object` via lambda dentro de task está corrompido (leitura/escrita em cópia errada ou captura quebrada).
+- **Causa provável:** o transform de corrotinas (`src/core/coroutines_transform.zig` — `collectCaptures`, boxed captures, e/ou a reescrita de lambdas dentro de corpos de `task {}`) trata a referência ao `object` global `CoopLog` como se fosse uma variável local capturável e a promove para campos da continuation gerada, gerando acesso incorreto à memória do objeto (busy-loop no estado de resume ou escrita perdida). O path de lambda com captura de `object`/referência global dentro de state machine não está coberto.
+- **O que corrigir:** audit a captura de **objetos/globais** (não locais) em lambdas dentro de corpos de `task {}` no `coroutines_transform.zig`; um `object` não deve ser "capturado" para o estado — a referência deve ser resolvida estática/global. Adicionar um teste de regressão com `sync { mutaMembroDeObject }` dentro de `task {}` + `await`.
+
+### Bug 2: `coop_await_test.ei` — "multiple tasks awaiting the same task are resumed FIFO" (flake ~1/12)
+- **Status:** ABERTO (pré-existente). Teste compartilha `CoopLog.log` (String global) mutada concorrentemente por `shared`, `t1` e `t2` em threads de pool diferentes → **lost update** → `assert(res == "S12" || res == "S21")` falha intermitentemente.
+- **Não é bug do scheduler:** é race **do teste** (estado compartilhado não-sincronizado). O fix idiomático (`sync`) esbarra no **Bug 1** acima.
+- **O que corrigir:** (a) resolver o Bug 1 para permitir `sync` no teste; ou (b) redesenhar o teste sem estado global mutável (verificar waiter-chain pelos valores de resultado `r1==43`/`r2==44`, que já provam o resumo de múltiplos waiters).
+
+---
+
+## ✅ Coroutines — Correções recentes (validado)
+
+- **Lost-wakeup do done state (fix):** o done state de `StackTask` escrevia `done=true` e drenava `waiters` **sem** o `task.mutex` que `awaitCoop` usa para registrar waiters. Um waiter anexado entre `done=true` e o drain ficava órfão → seu `await()` girava em busy-loop a 100% CPU (**bug de produção**, fritava um core). Corrigido sincronizando result+done+drain com `task.mutex` no transform (`buildResume`/`buildResumeStateMachine`). Foi o que eliminou o **freeze** do `eiwac test`.
+- **Stale-label do estado de suspensão (fix):** o estado de suspensão gerado chamava `Scheduler.yield/sleep(this)` (que enfileira a continuation) e **depois** setava `this.label = <próximo>`. Na janela, um worker popava a continuation e relia o **label obsoleto**, re-executando o estado (e estados seguintes) — o flake do `try_catch_suspend_test.ei` ("second_ok" rodando 2x, ~2.5% sob carga). Corrigido setando o label **antes** de enfileirar. Guardrail: `coop_try_catch_repeated_test.ei`.
+- **I/O não-bloqueante (`coop_io_test.ei`):** o teste assumia 10ms fixos para o servidor escutar — sob carga o `connect()` do cliente dava ECONNREFUSED (o servidor ainda não tinha feito `listen`), o servidor travava no `accept()` e o teste acabava em timeout. Fix: o cliente faz **retry no connect**. (Investiguei também races de EAGAIN no `Socket.read`/`eiwa_socket_write` e propus retries, mas **foram revertidos por desnecessários** — a suíte segue 100% verde só com o retry no connect.)
+
+---
+
 ## 🛠️ Historic Bugfixes & Tools
 * **Int/Double Numeric Promotion in Binary Ops (Aug 31, 2026):** `x * 2.0` with `x: Int` emitted `mul i64, double` (LLVM verification error) or returned `0` in method bodies — the emitter's `is_double` only inspected the **left** operand (`bin.left.resolved_type == .Double`), even though the type checker already resolves `Int op Double` to `.Double`. Now `is_double` is true when **either** operand is `Double` (guarded to both-numeric so custom-type operators like `Money * Int` still dispatch via `.times()`), and the `Int` operand is promoted with `SIToFP` before the float op/comparison. Regression tests added to `double_test.ei` (`Int * Double`, `Double * Int`, `+`/`-`/`/`, comparisons, `Int * Int` stays `Int`).
 * **Phase 72 — ADR 31 LLVM Gaps (Aug 31, 2026):** All four gaps closed. (1) **Receiver-lambda field access:** `inferLambdaExpr` now sets `current_type_c_name` alongside `current_class_props`, so `name`/`count` inside `T.() -> Void` resolve fields with the correct owner type (was `PropertyNotFound`). (2) **Boxing of captured `var` by assignment inside receiver lambdas:** the capture walk in `inferAssignment` broke at any scope containing `this`; a new `Scope.is_receiver_boundary` flag marks receiver scopes so the walk crosses them (class-property targets are still excluded from boxing). (3) **Primitive→contract coercion inside receiver lambdas:** `this.show(42.0)` routed through the "static-method" path which only called `coerceArg` (fat pointer with null vtable → `eiwa_to_string(0x4045...)` segfault); the path now builds the real fat pointer via `coerceToContract`. (4) **Chained safe calls (`?.`):** builtins (`toString`/`toInt`/`toDouble`) on nullable/union receivers now emit via `emitUnionBuiltin` (null-check + variant unboxing + result re-boxing), and `T? ==/!= scalar` comparisons via `emitNullableScalarCompare` (null-checked, so `null != 0`). Regression suite `receiver_lambda_fields_test.ei` (10 tests); full suite 94/94 PASSED + `zig build test` green.

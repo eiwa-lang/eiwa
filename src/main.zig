@@ -158,108 +158,112 @@ fn spawnTestChild(allocator: std.mem.Allocator, io: std.Io, args: []const []cons
 // fault address and only the non-toolchain frames (JIT code + C libraries),
 // keeping the crash actionable instead of a wall of Zig internals.
 
-const Dl_info = extern struct {
-    dli_fname: ?[*:0]const u8,
-    dli_fbase: ?*anyopaque,
-    dli_sname: ?[*:0]const u8,
-    dli_saddr: ?*anyopaque,
-};
-extern "c" fn dladdr(addr: *const anyopaque, info: *Dl_info) c_int;
-
-var eiwac_base: ?*anyopaque = null;
-
-fn crashWrite(s: []const u8) void {
-    _ = std.c.write(2, s.ptr, s.len);
-}
-
-fn crashWriteFrame(addr: usize) void {
-    var buf: [32]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "    0x{x}\n", .{addr}) catch return;
-    crashWrite(s);
-}
-
-fn crashHandler(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*anyopaque) callconv(.c) void {
-    const name = switch (sig) {
-        .SEGV => "Segmentation fault",
-        .ILL => "Illegal instruction",
-        .BUS => "Bus error",
-        .ABRT => "Aborted",
-        .TRAP => "Trap",
-        .FPE => "Arithmetic exception",
-        else => "Fatal signal",
+const posix_crash = if (builtin.os.tag != .windows) struct {
+    const Dl_info = extern struct {
+        dli_fname: ?[*:0]const u8,
+        dli_fbase: ?*anyopaque,
+        dli_sname: ?[*:0]const u8,
+        dli_saddr: ?*anyopaque,
     };
-    const fault_addr: ?usize = switch (builtin.os.tag) {
-        .macos => @intFromPtr(info.addr),
-        .linux => @intFromPtr(info.fields.sigfault.addr),
-        else => null,
-    };
+    extern "c" fn dladdr(addr: *const anyopaque, info: *Dl_info) c_int;
 
-    crashWrite("\n\x1b[1;31mRuntime Error:\x1b[0m ");
-    crashWrite(name);
-    if (sig == .SEGV and (fault_addr == null or fault_addr.? < 4096)) {
-        crashWrite(" (null pointer dereference)");
-    }
-    if (fault_addr) |a| {
-        crashWrite(" at address ");
-        crashWriteFrame(a);
-    } else {
-        crashWrite("\n");
-    }
-    crashWrite("\x1b[1;36mStack Trace (JIT):\x1b[0m\n");
-    var addr_buf: [48]usize = undefined;
-    if (builtin.os.tag != .linux and ctx_ptr != null) {
-        if (std.debug.cpu_context.fromPosixSignalContext(ctx_ptr.?)) |native_ctx| {
-            const stack = std.debug.captureCurrentStackTrace(.{ .context = &native_ctx, .allow_unsafe_unwind = true }, &addr_buf);
-            var frame_idx: usize = 0;
-            for (stack.return_addresses) |ra| {
-                var dli: Dl_info = undefined;
-                if (dladdr(@ptrFromInt(ra), &dli) != 0) {
-                    // Skip frames inside the eiwac binary itself (main/run/start):
-                    // they are the toolchain wrapper, not the failing program.
-                    if (dli.dli_fbase != null and dli.dli_fbase == eiwac_base) continue;
+    var eiwac_base: ?*anyopaque = null;
 
-                    var frame_buf: [256]u8 = undefined;
-                    if (dli.dli_sname) |sname| {
-                        const sym = std.mem.sliceTo(sname, 0);
-                        const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x} in {s}\n", .{ frame_idx, ra, sym }) catch continue;
-                        crashWrite(line_str);
+    fn write(s: []const u8) void {
+        _ = std.c.write(2, s.ptr, s.len);
+    }
+
+    fn writeFrame(addr: usize) void {
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "    0x{x}\n", .{addr}) catch return;
+        write(s);
+    }
+
+    fn handler(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*anyopaque) callconv(.c) void {
+        const name = switch (sig) {
+            .SEGV => "Segmentation fault",
+            .ILL => "Illegal instruction",
+            .BUS => "Bus error",
+            .ABRT => "Aborted",
+            .TRAP => "Trap",
+            .FPE => "Arithmetic exception",
+            else => "Fatal signal",
+        };
+        const fault_addr: ?usize = switch (builtin.os.tag) {
+            .macos => @intFromPtr(info.addr),
+            .linux => @intFromPtr(info.fields.sigfault.addr),
+            else => null,
+        };
+
+        write("\n\x1b[1;31mRuntime Error:\x1b[0m ");
+        write(name);
+        if (sig == .SEGV and (fault_addr == null or fault_addr.? < 4096)) {
+            write(" (null pointer dereference)");
+        }
+        if (fault_addr) |a| {
+            write(" at address ");
+            writeFrame(a);
+        } else {
+            write("\n");
+        }
+        write("\x1b[1;36mStack Trace (JIT):\x1b[0m\n");
+        var addr_buf: [48]usize = undefined;
+        if (builtin.os.tag != .linux and ctx_ptr != null) {
+            if (std.debug.cpu_context.fromPosixSignalContext(ctx_ptr.?)) |native_ctx| {
+                const stack = std.debug.captureCurrentStackTrace(.{ .context = &native_ctx, .allow_unsafe_unwind = true }, &addr_buf);
+                var frame_idx: usize = 0;
+                for (stack.return_addresses) |ra| {
+                    var dli: Dl_info = undefined;
+                    if (dladdr(@ptrFromInt(ra), &dli) != 0) {
+                        // Skip frames inside the eiwac binary itself (main/run/start):
+                        // they are the toolchain wrapper, not the failing program.
+                        if (dli.dli_fbase != null and dli.dli_fbase == eiwac_base) continue;
+
+                        var frame_buf: [256]u8 = undefined;
+                        if (dli.dli_sname) |sname| {
+                            const sym = std.mem.sliceTo(sname, 0);
+                            const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x} in {s}\n", .{ frame_idx, ra, sym }) catch continue;
+                            write(line_str);
+                        } else {
+                            const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x}\n", .{ frame_idx, ra }) catch continue;
+                            write(line_str);
+                        }
                     } else {
+                        var frame_buf: [64]u8 = undefined;
                         const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x}\n", .{ frame_idx, ra }) catch continue;
-                        crashWrite(line_str);
+                        write(line_str);
                     }
-                } else {
-                    var frame_buf: [64]u8 = undefined;
-                    const line_str = std.fmt.bufPrint(&frame_buf, "  {d}: 0x{x}\n", .{ frame_idx, ra }) catch continue;
-                    crashWrite(line_str);
+                    frame_idx += 1;
                 }
-                frame_idx += 1;
             }
         }
+        write("\n");
+        std.process.exit(@as(u8, @truncate(128 + @intFromEnum(sig))));
     }
-    crashWrite("\n");
-    std.process.exit(@as(u8, @truncate(128 + @intFromEnum(sig))));
-}
 
-fn installCleanCrashHandler() void {
-    var self_info: Dl_info = undefined;
-    if (dladdr(@ptrFromInt(@returnAddress()), &self_info) != 0) {
-        eiwac_base = self_info.dli_fbase;
+    pub fn install() void {
+        var self_info: Dl_info = undefined;
+        if (dladdr(@ptrFromInt(@returnAddress()), &self_info) != 0) {
+            eiwac_base = self_info.dli_fbase;
+        }
+        const act: std.posix.Sigaction = .{
+            .handler = .{ .sigaction = handler },
+            .mask = std.posix.sigemptyset(),
+            .flags = (std.posix.SA.SIGINFO | std.posix.SA.RESTART | std.posix.SA.RESETHAND | std.posix.SA.ONSTACK),
+        };
+        std.posix.sigaction(.SEGV, &act, null);
+        std.posix.sigaction(.ILL, &act, null);
+        std.posix.sigaction(.BUS, &act, null);
+        std.posix.sigaction(.FPE, &act, null);
+        std.posix.sigaction(.TRAP, &act, null);
+        std.posix.sigaction(.ABRT, &act, null);
     }
-    const act: std.posix.Sigaction = .{
-        .handler = .{ .sigaction = crashHandler },
-        .mask = std.posix.sigemptyset(),
-        .flags = (std.posix.SA.SIGINFO | std.posix.SA.RESTART | std.posix.SA.RESETHAND | std.posix.SA.ONSTACK),
-    };
-    std.posix.sigaction(.SEGV, &act, null);
-    std.posix.sigaction(.ILL, &act, null);
-    std.posix.sigaction(.BUS, &act, null);
-    std.posix.sigaction(.FPE, &act, null);
-    std.posix.sigaction(.TRAP, &act, null);
-    std.posix.sigaction(.ABRT, &act, null);
-}
+} else struct {
+    pub fn install() void {}
+};
 
 pub fn main(init: std.process.Init) !void {
-    installCleanCrashHandler();
+    posix_crash.install();
     // Never let a Zig error value reach the runtime's default printer (which
     // dumps `error: <name>` + a native stack trace). Eiwa diagnostics are
     // reported inline before the error propagates; here we just exit cleanly.

@@ -2042,8 +2042,15 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
         .call_expr => {
             if (isSuspendPrimitiveCall(stmt)) {
                 const entry = try m.newState();
-                try m.append(entry, try buildSuspendCall(stmt));
+                // Set the next label BEFORE enqueuing/suspending: the suspend
+                // call (Scheduler.yield/sleep) hands the continuation to the
+                // scheduler, and another thread can pop and resume it
+                // immediately. If the label were still the current state's, the
+                // pop re-runs the suspend state (and, once the label has been
+                // advanced by a previous thread, re-runs later states) — the
+                // stale-label race behind the intermittent try/catch flake.
                 try m.append(entry, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+                try m.append(entry, try buildSuspendCall(stmt));
                 try m.append(entry, mkReturnVoid());
                 return entry;
             }
