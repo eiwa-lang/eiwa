@@ -62,8 +62,7 @@ jobs:
           echo "LLVM_PATH=${UCRT64_DIR}" >> $GITHUB_ENV
           echo "GC_PATH=${UCRT64_DIR}" >> $GITHUB_ENV
           echo "${UCRT64_DIR}/bin" >> $GITHUB_PATH
-          ls -la "${UCRT64_DIR}/lib/libLLVM"* || true
-          ls -la "${UCRT64_DIR}/lib/libgc"* || true
+          cp "${UCRT64_DIR}/lib/libLLVM-"*.dll.a "${UCRT64_DIR}/lib/libLLVM.dll.a" 2>/dev/null || true
 
       - name: Unit tests (zig build test)
         shell: bash
