@@ -3,14 +3,15 @@ const builtin = @import("builtin");
 
 fn fileExists(b: *std.Build, path: []const u8) bool {
     if (path.len == 0) return false;
-    if (std.fs.path.isAbsolute(path)) {
-        var file = std.Io.Dir.openFileAbsolute(b.graph.io, path, .{}) catch return false;
+    if (std.Io.Dir.openFileAbsolute(b.graph.io, path, .{})) |file| {
         file.close(b.graph.io);
         return true;
-    }
-    var file = std.Io.Dir.cwd().openFile(b.graph.io, path, .{}) catch return false;
-    file.close(b.graph.io);
-    return true;
+    } else |_| {}
+    if (std.Io.Dir.cwd().openFile(b.graph.io, path, .{})) |file| {
+        file.close(b.graph.io);
+        return true;
+    } else |_| {}
+    return false;
 }
 
 fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[]const u8 } {
