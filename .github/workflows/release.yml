@@ -72,7 +72,13 @@ jobs:
         # Baseline CPU: release binaries must run on any x86_64/arm64 (incl.
         # emulators like Rosetta 2, which lack AVX-512). `zig build` defaults to
         # `-mcpu=native`, baking the CI runner's host features into the binary.
-        run: zig build -Dcpu=baseline
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            zig build -Dcpu=baseline -Dtarget=x86_64-windows-gnu
+          else
+            zig build -Dcpu=baseline
+          fi
 
       - name: Build eiwa CLI
         # eiwac emits with the host CPU by default; force a portable binary for

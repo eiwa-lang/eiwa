@@ -61,10 +61,22 @@ jobs:
           echo "C:/msys64/ucrt64/bin" >> $GITHUB_PATH
 
       - name: Unit tests (zig build test)
-        run: zig build test
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            zig build test -Dtarget=x86_64-windows-gnu
+          else
+            zig build test
+          fi
 
       - name: Build eiwac
-        run: zig build
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            zig build -Dtarget=x86_64-windows-gnu
+          else
+            zig build
+          fi
 
       - name: Build eiwa CLI
         shell: bash
