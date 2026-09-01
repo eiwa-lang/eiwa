@@ -1044,7 +1044,16 @@ pub const LLVMEmitter = struct {
                 const vtable_name_z = try self.allocator.dupeZ(u8, vtable_name);
                 defer self.allocator.free(vtable_name_z);
 
-                const vtable_const = llvm.LLVMConstStructInContext(self.context, vtable_funcs.items.ptr, @intCast(vtable_funcs.items.len), 0);
+                // Empty contracts (no methods) produce an empty vtable struct `{}`.
+                // The linker collapses identical empty constants across
+                // implementations, so `x is T` type checks (which compare vtable
+                // addresses) can no longer tell them apart. Give each empty vtable a
+                // unique identity element so its address stays distinct per type.
+                const vtable_const = if (vtable_funcs.items.len == 0) blk: {
+                    const identity = std.hash.Wyhash.hash(0, vtable_name_z);
+                    var dummy = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(self.context), identity, 0)};
+                    break :blk llvm.LLVMConstStructInContext(self.context, &dummy, 1, 0);
+                } else llvm.LLVMConstStructInContext(self.context, vtable_funcs.items.ptr, @intCast(vtable_funcs.items.len), 0);
                 const vtable_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(vtable_const), vtable_name_z.ptr);
                 llvm.LLVMSetInitializer(vtable_global, vtable_const);
                 llvm.LLVMSetGlobalConstant(vtable_global, 1);
