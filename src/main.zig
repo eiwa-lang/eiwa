@@ -377,7 +377,7 @@ fn cacheDir(alloc: std.mem.Allocator, sub: []const u8) ?[]const u8 {
     if (std.c.getenv("EIWA_CACHE_DIR")) |v| {
         return std.fmt.allocPrint(alloc, "{s}/{s}", .{ std.mem.span(v), sub }) catch null;
     }
-    const home = std.c.getenv("HOME") orelse return null;
+    const home = (std.c.getenv("HOME") orelse std.c.getenv("USERPROFILE")) orelse return null;
     return std.fmt.allocPrint(alloc, "{s}/.eiwa/cache/{s}", .{ std.mem.span(home), sub }) catch null;
 }
 

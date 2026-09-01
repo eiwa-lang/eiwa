@@ -49,7 +49,9 @@ pub fn useColors() bool {
     if (std.c.getenv("TERM")) |term| {
         if (std.mem.eql(u8, std.mem.sliceTo(term, 0), "dumb")) return false;
     }
-    // Check if stderr is a tty
+    if (builtin.os.tag == .windows) {
+        return true;
+    }
     return std.c.isatty(std.posix.STDERR_FILENO) != 0;
 }
 
