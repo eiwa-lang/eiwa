@@ -3698,8 +3698,8 @@ if (define_body) {
 
         var llvm_triple_str: []const u8 = if (self.target_info) |ti| ti.triple else std.mem.span(default_triple_c.?);
         if (self.target_info) |ti| {
-            if (ti.os_tag == .windows) {
-                llvm_triple_str = if (ti.arch == .aarch64) "aarch64-pc-windows-msvc" else "x86_64-pc-windows-msvc";
+            if (ti.os_tag == .windows and !std.mem.containsAtLeast(u8, ti.triple, 1, "msvc")) {
+                llvm_triple_str = if (ti.arch == .aarch64) "aarch64-pc-windows-gnu" else "x86_64-pc-windows-gnu";
             }
         }
         const triple = try self.allocator.dupeZ(u8, llvm_triple_str);
