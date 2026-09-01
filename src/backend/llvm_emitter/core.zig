@@ -3660,7 +3660,7 @@ if (define_body) {
 
     fn getProcessId() u32 {
         if (builtin.os.tag == .windows) {
-            return @intCast(std.os.windows.kernel32.GetCurrentProcessId());
+            return @intCast(std.os.windows.GetCurrentProcessId());
         } else {
             return @intCast(std.c.getpid());
         }

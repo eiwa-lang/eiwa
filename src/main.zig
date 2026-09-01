@@ -45,7 +45,7 @@ fn toRootDotPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 
 fn getProcessId() u32 {
     if (builtin.os.tag == .windows) {
-        return @intCast(std.os.windows.kernel32.GetCurrentProcessId());
+        return @intCast(std.os.windows.GetCurrentProcessId());
     } else {
         return @intCast(std.c.getpid());
     }
