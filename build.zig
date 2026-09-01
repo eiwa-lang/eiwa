@@ -13,6 +13,25 @@ fn findLlvmPath(b: *std.Build) ?struct { include_path: ?[]const u8, lib_path: ?[
             .lib_path = b.fmt("{s}/lib", .{p}),
         };
     }
+    // Check LLVM_PATH / LLVM_HOME env var (e.g. GitHub Actions or manual install)
+    if (std.c.getenv("LLVM_PATH")) |env_path| {
+        const p = std.mem.span(env_path);
+        if (fileExists(b, b.fmt("{s}/include/llvm-c/Core.h", .{p}))) {
+            return .{
+                .include_path = b.fmt("{s}/include", .{p}),
+                .lib_path = b.fmt("{s}/lib", .{p}),
+            };
+        }
+    }
+    if (std.c.getenv("LLVM_HOME")) |env_path| {
+        const p = std.mem.span(env_path);
+        if (fileExists(b, b.fmt("{s}/include/llvm-c/Core.h", .{p}))) {
+            return .{
+                .include_path = b.fmt("{s}/include", .{p}),
+                .lib_path = b.fmt("{s}/lib", .{p}),
+            };
+        }
+    }
     // Check macOS Homebrew llvm@21
     if (fileExists(b, "/opt/homebrew/opt/llvm@21/include/llvm-c/Core.h")) {
         return .{

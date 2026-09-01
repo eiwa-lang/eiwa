@@ -40,6 +40,12 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install bdw-gc llvm@21
 
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "19.1.0"
+
       - name: Unit tests (zig build test)
         run: zig build test
 

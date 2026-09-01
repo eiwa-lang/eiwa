@@ -48,12 +48,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install bdw-gc llvm@21
 
-      - name: Install deps (Windows)
+      - name: Install LLVM (Windows)
         if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          # LLVM comes pre-installed on GitHub Actions windows-latest under C:\Program Files\LLVM
-          echo "LLVM search path ready on Windows."
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "19.1.0"
 
       - name: Build eiwac
         # Baseline CPU: release binaries must run on any x86_64/arm64 (incl.
