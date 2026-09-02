@@ -291,7 +291,8 @@ const windows_crash = if (builtin.os.tag == .windows) struct {
         var wide: [512]u16 = undefined;
         const n = kernel32.GetModuleFileNameW(hmod, &wide, wide.len);
         if (n == 0 or n >= wide.len) return null;
-        return std.unicode.utf16LeToUtf8(out, wide[0..n]) catch null;
+        const len = std.unicode.utf16LeToUtf8(out, wide[0..n]) catch return null;
+        return out[0..len];
     }
 
     pub fn report(addr: ?usize, name: []const u8, ctx: ?std.debug.CpuContextPtr) noreturn {
