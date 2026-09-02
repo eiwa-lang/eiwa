@@ -62,6 +62,7 @@ jobs:
             mingw-w64-ucrt-x86_64-llvm
             mingw-w64-ucrt-x86_64-llvm-libs
             mingw-w64-ucrt-x86_64-gc
+            mingw-w64-ucrt-x86_64-curl
 
       - name: Setup Windows Paths
         if: runner.os == 'Windows'

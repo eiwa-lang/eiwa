@@ -1,6 +1,6 @@
 import { trim, isSpace, startsWith, endsWith, indentOf, parseTopField, parseManifest, 
     gitUrl, hasSource, serializeSource, serializeResolutions, serializeFreeze, 
-    hasDependenciesSection, eiwacPath, resolveCommit, ensureCloned, runOrFail, Dependency } from ".cli.src.main"
+    hasDependenciesSection, eiwacPath, resolveCommit, ensureCloned, runOrFail, Fs, Dependency } from ".cli.src.main"
 import { File } from "std.fs"
 import { Process } from "std.process"
 
@@ -151,14 +151,14 @@ test "eiwacPath: always returns a non-empty path" {
 }
 
 test "runOrFail: succeeds on zero exit code" {
-    runOrFail("true")
+    runOrFail(Fs.trueCmd())
 }
 
 test "resolveCommit and ensureCloned: resolve and clone a local git repo" {
-    val repo = "/tmp/eiwa_cli_unit_repo"
-    val root = "/tmp/eiwa_cli_unit_root"
-    Process.exec("rm -rf " + repo + " " + root)
-    runOrFail("mkdir -p " + repo + "/src")
+    val repo = Fs.tmpDir() + "/eiwa_cli_unit_repo"
+    val root = Fs.tmpDir() + "/eiwa_cli_unit_root"
+    Fs.rmrf(repo + " " + root)
+    Fs.mkdirP(repo + "/src")
     runOrFail("git -C " + repo + " init -q")
     File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.1.0\n")
     runOrFail("git -C " + repo + " add -A")
@@ -174,5 +174,5 @@ test "resolveCommit and ensureCloned: resolve and clone a local git repo" {
     assert(File.exists(dest + "/eiwa.yaml"))
     assert(dest == root + "/dep/" + head)
 
-    Process.exec("rm -rf " + repo + " " + root)
+    Fs.rmrf(repo + " " + root)
 }

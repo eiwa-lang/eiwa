@@ -203,6 +203,15 @@ object("posix") Fs {
     fun mkdirP(path: String) {
         runOrFail("mkdir -p " + path)
     }
+    fun rmrf(dir: String): Int {
+        return Process.exec("rm -rf " + dir)
+    }
+    fun tmpDir(): String {
+        return "/tmp"
+    }
+    fun trueCmd(): String {
+        return "true"
+    }
     fun pwd(): String {
         return trim(Process.capture("pwd"))
     }
@@ -215,6 +224,23 @@ object("windows") Fs {
         val p = path.replace("/", "\\")
         runOrFail("if not exist \"" + p + "\" mkdir \"" + p + "\"")
     }
+    fun rmrf(dir: String): Int {
+        return Process.exec("rmdir /s /q " + dir)
+    }
+    fun tmpDir(): String {
+        val t = Env.get("TEMP")
+        if (t != null) {
+            return t!!.replace("\\", "/")
+        }
+        val tt = Env.get("TMP")
+        if (tt != null) {
+            return tt!!.replace("\\", "/")
+        }
+        return "C:/Windows/Temp"
+    }
+    fun trueCmd(): String {
+        return "ver > NUL"
+    }
     fun pwd(): String {
         return trim(Process.capture("cd"))
     }
@@ -223,6 +249,15 @@ object("windows") Fs {
 object Fs {
     fun mkdirP(path: String) {
         runOrFail("mkdir -p " + path)
+    }
+    fun rmrf(dir: String): Int {
+        return Process.exec("rm -rf " + dir)
+    }
+    fun tmpDir(): String {
+        return "/tmp"
+    }
+    fun trueCmd(): String {
+        return "true"
     }
     fun pwd(): String {
         return trim(Process.capture("pwd"))
