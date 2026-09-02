@@ -306,6 +306,25 @@ const windows_crash = if (builtin.os.tag == .windows) struct {
         } else {
             write("\n");
         }
+        // The faulting instruction pointer is the single most diagnostic piece:
+        // RIP == 0 means a call through a null function pointer (unresolved FFI
+        // extern), while a real RIP with addr == 0 means a null data dereference.
+        if (ctx) |c| {
+            const pc = @as(usize, @intCast(c.getPc()));
+            var pbuf: [192]u8 = undefined;
+            if (pc == 0) {
+                write("Instruction pointer: 0x0 (call through null function pointer)\n");
+            } else {
+                var mbuf: [256]u8 = undefined;
+                if (moduleNameFor(pc, &mbuf)) |m| {
+                    const s = std.fmt.bufPrint(&pbuf, "Instruction pointer: 0x{x} in {s}\n", .{ pc, m }) catch "";
+                    write(s);
+                } else {
+                    const s = std.fmt.bufPrint(&pbuf, "Instruction pointer: 0x{x} (JIT code)\n", .{pc}) catch "";
+                    write(s);
+                }
+            }
+        }
         write("\x1b[1;36mStack Trace (JIT):\x1b[0m\n");
         const exe_handle = kernel32.GetModuleHandleW(null);
         var addr_buf: [48]usize = undefined;
