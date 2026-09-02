@@ -4214,32 +4214,20 @@ if (define_body) {
             }
         }
 
-        // Load with RTLD_GLOBAL (or LoadLibrary on Windows) so the MCJIT symbol
-        // resolver finds the externs. LLVM 21 dropped the LLVMLoadLibraryPermanently
-        // C API, so use platform-native dynamic library loading.
+        // Load the JIT lib through LLVM's DynamicLibrary so MCJIT's symbol
+        // resolver can find its externs. On Windows a raw LoadLibraryA handle is
+        // invisible to LLVM's resolver, so FFI externs resolve to a null pointer
+        // and every call segfaults at address 0x0; LLVMLoadLibraryPermanently
+        // registers the module with LLVM (LoadLibrary + bookkeeping on Windows,
+        // dlopen with RTLD_GLOBAL on POSIX).
         const lib_filename_z = try self.allocator.dupeZ(u8, lib_filename);
         defer self.allocator.free(lib_filename_z);
-
-        if (builtin.os.tag == .windows) {
-            const win_c = struct {
-                extern "kernel32" fn LoadLibraryA(lpLibFileName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
-            };
-            const handle = win_c.LoadLibraryA(lib_filename_z.ptr);
-            if (handle == null) {
-                std.debug.print("Could not load lib C sources into JIT: {s}\n", .{lib_filename});
-                return error.LibSourceLoadFailed;
-            }
-        } else {
-            const c_dl = struct {
-                extern "c" fn dlopen(filename: ?[*:0]const u8, flags: c_int) ?*anyopaque;
-            };
-            const rtld_lazy: c_int = 1;
-            const rtld_global: c_int = if (builtin.target.os.tag == .macos) 8 else 256;
-            const handle = c_dl.dlopen(lib_filename_z.ptr, rtld_lazy | rtld_global);
-            if (handle == null) {
-                std.debug.print("Could not load lib C sources into JIT: {s}\n", .{lib_filename});
-                return error.LibSourceLoadFailed;
-            }
+        const llvm_dl = struct {
+            extern "c" fn LLVMLoadLibraryPermanently(filename: [*:0]const u8) c_int;
+        };
+        if (llvm_dl.LLVMLoadLibraryPermanently(lib_filename_z.ptr) != 0) {
+            std.debug.print("Could not load lib C sources into JIT: {s}\n", .{lib_filename});
+            return error.LibSourceLoadFailed;
         }
     }
 
