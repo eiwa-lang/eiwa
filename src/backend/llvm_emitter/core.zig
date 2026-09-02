@@ -20,25 +20,6 @@ pub const StructInfo = struct {
     field_types: []llvm.LLVMTypeRef,
 };
 
-/// Returns the module's setjmp/longjmp functions, preferring the name the
-/// emitter declared for the current target. On Windows the mingw `<setjmp.h>`
-/// pulled in by `@cImport` declares `_setjmp`/`_longjmp`, but the module itself
-/// declares (and the windows-gnu libc resolves) `setjmp`/`longjmp`; preferring
-/// the underscore variants would call an unresolvable symbol.
-pub fn findSetjmp(mod: llvm.LLVMModuleRef) ?llvm.LLVMValueRef {
-    if (builtin.target.os.tag == .windows) {
-        return llvm.LLVMGetNamedFunction(mod, "setjmp") orelse llvm.LLVMGetNamedFunction(mod, "_setjmp");
-    }
-    return llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp");
-}
-
-pub fn findLongjmp(mod: llvm.LLVMModuleRef) ?llvm.LLVMValueRef {
-    if (builtin.target.os.tag == .windows) {
-        return llvm.LLVMGetNamedFunction(mod, "longjmp") orelse llvm.LLVMGetNamedFunction(mod, "_longjmp");
-    }
-    return llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp");
-}
-
 /// Resolves a repo-relative `src/...` path against the eiwa source tree
 /// (mirrors the C transpiler). Non-`src/` paths are returned unchanged.
 fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -521,14 +502,6 @@ pub const LLVMEmitter = struct {
         var fflush_params = [_]llvm.LLVMTypeRef{ptr_type};
         const fflush_type = llvm.LLVMFunctionType(i32_type, &fflush_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "fflush", fflush_type);
-
-        // Unhandled-exception reporting: the throw.unhandled path prints a
-        // diagnostic before exiting, so a missing handler is not a silent
-        // exit(1). Uses `puts` (stdout, reliably resolvable by MCJIT) rather
-        // than stderr, whose data symbol does not resolve in the JIT.
-        var puts_params_uh = [_]llvm.LLVMTypeRef{ptr_type};
-        const puts_type_uh = llvm.LLVMFunctionType(i32_type, &puts_params_uh, 1, 0);
-        _ = llvm.LLVMAddFunction(mod, "puts", puts_type_uh);
 
         var time_params = [_]llvm.LLVMTypeRef{ptr_type};
         const time_type = llvm.LLVMFunctionType(size_t_type, &time_params, 1, 0);
@@ -1348,7 +1321,7 @@ pub const LLVMEmitter = struct {
                 const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
                 const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
                 const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
-                const setjmp_func = (findSetjmp(mod) orelse return error.ExceptionRuntimeMissing);
+                const setjmp_func = (llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp")) orelse return error.ExceptionRuntimeMissing;
                 const sj_type = llvm.LLVMGlobalGetValueType(setjmp_func);
 
                 // Failed-test counter returned as the process exit code, so the
@@ -4255,42 +4228,6 @@ if (define_body) {
         if (llvm_dl.LLVMLoadLibraryPermanently(lib_filename_z.ptr) != 0) {
             std.debug.print("Could not load lib C sources into JIT: {s}\n", .{lib_filename});
             return error.LibSourceLoadFailed;
-        }
-
-        // On Windows the JIT lib's own symbols become resolvable through the
-        // registration above, but symbols that live in its dependency DLLs
-        // (@Link libraries such as curl -> libcurl-4.dll) do NOT: LLVM's
-        // DynamicLibrary only searches the process and explicitly-registered
-        // libraries, not every loaded module. Register every loaded module so
-        // MCJIT can resolve those externs too (otherwise they resolve to null
-        // and any call segfaults at 0x0).
-        if (builtin.os.tag == .windows) {
-            registerLoadedWindowsModules(self.allocator, llvm_dl.LLVMLoadLibraryPermanently);
-        }
-    }
-
-    /// Registers every module loaded into the current process with LLVM's
-    /// DynamicLibrary so MCJIT's symbol resolver can find FFI externs that live
-    /// in dependency DLLs (e.g. curl) rather than the JIT lib itself.
-    fn registerLoadedWindowsModules(allocator: std.mem.Allocator, load_lib: *const fn ([*:0]const u8) callconv(.c) c_int) void {
-        const kernel32 = struct {
-            extern "kernel32" fn K32EnumProcessModulesEx(hProcess: ?*anyopaque, lphModule: [*]?*anyopaque, cb: u32, lpcbNeeded: *u32, dwFilterFlag: u32) callconv(.winapi) i32;
-            extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
-            extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) callconv(.winapi) u32;
-        };
-        var mods: [512]?*anyopaque = undefined;
-        var needed: u32 = 0;
-        if (kernel32.K32EnumProcessModulesEx(kernel32.GetCurrentProcess(), &mods, @sizeOf(u32) * mods.len, &needed, 0x03) == 0) return;
-        const count = @min(needed / @sizeOf(u32), mods.len);
-        for (mods[0..count]) |hm| {
-            var wbuf: [1024]u16 = undefined;
-            const n = kernel32.GetModuleFileNameW(hm, &wbuf, wbuf.len);
-            if (n == 0 or n >= wbuf.len) continue;
-            var ubuf: [1024]u8 = undefined;
-            const ulen = std.unicode.utf16LeToUtf8(&ubuf, wbuf[0..n]) catch continue;
-            const path = allocator.dupeZ(u8, ubuf[0..ulen]) catch continue;
-            defer allocator.free(path);
-            _ = load_lib(path.ptr);
         }
     }
 
