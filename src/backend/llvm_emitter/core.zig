@@ -522,6 +522,14 @@ pub const LLVMEmitter = struct {
         const fflush_type = llvm.LLVMFunctionType(i32_type, &fflush_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "fflush", fflush_type);
 
+        // Unhandled-exception reporting: the throw.unhandled path prints a
+        // diagnostic before exiting, so a missing handler is not a silent
+        // exit(1). Uses `puts` (stdout, reliably resolvable by MCJIT) rather
+        // than stderr, whose data symbol does not resolve in the JIT.
+        var puts_params_uh = [_]llvm.LLVMTypeRef{ptr_type};
+        const puts_type_uh = llvm.LLVMFunctionType(i32_type, &puts_params_uh, 1, 0);
+        _ = llvm.LLVMAddFunction(mod, "puts", puts_type_uh);
+
         var time_params = [_]llvm.LLVMTypeRef{ptr_type};
         const time_type = llvm.LLVMFunctionType(size_t_type, &time_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "time", time_type);
