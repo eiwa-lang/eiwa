@@ -131,8 +131,32 @@ type Request(val method: String, val path: String, val body: String, val headers
 
 type ServerConnection(val sock: Socket) {
     fun readRequest(): Request {
-        val raw = this.sock.read(4096)
-        
+        // The request (headers + body) may arrive in several TCP segments
+        // (e.g. via a proxy like Traefik). Keep reading until the headers are
+        // complete AND the full body (per Content-Length) has been received.
+        var raw = ""
+        var complete = false
+        while (!complete) {
+            val chunk = this.sock.read(4096)
+            if (chunk == "") {
+                complete = true
+            } else {
+                raw = raw + chunk
+                val bodyStart = raw.indexOf("\r\n\r\n")
+                if (bodyStart >= 0) {
+                    val contentLength = this.parseContentLength(raw.substring(0, bodyStart))
+                    if (contentLength <= 0) {
+                        complete = true
+                    } else {
+                        val haveBody = raw.length - (bodyStart + 4)
+                        if (haveBody >= contentLength) {
+                            complete = true
+                        }
+                    }
+                }
+            }
+        }
+
         var method = "GET"
         var path = "/"
         
@@ -151,7 +175,12 @@ type ServerConnection(val sock: Socket) {
         var body = ""
         val bodyStart = raw.indexOf("\r\n\r\n")
         if (bodyStart >= 0) {
-            body = raw.substring(bodyStart + 4, raw.length)
+            val contentLength = this.parseContentLength(raw.substring(0, bodyStart))
+            if (contentLength > 0 && bodyStart + 4 + contentLength <= raw.length) {
+                body = raw.substring(bodyStart + 4, bodyStart + 4 + contentLength)
+            } else {
+                body = raw.substring(bodyStart + 4, raw.length)
+            }
         }
         
         // Parse actual path and queries
@@ -230,6 +259,74 @@ type ServerConnection(val sock: Socket) {
         }
         
         return Request(method, actualPath, body, headersMap.freeze(), queriesMap.freeze())
+    }
+
+    fun parseContentLength(headersPart: String): Int {
+        var rest = headersPart
+        var searching = true
+        while (searching) {
+            val lineEnd = rest.indexOf("\r\n")
+            var line = ""
+            if (lineEnd >= 0) {
+                line = rest.substring(0, lineEnd)
+                rest = rest.substring(lineEnd + 2, rest.length)
+            } else {
+                line = rest
+                searching = false
+            }
+            if (line.length > 0) {
+                val colonIdx = line.indexOf(":")
+                if (colonIdx > 0) {
+                    val key = line.substring(0, colonIdx)
+                    if (this.iequals(key, "Content-Length")) {
+                        var valStart = colonIdx + 1
+                        while (valStart < line.length && line.substring(valStart, valStart + 1) == " ") {
+                            valStart = valStart + 1
+                        }
+                        return this.parseInt(line.substring(valStart, line.length))
+                    }
+                }
+            }
+            if (rest.length == 0) {
+                searching = false
+            }
+        }
+        return -1
+    }
+
+    fun iequals(a: String, b: String): Bool {
+        if (a.length != b.length) {
+            return false
+        }
+        var i = 0
+        while (i < a.length) {
+            var ca = NativeMemory.readByte(a.ptr!!, i)
+            var cb = NativeMemory.readByte(b.ptr!!, i)
+            if (ca >= 65 && ca <= 90) {
+                ca = ca + 32
+            }
+            if (cb >= 65 && cb <= 90) {
+                cb = cb + 32
+            }
+            if (ca != cb) {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
+    fun parseInt(s: String): Int {
+        var result = 0
+        var i = 0
+        while (i < s.length) {
+            val c = NativeMemory.readByte(s.ptr!!, i)
+            if (c >= 48 && c <= 57) {
+                result = result * 10 + (c - 48)
+            }
+            i = i + 1
+        }
+        return result
     }
     
     fun writeResponse(status: Int, contentType: String, body: String): Void {
