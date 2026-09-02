@@ -20,6 +20,25 @@ pub const StructInfo = struct {
     field_types: []llvm.LLVMTypeRef,
 };
 
+/// Returns the module's setjmp/longjmp functions, preferring the name the
+/// emitter declared for the current target. On Windows the mingw `<setjmp.h>`
+/// pulled in by `@cImport` declares `_setjmp`/`_longjmp`, but the module itself
+/// declares (and the windows-gnu libc resolves) `setjmp`/`longjmp`; preferring
+/// the underscore variants would call an unresolvable symbol.
+pub fn findSetjmp(mod: llvm.LLVMModuleRef) ?llvm.LLVMValueRef {
+    if (builtin.target.os.tag == .windows) {
+        return llvm.LLVMGetNamedFunction(mod, "setjmp") orelse llvm.LLVMGetNamedFunction(mod, "_setjmp");
+    }
+    return llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp");
+}
+
+pub fn findLongjmp(mod: llvm.LLVMModuleRef) ?llvm.LLVMValueRef {
+    if (builtin.target.os.tag == .windows) {
+        return llvm.LLVMGetNamedFunction(mod, "longjmp") orelse llvm.LLVMGetNamedFunction(mod, "_longjmp");
+    }
+    return llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp");
+}
+
 /// Resolves a repo-relative `src/...` path against the eiwa source tree
 /// (mirrors the C transpiler). Non-`src/` paths are returned unchanged.
 fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -1321,7 +1340,7 @@ pub const LLVMEmitter = struct {
                 const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
                 const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
                 const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
-                const setjmp_func = (llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp")) orelse return error.ExceptionRuntimeMissing;
+                const setjmp_func = (findSetjmp(mod) orelse return error.ExceptionRuntimeMissing);
                 const sj_type = llvm.LLVMGlobalGetValueType(setjmp_func);
 
                 // Failed-test counter returned as the process exit code, so the

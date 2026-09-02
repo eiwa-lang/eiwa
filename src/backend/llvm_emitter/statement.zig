@@ -499,7 +499,7 @@ pub fn emitStatement(
                 const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
                 const buf_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, cur_stack, 0, "stack_buf");
                 const buf_ptr = llvm.LLVMBuildBitCast(builder, buf_gep, ptr_type, "sbuf");
-                const longjmp_func = (llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp")) orelse return error.ExceptionRuntimeMissing;
+                const longjmp_func = (core.findLongjmp(mod) orelse return error.ExceptionRuntimeMissing);
                 const lj_type = llvm.LLVMGlobalGetValueType(longjmp_func);
                 const one_i32 = llvm.LLVMConstInt(i32_type, 1, 0);
                 var lj_args = [_]llvm.LLVMValueRef{ buf_ptr, one_i32 };
@@ -544,7 +544,7 @@ pub fn emitStatement(
 
             const buf_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, frame_ptr, 0, "frame_buf");
             const buf_ptr = llvm.LLVMBuildBitCast(builder, buf_gep, ptr_type, "fbuf");
-            const setjmp_func = (llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp")) orelse return error.ExceptionRuntimeMissing;
+            const setjmp_func = (core.findSetjmp(mod) orelse return error.ExceptionRuntimeMissing);
             const sj_type = llvm.LLVMGlobalGetValueType(setjmp_func);
             var sj_args = [_]llvm.LLVMValueRef{buf_ptr};
             const sj_ret = llvm.LLVMBuildCall2(builder, sj_type, setjmp_func, &sj_args, 1, "setjmp_ret");
@@ -646,7 +646,7 @@ pub fn emitStatement(
                 {
                     const buf_gep2 = llvm.LLVMBuildStructGEP2(builder, frame_type, cur_stack2, 0, "stack_buf2");
                     const buf_ptr2 = llvm.LLVMBuildBitCast(builder, buf_gep2, ptr_type, "sbuf2");
-                    const longjmp_func2 = (llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp")) orelse return error.ExceptionRuntimeMissing;
+                    const longjmp_func2 = (core.findLongjmp(mod) orelse return error.ExceptionRuntimeMissing);
                     const lj_type2 = llvm.LLVMGlobalGetValueType(longjmp_func2);
                     const one_i322 = llvm.LLVMConstInt(i32_type, 1, 0);
                     var lj_args2 = [_]llvm.LLVMValueRef{ buf_ptr2, one_i322 };
