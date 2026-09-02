@@ -262,6 +262,93 @@ const posix_crash = if (builtin.os.tag != .windows) struct {
     pub fn install() void {}
 };
 
+// --- Windows crash reporting -------------------------------------------------
+// Zig installs a vectored exception handler on Windows (std.debug) and, when the
+// root module exposes `root.debug.handleSegfault`, calls it with the faulting
+// address and register context. We use that to print a JIT-focused report instead
+// of Zig's default handler, which recurses into a panic trying to symbolize
+// JIT'd frames ("aborting due to recursive panic").
+const windows_crash = if (builtin.os.tag == .windows) struct {
+    const kernel32 = struct {
+        extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*:0]const u16) callconv(.winapi) ?*anyopaque;
+        extern "kernel32" fn GetModuleHandleExW(dwFlags: u32, lpModuleName: ?*const anyopaque, phModule: *?*anyopaque) callconv(.winapi) i32;
+        extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) callconv(.winapi) u32;
+    };
+    extern "c" fn _write(fd: c_int, buf: *const anyopaque, count: c_uint) c_int;
+
+    const from_address: u32 = 0x00000004;
+    const unchanged_refcount: u32 = 0x00000002;
+
+    fn write(s: []const u8) void {
+        _ = _write(2, s.ptr, @intCast(s.len));
+    }
+
+    /// UTF-8 filename of the module containing `addr`, or null when the address
+    /// is not inside a loaded module (e.g. MCJIT-mapped JIT code).
+    fn moduleNameFor(addr: usize, out: []u8) ?[]const u8 {
+        var hmod: ?*anyopaque = null;
+        if (kernel32.GetModuleHandleExW(from_address | unchanged_refcount, @ptrFromInt(addr), &hmod) == 0) return null;
+        var wide: [512]u16 = undefined;
+        const n = kernel32.GetModuleFileNameW(hmod, &wide, wide.len);
+        if (n == 0 or n >= wide.len) return null;
+        return std.unicode.utf16LeToUtf8(out, wide[0..n]) catch null;
+    }
+
+    pub fn report(addr: ?usize, name: []const u8, ctx: ?std.debug.CpuContextPtr) noreturn {
+        write("\n\x1b[1;31mRuntime Error:\x1b[0m ");
+        write(name);
+        if (addr) |a| {
+            if (a < 4096) write(" (null pointer dereference)");
+            var abuf: [64]u8 = undefined;
+            const s = std.fmt.bufPrint(&abuf, " at address 0x{x}\n", .{a}) catch "";
+            write(s);
+        } else {
+            write("\n");
+        }
+        write("\x1b[1;36mStack Trace (JIT):\x1b[0m\n");
+        const exe_handle = kernel32.GetModuleHandleW(null);
+        var addr_buf: [48]usize = undefined;
+        if (ctx) |c| {
+            const stack = std.debug.captureCurrentStackTrace(.{ .context = c, .allow_unsafe_unwind = true }, &addr_buf);
+            var frame_idx: usize = 0;
+            for (stack.return_addresses) |ra| {
+                // Skip frames inside eiwac.exe itself (toolchain wrapper).
+                var hmod: ?*anyopaque = null;
+                if (kernel32.GetModuleHandleExW(from_address | unchanged_refcount, @ptrFromInt(ra), &hmod) != 0 and hmod == exe_handle) continue;
+                var mbuf: [256]u8 = undefined;
+                if (moduleNameFor(ra, &mbuf)) |m| {
+                    var fbuf: [512]u8 = undefined;
+                    const s = std.fmt.bufPrint(&fbuf, "  {d}: 0x{x} in {s}\n", .{ frame_idx, ra, m }) catch continue;
+                    write(s);
+                } else {
+                    var fbuf: [64]u8 = undefined;
+                    const s = std.fmt.bufPrint(&fbuf, "  {d}: 0x{x}\n", .{ frame_idx, ra }) catch continue;
+                    write(s);
+                }
+                frame_idx += 1;
+            }
+        }
+        write("\n");
+        std.process.exit(1);
+    }
+} else struct {
+    pub fn report(addr: ?usize, name: []const u8, ctx: ?std.debug.CpuContextPtr) noreturn {
+        _ = addr;
+        _ = name;
+        _ = ctx;
+        std.process.exit(1);
+    }
+};
+
+/// Zig's std.debug segfault handler (installed on Windows) calls this override
+/// on an access violation. POSIX keeps its own handler (`posix_crash`), so this
+/// only fires on Windows.
+pub const debug = struct {
+    pub fn handleSegfault(addr: ?usize, name: []const u8, ctx: ?std.debug.CpuContextPtr) noreturn {
+        windows_crash.report(addr, name, ctx);
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     posix_crash.install();
     // Never let a Zig error value reach the runtime's default printer (which
