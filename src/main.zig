@@ -79,9 +79,28 @@ fn collectChild(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Ch
     defer allocator.free(stderr_slice);
 
     const out = try allocator.alloc(u8, stdout_slice.len + stderr_slice.len);
-    @memcpy(out[0..stdout_slice.len], stdout_slice);
-    @memcpy(out[stdout_slice.len..], stderr_slice);
-    return .{ .term = term, .output = out, .timed_out = timed_out };
+    var out_len = normalizeNewlines(out, stdout_slice);
+    out_len += normalizeNewlines(out[out_len..], stderr_slice);
+    return .{ .term = term, .output = out[0..out_len], .timed_out = timed_out };
+}
+
+/// The Windows C runtime emits CRLF (`\r\n`) on stdout even when it is a pipe,
+/// so every marker line would otherwise carry a trailing `\r` — breaking the
+/// `[PASS]`/`*[FAIL]`/`[SUMMARY]` parsing in the parent harness and mangling
+/// the log. Normalize to plain `\n` so results behave identically on every OS.
+fn normalizeNewlines(out: []u8, from: []const u8) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < from.len) : (i += 1) {
+        if (from[i] == '\r') {
+            if (i + 1 < from.len and from[i + 1] == '\n') continue;
+            out[n] = '\n';
+        } else {
+            out[n] = from[i];
+        }
+        n += 1;
+    }
+    return n;
 }
 
 const Summary = struct {
@@ -635,12 +654,18 @@ fn run(init: std.process.Init) !void {
                     total_failed += sum.failed;
                     if (sum.failed > 0) files_failed += 1;
                 } else {
-                    // No [SUMMARY] (compile error / crash / no tests). A non-zero exit
-                    // means the file failed as a whole; still credit any test
-                    // blocks that did run before it died.
+                    // No [SUMMARY] (compile error / crash / exit() inside a test).
+                    // A non-zero exit with no in-child *[FAIL] marker means the
+                    // file died before the harness could report the failure —
+                    // still credit any test blocks that did run, and surface a
+                    // file-level *[FAIL] so the culprit is visible in the log.
                     const passed = countLines(res.output, "[PASS] ");
                     var failed = countLines(res.output, "*[FAIL] ");
-                    if (!(res.term == .exited and res.term.exited == 0)) failed += 1;
+                    const exited_ok = res.term == .exited and res.term.exited == 0;
+                    if (!exited_ok and failed == 0) {
+                        failed += 1;
+                        std.debug.print("*[FAIL] {s} (terminated before the harness reported results)\n", .{basename});
+                    }
                     total_passed += passed;
                     total_failed += failed;
                     if (failed > 0) files_failed += 1;
