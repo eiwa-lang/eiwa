@@ -215,6 +215,18 @@ fn modulePathToFile(allocator: std.mem.Allocator, mod_path: []const u8) ![]const
     return buf.toOwnedSlice();
 }
 
+/// Canonicalizes a resolved module path to forward slashes so the same
+/// physical file always maps to the same module key on every OS. On Windows
+/// `std.fs.path.join` mixes backslashes (native separator) with forward
+/// slashes (from the dot-separated module path), so the same file could be
+/// loaded under two different keys — tripping "Duplicate type declaration".
+fn canonicalModulePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, path, '\\') == null) return path;
+    var buf = try allocator.alloc(u8, path.len);
+    for (path, 0..) |c, i| buf[i] = if (c == '\\') '/' else c;
+    return buf;
+}
+
 pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, actual_module_path: []const u8) ![]const u8 {
     if (std.mem.startsWith(u8, actual_module_path, "std.")) {
         var pkg_name = actual_module_path[4..];
@@ -247,7 +259,7 @@ pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, act
         const inner = actual_module_path[1..];
         const file_path = try modulePathToFile(allocator, inner);
         const root = findLibraryRoot(dir_path) orelse module_root;
-        return try std.fs.path.join(allocator, &.{ root, file_path });
+        return try canonicalModulePath(allocator, try std.fs.path.join(allocator, &.{ root, file_path }));
     }
 
     // Bare module path: resolve relative to the importing file's directory,
@@ -259,18 +271,18 @@ pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, act
         try std.fs.path.join(allocator, &.{ dir_path, file_path });
 
     if (module_search_paths.len == 0) {
-        return relative;
+        return try canonicalModulePath(allocator, relative);
     }
     if (pathExists(relative)) {
-        return relative;
+        return try canonicalModulePath(allocator, relative);
     }
     for (module_search_paths) |search_dir| {
         const candidate = try std.fs.path.join(allocator, &.{ search_dir, file_path });
         if (pathExists(candidate)) {
-            return candidate;
+            return try canonicalModulePath(allocator, candidate);
         }
     }
-    return relative;
+    return try canonicalModulePath(allocator, relative);
 }
 
 /// Builds the monomorphized `List<T>` type used for a varargs parameter (`T...`)

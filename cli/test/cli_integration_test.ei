@@ -2,16 +2,60 @@ import { File } from "std.fs"
 import { Env } from "std.env"
 import { Process } from "std.process"
 
+object("posix") CliEnv {
+    fun binName(): String { return "bin/eiwac" }
+    fun binExt(): String { return "" }
+    fun tmpDir(): String { return "/tmp" }
+    fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > /dev/null 2>&1") }
+    fun rmrf(dir: String): Int { return Process.exec("rm -rf " + dir + " > /dev/null 2>&1") }
+    fun mkdirp(dir: String): Int { return Process.exec("mkdir -p " + dir + " > /dev/null 2>&1") }
+    fun cdRun(dir: String, cmd: String): Int { return Process.exec("cd " + dir + " && " + cmd + " > /dev/null 2>&1") }
+    fun withEnv(name: String, value: String, cmd: String): String { return name + "=" + value + " " + cmd }
+}
+
+object("windows") CliEnv {
+    fun binName(): String { return "bin/eiwac.exe" }
+    fun binExt(): String { return ".exe" }
+    fun tmpDir(): String {
+        val t = Env.get("TEMP")
+        if (t != null) {
+            return t!!.replace("\\", "/")
+        }
+        val tt = Env.get("TMP")
+        if (tt != null) {
+            return tt!!.replace("\\", "/")
+        }
+        return "C:/Windows/Temp"
+    }
+    fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > NUL 2>&1") }
+    fun rmrf(dir: String): Int { return Process.exec("rmdir /s /q " + dir + " > NUL 2>&1") }
+    fun mkdirp(dir: String): Int { return Process.exec("mkdir " + dir + " > NUL 2>&1") }
+    fun cdRun(dir: String, cmd: String): Int { return Process.exec("cd /d " + dir + " && " + cmd + " > NUL 2>&1") }
+    fun withEnv(name: String, value: String, cmd: String): String { return "set " + name + "=" + value + " && " + cmd }
+}
+
+object CliEnv {
+    fun binName(): String { return "bin/eiwac" }
+    fun binExt(): String { return "" }
+    fun tmpDir(): String { return "/tmp" }
+    fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > /dev/null 2>&1") }
+    fun rmrf(dir: String): Int { return Process.exec("rm -rf " + dir + " > /dev/null 2>&1") }
+    fun mkdirp(dir: String): Int { return Process.exec("mkdir -p " + dir + " > /dev/null 2>&1") }
+    fun cdRun(dir: String, cmd: String): Int { return Process.exec("cd " + dir + " && " + cmd + " > /dev/null 2>&1") }
+    fun withEnv(name: String, value: String, cmd: String): String { return name + "=" + value + " " + cmd }
+}
+
 fun eiwacPathForTests(): String {
     val fromEnv = Env.get("EIWAC")
     if (fromEnv != null) {
         return fromEnv!!
     }
-    if (File.exists("bin/eiwac")) {
-        return Process.realpath("bin/eiwac")!!
+    val bin = CliEnv.binName()
+    if (File.exists(bin)) {
+        return Process.realpath(bin)!!
     }
-    if (File.exists("../bin/eiwac")) {
-        return Process.realpath("../bin/eiwac")!!
+    if (File.exists("../" + bin)) {
+        return Process.realpath("../" + bin)!!
     }
     return "eiwac"
 }
@@ -23,14 +67,8 @@ fun cliSrcDir(): String {
     return "."
 }
 
-// Runs a shell command discarding stdout/stderr (the tests only assert on the
-// exit code, and subprocess output would otherwise pollute the test suite log).
-fun qexec(cmd: String): Int {
-    return Process.exec(cmd + " > /dev/null 2>&1")
-}
-
 fun cliBinary(eiwac: String): String {
-    val bin = "/tmp/eiwa_cli_itest_bin"
+    val bin = CliEnv.tmpDir() + "/eiwa_cli_itest_bin" + CliEnv.binExt()
     val hashFile = bin + ".hash"
     val src = File.read(cliSrcDir() + "/src/main.ei")
     val hash = src.hashCode().toString()
@@ -39,7 +77,7 @@ fun cliBinary(eiwac: String): String {
         cached = File.read(hashFile)
     }
     if (File.exists(bin) == false || cached != hash) {
-        val code = qexec(eiwac + " build " + cliSrcDir() + "/src/main.ei -o " + bin)
+        val code = CliEnv.execQuiet(eiwac + " build " + cliSrcDir() + "/src/main.ei -o " + bin)
         assert(code == 0)
         File.write(hashFile, hash)
     }
@@ -48,53 +86,53 @@ fun cliBinary(eiwac: String): String {
 
 test "cli: help and unknown commands" {
     val bin = cliBinary(eiwacPathForTests())
-    assert(qexec(bin + " --help") == 0)
-    assert(qexec(bin + " -h") == 0)
-    assert(qexec(bin + " badcmd") != 0)
-    assert(qexec(bin) != 0)
+    assert(CliEnv.execQuiet(bin + " --help") == 0)
+    assert(CliEnv.execQuiet(bin + " -h") == 0)
+    assert(CliEnv.execQuiet(bin + " badcmd") != 0)
+    assert(CliEnv.execQuiet(bin) != 0)
 }
 
 test "cli: run/build/test a standalone .ei file (delegates to eiwac)" {
     val eiwac = eiwacPathForTests()
     val bin = cliBinary(eiwac)
-    val dir = "/tmp/eiwa_cli_itest_direct"
-    qexec("rm -rf " + dir)
-    assert(qexec("mkdir -p " + dir) == 0)
+    val dir = CliEnv.tmpDir() + "/eiwa_cli_itest_direct"
+    CliEnv.rmrf(dir)
+    assert(CliEnv.mkdirp(dir) == 0)
     File.write(dir + "/app.ei", "fun main() {\n    println(\"direct-ok\")\n}\n")
     File.write(dir + "/app_test.ei", "import { assert } from \"std.core\"\n\ntest \"direct test\" {\n    assert(1 + 1 == 2)\n}\n")
 
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run app.ei") == 0)
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release app.ei") == 0)
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build app.ei -o app_bin") == 0)
-    assert(File.exists(dir + "/app_bin"))
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " test app_test.ei") == 0)
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run missing.ei") != 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " run app.ei")) == 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " run --release app.ei")) == 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " build app.ei -o app_bin")) == 0)
+    assert(File.exists(dir + "/app_bin" + CliEnv.binExt()))
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " test app_test.ei")) == 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " run missing.ei")) != 0)
 
-    qexec("rm -rf " + dir)
+    CliEnv.rmrf(dir)
 }
 
 test "cli: run/build a project forwarding --release" {
     val eiwac = eiwacPathForTests()
     val bin = cliBinary(eiwac)
-    val dir = "/tmp/eiwa_cli_itest_flags"
-    qexec("rm -rf " + dir)
-    assert(qexec("mkdir -p " + dir + "/src") == 0)
+    val dir = CliEnv.tmpDir() + "/eiwa_cli_itest_flags"
+    CliEnv.rmrf(dir)
+    assert(CliEnv.mkdirp(dir + "/src") == 0)
     File.write(dir + "/eiwa.yaml", "name: flags\nversion: 0.1.0\n")
     File.write(dir + "/src/main.ei", "fun main() {\n    println(\"flags-ok\")\n}\n")
 
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run --release") == 0)
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --release") == 0)
-    assert(File.exists(dir + "/bin/flags"))
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " run --release")) == 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " build --release")) == 0)
+    assert(File.exists(dir + "/bin/flags" + CliEnv.binExt()))
 
-    qexec("rm -rf " + dir)
+    CliEnv.rmrf(dir)
 }
 
 test "cli: init creates the project skeleton" {
     val bin = cliBinary(eiwacPathForTests())
-    val dir = "/tmp/eiwa_cli_itest_init"
-    qexec("rm -rf " + dir)
+    val dir = CliEnv.tmpDir() + "/eiwa_cli_itest_init"
+    CliEnv.rmrf(dir)
 
-    assert(qexec(bin + " init " + dir) == 0)
+    assert(CliEnv.execQuiet(bin + " init " + dir) == 0)
     assert(File.exists(dir + "/eiwa.yaml"))
     assert(File.exists(dir + "/src/main.ei"))
 
@@ -102,19 +140,19 @@ test "cli: init creates the project skeleton" {
     assert(manifest.indexOf("name: eiwa_cli_itest_init") != -1)
     assert(manifest.indexOf("version: 0.1.0") != -1)
 
-    assert(qexec(bin + " init " + dir) != 0)
-    qexec("rm -rf " + dir)
+    assert(CliEnv.execQuiet(bin + " init " + dir) != 0)
+    CliEnv.rmrf(dir)
 }
 
 test "cli: add and remove manage manifest dependencies" {
     val bin = cliBinary(eiwacPathForTests())
-    val dir = "/tmp/eiwa_cli_itest_add"
-    qexec("rm -rf " + dir)
-    assert(qexec(bin + " init " + dir) == 0)
+    val dir = CliEnv.tmpDir() + "/eiwa_cli_itest_add"
+    CliEnv.rmrf(dir)
+    assert(CliEnv.execQuiet(bin + " init " + dir) == 0)
 
-    assert(qexec("cd " + dir + " && " + bin + " add orm github:eiwa-lang/orm --branch main") == 0)
-    assert(qexec("cd " + dir + " && " + bin + " add pg gitlab:eiwa-lang/pg --tag v1.0.0") == 0)
-    assert(qexec("cd " + dir + " && " + bin + " add util https://git.example.com/util.git") == 0)
+    assert(CliEnv.cdRun(dir, bin + " add orm github:eiwa-lang/orm --branch main") == 0)
+    assert(CliEnv.cdRun(dir, bin + " add pg gitlab:eiwa-lang/pg --tag v1.0.0") == 0)
+    assert(CliEnv.cdRun(dir, bin + " add util https://git.example.com/util.git") == 0)
 
     var manifest = File.read(dir + "/eiwa.yaml")
     assert(manifest.indexOf("dependencies:") != -1)
@@ -124,59 +162,61 @@ test "cli: add and remove manage manifest dependencies" {
     assert(manifest.indexOf("tag: v1.0.0") != -1)
     assert(manifest.indexOf("git: https://git.example.com/util.git") != -1)
 
-    assert(qexec("cd " + dir + " && " + bin + " add orm github:x/y") != 0)
+    assert(CliEnv.cdRun(dir, bin + " add orm github:x/y") != 0)
 
-    assert(qexec("cd " + dir + " && " + bin + " remove pg") == 0)
+    assert(CliEnv.cdRun(dir, bin + " remove pg") == 0)
     manifest = File.read(dir + "/eiwa.yaml")
     assert(manifest.indexOf("gitlab") == -1)
     assert(manifest.indexOf("github: eiwa-lang/orm") != -1)
 
-    assert(qexec("cd " + dir + " && " + bin + " remove nope") != 0)
-    qexec("rm -rf " + dir)
+    assert(CliEnv.cdRun(dir, bin + " remove nope") != 0)
+    CliEnv.rmrf(dir)
 }
 
 test "cli: freeze, update, --frozen, build, run and test with a local git dependency" {
     val eiwac = eiwacPathForTests()
     val bin = cliBinary(eiwac)
-    val dir = "/tmp/eiwa_cli_itest_full"
-    val repo = "/tmp/eiwa_cli_itest_repo"
-    qexec("rm -rf " + dir + " " + repo)
+    val dir = CliEnv.tmpDir() + "/eiwa_cli_itest_full"
+    val repo = CliEnv.tmpDir() + "/eiwa_cli_itest_repo"
+    CliEnv.rmrf(dir)
+    CliEnv.rmrf(repo)
 
-    assert(qexec("mkdir -p " + repo + "/src") == 0)
+    assert(CliEnv.mkdirp(repo + "/src") == 0)
     // --initial-branch=main: without it, `git init` uses the runner's default
     // branch (Apple CLT git defaults to main, but stock Ubuntu git defaults to
     // master) — and "add <repo> --branch main" would then resolve an empty ref.
-    assert(qexec("git -C " + repo + " init -q --initial-branch=main") == 0)
+    assert(CliEnv.execQuiet("git -C " + repo + " init -q --initial-branch=main") == 0)
     File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.1.0\n")
     File.write(repo + "/src/dep.ei", "fun hello() {\n    println(\"dep\")\n}\n")
-    assert(qexec("git -C " + repo + " add -A") == 0)
-    assert(qexec("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qm init") == 0)
+    assert(CliEnv.execQuiet("git -C " + repo + " add -A") == 0)
+    assert(CliEnv.execQuiet("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qm init") == 0)
 
-    assert(qexec(bin + " init " + dir) == 0)
-    assert(qexec("cd " + dir + " && " + bin + " add dep " + repo + " --branch main") == 0)
+    assert(CliEnv.execQuiet(bin + " init " + dir) == 0)
+    assert(CliEnv.cdRun(dir, bin + " add dep " + repo + " --branch main") == 0)
 
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --frozen") != 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " build --frozen")) != 0)
 
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " freeze") == 0)
+    assert(CliEnv.cdRun(dir, bin + " freeze") == 0)
     val freeze = File.read(dir + "/eiwa.freeze")
     assert(freeze.indexOf("commit: ") != -1)
     assert(freeze.indexOf("branch") == -1)
 
     //TODO........NAO PASSA ESSA BOSTA
-    // assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " build --frozen") == 0)
-    // assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " run") == 0)
-    // assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " test") == 0)
+    // assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " build --frozen")) == 0)
+    // assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " run")) == 0)
+    // assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " test")) == 0)
 
     File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.2.0\n")
-    assert(qexec("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qam v2") == 0)
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " update dep") == 0)
+    assert(CliEnv.execQuiet("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qam v2") == 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " update dep")) == 0)
     val head = trimForTest(Process.capture("git -C " + repo + " rev-parse HEAD"))
     val freezeAfter = File.read(dir + "/eiwa.freeze")
     assert(freezeAfter.indexOf(head) != -1)
 
-    assert(qexec("cd " + dir + " && EIWAC=" + eiwac + " " + bin + " update nope") != 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " update nope")) != 0)
 
-    qexec("rm -rf " + dir + " " + repo)
+    CliEnv.rmrf(dir)
+    CliEnv.rmrf(repo)
 }
 
 fun trimForTest(s: String): String {

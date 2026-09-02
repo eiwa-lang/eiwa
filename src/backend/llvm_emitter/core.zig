@@ -4083,8 +4083,15 @@ if (define_body) {
         // platform-appropriate extension so both the linker and the dynamic
         // loader (LoadLibraryA / dlopen) can reach it.
         const ext = if (builtin.target.os.tag == .macos) ".dylib" else if (builtin.target.os.tag == .windows) ".dll" else ".so";
-        const lib_basename = try std.fmt.allocPrint(self.allocator, "eiwa_llvm_libs_{x}{s}", .{ key, ext });
-        defer self.allocator.free(lib_basename);
+        // Cache name: shared across processes so an identical lib is compiled
+        // once and reused. Work name: unique per process so parallel test
+        // children never collide on the same output file — on Windows a
+        // concurrently-open output file makes ld.exe fail with "Permission
+        // denied". The finished lib is published to the cache name atomically.
+        const cache_basename = try std.fmt.allocPrint(self.allocator, "eiwa_llvm_libs_{x}{s}", .{ key, ext });
+        defer self.allocator.free(cache_basename);
+        const work_basename = try std.fmt.allocPrint(self.allocator, "eiwa_llvm_libs_{x}_{d}{s}", .{ key, getProcessId(), ext });
+        defer self.allocator.free(work_basename);
         const temp_dir = temp_dir: {
             if (builtin.target.os.tag == .windows) {
                 for ([_][*:0]const u8{ "TMP", "TEMP" }) |env_key| {
@@ -4103,14 +4110,17 @@ if (define_body) {
             }
         };
         defer self.allocator.free(temp_dir);
-        const lib_filename = try std.fs.path.join(self.allocator, &.{ temp_dir, lib_basename });
-        defer self.allocator.free(lib_filename);
+        const cache_filename = try std.fs.path.join(self.allocator, &.{ temp_dir, cache_basename });
+        defer self.allocator.free(cache_filename);
+        const work_filename = try std.fs.path.join(self.allocator, &.{ temp_dir, work_basename });
+        defer self.allocator.free(work_filename);
 
         const cached = blk: {
-            var f = std.Io.Dir.openFileAbsolute(io, lib_filename, .{}) catch break :blk false;
+            var f = std.Io.Dir.openFileAbsolute(io, cache_filename, .{}) catch break :blk false;
             f.close(io);
             break :blk true;
         };
+        var lib_filename = cache_filename;
         if (!cached) {
             var cc_argv = ArrayList([]const u8).init(self.allocator);
             defer cc_argv.deinit();
@@ -4125,7 +4135,7 @@ if (define_body) {
                 const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
                 try cc_argv.appendSlice(&[_][]const u8{ "-I", brew ++ "/include", "-L", brew ++ "/lib" });
             }
-            try cc_argv.appendSlice(&[_][]const u8{ "-o", lib_filename });
+            try cc_argv.appendSlice(&[_][]const u8{ "-o", work_filename });
             for (self.cli_c_flags) |flag| try cc_argv.append(flag);
 
             const src_dir = eiwa_home.resolve(self.allocator);
@@ -4171,6 +4181,11 @@ if (define_body) {
             }
 
             try cc_argv.append("-lgc");
+            if (builtin.target.os.tag == .windows) {
+                // Winsock APIs (socket, WSAStartup, ...) used by net_helpers.c
+                // live in ws2_32 on Windows.
+                try cc_argv.append("-lws2_32");
+            }
             var lib_it = self.link_libraries.keyIterator();
             while (lib_it.next()) |lib_name| {
                 try cc_argv.append(try std.fmt.allocPrint(self.allocator, "-l{s}", .{lib_name.*}));
@@ -4186,6 +4201,16 @@ if (define_body) {
                 for (cc_argv.items) |arg| std.debug.print(" {s}", .{arg});
                 std.debug.print("\n", .{});
                 return error.LibSourceCompileFailed;
+            }
+
+            // Publish the fully-linked lib to the shared cache name so later
+            // processes reuse it. If a concurrent child already published it (or
+            // has it loaded, which blocks the rename on Windows), keep the
+            // per-process copy — it is content-identical and equally loadable.
+            if (std.Io.Dir.renameAbsolute(work_filename, cache_filename, io)) |_| {
+                lib_filename = cache_filename;
+            } else |_| {
+                lib_filename = work_filename;
             }
         }
 

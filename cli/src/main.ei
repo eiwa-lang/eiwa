@@ -199,6 +199,52 @@ fun runOrFail(cmd: String) {
     }
 }
 
+object("posix") Fs {
+    fun mkdirP(path: String) {
+        runOrFail("mkdir -p " + path)
+    }
+    fun pwd(): String {
+        return trim(Process.capture("pwd"))
+    }
+}
+
+object("windows") Fs {
+    fun mkdirP(path: String) {
+        // `mkdir` errors if the directory already exists, so guard it. Uses
+        // backslashes because cmd treats '/' as a switch prefix.
+        val p = path.replace("/", "\\")
+        runOrFail("if not exist \"" + p + "\" mkdir \"" + p + "\"")
+    }
+    fun pwd(): String {
+        return trim(Process.capture("cd"))
+    }
+}
+
+object Fs {
+    fun mkdirP(path: String) {
+        runOrFail("mkdir -p " + path)
+    }
+    fun pwd(): String {
+        return trim(Process.capture("pwd"))
+    }
+}
+
+fun lastPathSegment(p: String): String {
+    var slash = -1
+    var i = 0
+    while (i < p.length) {
+        val ch = p.substring(i, i + 1)
+        if (ch == "/" || ch == "\\") {
+            slash = i
+        }
+        i = i + 1
+    }
+    if (slash != -1) {
+        return p.substring(slash + 1, p.length)
+    }
+    return p
+}
+
 fun parseTopField(content: String, key: String): String? {
     var rest = content
     var looping = true
@@ -298,7 +344,7 @@ fun ensureCloned(dep: Dependency, repositoryRoot: String): String {
     val dest = repositoryRoot + "/" + dep.name + "/" + dep.commit
     if (File.exists(dest + "/eiwa.yaml") == false) {
         val url = gitUrl(dep)
-        runOrFail("mkdir -p " + repositoryRoot + "/" + dep.name)
+        Fs.mkdirP(repositoryRoot + "/" + dep.name)
         runOrFail("git clone --quiet " + url + " " + dest)
         runOrFail("git -C " + dest + " checkout --quiet " + dep.commit)
     }
@@ -428,7 +474,7 @@ fun loadProject(eiwacResolved: String): ProjectContext {
     } else {
         resolveAll(deps)
         if (deps.size() > 0) {
-            runOrFail("mkdir -p " + resolutionsDir)
+            Fs.mkdirP(resolutionsDir)
             File.write(resolutionsFile, serializeResolutions(deps))
         }
     }
@@ -526,7 +572,7 @@ fun updateCommand() {
         exit(1)
     }
 
-    runOrFail("mkdir -p " + ctx.resolutionsDir)
+    Fs.mkdirP(ctx.resolutionsDir)
     File.write(ctx.resolutionsFile, serializeResolutions(deps))
     if (ctx.hasFreeze) {
         File.write("eiwa.freeze", serializeFreeze(deps))
@@ -556,7 +602,7 @@ fun initCommand() {
     val args = parseArgs()
     if (args.positionals.size() > 0) {
         val dirOpt = args.positionals[0]
-        runOrFail("mkdir -p " + dirOpt)
+        Fs.mkdirP(dirOpt)
         if (Process.chdir(dirOpt) == false) {
             println("Error: cannot enter directory: " + dirOpt)
             exit(1)
@@ -566,9 +612,10 @@ fun initCommand() {
         println("Error: eiwa.yaml already exists.")
         exit(1)
     }
-    val name = trim(Process.capture("basename \"$(pwd)\""))
+    val name = lastPathSegment(Fs.pwd())
     File.write("eiwa.yaml", "name: " + name + "\nversion: 0.1.0\n")
-    runOrFail("mkdir -p src test")
+    Fs.mkdirP("src")
+    Fs.mkdirP("test")
     if (File.exists("src/main.ei") == false) {
         File.write("src/main.ei", "fun main() {\n    println(\"Hello, Eiwa!\")\n}\n")
     }
@@ -873,7 +920,7 @@ fun compilerCommand(cmd: String) {
     if (cmd != "test") {
         val slash = finalOutput.indexOf("/")
         if (slash != -1) {
-            runOrFail("mkdir -p " + finalOutput.substring(0, slash))
+            Fs.mkdirP(finalOutput.substring(0, slash))
         }
     }
 
