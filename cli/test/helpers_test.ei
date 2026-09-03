@@ -157,7 +157,8 @@ test "runOrFail: succeeds on zero exit code" {
 test "resolveCommit and ensureCloned: resolve and clone a local git repo" {
     val repo = Fs.tmpDir() + "/eiwa_cli_unit_repo"
     val root = Fs.tmpDir() + "/eiwa_cli_unit_root"
-    Fs.rmrf(repo + " " + root)
+    Fs.rmrf(repo)
+    Fs.rmrf(root)
     Fs.mkdirP(repo + "/src")
     runOrFail("git -C " + repo + " init -q")
     File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.1.0\n")
@@ -174,5 +175,6 @@ test "resolveCommit and ensureCloned: resolve and clone a local git repo" {
     assert(File.exists(dest + "/eiwa.yaml"))
     assert(dest == root + "/dep/" + head)
 
-    Fs.rmrf(repo + " " + root)
+    Fs.rmrf(repo)
+    Fs.rmrf(root)
 }

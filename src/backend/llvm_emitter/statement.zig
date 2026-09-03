@@ -509,6 +509,12 @@ pub fn emitStatement(
 
             llvm.LLVMPositionBuilderAtEnd(builder, unhandled_bb);
             {
+                if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
+                    const puts_ft = llvm.LLVMGlobalGetValueType(puts_fn);
+                    const msg_ptr = llvm.LLVMBuildGlobalStringPtr(builder, "Error: unhandled exception (no active handler)", "unhandled_msg");
+                    var puts_args = [_]llvm.LLVMValueRef{msg_ptr};
+                    _ = llvm.LLVMBuildCall2(builder, puts_ft, puts_fn, &puts_args, 1, "");
+                }
                 const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
                 const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
                 const one_i32 = llvm.LLVMConstInt(i32_type, 1, 0);
@@ -656,6 +662,12 @@ pub fn emitStatement(
 
                 llvm.LLVMPositionBuilderAtEnd(builder, rethrow_unhandled_bb);
                 {
+                    if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
+                        const puts_ft2 = llvm.LLVMGlobalGetValueType(puts_fn);
+                        const msg_ptr2 = llvm.LLVMBuildGlobalStringPtr(builder, "Error: unhandled exception (no matching handler)", "unhandled_msg2");
+                        var puts_args2 = [_]llvm.LLVMValueRef{msg_ptr2};
+                        _ = llvm.LLVMBuildCall2(builder, puts_ft2, puts_fn, &puts_args2, 1, "");
+                    }
                     const exit_func2 = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
                     const exit_type2 = llvm.LLVMGlobalGetValueType(exit_func2);
                     const one_i322 = llvm.LLVMConstInt(i32_type, 1, 0);

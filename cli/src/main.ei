@@ -225,7 +225,8 @@ object("windows") Fs {
         runOrFail("if not exist \"" + p + "\" mkdir \"" + p + "\"")
     }
     fun rmrf(dir: String): Int {
-        return Process.exec("rmdir /s /q " + dir)
+        val p = dir.replace("/", "\\")
+        return Process.exec("if exist \"" + p + "\" rmdir /s /q \"" + p + "\"")
     }
     fun tmpDir(): String {
         val t = Env.get("TEMP")

@@ -28,9 +28,18 @@ object("windows") CliEnv {
         return "C:/Windows/Temp"
     }
     fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > NUL 2>&1") }
-    fun rmrf(dir: String): Int { return Process.exec("rmdir /s /q " + dir + " > NUL 2>&1") }
-    fun mkdirp(dir: String): Int { return Process.exec("mkdir " + dir + " > NUL 2>&1") }
-    fun cdRun(dir: String, cmd: String): Int { return Process.exec("cd /d " + dir + " && " + cmd + " > NUL 2>&1") }
+    fun rmrf(dir: String): Int {
+        val p = dir.replace("/", "\\")
+        return Process.exec("if exist \"" + p + "\" rmdir /s /q \"" + p + "\" > NUL 2>&1")
+    }
+    fun mkdirp(dir: String): Int {
+        val p = dir.replace("/", "\\")
+        return Process.exec("if not exist \"" + p + "\" mkdir \"" + p + "\" > NUL 2>&1")
+    }
+    fun cdRun(dir: String, cmd: String): Int {
+        val p = dir.replace("/", "\\")
+        return Process.exec("cd /d \"" + p + "\" && " + cmd + " > NUL 2>&1")
+    }
     fun withEnv(name: String, value: String, cmd: String): String { return "set " + name + "=" + value + " && " + cmd }
 }
 

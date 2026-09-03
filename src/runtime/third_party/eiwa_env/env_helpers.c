@@ -10,12 +10,14 @@ char* eiwa_getenv(const char* name) {
 }
 
 int64_t eiwa_setenv(const char* name, const char* value, int64_t overwrite) {
-    (void)overwrite;
-    return SetEnvironmentVariableA(name, value) ? 0 : -1;
+    if (!overwrite && getenv(name) != NULL) return 0;
+    SetEnvironmentVariableA(name, value);
+    return _putenv_s(name, value) == 0 ? 0 : -1;
 }
 
 int64_t eiwa_unsetenv(const char* name) {
-    return SetEnvironmentVariableA(name, NULL) ? 0 : -1;
+    SetEnvironmentVariableA(name, NULL);
+    return _putenv_s(name, "") == 0 ? 0 : -1;
 }
 
 #else

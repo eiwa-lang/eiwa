@@ -193,6 +193,11 @@ pub fn build(b: *std.Build) void {
     if (llvm_dep) |dep| dep.applyTo(test_module);
     if (gc_dep) |dep| dep.applyTo(test_module);
 
+    if (target.result.os.tag == .windows and target.result.cpu.arch == .x86_64) {
+        exe_module.addAssemblyFile(b.path("src/runtime/windows_sjlj.s"));
+        test_module.addAssemblyFile(b.path("src/runtime/windows_sjlj.s"));
+    }
+
     const exe_unit_tests = b.addTest(.{
         .root_module = test_module,
     });

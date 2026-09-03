@@ -13,6 +13,7 @@ const expression = @import("expression.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 const diagnostics = @import("../../core/diagnostics.zig");
+const windows_sjlj = @import("windows_sjlj.zig");
 
 pub const StructInfo = struct {
     struct_type: llvm.LLVMTypeRef,
@@ -4425,6 +4426,20 @@ if (define_body) {
                 .{ .name = "GC_unregister_my_thread", .ptr = @ptrCast(&gc.GC_unregister_my_thread) },
             };
             for (gc_syms) |sym| {
+                if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
+                    llvm.LLVMAddGlobalMapping(engine, f, @constCast(sym.ptr));
+                }
+            }
+        }
+
+        if (windows_sjlj.is_windows_x64) {
+            const sjlj_syms = [_]struct { name: [:0]const u8, ptr: *const anyopaque }{
+                .{ .name = "setjmp", .ptr = @ptrCast(&windows_sjlj.eiwa_setjmp) },
+                .{ .name = "_setjmp", .ptr = @ptrCast(&windows_sjlj.eiwa_setjmp) },
+                .{ .name = "longjmp", .ptr = @ptrCast(&windows_sjlj.eiwa_longjmp) },
+                .{ .name = "_longjmp", .ptr = @ptrCast(&windows_sjlj.eiwa_longjmp) },
+            };
+            for (sjlj_syms) |sym| {
                 if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
                     llvm.LLVMAddGlobalMapping(engine, f, @constCast(sym.ptr));
                 }
