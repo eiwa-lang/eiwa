@@ -704,6 +704,8 @@ fn collectLocalDecls(allocator: std.mem.Allocator, node: *ASTNode, locals: *std.
             try collectLocalDecls(allocator, f.body, locals);
         },
         .lambda_expr => |l| {
+            try locals.put("it", {});
+            try locals.put("this", {});
             for (l.params) |p| {
                 try locals.put(p.name, {});
             }
@@ -783,6 +785,7 @@ fn collectFreeIdents(
         .identifier => |i| {
             if (i.resolved_c_name != null and i.is_class_property) return;
             if (std.mem.eql(u8, i.name, "this")) return;
+            if (std.mem.eql(u8, i.name, "it")) return;
             if (locals.contains(i.name)) return;
             if (isGlobalName(checker, i.name)) return;
             const rt = node.resolved_type orelse return;
@@ -797,7 +800,11 @@ fn collectFreeIdents(
             }
             try collectFreeIdents(allocator, checker, a.value, locals, captures);
         },
-        .lambda_expr => return,
+        .lambda_expr => |l| {
+            for (l.body) |s| {
+                try collectFreeIdents(allocator, checker, s, locals, captures);
+            }
+        },
         .block => |b| {
             for (b.statements) |s| {
                 try collectFreeIdents(allocator, checker, s, locals, captures);
@@ -944,7 +951,25 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
                 }
             }
         },
-        .lambda_expr => return,
+        .lambda_expr => |l| {
+            var inner_captures = ArrayList(CapturedVar).init(allocator);
+            defer inner_captures.deinit();
+            var inner_locals = std.StringHashMap(void).init(allocator);
+            defer inner_locals.deinit();
+            try inner_locals.put("it", {});
+            try inner_locals.put("this", {});
+            for (l.params) |p| try inner_locals.put(p.name, {});
+            for (l.body) |s| try collectLocalDecls(allocator, s, &inner_locals);
+
+            for (captures) |c| {
+                if (!inner_locals.contains(c.name)) {
+                    try inner_captures.append(c);
+                }
+            }
+            for (l.body) |s| {
+                try rewriteCapturedRefs(allocator, inner_captures.items, s);
+            }
+        },
         .block => |b| {
             for (b.statements) |s| {
                 try rewriteCapturedRefs(allocator, captures, s);
@@ -1876,7 +1901,25 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
                 }
             }
         },
-        .lambda_expr => return,
+        .lambda_expr => |l| {
+            var inner_promoted = ArrayList(CapturedVar).init(allocator);
+            defer inner_promoted.deinit();
+            var inner_locals = std.StringHashMap(void).init(allocator);
+            defer inner_locals.deinit();
+            try inner_locals.put("it", {});
+            try inner_locals.put("this", {});
+            for (l.params) |p| try inner_locals.put(p.name, {});
+            for (l.body) |s| try collectLocalDecls(allocator, s, &inner_locals);
+
+            for (promoted) |p| {
+                if (!inner_locals.contains(p.name)) {
+                    try inner_promoted.append(p);
+                }
+            }
+            for (l.body) |s| {
+                try rewritePromotedRefs(allocator, inner_promoted.items, s);
+            }
+        },
         .block => |b| {
             for (b.statements) |s| {
                 try rewritePromotedRefs(allocator, promoted, s);

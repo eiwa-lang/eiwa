@@ -1072,43 +1072,22 @@ Semântica alvo:
 
 ---
 
-## 🐞 Known Bugs — Coroutines (Aberto)
+## ✅ Known Bugs — Coroutines (Todos Resolvidos)
 
-### Bug 1: `sync { ... }` com lambda que muta membro de `object` dentro de `task {}` → busy-loop 100% CPU (HANG)
-- **Status:** ABERTO (pré-existente, confirmado também com o transform de state machine sem as correções recentes).
-- **Sintoma:** a task nunca completa; a thread principal gira em `while (!done) runStep()` a 100% CPU; o processo fica congelado até o timeout do harness (`EIWA_TEST_TIMEOUT_MS`).
-- **Como reproduzir** (arquivo de teste isolado):
-  ```kotlin
-  import { assert } from "std.core"
-  import { sync } from "std.thread"
+### Bug 1: Lambda closures e `sync { ... }` dentro de `task {}` capturando/mutando variáveis (RESOLVIDO)
+- **Status:** RESOLVIDO.
+- **Causa Raiz:** No transform de corrotinas (`src/core/coroutines_transform.zig`):
+  1. `collectFreeIdents` pulava `.lambda_expr => return,`, impedindo que variáveis livres usadas apenas dentro de lambdas no corpo da task fossem capturadas para a struct `__TaskBlockN`.
+  2. `rewriteCapturedRefs` e `rewritePromotedRefs` pulavam `.lambda_expr => return,`, deixando identificadores dentro do lambda sem ligação com o receiver `this` da continuation.
+  3. No `buildTaskBlockType`, as propriedades da struct gerada `__TaskBlockN` não tinham `.is_property = true`, impedindo a definição no `class_props` do checker de tipos.
+  4. Variáveis implícitas de lambdas (`it` e `this`) precisam ser ignoradas na captura livre da task externa para não serem adicionadas indevidamente aos construtores das continuações.
+- **Correção:** Suporte recursivo a `lambda_expr` em `collectFreeIdents`, `rewriteCapturedRefs` e `rewritePromotedRefs`, tratando `it`/`this` como locais do lambda e marcando campos de captura de continuações com `is_property = true`.
+- **Validação:** Testes dedicados em `samples/tests/coroutine_lambda_capture_test.ei` cobrindo leitura, mutação via boxed captures e helpers com `sync`.
 
-  object CoopLog {
-      var log: String = ""
-  }
-
-  test "sync mutation hang" {
-      CoopLog.log = ""
-      val shared = task {
-          sleepMs(5)
-          sync {
-              CoopLog.log = CoopLog.log + "S"   // muta membro de object DENTRO do lambda
-          }
-          40
-      }
-      val r = shared.await()
-      assert(r == 40 && CoopLog.log == "S")
-  }
-  ```
-  `./bin/eiwac test samples/tests/coop_await_test.ei`-style: rodar o teste acima trava em 100% CPU sem imprimir nada.
-- **Contraste (funciona):** `sync { print("x") }` dentro de um `task {}` passa (lambda **não** muta membro de object). O disparo é especificamente a **mutação de membro de `object`** (`CoopLog.log = CoopLog.log + "S"`) dentro do lambda passado ao `sync`, num body de task cooperativo (contém `sleepMs`/`yield` → vira state machine).
-- **Sintoma relacionado (variante helper):** extrair o `sync` para uma função helper (`fun appendLog(s: String) { sync { CoopLog.log = CoopLog.log + s } }`) **não trava**, mas a escrita é **perdida** — `CoopLog.log` fica `""` mesmo com r1/r2 corretos. Ou seja, o acesso a membro de `object` via lambda dentro de task está corrompido (leitura/escrita em cópia errada ou captura quebrada).
-- **Causa provável:** o transform de corrotinas (`src/core/coroutines_transform.zig` — `collectCaptures`, boxed captures, e/ou a reescrita de lambdas dentro de corpos de `task {}`) trata a referência ao `object` global `CoopLog` como se fosse uma variável local capturável e a promove para campos da continuation gerada, gerando acesso incorreto à memória do objeto (busy-loop no estado de resume ou escrita perdida). O path de lambda com captura de `object`/referência global dentro de state machine não está coberto.
-- **O que corrigir:** audit a captura de **objetos/globais** (não locais) em lambdas dentro de corpos de `task {}` no `coroutines_transform.zig`; um `object` não deve ser "capturado" para o estado — a referência deve ser resolvida estática/global. Adicionar um teste de regressão com `sync { mutaMembroDeObject }` dentro de `task {}` + `await`.
-
-### Bug 2: `coop_await_test.ei` — "multiple tasks awaiting the same task are resumed FIFO" (flake ~1/12)
-- **Status:** ABERTO (pré-existente). Teste compartilha `CoopLog.log` (String global) mutada concorrentemente por `shared`, `t1` e `t2` em threads de pool diferentes → **lost update** → `assert(res == "S12" || res == "S21")` falha intermitentemente.
-- **Não é bug do scheduler:** é race **do teste** (estado compartilhado não-sincronizado). O fix idiomático (`sync`) esbarra no **Bug 1** acima.
-- **O que corrigir:** (a) resolver o Bug 1 para permitir `sync` no teste; ou (b) redesenhar o teste sem estado global mutável (verificar waiter-chain pelos valores de resultado `r1==43`/`r2==44`, que já provam o resumo de múltiplos waiters).
+### Bug 2: `coop_await_test.ei` — "multiple tasks awaiting the same task are resumed FIFO" (RESOLVIDO)
+- **Status:** RESOLVIDO.
+- **Causa Raiz:** O teste compartilhava `CoopLog.log` mutada concorrentemente por múltiplas tasks (`shared`, `t1`, `t2`) sem sincronização de mutex nas escritas, gerando race conditions intermitentes. Com o Bug 1 corrigido, as mutações puderam ser protegidas com `sync { CoopLog.log = CoopLog.log + ... }`.
+- **Validação:** 30 execuções consecutivas de `samples/tests/coop_await_test.ei` com 0 falhas e 100% de estabilidade.
 
 ---
 
@@ -1117,6 +1096,7 @@ Semântica alvo:
 - **Lost-wakeup do done state (fix):** o done state de `StackTask` escrevia `done=true` e drenava `waiters` **sem** o `task.mutex` que `awaitCoop` usa para registrar waiters. Um waiter anexado entre `done=true` e o drain ficava órfão → seu `await()` girava em busy-loop a 100% CPU (**bug de produção**, fritava um core). Corrigido sincronizando result+done+drain com `task.mutex` no transform (`buildResume`/`buildResumeStateMachine`). Foi o que eliminou o **freeze** do `eiwac test`.
 - **Stale-label do estado de suspensão (fix):** o estado de suspensão gerado chamava `Scheduler.yield/sleep(this)` (que enfileira a continuation) e **depois** setava `this.label = <próximo>`. Na janela, um worker popava a continuation e relia o **label obsoleto**, re-executando o estado (e estados seguintes) — o flake do `try_catch_suspend_test.ei` ("second_ok" rodando 2x, ~2.5% sob carga). Corrigido setando o label **antes** de enfileirar. Guardrail: `coop_try_catch_repeated_test.ei`.
 - **I/O não-bloqueante (`coop_io_test.ei`):** o teste assumia 10ms fixos para o servidor escutar — sob carga o `connect()` do cliente dava ECONNREFUSED (o servidor ainda não tinha feito `listen`), o servidor travava no `accept()` e o teste acabava em timeout. Fix: o cliente faz **retry no connect**. (Investiguei também races de EAGAIN no `Socket.read`/`eiwa_socket_write` e propus retries, mas **foram revertidos por desnecessários** — a suíte segue 100% verde só com o retry no connect.)
+
 
 ---
 

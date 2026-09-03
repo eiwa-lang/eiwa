@@ -1,0 +1,76 @@
+import { assert } from "std.core"
+import { sync } from "std.thread"
+
+// Test suite for coroutines and lambdas with captured variables.
+// Covers:
+// 1. Calling functions with sync/lambdas from inside a coroutine.
+// 2. Reading captured outer variables inside a lambda (e.g. sync {}) inside a coroutine.
+// 3. Mutating captured outer variables inside a lambda (e.g. sync {}) inside a coroutine.
+
+object CoopLog {
+    var log: String = ""
+}
+
+fun appendLog(s: String) {
+    sync {
+        CoopLog.log = CoopLog.log + s
+    }
+}
+
+test "sync helper mutation inside coroutine" {
+    CoopLog.log = ""
+    val shared = task {
+        sleepMs(5)
+        appendLog("S")
+        40
+    }
+    val r = shared.await()
+    assert(r == 40)
+    assert(CoopLog.log == "S")
+}
+
+test "captured outer variable inside lambda in coroutine reads correct value" {
+    CoopLog.log = ""
+    var localMsg = "hello"
+    val t = task {
+        val dummy = localMsg
+        sleepMs(5)
+        sync {
+            CoopLog.log = CoopLog.log + localMsg
+        }
+        42
+    }
+    val res = t.await()
+    assert(res == 42)
+    assert(CoopLog.log == "hello")
+}
+
+test "mutating captured outer variable inside lambda in coroutine updates outer variable" {
+    var count = 0
+    val t = task {
+        val dummy = count
+        sleepMs(5)
+        sync {
+            count = count + 1
+        }
+        42
+    }
+    t.await()
+    assert(count == 1)
+}
+
+test "captured outer variable used ONLY inside lambda in coroutine" {
+    CoopLog.log = ""
+    var greeting = "world"
+    val t = task {
+        sleepMs(5)
+        sync {
+            CoopLog.log = "hello " + greeting
+        }
+        42
+    }
+    val res = t.await()
+    assert(res == 42)
+    assert(CoopLog.log == "hello world")
+}
+
