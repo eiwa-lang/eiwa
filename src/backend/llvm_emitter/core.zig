@@ -4239,20 +4239,24 @@ if (define_body) {
         if (builtin.target.os.tag == .windows or builtin.os.tag == .windows) {
             var it = self.link_libraries.keyIterator();
             while (it.next()) |lib_name| {
-                var prefixes = std.ArrayList([]const u8).init(self.allocator);
-                defer prefixes.deinit();
-                try prefixes.append("");
+                var prefix_buf: [8][]const u8 = undefined;
+                var prefix_count: usize = 0;
+                prefix_buf[prefix_count] = "";
+                prefix_count += 1;
+                const env_start = prefix_count;
                 for ([_][*:0]const u8{ "LLVM_PATH", "GC_PATH", "MINGW_PREFIX", "MSYSTEM_PREFIX" }) |env_key| {
                     if (std.c.getenv(env_key)) |p_z| {
                         const p = std.mem.sliceTo(p_z, 0);
-                        const bin_dir = try std.fmt.allocPrint(self.allocator, "{s}/bin/", .{p});
-                        try prefixes.append(bin_dir);
+                        prefix_buf[prefix_count] = try std.fmt.allocPrint(self.allocator, "{s}/bin/", .{p});
+                        prefix_count += 1;
                     }
                 }
-                try prefixes.append("C:/msys64/ucrt64/bin/");
+                const env_end = prefix_count;
+                prefix_buf[prefix_count] = "C:/msys64/ucrt64/bin/";
+                prefix_count += 1;
 
                 var loaded = false;
-                for (prefixes.items) |prefix| {
+                for (prefix_buf[0..prefix_count]) |prefix| {
                     if (loaded) break;
                     const names = [_][]const u8{
                         try std.fmt.allocPrint(self.allocator, "{s}lib{s}-4.dll", .{ prefix, lib_name.* }),
@@ -4268,6 +4272,9 @@ if (define_body) {
                             loaded = true;
                         }
                     }
+                }
+                for (prefix_buf[env_start..env_end]) |allocated_prefix| {
+                    self.allocator.free(allocated_prefix);
                 }
             }
         }
