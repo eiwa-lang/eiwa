@@ -27,9 +27,27 @@ lib("windows") NativeProcess {
     @Alias("_chdir")
     fun chdir(path: String): Int
     @Alias("_fullpath")
-    fun realpath(path: String, resolved: Pointer): Pointer
+    fun fullpath(resolved: Pointer, path: String, maxLen: Int): Pointer
     fun eiwa_args_count(): Int
     fun eiwa_args_get(i: Int): Pointer
+}
+
+object("posix") PathResolver {
+    fun resolve(path: String, buf: Pointer): Pointer {
+        return NativeProcess.realpath(path, buf)
+    }
+}
+
+object("windows") PathResolver {
+    fun resolve(path: String, buf: Pointer): Pointer {
+        return NativeProcess.fullpath(buf, path, 4096)
+    }
+}
+
+object PathResolver {
+    fun resolve(path: String, buf: Pointer): Pointer {
+        return NativeProcess.realpath(path, buf)
+    }
 }
 
 object Process {
@@ -58,7 +76,7 @@ object Process {
 
     fun realpath(path: String): String? {
         val buf = Standard.gcMalloc(4096)
-        if (NativeProcess.realpath(path, buf) == null) {
+        if (PathResolver.resolve(path, buf) == null) {
             return null
         }
         return String(buf, NativeString.strlen(buf))

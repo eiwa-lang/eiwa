@@ -21,13 +21,27 @@ object PlatformSpecificConfig {
     fun platformName(): String = "Universal/Default"
 }
 
+object("windows") ExpectedPlatform {
+    fun greeting(): String = "Hello from Windows"
+    fun config(): String = "Win32"
+}
+
+object("posix") ExpectedPlatform {
+    fun greeting(): String = "Hello from POSIX"
+    fun config(): String = "Universal/Default"
+}
+
+object ExpectedPlatform {
+    fun greeting(): String = "Hello from POSIX"
+    fun config(): String = "Universal/Default"
+}
+
 test "platform specialized object resolution" {
     val greeting = Greeter.greet()
-    // On macOS/Linux, Greeter should be POSIX
-    assert(greeting == "Hello from POSIX", "Should resolve posix specialized object on POSIX platforms")
+    assert(greeting == ExpectedPlatform.greeting(), "Should resolve platform specialized object")
 }
 
 test "platform fallback resolution" {
     val name = PlatformSpecificConfig.platformName()
-    assert(name == "Universal/Default", "Should fallback to universal object when no platform match overrides")
+    assert(name == ExpectedPlatform.config(), "Should resolve platform config or universal fallback")
 }

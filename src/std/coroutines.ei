@@ -554,6 +554,11 @@ object EventLoop {
     fun waitReadable(fd: Int): Int {
         val entrySz = PollLayout.entrySize()
         val pfd = Standard.gcMalloc(entrySz)
+        var z = 0
+        while (z < entrySz) {
+            NativeMemory.writeByte(pfd, z, 0)
+            z = z + 1
+        }
         var v = fd
         var i = 0
         val fdB = PollLayout.fdBytes()
@@ -572,6 +577,11 @@ object EventLoop {
     fun waitWritable(fd: Int): Int {
         val entrySz = PollLayout.entrySize()
         val pfd = Standard.gcMalloc(entrySz)
+        var z = 0
+        while (z < entrySz) {
+            NativeMemory.writeByte(pfd, z, 0)
+            z = z + 1
+        }
         var v = fd
         var i = 0
         val fdB = PollLayout.fdBytes()
