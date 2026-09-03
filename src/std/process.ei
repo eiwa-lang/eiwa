@@ -44,12 +44,6 @@ object("windows") PathResolver {
     }
 }
 
-object PathResolver {
-    fun resolve(path: String, buf: Pointer): Pointer {
-        return NativeProcess.realpath(path, buf)
-    }
-}
-
 object Process {
 
     fun exec(cmd: String): Int {
