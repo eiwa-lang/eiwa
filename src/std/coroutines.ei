@@ -43,6 +43,10 @@ object("posix") PollLayout {
     fun eventsOffset(): Int = 4
     fun reventsOffset(): Int = 6
     fun fdBytes(): Int = 4
+    fun pollInLow(): Int = 1
+    fun pollInHigh(): Int = 0
+    fun pollOutLow(): Int = 4
+    fun pollOutHigh(): Int = 0
 }
 
 object("windows") PollLayout {
@@ -50,13 +54,10 @@ object("windows") PollLayout {
     fun eventsOffset(): Int = 8
     fun reventsOffset(): Int = 10
     fun fdBytes(): Int = 8
-}
-
-object PollLayout {
-    fun entrySize(): Int = 8
-    fun eventsOffset(): Int = 4
-    fun reventsOffset(): Int = 6
-    fun fdBytes(): Int = 4
+    fun pollInLow(): Int = 0
+    fun pollInHigh(): Int = 3
+    fun pollOutLow(): Int = 16
+    fun pollOutHigh(): Int = 0
 }
 
 // ============================================================================
@@ -188,8 +189,13 @@ type TaskScheduler(
                 v = v / 256
                 b = b + 1
             }
-            NativeMemory.writeByte(pfd, base + evOff, mod(w.events, 256))
-            NativeMemory.writeByte(pfd, base + evOff + 1, 0)
+            if (w.events == 1) {
+                NativeMemory.writeByte(pfd, base + evOff, PollLayout.pollInLow())
+                NativeMemory.writeByte(pfd, base + evOff + 1, PollLayout.pollInHigh())
+            } else {
+                NativeMemory.writeByte(pfd, base + evOff, PollLayout.pollOutLow())
+                NativeMemory.writeByte(pfd, base + evOff + 1, PollLayout.pollOutHigh())
+            }
             NativeMemory.writeByte(pfd, base + revOff, 0)
             NativeMemory.writeByte(pfd, base + revOff + 1, 0)
             idx = idx + 1
@@ -568,8 +574,8 @@ object EventLoop {
             i = i + 1
         }
         val evOff = PollLayout.eventsOffset()
-        NativeMemory.writeByte(pfd, evOff, 1)
-        NativeMemory.writeByte(pfd, evOff + 1, 0)
+        NativeMemory.writeByte(pfd, evOff, PollLayout.pollInLow())
+        NativeMemory.writeByte(pfd, evOff + 1, PollLayout.pollInHigh())
         return NativePoll.poll(pfd, 1, -1)
     }
 
@@ -591,8 +597,8 @@ object EventLoop {
             i = i + 1
         }
         val evOff = PollLayout.eventsOffset()
-        NativeMemory.writeByte(pfd, evOff, 4)
-        NativeMemory.writeByte(pfd, evOff + 1, 0)
+        NativeMemory.writeByte(pfd, evOff, PollLayout.pollOutLow())
+        NativeMemory.writeByte(pfd, evOff + 1, PollLayout.pollOutHigh())
         return NativePoll.poll(pfd, 1, -1)
     }
 }

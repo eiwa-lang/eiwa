@@ -4233,39 +4233,43 @@ if (define_body) {
 
         // On Windows the JIT lib's own symbols become resolvable through the
         // registration above, but symbols that live in its dependency DLLs
-        // (@Link libraries such as curl -> libcurl-4.dll) do NOT: LLVM's
-        // DynamicLibrary only searches the process and explicitly-registered
-        // libraries, not every loaded module. Register every loaded module so
-        // MCJIT can resolve those externs too (otherwise they resolve to null
-        // and any call segfaults at 0x0).
+        // (@Link libraries such as curl -> libcurl-4.dll) do NOT. Register each
+        // declared @Link dependency DLL explicitly with LLVM so MCJIT can resolve
+        // its externs without iterating over Windows system DLLs (e.g. ntdll).
         if (builtin.target.os.tag == .windows or builtin.os.tag == .windows) {
-            registerLoadedWindowsModules(self.allocator, llvm_dl.LLVMLoadLibraryPermanently);
-        }
-    }
+            var it = self.link_libraries.keyIterator();
+            while (it.next()) |lib_name| {
+                var prefixes = std.ArrayList([]const u8).init(self.allocator);
+                defer prefixes.deinit();
+                try prefixes.append("");
+                for ([_][*:0]const u8{ "LLVM_PATH", "GC_PATH", "MINGW_PREFIX", "MSYSTEM_PREFIX" }) |env_key| {
+                    if (std.c.getenv(env_key)) |p_z| {
+                        const p = std.mem.sliceTo(p_z, 0);
+                        const bin_dir = try std.fmt.allocPrint(self.allocator, "{s}/bin/", .{p});
+                        try prefixes.append(bin_dir);
+                    }
+                }
+                try prefixes.append("C:/msys64/ucrt64/bin/");
 
-    /// Registers every module loaded into the current process with LLVM's
-    /// DynamicLibrary so MCJIT's symbol resolver can find FFI externs that live
-    /// in dependency DLLs (e.g. curl) rather than the JIT lib itself.
-    fn registerLoadedWindowsModules(allocator: std.mem.Allocator, load_lib: *const fn ([*:0]const u8) callconv(.c) c_int) void {
-        const kernel32 = struct {
-            extern "kernel32" fn K32EnumProcessModulesEx(hProcess: ?*anyopaque, lphModule: [*]?*anyopaque, cb: u32, lpcbNeeded: *u32, dwFilterFlag: u32) callconv(.winapi) i32;
-            extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
-            extern "kernel32" fn GetModuleFileNameW(hModule: ?*anyopaque, lpFilename: [*]u16, nSize: u32) callconv(.winapi) u32;
-        };
-        var mods: [512]?*anyopaque = undefined;
-        var needed: u32 = 0;
-        const ptr_sz = @sizeOf(?*anyopaque);
-        if (kernel32.K32EnumProcessModulesEx(kernel32.GetCurrentProcess(), &mods, @intCast(ptr_sz * mods.len), &needed, 0x03) == 0) return;
-        const count = @min(needed / ptr_sz, mods.len);
-        for (mods[0..count]) |hm| {
-            var wbuf: [1024]u16 = undefined;
-            const n = kernel32.GetModuleFileNameW(hm, &wbuf, wbuf.len);
-            if (n == 0 or n >= wbuf.len) continue;
-            var ubuf: [1024]u8 = undefined;
-            const ulen = std.unicode.utf16LeToUtf8(&ubuf, wbuf[0..n]) catch continue;
-            const path = allocator.dupeZ(u8, ubuf[0..ulen]) catch continue;
-            defer allocator.free(path);
-            _ = load_lib(path.ptr);
+                var loaded = false;
+                for (prefixes.items) |prefix| {
+                    if (loaded) break;
+                    const names = [_][]const u8{
+                        try std.fmt.allocPrint(self.allocator, "{s}lib{s}-4.dll", .{ prefix, lib_name.* }),
+                        try std.fmt.allocPrint(self.allocator, "{s}lib{s}.dll", .{ prefix, lib_name.* }),
+                        try std.fmt.allocPrint(self.allocator, "{s}{s}.dll", .{ prefix, lib_name.* }),
+                    };
+                    for (names) |cand| {
+                        defer self.allocator.free(cand);
+                        if (loaded) continue;
+                        const cand_z = try self.allocator.dupeZ(u8, cand);
+                        defer self.allocator.free(cand_z);
+                        if (llvm_dl.LLVMLoadLibraryPermanently(cand_z.ptr) == 0) {
+                            loaded = true;
+                        }
+                    }
+                }
+            }
         }
     }
 

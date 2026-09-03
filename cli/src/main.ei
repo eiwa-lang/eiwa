@@ -700,7 +700,7 @@ fun parseDepSpec(rawSpec: String, explicitName: String?): Dependency {
     } else if (startsWith(spec, "http://") || startsWith(spec, "https://") || startsWith(spec, "git@")) {
         gitUrl = spec
         depName = extractRepoName(gitUrl)
-    } else if (startsWith(spec, "/") || startsWith(spec, "./") || startsWith(spec, "../") || startsWith(spec, ".git") || endsWith(spec, ".git")) {
+    } else if (startsWith(spec, "/") || startsWith(spec, "\\") || startsWith(spec, "./") || startsWith(spec, ".\\") || startsWith(spec, "../") || startsWith(spec, "..\\") || startsWith(spec, ".git") || endsWith(spec, ".git") || (spec.length >= 3 && spec.substring(1, 2) == ":" && (spec.substring(2, 3) == "/" || spec.substring(2, 3) == "\\"))) {
         // Local path (or .git URL): a real git URL, not an org/repo shorthand.
         gitUrl = spec
         depName = extractRepoName(gitUrl)
