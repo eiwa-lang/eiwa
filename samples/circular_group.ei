@@ -4,6 +4,6 @@ import { print } from "std.core"
 type CircularGroup(val name: String, var owner: CircularUser?) {
     fun show() {
         val ownerName = owner?.name ?: "No Owner"
-        print("Group: " + name + ", Owner: " + ownerName)
+        print("Group: $name, Owner: $ownerName")
     }
 }

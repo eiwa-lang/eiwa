@@ -38,18 +38,18 @@ skill Hoverable {
 // Singleton object
 object Logger {
     fun info(message: String) {
-        print("[INFO] " + message)
+        print("[INFO] $message")
     }
 }
 
 // A type owns state, implements contracts (:) and composes skills (+).
 type Button(val label: String): Drawable, Serializable + Shadow + Clickable + Hoverable {
     implement fun draw() {
-        print("drawing button: " + label)
+        print("drawing button: $label")
     }
 
     implement fun serialize(): String {
-        return "Button(" + label + ")"
+        return "Button($label)"
     }
 }
 

@@ -248,6 +248,9 @@ pub const ASTNodeType = union(enum) {
     int_literal: i64,
     double_literal: f64,
     string_literal: []const u8,
+    string_template: struct {
+        parts: []const *ASTNode,
+    },
     bool_literal: bool,
     array_literal: struct {
         elements: []const *ASTNode,

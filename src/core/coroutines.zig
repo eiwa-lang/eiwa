@@ -298,6 +298,9 @@ fn walkChildren(node: *ASTNode, registry: *ModuleRegistry, global_functions: *st
         .array_literal => |al| {
             for (al.elements) |e| walkForSuspend(e, registry, global_functions, suspend_set, vis, found);
         },
+        .string_template => |st| {
+            for (st.parts) |e| walkForSuspend(e, registry, global_functions, suspend_set, vis, found);
+        },
         .map_literal => |ml| {
             for (ml.elements) |e| walkForSuspend(e, registry, global_functions, suspend_set, vis, found);
         },
@@ -407,6 +410,9 @@ fn markWalk(node: *ASTNode, registry: *ModuleRegistry, global_functions: *std.St
         .named_arg => |na| try markWalk(na.value, registry, global_functions, suspend_set, vis),
         .array_literal => |al| {
             for (al.elements) |e| try markWalk(e, registry, global_functions, suspend_set, vis);
+        },
+        .string_template => |st| {
+            for (st.parts) |e| try markWalk(e, registry, global_functions, suspend_set, vis);
         },
         .map_literal => |ml| {
             for (ml.elements) |e| try markWalk(e, registry, global_functions, suspend_set, vis);

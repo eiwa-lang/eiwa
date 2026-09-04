@@ -13,21 +13,21 @@ fun runTryCatchPattern(): String {
             sleepMs(1)
             throw Exception("first")
         } catch (e: Exception) {
-            log = log + "first_caught;"
+            log = "${log}first_caught;"
         }
 
         try {
             yield()
-            log = log + "second_ok;"
+            log = "${log}second_ok;"
         } catch (e: Exception) {
-            log = log + "second_fail;"
+            log = "${log}second_fail;"
         }
 
         try {
             sleepMs(1)
             throw Exception("third")
         } catch (e: Exception) {
-            log = log + "third_caught"
+            log = "${log}third_caught"
         }
         log
     }
@@ -39,7 +39,7 @@ test "repeated sequential try/catch with suspension points stays correct" {
     var i = 0
     while (i < n) {
         val res = runTryCatchPattern()
-        assert(res == "first_caught;second_ok;third_caught", "log should match, got " + res)
+        assert(res == "first_caught;second_ok;third_caught", "log should match, got $res")
         i = i + 1
     }
 }

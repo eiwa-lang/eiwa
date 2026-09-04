@@ -20,19 +20,19 @@ skill Yaml : Serializable {
         var i = 0
         while (i < fields.size()) {
             val f = fields.get(i)
-            out = out + indent + f.name + ":" + this.writeYamlValueSuffix(f.value, indent)
+            out = "$out$indent${f.name}:${this.writeYamlValueSuffix(f.value, indent)}"
             i = i + 1
         }
         return out
     }
 
     fun writeYamlValueSuffix(v: SerdeValue, indent: String): String = when (v) {
-        is SerdeInt -> " " + v.v.toString() + "\n"
-        is SerdeDouble -> " " + v.v.toString() + "\n"
-        is SerdeBool -> " " + v.v.toString() + "\n"
-        is SerdeString -> " \"" + v.v + "\"\n"
-        is SerdeObject -> v.obj.serdeFields().size() == 1 ? this.writeYamlValueSuffix(v.obj.serdeFields()[0].value, indent) : "\n" + this.writeYamlBlock(v.obj.serdeFields(), indent + "  ")
-        is SerdeListValue -> "\n" + this.writeYamlList(v.list, indent + "  ")
+        is SerdeInt -> " ${v.v}\n"
+        is SerdeDouble -> " ${v.v}\n"
+        is SerdeBool -> " ${v.v}\n"
+        is SerdeString -> " \"${v.v}\"\n"
+        is SerdeObject -> v.obj.serdeFields().size() == 1 ? this.writeYamlValueSuffix(v.obj.serdeFields()[0].value, indent) : "\n${this.writeYamlBlock(v.obj.serdeFields(), "$indent  ")}"
+        is SerdeListValue -> "\n${this.writeYamlList(v.list, "$indent  ")}"
         else -> " null\n"
     }
 
@@ -41,23 +41,23 @@ skill Yaml : Serializable {
         var i = 0
         while (i < list.size()) {
             val v = list.getAt(i)
-            out = out + indent + this.writeYamlListItem(v, indent)
+            out = "$out$indent${this.writeYamlListItem(v, indent)}"
             i = i + 1
         }
         return out
     }
 
     fun writeYamlListItem(v: SerdeValue, indent: String): String = when (v) {
-        is SerdeObject -> "-\n" + this.writeYamlBlock(v.obj.serdeFields(), indent + "  ")
-        is SerdeListValue -> "-\n" + this.writeYamlList(v.list, indent + "  ")
-        else -> "- " + this.writeYamlScalar(v) + "\n"
+        is SerdeObject -> "-\n${this.writeYamlBlock(v.obj.serdeFields(), "$indent  ")}"
+        is SerdeListValue -> "-\n${this.writeYamlList(v.list, "$indent  ")}"
+        else -> "- ${this.writeYamlScalar(v)}\n"
     }
 
     fun writeYamlScalar(v: SerdeValue): String = when (v) {
         is SerdeInt -> v.v.toString()
         is SerdeDouble -> v.v.toString()
         is SerdeBool -> v.v.toString()
-        is SerdeString -> "\"" + v.v + "\""
+        is SerdeString -> "\"${v.v}\""
         else -> "null"
     }
 }

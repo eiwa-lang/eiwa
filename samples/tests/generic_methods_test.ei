@@ -15,7 +15,7 @@ fun identity<T>(value: T): T {
 }
 
 fun pair<A, B>(a: A, b: B): String {
-    return a.toString() + " and " + b.toString()
+    return "$a and $b"
 }
 
 type Util() {

@@ -34,11 +34,11 @@ fun makeList(items: Int...): List<Int> {
 
 type Stats(val label: String) {
     fun describe(values: Double...): String {
-        var res = this.label + "(" + values.size().toString() + "): "
+        var res = "${this.label}(${values.size()}): "
         var i = 0
         while (i < values.size()) {
-            if (i > 0) res = res + ", "
-            res = res + values[i].toString()
+            if (i > 0) res = "$res, "
+            res = "$res${values[i]}"
             i = i + 1
         }
         return res
@@ -104,7 +104,7 @@ fun single(x: Int): String {
 }
 
 fun single(x: Int, y: Int...): String {
-    return "varargs" + y.size().toString()
+    return "varargs${y.size()}"
 }
 
 test "varargs: overload resolution picks the right arity" {

@@ -264,6 +264,11 @@ fn hasTaskOrAwait(node: *ASTNode) bool {
                 if (hasTaskOrAwait(e)) return true;
             }
         },
+        .string_template => |st| {
+            for (st.parts) |e| {
+                if (hasTaskOrAwait(e)) return true;
+            }
+        },
         .map_literal => |ml| {
             for (ml.elements) |e| {
                 if (hasTaskOrAwait(e)) return true;
@@ -647,6 +652,11 @@ fn containsAwait(node: *ASTNode) bool {
                 if (containsAwait(e)) return true;
             }
         },
+        .string_template => |st| {
+            for (st.parts) |e| {
+                if (containsAwait(e)) return true;
+            }
+        },
         .map_literal => |ml| {
             for (ml.elements) |e| {
                 if (containsAwait(e)) return true;
@@ -869,6 +879,9 @@ fn collectFreeIdents(
         .array_literal => |al| {
             for (al.elements) |e| try collectFreeIdents(allocator, checker, e, locals, captures);
         },
+        .string_template => |st| {
+            for (st.parts) |e| try collectFreeIdents(allocator, checker, e, locals, captures);
+        },
         .map_literal => |ml| {
             for (ml.elements) |e| try collectFreeIdents(allocator, checker, e, locals, captures);
         },
@@ -1034,6 +1047,9 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
         .array_literal => |al| {
             for (al.elements) |e| try rewriteCapturedRefs(allocator, captures, e);
         },
+        .string_template => |st| {
+            for (st.parts) |e| try rewriteCapturedRefs(allocator, captures, e);
+        },
         .map_literal => |ml| {
             for (ml.elements) |e| try rewriteCapturedRefs(allocator, captures, e);
         },
@@ -1118,6 +1134,11 @@ fn hoistAwaitsWalk(
         },
         .array_literal => |*al| {
             for (al.elements) |e| {
+                try hoistAwaitsWalk(allocator, checker, e, counter, preamble, hoisted);
+            }
+        },
+        .string_template => |*st| {
+            for (st.parts) |e| {
                 try hoistAwaitsWalk(allocator, checker, e, counter, preamble, hoisted);
             }
         },
@@ -1384,7 +1405,7 @@ var defaultVoidType: EiwaType = .Void;
 /// executed for its effect, not consumed as the block's value).
 fn isValueStatement(node: *ASTNode) bool {
     switch (node.data) {
-        .int_literal, .double_literal, .string_literal, .bool_literal, .identifier,
+        .int_literal, .double_literal, .string_literal, .string_template, .bool_literal, .identifier,
         .binary_expr, .unary_expr, .call_expr, .get_expr, .index_expr,
         .array_literal, .map_literal, .lambda_expr => return true,
         else => return false,
@@ -1491,6 +1512,11 @@ fn containsTrueSuspend(node: *ASTNode) bool {
                 if (containsTrueSuspend(e)) return true;
             }
         },
+        .string_template => |st| {
+            for (st.parts) |e| {
+                if (containsTrueSuspend(e)) return true;
+            }
+        },
         .map_literal => |ml| {
             for (ml.elements) |e| {
                 if (containsTrueSuspend(e)) return true;
@@ -1523,7 +1549,7 @@ fn typeRefForVarDecl(allocator: std.mem.Allocator, node: *ASTNode) !*const ast.A
     if (v.initializer) |init| {
         if (init.resolved_type) |irt| return try typeRefForEiwaType(allocator, irt);
         switch (init.data) {
-            .string_literal => return typeRefSimple("String"),
+            .string_literal, .string_template => return typeRefSimple("String"),
             .bool_literal => return typeRefSimple("Bool"),
             .double_literal => return typeRefSimple("Double"),
             .int_literal => return typeRefSimple("Int"),
@@ -1661,6 +1687,9 @@ fn collectLocalVars(
         .named_arg => |na| try collectLocalVars(allocator, na.value, seen, out),
         .array_literal => |al| {
             for (al.elements) |e| try collectLocalVars(allocator, e, seen, out);
+        },
+        .string_template => |st| {
+            for (st.parts) |e| try collectLocalVars(allocator, e, seen, out);
         },
         .map_literal => |ml| {
             for (ml.elements) |e| try collectLocalVars(allocator, e, seen, out);
@@ -1815,6 +1844,9 @@ fn collectNewLocals(
         .named_arg => |na| try collectNewLocals(allocator, na.value, promoted_names, out),
         .array_literal => |al| {
             for (al.elements) |e| try collectNewLocals(allocator, e, promoted_names, out);
+        },
+        .string_template => |st| {
+            for (st.parts) |e| try collectNewLocals(allocator, e, promoted_names, out);
         },
         .map_literal => |ml| {
             for (ml.elements) |e| try collectNewLocals(allocator, e, promoted_names, out);
@@ -2000,6 +2032,9 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
         },
         .array_literal => |al| {
             for (al.elements) |e| try rewritePromotedRefs(allocator, promoted, e);
+        },
+        .string_template => |st| {
+            for (st.parts) |e| try rewritePromotedRefs(allocator, promoted, e);
         },
         .map_literal => |ml| {
             for (ml.elements) |e| try rewritePromotedRefs(allocator, promoted, e);
@@ -3174,6 +3209,9 @@ fn clearResolvedTypes(allocator: std.mem.Allocator, node: *ASTNode) !void {
         .named_arg => |na| try clearResolvedTypes(allocator, na.value),
         .array_literal => |al| {
             for (al.elements) |e| try clearResolvedTypes(allocator, e);
+        },
+        .string_template => |st| {
+            for (st.parts) |e| try clearResolvedTypes(allocator, e);
         },
         .map_literal => |ml| {
             for (ml.elements) |e| try clearResolvedTypes(allocator, e);

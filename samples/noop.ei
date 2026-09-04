@@ -5,7 +5,7 @@ type NoopCont(val dummy: Int) : Continuation {
 
 type TinyCont(val name: String, var step: Int) : Continuation {
     implement fun resume() {
-        echo("[tiny " + this.name + "] step=" + this.step.toString())
+        echo("[tiny ${this.name}] step=${this.step}")
         this.step = this.step + 1
     }
     implement fun isDone(): Bool = true

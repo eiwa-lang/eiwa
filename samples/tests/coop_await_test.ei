@@ -69,7 +69,7 @@ fun multiWaiter(): String {
     val shared = task {
         sleepMs(50)
         sync {
-            CoopLog.log = CoopLog.log + "S"
+            CoopLog.log = "${CoopLog.log}S"
         }
         42
     }
@@ -77,7 +77,7 @@ fun multiWaiter(): String {
         sleepMs(5)
         val r = shared.await() + 1
         sync {
-            CoopLog.log = CoopLog.log + "1"
+            CoopLog.log = "${CoopLog.log}1"
         }
         r
     }
@@ -85,7 +85,7 @@ fun multiWaiter(): String {
         sleepMs(10)
         val r = shared.await() + 2
         sync {
-            CoopLog.log = CoopLog.log + "2"
+            CoopLog.log = "${CoopLog.log}2"
         }
         r
     }

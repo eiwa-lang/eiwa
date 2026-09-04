@@ -1,4 +1,4 @@
-fun greet(name: String, greeting: String = "Hello") = greeting + ", " + name + "!"
+fun greet(name: String, greeting: String = "Hello") = "$greeting, $name!"
 
 fun compute(a: Int, b: Int = 10, c: Int = 5) = a + b + c
 

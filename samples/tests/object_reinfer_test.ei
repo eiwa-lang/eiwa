@@ -1,7 +1,7 @@
 import { assert } from "std.core"
 
 object Greeter {
-    fun hello(name: String): String = "hi " + name
+    fun hello(name: String): String = "hi $name"
 }
 
 test "object method call survives transform re-inference" {

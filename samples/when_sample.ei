@@ -9,11 +9,11 @@ fun describeVehicle(v: Vehicle) {
     when (v) {
         is Car -> {
             // Smart cast to Car
-            print("Car model: " + v.model)
+            print("Car model: ${v.model}")
         }
         is Bike -> {
             // Smart cast to Bike
-            print("Bike cc: " + v.cc.toString() + "cc")
+            print("Bike cc: ${v.cc}cc")
         }
         else -> {
             print("Unknown vehicle")
@@ -33,7 +33,7 @@ fun getStatusMessage(code: Int): String {
 fun main() {
     print("--- Testing when with Subject ---")
     val status = getStatusMessage(404)
-    print("Status 404: " + status)
+    print("Status 404: $status")
     
     print("\n--- Testing when with Smart Casting ---")
     val c: Vehicle = Car("Mustang")

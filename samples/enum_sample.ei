@@ -31,13 +31,13 @@ fun main() {
     val d2 = Direction.EAST
     val d3 = Direction.SOUTH
 
-    println("d1 name: " + d1.name + ", ordinal: " + d1.ordinal.toString())
-    println("d2 name: " + d2.name + ", ordinal: " + d2.ordinal.toString())
-    println("d3 name: " + d3.name + ", ordinal: " + d3.ordinal.toString())
+    println("d1 name: ${d1.name}, ordinal: ${d1.ordinal}")
+    println("d2 name: ${d2.name}, ordinal: ${d2.ordinal}")
+    println("d3 name: ${d3.name}, ordinal: ${d3.ordinal}")
 
-    println("Describe d1: " + describeDirection(d1))
-    println("Describe d2: " + describeDirection(d2))
+    println("Describe d1: ${describeDirection(d1)}")
+    println("Describe d2: ${describeDirection(d2)}")
 
     val s = Status.COMPLETED
-    println("Status name: " + s.name + ", ordinal: " + s.ordinal.toString())
+    println("Status name: ${s.name}, ordinal: ${s.ordinal}")
 }

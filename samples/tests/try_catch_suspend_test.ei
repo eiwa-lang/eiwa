@@ -26,7 +26,7 @@ test "try catch with yield inside task - exception thrown after yield" {
             status = "yielded"
             throw Exception("fail yield")
         } catch (e: Exception) {
-            status = "recovered_" + status
+            status = "recovered_$status"
         }
         status
     }
@@ -103,21 +103,21 @@ test "multiple sequential try catch blocks in same task" {
             sleepMs(1)
             throw Exception("first")
         } catch (e: Exception) {
-            log = log + "first_caught;"
+            log = "${log}first_caught;"
         }
 
         try {
             yield()
-            log = log + "second_ok;"
+            log = "${log}second_ok;"
         } catch (e: Exception) {
-            log = log + "second_fail;"
+            log = "${log}second_fail;"
         }
 
         try {
             sleepMs(1)
             throw Exception("third")
         } catch (e: Exception) {
-            log = log + "third_caught"
+            log = "${log}third_caught"
         }
         log
     }

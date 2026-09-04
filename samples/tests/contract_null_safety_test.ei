@@ -4,13 +4,13 @@ contract Printable {
 
 type Article(val title: String) : Printable {
     implement fun printText(): String {
-        return "Title: " + title
+        return "Title: $title"
     }
 }
 
 type Book(val title: String) : Printable {
     implement fun printText(): String {
-        return "Book: " + title
+        return "Book: $title"
     }
 }
 

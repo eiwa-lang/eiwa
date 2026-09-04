@@ -330,12 +330,10 @@ type ServerConnection(val sock: Socket) {
     }
     
     fun writeResponse(status: Int, contentType: String, body: String): Void {
-        val statusLine = "HTTP/1.1 " + status.toString() + " OK\r\n"
-        val headers = "Content-Type: " + contentType + "\r\n" +
-                      "Content-Length: " + body.length.toString() + "\r\n" +
-                      "Connection: close\r\n\r\n"
+        val statusLine = "HTTP/1.1 $status OK\r\n"
+        val headers = "Content-Type: $contentType\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n"
         
-        this.sock.write(statusLine + headers)
+        this.sock.write("$statusLine$headers")
         this.sock.write(body)
     }
     

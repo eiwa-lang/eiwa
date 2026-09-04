@@ -21,11 +21,11 @@ fun join(separator: String, parts: String...): String {
 
 type Stats(val label: String) {
     fun describe(values: Double...): String {
-        var res = this.label + "(" + values.size().toString() + "): "
+        var res = "${this.label}(${values.size()}): "
         var i = 0
         while (i < values.size()) {
-            if (i > 0) res = res + ", "
-            res = res + values[i].toString()
+            if (i > 0) res = "$res, "
+            res = "$res${values[i]}"
             i = i + 1
         }
         return res
@@ -33,9 +33,9 @@ type Stats(val label: String) {
 }
 
 fun main() {
-    println("sum() = " + sum().toString())
-    println("sum(1,2,3) = " + sum(1, 2, 3).toString())
-    println("sum(10,20,30,40) = " + sum(10, 20, 30, 40).toString())
+    println("sum() = ${sum()}")
+    println("sum(1,2,3) = ${sum(1, 2, 3)}")
+    println("sum(10,20,30,40) = ${sum(10, 20, 30, 40)}")
 
     println(join(", ", "Eiwa", "Zig", "LLVM"))
     println(join(" - ", "a", "b"))

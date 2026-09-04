@@ -3,7 +3,7 @@
 
 type File(val path: String) {
     fun getInfo(): String {
-        return "File path: " + this.path
+        return "File path: ${this.path}"
     }
 } object {
     val defaultPath = "/tmp/eiwa_db.json"
@@ -16,7 +16,7 @@ type File(val path: String) {
 fun main() {
     // 1. Access static variable directly on File namespace
     val path = File.defaultPath
-    print("Default Path: " + path)
+    print("Default Path: $path")
 
     // 2. Access static factory method on File namespace
     val file = File.createDefault()

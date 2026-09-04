@@ -48,14 +48,14 @@ test "lambdas: higher order function return and nested capturing" {
 
 type HTMLBuilder(var content: String = "") {
     fun body(init: () -> String) {
-        this.content = this.content + "<body>" + init() + "</body>"
+        this.content = "${this.content}<body>${init()}</body>"
     }
 }
 
 fun html(init: HTMLBuilder.() -> Void): String {
     val builder = HTMLBuilder()
     init(builder)
-    return "<html>" + builder.content + "</html>"
+    return "<html>${builder.content}</html>"
 }
 
 test "lambdas: simple HTML builder DSL" {

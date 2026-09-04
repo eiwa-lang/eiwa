@@ -1,0 +1,118 @@
+import { assert } from "std.core"
+
+type Product(val title: String, val price: Double) : Stringable {
+    implement fun toString(): String {
+        return "Product(title=$title, price=$price)"
+    }
+}
+
+type User(val id: Int, val username: String, val active: Bool) : Stringable {
+    implement fun toString(): String {
+        return "User(id=$id, username=$username, active=$active)"
+    }
+}
+
+test "should interpolate simple identifiers ($var)" {
+    val name = "Eiwa"
+    val greeting = "Hello, $name!"
+    assert(greeting == "Hello, Eiwa!")
+
+    val version = 1
+    val info = "Language: $name v$version"
+    assert(info == "Language: Eiwa v1")
+}
+
+test "should interpolate primitive types (Int, Double, Bool)" {
+    val count: Int = 42
+    val pi: Double = 3.14
+    val isReady: Bool = true
+
+    val output = "Count: $count, Pi: $pi, Ready: $isReady"
+    assert(output == "Count: 42, Pi: 3.14, Ready: true")
+}
+
+test "should interpolate arithmetic and complex expressions (${expr})" {
+    val a = 10
+    val b = 25
+    val sumStr = "Sum: ${a + b}"
+    assert(sumStr == "Sum: 35")
+
+    val multStr = "Calc: ${a * 2 + b}"
+    assert(multStr == "Calc: 45")
+}
+
+test "should interpolate method calls and property access inside ${expr}" {
+    val title = "compiler"
+    val lenStr = "Length of $title is ${title.length}"
+    assert(lenStr == "Length of compiler is 8")
+
+    val user = User(101, "dev_user", true)
+    val userPropStr = "User ID: ${user.id}, Username: ${user.username}"
+    assert(userPropStr == "User ID: 101, Username: dev_user")
+}
+
+test "should interpolate custom types implementing Stringable" {
+    val prod = Product("Keyboard", 99.9)
+    val prodStr = "Cart item: $prod"
+    assert(prodStr == "Cart item: Product(title=Keyboard, price=99.9)")
+
+    val user = User(7, "alice", false)
+    val userStr = "Account: $user"
+    assert(userStr == "Account: User(id=7, username=alice, active=false)")
+}
+
+test "should support adjacent interpolations without separators" {
+    val first = "foo"
+    val second = "bar"
+    val combined = "$first$second"
+    assert(combined == "foobar")
+
+    val prefix = "item_"
+    val id = 42
+    val suffix = "_v2"
+    val code = "$prefix$id$suffix"
+    assert(code == "item_42_v2")
+}
+
+test "should handle interpolation at boundary positions (start, middle, end)" {
+    val word = "start"
+    val startStr = "$word of line"
+    assert(startStr == "start of line")
+
+    val endWord = "end"
+    val endStr = "at the $endWord"
+    assert(endStr == "at the end")
+
+    val single = "$word"
+    assert(single == "start")
+}
+
+test "should handle escaped dollar sign (\$)" {
+    val price = 50
+    val escaped = "Price is \$$price USD"
+    assert(escaped == "Price is $50 USD")
+
+    val doubleEscaped = "Total: \$$price and fee is \$5"
+    assert(doubleEscaped == "Total: $50 and fee is $5")
+}
+
+test "should handle string template containing only expressions" {
+    val a = 3
+    val b = 4
+    val result = "${a + b}"
+    assert(result == "7")
+
+    val dual = "$a$b"
+    assert(dual == "34")
+}
+
+test "should maintain stability and correctness under repeated execution" {
+    var i = 0
+    while (i < 100) {
+        val iterationStr = "Iteration #$i with value: ${i * 2}"
+        if (i == 50) {
+            assert(iterationStr == "Iteration #50 with value: 100")
+        }
+        i = i + 1
+    }
+}

@@ -2,7 +2,7 @@ import { assert } from "std.core"
 
 type Greeter(val prefix: String) {
     fun greet(name: String): String {
-        val build = { prefix + ", " + name }
+        val build = { "$prefix, $name" }
         return build()
     }
 }
@@ -20,7 +20,7 @@ fun applyString(block: () -> String): String {
 
 type Templater(val header: String) {
     fun render(title: String): String {
-        return applyString { header + " | " + title }
+        return applyString { "$header | $title" }
     }
 }
 

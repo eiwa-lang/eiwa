@@ -42,8 +42,8 @@ fun main(): Void {
 
         count = count + 1
         if (lastEchoIn != currentTime) {
-            val msg = "[" + currentTime.format("YYYY-MM-DD HH:mm:ss") + "] " + p.name + " simulated 1000 times 1000 N-Body steps and found prime up to 100000000: " + (prime).toString()
-            echo(msg + " [" + count.toString() + " times]")
+            val msg = "[" + currentTime.format("YYYY-MM-DD HH:mm:ss") + "] " + p.name + " simulated 1000 times 1000 N-Body steps and found prime up to 100000000: $prime"
+            echo("$msg [$count times]")
             
             lastEchoIn = currentTime
             count = 0

@@ -119,6 +119,13 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
             }
             new_node.data = .{ .array_literal = .{ .elements = new_elems } };
         },
+        .string_template => |st| {
+            var new_parts = try self.allocator.alloc(*ASTNode, st.parts.len);
+            for (st.parts, 0..) |part, i| {
+                new_parts[i] = try self.cloneNode(part);
+            }
+            new_node.data = .{ .string_template = .{ .parts = new_parts } };
+        },
 
         .unary_expr => |u| {
             new_node.data = .{ .unary_expr = .{

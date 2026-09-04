@@ -16,7 +16,7 @@ type Counter(val base: Int) {
     }
 
     fun describe(): String {
-        return this.label + "#" + this.count.toString()
+        return "${this.label}#${this.count}"
     }
 }
 

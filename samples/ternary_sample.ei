@@ -3,16 +3,16 @@ val b = 20
 
 // Standard ternary
 val max = (a > b) ? a : b
-print("Max is: " + max.toString())
+print("Max is: $max")
 
 // Nested ternary (associating to the right)
 val score = 85
 val grade = (score >= 90) ? "A" : (score >= 80) ? "B" : "C"
-print("Grade: " + grade)
+print("Grade: $grade")
 
 // Short ternary (implicitly returns null when condition is false)
 val isPremium = false
 val discountCode: String? = isPremium ? "PREMIUM_DEAL"
 
 val actualDiscount = discountCode ?: "NO_DISCOUNT"
-print("Discount Code: " + actualDiscount)
+print("Discount Code: $actualDiscount")

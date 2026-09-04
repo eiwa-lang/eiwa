@@ -3,6 +3,6 @@ import { print } from "std.core"
 
 type CircularUser(val name: String, val group: CircularGroup) {
     fun show() {
-        print("User: " + name + " in group " + group.name)
+        print("User: $name in group ${group.name}")
     }
 }

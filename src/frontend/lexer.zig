@@ -140,15 +140,49 @@ pub const Lexer = struct {
     }
 
     fn string(self: *Lexer) Token {
-        while (!self.isAtEnd() and self.peek() != '"') {
-            if (self.peek() == '\\') {
+        var interp_depth: usize = 0;
+        while (!self.isAtEnd()) {
+            const c = self.peek();
+            if (c == '"' and interp_depth == 0) {
+                break;
+            }
+            if (c == '\\') {
                 _ = self.advance(); // consume '\'
                 if (!self.isAtEnd()) {
                     _ = self.advance(); // consume the escaped character
                 }
                 continue;
             }
-            if (self.peek() == '\n') {
+            if (c == '$' and self.peekNext() == '{') {
+                _ = self.advance(); // consume '$'
+                _ = self.advance(); // consume '{'
+                interp_depth += 1;
+                continue;
+            }
+            if (interp_depth > 0) {
+                if (c == '{') {
+                    interp_depth += 1;
+                } else if (c == '}') {
+                    interp_depth -= 1;
+                } else if (c == '"') {
+                    _ = self.advance(); // consume opening quote of inner string
+                    while (!self.isAtEnd() and self.peek() != '"') {
+                        if (self.peek() == '\\') {
+                            _ = self.advance();
+                            if (!self.isAtEnd()) _ = self.advance();
+                            continue;
+                        }
+                        if (self.peek() == '\n') {
+                            self.line += 1;
+                            self.column = 1;
+                        }
+                        _ = self.advance();
+                    }
+                    if (!self.isAtEnd()) _ = self.advance(); // consume closing quote of inner string
+                    continue;
+                }
+            }
+            if (c == '\n') {
                 self.line += 1;
                 self.column = 1;
             }

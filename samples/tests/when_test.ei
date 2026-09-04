@@ -38,11 +38,11 @@ test "when with type checking and smart casting" {
     val description = when (pet) {
         is Dog -> {
             // Check that smart cast allows accessing 'name' on Dog
-            "Dog named " + pet.name
+            "Dog named ${pet.name}"
         }
         is Cat -> {
             // Check that smart cast allows accessing 'lives' on Cat
-            "Cat with " + pet.lives.toString() + " lives"
+            "Cat with ${pet.lives} lives"
         }
         else -> "Unknown animal"
     }

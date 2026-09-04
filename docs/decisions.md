@@ -819,6 +819,39 @@ Permite aos desenvolvedores distribuir binários estáticos portáveis para qual
 - **A5 (cache de typecheck) medido e adiado**: typecheck = ~49ms (18%) do rebuild; serializar AST+symbols inter-module não justifica o risco para ~0.05s. Piso real = emit+link (~210ms).
 - **`internal` em vez de `linkonce_odr`**: helpers/lambdas nunca cruzam unidades — `internal` é mais simples e permite dead-strip. `linkonce_odr` voltaria a ser necessário se A4 (N-way) for implementado.
 
+---
+
+## ADR 59: String Templates Nativos com Alocador de Buffer Único (Single-Buffer Allocator)
+**Status:** Aprovado / Implementado  
+**Data:** Setembro 2026  
+
+**Contexto:**
+1. A interpolação textual no Eiwa dependia do operador de concatenação em cadeia `+` (ex.: `"User: " + name + " (" + id.toString() + ")"`).
+2. O encadeamento de múltiplos operadores `+` produz uma árvore de nós binários no AST. Cada nó intermediário gera chamadas ao `Standard.gcMalloc` no Boehm GC para buffers temporários descartáveis e structs `core_String` de 16 bytes, além de re-copiar os bytes de segmentos já processados (complexidade de cópia quadrática $O(L^2)$).
+3. Sob o Boehm GC, a produção contínua de lixo transitório em laços intensivos causa fragmentação de páginas livres e dispara coletas de lixo prematuras (*Stop-the-World*), degradando o throughput.
+
+**Decisão:**
+1. **Sintaxe de Interpolação Kotlin-Style:**
+   - Variáveis e identificadores simples: `$identificador` (ex.: `"Hello, $name!"`).
+   - Expressões compostas e arbitrárias: `${expressao}` (ex.: `"${a + b}"`, `"${user.username}"`, `"${list.length()}"`).
+   - Sequência de escape: `\$` emite o caractere literal `$` sem iniciar interpolação (ex.: `"Price: \$$price"` $\rightarrow$ `"Price: $50"`).
+2. **Nó de AST Dedicado (`.string_template`):**
+   - O scanner (`src/frontend/lexer.zig`) rastreia profundidade de interpolação `${...}` garantindo suporte a chaves e aspas aninhadas.
+   - O parser (`src/frontend/parser/expression.zig`) desmembra a string em segmentos literais (`.string_literal`) e expressões executáveis.
+   - O `TypeChecker` infere o tipo de cada expressão filha, verifica conformidade com `Stringable` e tipa o nó como `.String`.
+   - O transformador de corrotinas stackless (`coroutines_transform.zig`) e o clonador de AST (`clone.zig`) propagam `.string_template` em todas as fases do compilador.
+3. **Backend LLVM com Alocador de Buffer Único (`emitStringTemplate`):**
+   - O compilador avalia expressões dinâmicas (utilizando `emitValueToString` para primitivos e tipos customizados com `Stringable`).
+   - Acumula em tempo de compilação/IR a soma exata dos comprimentos de todos os segmentos (`total_len`).
+   - Executa **uma única chamada** `gcMalloc(total_len + 1)` para o buffer final contíguo.
+   - Executa chamadas sequenciais a `memcpy` diretamente nas posições de offset calculadas, garantindo complexidade de cópia estritamente linear $O(L)$ e aproveitando aceleração vetorial SIMD da libc/LLVM.
+   - Grava o terminador nulo `\0` e aloca uma única struct `core_String { ptr, total_len }`.
+   - Fragmentos literais estáticos dentro do template não alocam structs `core_String` intermediárias.
+
+**Razão:**
+Entrega a melhor ergonomia de desenvolvimento moderna (DX alinhada à filosofia do Kotlin) combinada com a máxima performance nativa possível em sistemas orientados a Boehm GC, eliminando buffers transitórios e reduzindo a pressão sobre o coletor de lixo.
+
+
 
 
 

@@ -10,7 +10,7 @@ fun String.lastChar(): String {
 }
 
 fun String.quoted(): String {
-    return "\"" + this + "\""
+    return "\"$this\""
 }
 
 // 2. Extension function on Int

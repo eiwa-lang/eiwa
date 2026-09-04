@@ -5,12 +5,12 @@ fun main() {
 
     // Try loading environment from .env file (optional, returns false if not found)
     val envLoaded = Env.load()
-    print("Env file loaded: " + envLoaded.toString())
+    print("Env file loaded: $envLoaded")
 
     // 1. Reading basic string environment variables
     val homeDir = Env.get("HOME")
     if (homeDir != null) {
-        print("HOME directory is: " + homeDir!!)
+        print("HOME directory is: ${homeDir!!}")
     } else {
         print("HOME variable not set in process environment.")
     }
@@ -20,9 +20,9 @@ fun main() {
     val dbPort = Env.get("DB_PORT", 5432)
     val debugMode = Env.get("DEBUG_MODE", false)
 
-    print("Database Host: " + dbHost)
-    print("Database Port: " + dbPort.toString())
-    print("Debug Mode: " + debugMode.toString())
+    print("Database Host: $dbHost")
+    print("Database Port: $dbPort")
+    print("Debug Mode: $debugMode")
 
     // 3. Modifying the environment dynamically
     Env.set("MY_CUSTOM_CONFIG", "eiwa-config-value")

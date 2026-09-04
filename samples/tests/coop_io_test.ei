@@ -25,7 +25,7 @@ test "cooperative non-blocking TCP server accept and client communication" {
             val s: Socket = client!!
             val msg: String = s.read(100)
             serverReceived = msg
-            s.write("PONG:" + msg)
+            s.write("PONG:$msg")
             s.close()
         }
         server.close()

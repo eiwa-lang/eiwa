@@ -126,7 +126,7 @@ type Time(val sec: Int) : Serializable {
     }
 
     fun pad(value: Int): String {
-        return if (value < 10) "0" + value.toString() else value.toString()
+        return if (value < 10) "0$value" else "$value"
     }
 
     fun format(pattern: String): String {

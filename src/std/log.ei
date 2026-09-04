@@ -34,14 +34,14 @@ skill TextFormatter : LogFormatter {
         val timestamp = now().toString()
         val levelStr = level.name
 
-        var result = "[" + timestamp + "] " + color + "[" + levelStr + "]" + reset + " " + message
+        var result = "[$timestamp] $color[$levelStr]$reset $message"
 
         if (throwable != null) {
-            result = result + " | Error: " + throwable!!.message()
+            result = "$result | Error: ${throwable!!.message()}"
         }
 
         if (fields.size() > 0) {
-            result = result + " {"
+            result = "$result {"
             var i = 0
             val capacity = fields.entries.size()
             var first = true
@@ -49,17 +49,17 @@ skill TextFormatter : LogFormatter {
                 var curr = fields.entries.get(i)
                 while (curr != null) {
                     if (first == false) {
-                        result = result + ", "
+                        result = "$result, "
                     }
                     val k = curr!!.key
                     val v = curr!!.value
-                    result = result + k + "=" + v
+                    result = "$result$k=$v"
                     first = false
                     curr = curr!!.next
                 }
                 i = i + 1
             }
-            result = result + "}"
+            result = "$result}"
         }
 
         return result
@@ -71,10 +71,10 @@ skill JsonFormatter : LogFormatter {
         val timestamp = now().toString()
         val levelStr = level.name
 
-        var json = "{\"timestamp\":\"" + timestamp + "\",\"level\":\"" + levelStr + "\",\"message\":\"" + message + "\""
+        var json = "{\"timestamp\":\"$timestamp\",\"level\":\"$levelStr\",\"message\":\"$message\""
 
         if (throwable != null) {
-            json = json + ",\"error\":\"" + throwable!!.message() + "\""
+            json = "$json,\"error\":\"${throwable!!.message()}\""
         }
 
         if (fields.size() > 0) {
@@ -85,14 +85,14 @@ skill JsonFormatter : LogFormatter {
                 while (curr != null) {
                     val k = curr!!.key
                     val v = curr!!.value
-                    json = json + ",\"" + k + "\":\"" + v + "\""
+                    json = "$json,\"$k\":\"$v\""
                     curr = curr!!.next
                 }
                 i = i + 1
             }
         }
 
-        json = json + "}"
+        json = "$json}"
         return json
     }
 }

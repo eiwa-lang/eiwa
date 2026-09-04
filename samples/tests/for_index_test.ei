@@ -8,7 +8,7 @@ test "for loop with index and item parameters over List" {
 
     for (items) { i, item ->
         indexSum = indexSum + i
-        concat = concat + i.toString() + ":" + item + ","
+        concat = "$concat$i:$item,"
     }
 
     assert(indexSum == 6, "indexSum should be 0+1+2+3 = 6")
@@ -35,7 +35,7 @@ test "for loop with index over MutableList" {
 
     var formatted = ""
     for (list) { i, fruit ->
-        formatted = formatted + "#" + i.toString() + "=" + fruit + " "
+        formatted = "$formatted#$i=$fruit "
     }
 
     assert(formatted == "#0=apple #1=banana #2=cherry ", "mutable list with index formatted properly")
@@ -47,7 +47,7 @@ test "for loop with index and suspension inside coroutine task" {
         var log = ""
         for (words) { i, w ->
             sleepMs(1)
-            log = log + i.toString() + "-" + w + ";"
+            log = "$log$i-$w;"
         }
         log
     }

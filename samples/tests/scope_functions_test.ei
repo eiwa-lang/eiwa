@@ -11,7 +11,7 @@ test "scope: let on primitive transforms value" {
 test "scope: let on custom type" {
     val p = Person("Leo", 30)
     assert(p.let { it.name } == "Leo")
-    assert(p.let { it.name + " is " + it.age.toString() } == "Leo is 30")
+    assert(p.let { "${it.name} is ${it.age}" } == "Leo is 30")
 }
 
 test "scope: let chains" {
@@ -21,7 +21,7 @@ test "scope: let chains" {
 
 test "scope: run returns lambda result" {
     val p = Person("Leo", 30)
-    assert(p.run { it.name + "!" } == "Leo!")
+    assert(p.run { "${it.name}!" } == "Leo!")
 }
 
 test "scope: also returns receiver after side effect" {
@@ -70,7 +70,7 @@ test "scope: takeIf on String" {
 test "scope: with as top-level function" {
     val p = Person("Leo", 31)
     val r = with(p) {
-        it.name + " is " + it.age.toString()
+        "${it.name} is ${it.age}"
     }
     assert(r == "Leo is 31")
 }

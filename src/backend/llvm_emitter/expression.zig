@@ -32,6 +32,70 @@ fn isCoreAutoContract(name: []const u8) bool {
         std.mem.eql(u8, short_name, "SerdeMap");
 }
 
+/// Derives the LLVM struct type representing a contract's vtable (a struct of N function pointers).
+/// Uses a stack buffer for typical contract method counts (<= 32) to avoid dynamic allocations.
+fn getContractVTableLLVMType(ctx: llvm.LLVMContextRef, c_decl: anytype) llvm.LLVMTypeRef {
+    var vtable_fn_count: usize = 0;
+    for (c_decl.methods) |cm| {
+        if (cm.data == .fun_decl) vtable_fn_count += 1;
+    }
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    var stack_buf: [32]llvm.LLVMTypeRef = undefined;
+    if (vtable_fn_count <= 32) {
+        for (stack_buf[0..vtable_fn_count]) |*p| p.* = ptr_t;
+        return llvm.LLVMStructTypeInContext(ctx, &stack_buf, @intCast(vtable_fn_count), 0);
+    } else {
+        const allocated = std.heap.page_allocator.alloc(llvm.LLVMTypeRef, vtable_fn_count) catch return ptr_t;
+        defer std.heap.page_allocator.free(allocated);
+        for (allocated) |*p| p.* = ptr_t;
+        return llvm.LLVMStructTypeInContext(ctx, allocated.ptr, @intCast(vtable_fn_count), 0);
+    }
+}
+
+/// Emits a dynamic virtual method call on a contract fat pointer (`{ ptr fat_data, ptr fat_vtable }`).
+/// Finds the method slot in the contract declaration, loads the function pointer from the vtable,
+/// and executes the indirect call with `fat_data` as the first argument (`this`).
+fn emitContractVirtualCall(
+    ctx: llvm.LLVMContextRef,
+    builder: llvm.LLVMBuilderRef,
+    fat_val: llvm.LLVMValueRef,
+    c_decl: anytype,
+    method_name: []const u8,
+    ret_type: llvm.LLVMTypeRef,
+) !?llvm.LLVMValueRef {
+    var m_idx: ?usize = null;
+    var fun_idx: usize = 0;
+    for (c_decl.methods) |cm| {
+        if (cm.data == .fun_decl) {
+            if (std.mem.eql(u8, cm.data.fun_decl.name, method_name)) {
+                m_idx = fun_idx;
+                break;
+            }
+            fun_idx += 1;
+        }
+    }
+    const idx = m_idx orelse return null;
+
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const data_ptr = if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_val)) == llvm.LLVMStructTypeKind)
+        llvm.LLVMBuildExtractValue(builder, fat_val, 0, "fat_data")
+    else
+        fat_val;
+    const vtable_ptr = if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_val)) == llvm.LLVMStructTypeKind)
+        llvm.LLVMBuildExtractValue(builder, fat_val, 1, "fat_vtable")
+    else
+        fat_val;
+
+    const vtable_llvm_type = getContractVTableLLVMType(ctx, c_decl);
+    const fn_slot = llvm.LLVMBuildStructGEP2(builder, vtable_llvm_type, vtable_ptr, @intCast(idx), "vt_fn_slot");
+    const fn_val = llvm.LLVMBuildLoad2(builder, ptr_t, fn_slot, "vt_fn");
+
+    var ps = [_]llvm.LLVMTypeRef{ptr_t};
+    const ft = llvm.LLVMFunctionType(ret_type, &ps, 1, 0);
+    var args = [_]llvm.LLVMValueRef{data_ptr};
+    return llvm.LLVMBuildCall2(builder, ft, fn_val, &args, 1, "vt_call_res");
+}
+
 // ---------------------------------------------------------------------------
 // Closure fat-pointer helpers
 // ---------------------------------------------------------------------------
@@ -199,6 +263,9 @@ fn collectCapturesLLVM(
                 try collectCapturesLLVM(case.body, locals, captures, mod, structs, ctx);
             }
         },
+        .string_template => |st| {
+            for (st.parts) |p| try collectCapturesLLVM(p, locals, captures, mod, structs, ctx);
+        },
         // Nested lambda: build inner_locals (outer locals + inner params + inner decls)
         // so the inner lambda's own variables are not treated as captures.
         // Pass the outer `captures` list directly — anything not in inner_locals
@@ -270,6 +337,9 @@ pub fn emitExpression(
                 }
             }
             return try emitStringLiteral(ctx, mod, builder, str);
+        },
+        .string_template => |st| {
+            return try emitStringTemplate(ctx, mod, builder, scope, structs, libs, st.parts);
         },
         .identifier => |ident| {
             const name = ident.resolved_c_name orelse ident.name;
@@ -2545,18 +2615,7 @@ pub fn emitExpression(
                                 }
 
                             if (method_idx) |m_idx| {
-                                // Every vtable for this contract has the same layout
-                                // (a struct of N fn pointers), so derive its LLVM type
-                                // from the contract methods — works for both constant
-                                // globals and runtime-loaded vtable pointers.
-                                var vtable_fn_count: usize = 0;
-                                for (c_decl.methods) |cm| {
-                                    if (cm.data == .fun_decl) vtable_fn_count += 1;
-                                }
-                                const vtable_ptr_arr = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, vtable_fn_count);
-                                defer std.heap.page_allocator.free(vtable_ptr_arr);
-                                for (vtable_ptr_arr) |*p| p.* = llvm.LLVMPointerTypeInContext(ctx, 0);
-                                const vtable_llvm_type = llvm.LLVMStructTypeInContext(ctx, vtable_ptr_arr.ptr, @intCast(vtable_fn_count), 0);
+                                const vtable_llvm_type = getContractVTableLLVMType(ctx, c_decl);
 
                                 const fat_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
                                 const data_ptr = if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_ptr)) == llvm.LLVMStructTypeKind)
@@ -4192,6 +4251,112 @@ pub fn emitStringLiteral(
     return inst_ptr;
 }
 
+pub fn emitStringTemplate(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    parts: []const *ast.ASTNode,
+) anyerror!llvm.LLVMValueRef {
+    if (parts.len == 0) {
+        return try emitStringLiteral(ctx, mod, builder, "");
+    }
+
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+    const i8_t = llvm.LLVMInt8TypeInContext(ctx);
+
+    var inst_fields = [_]llvm.LLVMTypeRef{ ptr_t, i64_t };
+    const inst_struct_t = llvm.LLVMStructTypeInContext(ctx, &inst_fields, 2, 0);
+
+    const part_datas = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, parts.len);
+    defer std.heap.page_allocator.free(part_datas);
+    const part_lens = try std.heap.page_allocator.alloc(llvm.LLVMValueRef, parts.len);
+    defer std.heap.page_allocator.free(part_lens);
+
+    var total_len: llvm.LLVMValueRef = llvm.LLVMConstInt(i64_t, 0, 0);
+
+    for (parts, 0..) |part, idx| {
+        if (part.data == .string_literal) {
+            const raw_buf = try emitRawCharBuffer(ctx, mod, builder, part.data.string_literal);
+            const strlen_func = llvm.LLVMGetNamedFunction(mod, "strlen") orelse blk: {
+                var ps = [_]llvm.LLVMTypeRef{ptr_t};
+                const ft = llvm.LLVMFunctionType(i64_t, &ps, 1, 0);
+                break :blk llvm.LLVMAddFunction(mod, "strlen", ft);
+            };
+            const strlen_type = llvm.LLVMGlobalGetValueType(strlen_func);
+            var sl_args = [_]llvm.LLVMValueRef{raw_buf};
+            const len = llvm.LLVMBuildCall2(builder, strlen_type, strlen_func, &sl_args, 1, "lit_len");
+
+            part_datas[idx] = raw_buf;
+            part_lens[idx] = len;
+            total_len = llvm.LLVMBuildAdd(builder, total_len, len, "accum_len");
+            continue;
+        }
+
+        var part_val = try emitExpression(ctx, mod, builder, scope, structs, libs, part);
+        if (!isStringOperand(part)) {
+            part_val = try emitValueToString(ctx, mod, builder, part_val, part.resolved_type);
+        } else {
+            part_val = coerceArg(builder, part_val, ptr_t);
+        }
+
+        const null_str = try emitStringLiteral(ctx, mod, builder, "null");
+        const is_null = llvm.LLVMBuildIsNull(builder, part_val, "is_null");
+        const safe_part = llvm.LLVMBuildSelect(builder, is_null, null_str, part_val, "safe_part");
+
+        const data_ptr = llvm.LLVMBuildStructGEP2(builder, inst_struct_t, safe_part, 0, "p_data_ptr");
+        const data = llvm.LLVMBuildLoad2(builder, ptr_t, data_ptr, "p_data");
+        const len_ptr = llvm.LLVMBuildStructGEP2(builder, inst_struct_t, safe_part, 1, "p_len_ptr");
+        const len = llvm.LLVMBuildLoad2(builder, i64_t, len_ptr, "p_len");
+
+        part_datas[idx] = data;
+        part_lens[idx] = len;
+        total_len = llvm.LLVMBuildAdd(builder, total_len, len, "accum_len");
+    }
+
+    const total_alloc = llvm.LLVMBuildAdd(builder, total_len, llvm.LLVMConstInt(i64_t, 1, 0), "total_alloc");
+    const gc_func = core.getHeapAllocFn(mod);
+    const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
+    var gc_args = [_]llvm.LLVMValueRef{total_alloc};
+    const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "template_buf");
+
+    const memcpy_fn = llvm.LLVMGetNamedFunction(mod, "memcpy") orelse blk: {
+        var ps = [_]llvm.LLVMTypeRef{ ptr_t, ptr_t, i64_t };
+        const ft = llvm.LLVMFunctionType(ptr_t, &ps, 3, 0);
+        break :blk llvm.LLVMAddFunction(mod, "memcpy", ft);
+    };
+    const memcpy_ft = llvm.LLVMGlobalGetValueType(memcpy_fn);
+
+    var current_offset: llvm.LLVMValueRef = llvm.LLVMConstInt(i64_t, 0, 0);
+    for (0..parts.len) |idx| {
+        var off_idx = [_]llvm.LLVMValueRef{current_offset};
+        const dest_ptr = llvm.LLVMBuildGEP2(builder, i8_t, buf, &off_idx, 1, "dest_ptr");
+        var mc_args = [_]llvm.LLVMValueRef{ dest_ptr, part_datas[idx], part_lens[idx] };
+        _ = llvm.LLVMBuildCall2(builder, memcpy_ft, memcpy_fn, &mc_args, 3, "mc");
+        current_offset = llvm.LLVMBuildAdd(builder, current_offset, part_lens[idx], "next_offset");
+    }
+
+    var tot_idx = [_]llvm.LLVMValueRef{total_len};
+    const nul_ptr = llvm.LLVMBuildGEP2(builder, i8_t, buf, &tot_idx, 1, "nul_ptr");
+    _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i8_t, 0, 0), nul_ptr);
+
+    var ga16 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 16, 0)};
+    const raw_inst = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &ga16, 1, "str_inst_alloc");
+    const inst_ptr = llvm.LLVMBuildBitCast(builder, raw_inst, ptr_t, "str_inst");
+
+    const f0_ptr = llvm.LLVMBuildStructGEP2(builder, inst_struct_t, inst_ptr, 0, "f0_ptr");
+    _ = llvm.LLVMBuildStore(builder, buf, f0_ptr);
+
+    const f1_ptr = llvm.LLVMBuildStructGEP2(builder, inst_struct_t, inst_ptr, 1, "f1_ptr");
+    _ = llvm.LLVMBuildStore(builder, total_len, f1_ptr);
+
+    return inst_ptr;
+}
+
+
 /// Wraps a null-terminated char* into a String object (%core_String { ptr, length }):
 /// allocates 16 bytes on the GC heap, stores ptr at offset 0 and length at offset 8.
 fn wrapStringWithHeader(
@@ -4508,6 +4673,23 @@ pub fn emitValueToString(
                 return try wrapStringWithHeader(ctx, mod, builder, buf, "double_str");
             },
             .Custom => |name| {
+                if (types_mapping.isContractType(base_rt.*, global_contracts_ast_ptr)) {
+                    var contract_node = if (global_contracts_ast_ptr) |ca| ca.get(name) else null;
+                    if (contract_node == null and global_contracts_ast_ptr != null) {
+                        const ca = global_contracts_ast_ptr.?;
+                        if (std.mem.indexOfScalar(u8, name, '_')) |idx| {
+                            contract_node = ca.get(name[0..idx]);
+                        }
+                    }
+                    if (contract_node) |cnode| {
+                        if (cnode.data == .contract_decl) {
+                            if (try emitContractVirtualCall(ctx, builder, val, cnode.data.contract_decl, "toString", ptr_t)) |res| {
+                                return res;
+                            }
+                        }
+                    }
+                }
+
                 var buf_name: [128]u8 = undefined;
                 var to_str_fn: ?llvm.LLVMValueRef = null;
                 const to_str_mangled = std.fmt.bufPrint(&buf_name, "{s}_toString\x00", .{name}) catch "";
@@ -4536,11 +4718,13 @@ pub fn emitValueToString(
         }
     }
 
-    const to_str_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_to_string").?;
-    const to_str_type = llvm.LLVMGlobalGetValueType(to_str_fn);
-    const p_val = coerceArg(builder, val, ptr_t);
-    var ts_args = [_]llvm.LLVMValueRef{p_val};
-    return llvm.LLVMBuildCall2(builder, to_str_type, to_str_fn, &ts_args, 1, "ts_fallback");
+    if (llvm.LLVMGetNamedFunction(mod, "eiwa_to_string")) |to_str_fn| {
+        const to_str_type = llvm.LLVMGlobalGetValueType(to_str_fn);
+        const p_val = coerceArg(builder, val, ptr_t);
+        var ts_args = [_]llvm.LLVMValueRef{p_val};
+        return llvm.LLVMBuildCall2(builder, to_str_type, to_str_fn, &ts_args, 1, "ts_fallback");
+    }
+    return try emitStringLiteral(ctx, mod, builder, "");
 }
 
 /// `coerceArg` unifies argument types at function and contract call boundaries,
@@ -4805,13 +4989,13 @@ fn isStringOperandType(rt: *const ts.EiwaType) bool {
 }
 
 fn isStringOperand(node: *ast.ASTNode) bool {
-    if (node.data == .string_literal) return true;
+    if (node.data == .string_literal or node.data == .string_template) return true;
     const rt = node.resolved_type orelse return false;
     return isStringOperandType(rt);
 }
 
 fn isStrictString(node: *ast.ASTNode) bool {
-    if (node.data == .string_literal) return true;
+    if (node.data == .string_literal or node.data == .string_template) return true;
     const rt = node.resolved_type orelse return false;
     const base_rt = ts.extractBaseType(rt);
     return switch (base_rt.*) {

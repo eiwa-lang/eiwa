@@ -85,7 +85,7 @@ test "task with `with` block" {
     val t = task {
         val person = Person("Leo", 31)
         with(person) {
-            it.name + " is " + it.age.toString()
+            "${it.name} is ${it.age}"
         }
     }
     assert(t.await() == "Leo is 31")

@@ -582,7 +582,7 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
     if (self.match(.string_literal)) {
         const lexeme = self.previous.lexeme;
         const value = lexeme[1 .. lexeme.len - 1];
-        return try self.createNodeAt(.{ .string_literal = value }, line, col);
+        return try parseStringLiteralOrTemplate(self, value, line, col);
     }
     if (self.match(.identifier)) {
         return try self.createNodeAt(.{ .identifier = .{
@@ -617,3 +617,97 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
     self.errorAtCurrent("Expected expression.");
     return error.ParseError;
 }
+
+fn parseStringLiteralOrTemplate(self: *Parser, raw: []const u8, line: usize, col: usize) anyerror!*ASTNode {
+    var has_interpolation = false;
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        if (raw[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (raw[i] == '$' and i + 1 < raw.len) {
+            if (raw[i + 1] == '{' or std.ascii.isAlphabetic(raw[i + 1]) or raw[i + 1] == '_') {
+                has_interpolation = true;
+                break;
+            }
+        }
+    }
+
+    if (!has_interpolation) {
+        return try self.createNodeAt(.{ .string_literal = raw }, line, col);
+    }
+
+    var parts = ArrayList(*ASTNode).init(self.allocator);
+    var start: usize = 0;
+    var idx: usize = 0;
+    while (idx < raw.len) {
+        if (raw[idx] == '\\') {
+            idx += 2;
+            continue;
+        }
+        if (raw[idx] == '$' and idx + 1 < raw.len and (raw[idx + 1] == '{' or std.ascii.isAlphabetic(raw[idx + 1]) or raw[idx + 1] == '_')) {
+            if (idx > start) {
+                const lit_slice = raw[start..idx];
+                const lit_node = try self.createNodeAt(.{ .string_literal = lit_slice }, line, col);
+                try parts.append(lit_node);
+            }
+
+            if (raw[idx + 1] == '{') {
+                var depth: usize = 1;
+                var j: usize = idx + 2;
+                var in_quote = false;
+                while (j < raw.len and depth > 0) : (j += 1) {
+                    if (raw[j] == '\\' and in_quote) {
+                        j += 1;
+                        continue;
+                    }
+                    if (raw[j] == '"') {
+                        in_quote = !in_quote;
+                        continue;
+                    }
+                    if (!in_quote) {
+                        if (raw[j] == '{') depth += 1
+                        else if (raw[j] == '}') depth -= 1;
+                    }
+                }
+                if (depth != 0) {
+                    self.errorAtCurrent("Unterminated expression inside string template.");
+                    return error.ParseError;
+                }
+                const expr_str = raw[idx + 2 .. j - 1];
+                var sub_parser = Parser.init(self.allocator, expr_str);
+                const expr_node = try sub_parser.expression();
+                try parts.append(expr_node);
+
+                idx = j;
+                start = j;
+            } else {
+                var j: usize = idx + 1;
+                while (j < raw.len and (std.ascii.isAlphanumeric(raw[j]) or raw[j] == '_')) : (j += 1) {}
+                const ident_name = raw[idx + 1 .. j];
+                const ident_node = try self.createNodeAt(.{ .identifier = .{
+                    .name = ident_name,
+                    .resolved_c_name = null,
+                } }, line, col);
+                try parts.append(ident_node);
+
+                idx = j;
+                start = j;
+            }
+        } else {
+            idx += 1;
+        }
+    }
+
+    if (start < raw.len) {
+        const trailing = raw[start..raw.len];
+        const trailing_node = try self.createNodeAt(.{ .string_literal = trailing }, line, col);
+        try parts.append(trailing_node);
+    }
+
+    return try self.createNodeAt(.{ .string_template = .{
+        .parts = try parts.toOwnedSlice(),
+    } }, line, col);
+}
+

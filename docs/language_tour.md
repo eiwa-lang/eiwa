@@ -184,14 +184,17 @@ Eiwa supports Kotlin-style backslash escape sequences inside double-quoted strin
 * `\t` – Tab
 * `\b` – Backspace
 * `\'` – Single quote
+* `\$` – Escaped dollar sign (outputs a literal `$`, prevents template interpolation)
 
 ```kotlin
 fun main() {
     val escapedQuote = "Ele disse \"Ola\""
     val backslash = "C:\\eiwa\\bin"
     val multiline = "Primeira Linha\nSegunda Linha"
+    val priceLiteral = "Price is \$100 USD"
     
     assert(escapedQuote.length == 15) // counts exact characters (excluding the backslash escape character)
+    assert(priceLiteral == "Price is $100 USD")
 }
 ```
 
@@ -222,6 +225,50 @@ fun main() {
     assert(info == "Customer: User(id=1, name=Alice)")
 }
 ```
+
+### 4.2 String Templates & Interpolation (`$var`, `${expr}`)
+
+Eiwa supports native Kotlin-style string templates. Expressions and variables can be directly embedded into double-quoted string literals:
+
+* **Simple Identifiers:** `$variableName`
+* **Arbitrary Expressions:** `${expression}` (including arithmetic, property reads, method calls, or nested logic)
+* **Escaped Dollar Sign:** `\$` emits a literal `$` without triggering interpolation.
+
+```kotlin
+type Account(val id: Int, val holder: String, val balance: Double) : Stringable {
+    implement fun toString(): String = "Account(id=$id, holder=$holder, balance=\$$balance)"
+}
+
+fun main() {
+    val name = "Eiwa"
+    val version = 1
+    val greeting = "Welcome to $name v$version!"
+    assert(greeting == "Welcome to Eiwa v1!")
+
+    // Arithmetic & expressions
+    val a = 10
+    val b = 25
+    val calc = "Sum of $a + $b is ${a + b}, doubled is ${(a + b) * 2}"
+    assert(calc == "Sum of 10 + 25 is 35, doubled is 70")
+
+    // Properties and methods
+    val lang = "compiler"
+    val stats = "The word '$lang' has ${lang.length} letters"
+    assert(stats == "The word 'compiler' has 8 letters")
+
+    // Custom Stringable objects
+    val acc = Account(42, "Alice", 1500.5)
+    val statement = "Customer status: $acc"
+    assert(statement == "Customer status: Account(id=42, holder=Alice, balance=\$1500.5)")
+
+    // Escaped dollar signs for monetary representations
+    val cost = 99
+    val receipt = "Total price: \$$cost"
+    assert(receipt == "Total price: \$99")
+}
+```
+
+> **High-Performance Single-Buffer Allocator:** Unlike chained `+` concatenation which creates intermediate heap allocations for each operator, Eiwa's LLVM backend computes the cumulative length of all template segments and allocates **a single contiguous memory buffer** in Boehm GC (`gcMalloc`), copying all fragments sequentially via SIMD `memcpy` in linear $O(L)$ time with zero GC heap fragmentation.
 
 ---
 

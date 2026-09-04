@@ -6,7 +6,7 @@ import { Throwable } from "std.exceptions"
 
 type TestException(val msg: String) : Throwable {
     implement fun message(): String {
-        return "TestException: " + this.msg
+        return "TestException: ${this.msg}"
     }
 }
 

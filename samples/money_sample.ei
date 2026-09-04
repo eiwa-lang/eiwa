@@ -7,22 +7,22 @@ fun main() {
 
     // 2. Mathematical operators (+, -, *)
     val total = item1 + item2
-    print("Total sum: " + total.format()) // R$ 15,00
+    print("Total sum: ${total.format()}") // R$ 15,00
 
     val doubled = item1 * 2
-    print("Doubled item1: " + doubled.format()) // R$ 21,00
+    print("Doubled item1: ${doubled.format()}") // R$ 21,00
 
     // 3. Fowler Allocation Engine (rate allocation without cent loss)
     // Split R$ 10,00 (1000 cents) into 3 equal parts
     val tenReais = brl(1000)
     val installments = tenReais.split(3)
 
-    print("Installment 1: " + installments[0].format()) // R$ 3,34
-    print("Installment 2: " + installments[1].format()) // R$ 3,33
-    print("Installment 3: " + installments[2].format()) // R$ 3,33
+    print("Installment 1: ${installments[0].format()}") // R$ 3,34
+    print("Installment 2: ${installments[1].format()}") // R$ 3,33
+    print("Installment 3: ${installments[2].format()}") // R$ 3,33
 
     // Verify exact sum preservation (334 + 333 + 333 = 1000 cents)
     val totalInstallments = installments[0] + installments[1] + installments[2]
     assert(totalInstallments == tenReais)
-    print("Exact sum preserved without cent loss: " + totalInstallments.format())
+    print("Exact sum preserved without cent loss: ${totalInstallments.format()}")
 }

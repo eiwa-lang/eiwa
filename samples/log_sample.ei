@@ -4,7 +4,7 @@ import { Throwable } from "std.exceptions"
 
 type DatabaseException(val reason: String) : Throwable {
     implement fun message(): String {
-        return "DatabaseException: " + this.reason
+        return "DatabaseException: ${this.reason}"
     }
 }
 

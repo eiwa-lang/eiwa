@@ -7,7 +7,7 @@ contract Drawable {
 skill Shadow : Drawable {
 
     fun render(): String {
-        return draw() + " + shadow"
+        return "${draw()} + shadow"
     }
 
 }
@@ -31,7 +31,7 @@ skill TouchInput {
 type Button(val label: String): Drawable + Shadow + MouseInput + TouchInput {
 
     implement fun draw(): String {
-        return "draw " + label
+        return "draw $label"
     }
 
     // Explicit conflict resolution between MouseInput and TouchInput
@@ -83,7 +83,7 @@ contract Transformer<T, R> {
 
 skill IntToStringTransformer : Transformer<Int, String> {
     implement fun transform(value: Int): String {
-        return "Value: " + value.toString()
+        return "Value: $value"
     }
 }
 
@@ -95,7 +95,7 @@ contract ValueHolder<T> {
 
 skill FormattedHolderSkill : ValueHolder<String> {
     fun getFormatted(): String {
-        return "Formatted(" + getValue() + ")"
+        return "Formatted(${getValue()})"
     }
 }
 

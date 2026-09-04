@@ -2333,6 +2333,19 @@ pub const LLVMEmitter = struct {
                     }
                 }
             },
+            .string_template => |st| {
+                for (st.parts) |p| {
+                    try self.collectCallees(p, reachable, worklist);
+                    if (p.resolved_type) |pt| {
+                        const p_base = ts.extractBaseType(pt);
+                        if (p_base.* == .Custom) {
+                            const buf = try std.fmt.allocPrint(self.allocator, "{s}_toString", .{p_base.Custom});
+                            try self.markReachable(buf, reachable, worklist);
+                            self.allocator.free(buf);
+                        }
+                    }
+                }
+            },
             .unary_expr => |u| try self.collectCallees(u.operand, reachable, worklist),
             .ternary_expr => |t| {
                 try self.collectCallees(t.condition, reachable, worklist);

@@ -2,7 +2,7 @@ import { assert } from "std.core"
 
 type Box(val name: String, var count: Int = 0) {
     fun show(value: Stringable): String {
-        return name + ":" + value.toString()
+        return "$name:$value"
     }
 }
 
@@ -42,7 +42,7 @@ test "receiver lambda: var field read and reassigned without this." {
     var before = ""
     var after = ""
     runBox {
-        before = name + count.toString()
+        before = "$name$count"
         count = count + 10
         after = count.toString()
     }
@@ -53,7 +53,7 @@ test "receiver lambda: var field read and reassigned without this." {
 test "receiver lambda: nested receiver field access without this." {
     var captured = ""
     runBoxNested {
-        captured = name + count.toString()
+        captured = "$name$count"
     }
     assert(captured == "x1")
 }

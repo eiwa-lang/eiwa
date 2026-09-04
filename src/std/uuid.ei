@@ -14,12 +14,12 @@ type Uuid(val bytes: List<Int>) : Identifier {
         var i = 0
         while (i < 16) {
             if (i == 4 || i == 6 || i == 8 || i == 10) {
-                result = result + "-"
+                result = "$result-"
             }
             val b = this.bytes[i]
             val high = mod(b / 16, 16)
             val low = mod(b, 16)
-            result = result + hexChars.substring(high, high + 1) + hexChars.substring(low, low + 1)
+            result = "$result${hexChars.substring(high, high + 1)}${hexChars.substring(low, low + 1)}"
             i = i + 1
         }
         return result

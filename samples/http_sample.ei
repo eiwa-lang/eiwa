@@ -23,7 +23,7 @@ fun main() {
             val conn = server.accept()
             if (conn != null) {
                 val req = conn!!.readRequest()
-                print("Received request: " + req.method + " " + req.path)
+                print("Received request: ${req.method} ${req.path}")
                 
                 conn!!.writeResponse(200, "text/plain", "Hello from Eiwa HTTP Server!")
                 conn!!.close()

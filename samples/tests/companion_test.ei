@@ -2,7 +2,7 @@
 
 type Config(val name: String) {
     fun getFormatted(): String {
-        return "Config:" + this.name
+        return "Config:${this.name}"
     }
 } object {
     val defaultPrefix = "SYS_"
@@ -10,7 +10,7 @@ type Config(val name: String) {
     
     fun createSystem(name: String): Config {
         Config.loadCount = Config.loadCount + 1
-        return Config(Config.defaultPrefix + name)
+        return Config("${Config.defaultPrefix}$name")
     }
 }
 
@@ -19,7 +19,7 @@ object CustomLogger {
     var logs = ""
     
     fun info(msg: String) {
-        CustomLogger.logs = CustomLogger.logs + msg + ";"
+        CustomLogger.logs = "${CustomLogger.logs}$msg;"
     }
 }
 
@@ -32,7 +32,7 @@ object Service {
     }
 } type (val host: String, val port: Int) {
     fun getUrl(): String {
-        return "http://" + this.host + ":" + this.port.toString()
+        return "http://${this.host}:${this.port}"
     }
 }
 

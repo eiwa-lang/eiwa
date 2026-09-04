@@ -5,19 +5,19 @@ fun main() {
     print("=== General Union Types Sample ===")
 
     var value: String | Int = "Initial String"
-    print("Value (String): " + (value as String))
+    print("Value (String): ${value as String}")
     assert(value == "Initial String")
 
     value = 42
-    print("Value (Int): " + (value as Int).toString())
+    print("Value (Int): ${value as Int}")
     assert(value == 42)
 
     val map: MutableMap<String, String | Int> = MutableMap()
     map["language"] = "Eiwa"
     map["year"] = 2026
 
-    print("Map language: " + ((map["language"]) as String))
-    print("Map year: " + ((map["year"]) as Int).toString())
+    print("Map language: ${(map["language"]) as String}")
+    print("Map year: ${(map["year"]) as Int}")
 
     assert(map["language"] == "Eiwa")
     assert(map["year"] == 2026)

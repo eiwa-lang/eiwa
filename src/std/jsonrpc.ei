@@ -55,11 +55,11 @@ type JsonRpc(val id: JsonValue, val method: String, val params: JsonValue) {
     }
 
     fun response(result: String): String {
-        return "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": " + this.id.write() + ",\n  \"result\": " + result + "\n}"
+        return "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": ${this.id.write()},\n  \"result\": $result\n}"
     }
 
     fun errorResponse(code: Int, message: String): String {
-        return "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": " + this.id.write() + ",\n  \"error\": {\n    \"code\": " + code.toString() + ",\n    \"message\": \"" + message + "\"\n  }\n}"
+        return "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": ${this.id.write()},\n  \"error\": {\n    \"code\": $code,\n    \"message\": \"$message\"\n  }\n}"
     }
 } object {
     fun parse(body: String): JsonRpc {

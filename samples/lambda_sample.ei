@@ -4,14 +4,14 @@ fun makeAdder(x: Int): (Int) -> Int {
 
 type HTMLBuilder(var content: String = "") {
     fun body(init: () -> String) {
-        this.content = this.content + "<body>" + init() + "</body>"
+        this.content = "${this.content}<body>${init()}</body>"
     }
 }
 
 fun html(init: HTMLBuilder.() -> Void): String {
     val builder = HTMLBuilder()
     init(builder)
-    return "<html>" + builder.content + "</html>"
+    return "<html>${builder.content}</html>"
 }
 
 fun main() {
@@ -19,15 +19,15 @@ fun main() {
     
     // Lambda com tipos explícitos
     val sum: (Int, Int) -> Int = { x: Int, y: Int -> x + y }
-    print("sum(10, 20) = " + sum(10, 20).toString())
+    print("sum(10, 20) = ${sum(10, 20)}")
     
     // Lambda com 'it' implícito
     val twice: (Int) -> Int = { it * 2 }
-    print("twice(5) = " + twice(5).toString())
+    print("twice(5) = ${twice(5)}")
     
     // Captura de valor constante (val)
     val adder = makeAdder(100)
-    print("adder(50) = " + adder(50).toString())
+    print("adder(50) = ${adder(50)}")
     
     // Captura de variável mutável (var) - Closure
     var count = 0
@@ -35,9 +35,9 @@ fun main() {
         count = count + 1
         count
     }
-    print("counter(): " + counter().toString())
-    print("counter(): " + counter().toString())
-    print("Valor final de count: " + count.toString())
+    print("counter(): ${counter()}")
+    print("counter(): ${counter()}")
+    print("Valor final de count: $count")
 
     // DSL com Receiver Lambda e Trailing Lambdas
     val htmlResult = html {
@@ -45,6 +45,6 @@ fun main() {
             "Hello from Eiwa DSL!"
         }
     }
-    print("Resultado da DSL: " + htmlResult)
+    print("Resultado da DSL: $htmlResult")
 }
 

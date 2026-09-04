@@ -73,15 +73,15 @@ type JsonValue(
             var curr = this.obj.entries.items[i]
             while (curr != null) {
                 if (first == false) {
-                    out = out + ","
+                    out = "$out,"
                 }
-                out = out + this.writeString(curr!!.key) + ":" + curr!!.value.write()
+                out = "$out${this.writeString(curr!!.key)}:${curr!!.value.write()}"
                 first = false
                 curr = curr!!.next
             }
             i = i + 1
         }
-        return out + "}"
+        return "$out}"
     }
 
     fun writeArray(): String {
@@ -89,12 +89,12 @@ type JsonValue(
         var i = 0
         while (i < this.arr.size()) {
             if (i > 0) {
-                out = out + ","
+                out = "$out,"
             }
-            out = out + this.arr.get(i).write()
+            out = "$out${this.arr.get(i).write()}"
             i = i + 1
         }
-        return out + "]"
+        return "$out]"
     }
 }
 
@@ -399,20 +399,20 @@ skill Json : Serializable {
         var i = 0
         while (i < fields.size()) {
             if (i > 0) {
-                out = out + ", "
+                out = "$out, "
             }
             val f = fields.get(i)
-            out = out + "\"" + f.name + "\": " + this.writeJsonValue(f.value)
+            out = "$out\"${f.name}\": ${this.writeJsonValue(f.value)}"
             i = i + 1
         }
-        return out + "}"
+        return "$out}"
     }
 
     fun writeJsonValue(v: SerdeValue): String = when (v) {
         is SerdeInt -> v.v.toString()
         is SerdeDouble -> v.v.toString()
         is SerdeBool -> v.v.toString()
-        is SerdeString -> "\"" + this.escapeJsonString(v.v) + "\""
+        is SerdeString -> "\"${this.escapeJsonString(v.v)}\""
         is SerdeObject -> this.writeJson(v.obj.serdeFields())
         is SerdeListValue -> this.writeJsonList(v.list)
         else -> "null"
@@ -423,11 +423,11 @@ skill Json : Serializable {
         var i = 0
         while (i < list.size()) {
             if (i > 0) {
-                out = out + ", "
+                out = "$out, "
             }
-            out = out + this.writeJsonValue(list.getAt(i))
+            out = "$out${this.writeJsonValue(list.getAt(i))}"
             i = i + 1
         }
-        return out + "]"
+        return "$out]"
     }
 }

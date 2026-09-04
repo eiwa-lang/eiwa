@@ -998,6 +998,12 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .int_literal => t.* = .Int,
         .double_literal => t.* = .Double,
         .string_literal => t.* = .String,
+        .string_template => |st| {
+            for (st.parts) |part| {
+                _ = try self.inferNode(part, scope);
+            }
+            t.* = .String;
+        },
         .bool_literal => t.* = .Bool,
         .null_literal => t.* = .Null,
         .array_literal => try infer_expr_mod.inferArrayLiteral(self, node, scope, t),

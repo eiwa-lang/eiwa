@@ -10,8 +10,9 @@ test "should return value from sync { }" {
 
 test "should return value from sync(lock) { }" {
     val lock = Mutex()
+    val target = "world"
     val result = sync(lock) {
-        "hello " + "world"
+        "hello $target"
     }
     assert(result == "hello world")
 }
@@ -59,12 +60,12 @@ test "should synchronize string concat across threads with sync { }" {
 
     val t1 = Threads.spawn {
         sync {
-            log = log + "AAA"
+            log = "${log}AAA"
         }
     }
     val t2 = Threads.spawn {
         sync {
-            log = log + "BBB"
+            log = "${log}BBB"
         }
     }
     t1.join()

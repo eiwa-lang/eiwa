@@ -65,7 +65,7 @@ test "captured outer variable used ONLY inside lambda in coroutine" {
     val t = task {
         sleepMs(5)
         sync {
-            CoopLog.log = "hello " + greeting
+            CoopLog.log = "hello $greeting"
         }
         42
     }

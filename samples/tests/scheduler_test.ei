@@ -19,11 +19,11 @@ object Order {
 type PC(val name: String, var step: Int) : Continuation {
     implement fun resume() {
         if (this.step == 0) {
-            Order.record(this.name + "A;")
+            Order.record("${this.name}A;")
             this.step = 1
             Dispatchers.Single.scheduler.schedule(this)
         } else {
-            Order.record(this.name + "B;")
+            Order.record("${this.name}B;")
             this.step = 2
         }
     }

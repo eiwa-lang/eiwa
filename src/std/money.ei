@@ -53,21 +53,21 @@ type Currency(
 
         if (this.decimals == 0) {
             if (isNegative) {
-                return "-" + this.symbol + " " + majorStr
+                return "-${this.symbol} $majorStr"
             }
-            return this.symbol + " " + majorStr
+            return "${this.symbol} $majorStr"
         }
 
         val minor = mod(positiveCents, divisor)
 
         var minorStr = minor.toString()
         while (minorStr.length < this.decimals) {
-            minorStr = "0" + minorStr
+            minorStr = "0$minorStr"
         }
 
-        val formatted = this.symbol + " " + majorStr + this.decimalSeparator + minorStr
+        val formatted = "${this.symbol} $majorStr${this.decimalSeparator}$minorStr"
         if (isNegative) {
-            return "-" + formatted
+            return "-$formatted"
         }
         return formatted
     }
@@ -80,7 +80,7 @@ object Currencies {
     val CLP = Currency("CLP", "Chilean Peso", "CLP$", 0, ".", ".")
     val COP = Currency("COP", "Colombian Peso", "COL$", 2, ",", ".")
     val PEN = Currency("PEN", "Peruvian Sol", "S/", 2, ".", ",")
-    val UYU = Currency("UYU", "Uruguayan Peso", "$U", 2, ",", ".")
+    val UYU = Currency("UYU", "Uruguayan Peso", "\$U", 2, ",", ".")
     val PYG = Currency("PYG", "Paraguayan Guaraní", "₲", 0, ".", ".")
     val BOB = Currency("BOB", "Bolivian Boliviano", "Bs.", 2, ",", ".")
     val VES = Currency("VES", "Venezuelan Bolívar", "Bs.S", 2, ",", ".")
@@ -124,14 +124,14 @@ object Currencies {
 type Money(val cents: Int, val currency: Currency) {
     operator fun plus(other: Money): Money {
         if (this.currency.code != other.currency.code) {
-            throw Exception("Currency mismatch: " + this.currency.code + " vs " + other.currency.code)
+            throw Exception("Currency mismatch: ${this.currency.code} vs ${other.currency.code}")
         }
         return Money(this.cents + other.cents, this.currency)
     }
 
     operator fun minus(other: Money): Money {
         if (this.currency.code != other.currency.code) {
-            throw Exception("Currency mismatch: " + this.currency.code + " vs " + other.currency.code)
+            throw Exception("Currency mismatch: ${this.currency.code} vs ${other.currency.code}")
         }
         return Money(this.cents - other.cents, this.currency)
     }

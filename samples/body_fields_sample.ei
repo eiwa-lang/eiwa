@@ -21,7 +21,7 @@ type Counter(val base: Int) {
     }
 
     fun describe(): String {
-        return this.label + "#" + this.count.toString() + " base=" + this.base.toString()
+        return "${this.label}#${this.count} base=${this.base}"
     }
 
     fun clear() {
@@ -32,19 +32,19 @@ type Counter(val base: Int) {
 
 fun main() {
     val c = Counter(10)
-    print("initial: " + c.describe())
-    print("doubled: " + c.doubled.toString())
-    print("derived (count+base at ctor): " + c.derived.toString())
-    print("note (nullable default): " + if (c.note == null) "null" else c.note!!)
+    print("initial: ${c.describe()}")
+    print("doubled: ${c.doubled}")
+    print("derived (count+base at ctor): ${c.derived}")
+    print("note (nullable default): ${if (c.note == null) "null" else c.note!!}")
 
     c.inc()
     c.inc()
-    print("after 2 inc: " + c.describe())
-    print("doubled unchanged (evaluated at ctor): " + c.doubled.toString())
+    print("after 2 inc: ${c.describe()}")
+    print("doubled unchanged (evaluated at ctor): ${c.doubled}")
 
     c.note = "hello"
-    print("note set: " + c.note!!)
+    print("note set: ${c.note!!}")
 
     val other = Counter(3)
-    print("independent instance count: " + other.count.toString())
+    print("independent instance count: ${other.count}")
 }

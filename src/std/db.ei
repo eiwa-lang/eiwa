@@ -166,7 +166,7 @@ type ConnectionPool<C>(
             try {
                 conn.execute("ROLLBACK")
             } catch (rErr: Throwable) {
-                Log.error {"Failed to rollback transaction: " + rErr.message()}
+                Log.error {"Failed to rollback transaction: ${rErr.message()}"}
             }
             release(conn)
             throw e
