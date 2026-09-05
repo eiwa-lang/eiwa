@@ -276,8 +276,32 @@ type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable
         return String(buf, 1)
     }
 
+    fun trim(): String {
+        var start = 0
+        while (start < this.length) {
+            val b = NativeMemory.readByte(this.ptr, start)
+            if (b > 32) {
+                var end = this.length - 1
+                while (end >= start) {
+                    val eb = NativeMemory.readByte(this.ptr, end)
+                    if (eb > 32) {
+                        return this.substring(start, end + 1)
+                    }
+                    end = end - 1
+                }
+                return this.substring(start, end + 1)
+            }
+            start = start + 1
+        }
+        return ""
+    }
+
     fun toDouble(): Double {
         return Standard.atof(this.ptr)
+    }
+
+    fun toInt(): Int {
+        return this.toDouble() as Int
     }
 
     implement fun hashCode(): Int {

@@ -57,3 +57,25 @@ test "should support string escape sequences and count length correctly" {
     assert(backslash.length == 25)
     assert(standardEscapes.length == 53)
 }
+
+test "should trim whitespace from string" {
+    val s1 = "   hello world   "
+    assert(s1.trim() == "hello world")
+
+    val s2 = "\t\n  abc  \r\n"
+    assert(s2.trim() == "abc")
+
+    val s3 = "no_whitespace"
+    assert(s3.trim() == "no_whitespace")
+
+    val s4 = "    "
+    assert(s4.trim() == "")
+}
+
+test "should parse Int directly from String using toInt" {
+    val numStr = "12345"
+    assert(numStr.toInt() == 12345)
+
+    val negStr = "-42"
+    assert(negStr.toInt() == -42)
+}
