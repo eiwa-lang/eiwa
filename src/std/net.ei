@@ -74,7 +74,10 @@ type TCPServer(var fd: Int = -1) {
         if (this.fd < 0) {
             return null
         }
-        EventLoop.waitReadable(this.fd)
+        val pr = EventLoop.waitReadable(this.fd, 250)
+        if (pr <= 0) {
+            return null
+        }
         val clientFd = NativeNet.tcpAccept(this.fd)
         if (clientFd < 0) {
             return null

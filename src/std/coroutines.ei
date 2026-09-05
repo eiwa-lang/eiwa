@@ -575,7 +575,7 @@ object Coroutine {
 
 object EventLoop {
     @Suspend
-    fun waitReadable(fd: Int): Int {
+    fun waitReadable(fd: Int, timeout: Int = -1): Int {
         val entrySz = PollLayout.entrySize()
         val pfd = Standard.gcMalloc(entrySz)
         var z = 0
@@ -594,11 +594,11 @@ object EventLoop {
         val evOff = PollLayout.eventsOffset()
         NativeMemory.writeByte(pfd, evOff, PollLayout.pollInLow())
         NativeMemory.writeByte(pfd, evOff + 1, PollLayout.pollInHigh())
-        return PollLayout.poll(pfd, 1, -1)
+        return PollLayout.poll(pfd, 1, timeout)
     }
 
     @Suspend
-    fun waitWritable(fd: Int): Int {
+    fun waitWritable(fd: Int, timeout: Int = -1): Int {
         val entrySz = PollLayout.entrySize()
         val pfd = Standard.gcMalloc(entrySz)
         var z = 0
@@ -617,7 +617,7 @@ object EventLoop {
         val evOff = PollLayout.eventsOffset()
         NativeMemory.writeByte(pfd, evOff, PollLayout.pollOutLow())
         NativeMemory.writeByte(pfd, evOff + 1, PollLayout.pollOutHigh())
-        return PollLayout.poll(pfd, 1, -1)
+        return PollLayout.poll(pfd, 1, timeout)
     }
 }
 

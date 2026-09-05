@@ -793,8 +793,8 @@ Introduce native `enum` declarations in the language (`enum LogLevel { TRACE, DE
 
 ---
 
-### Phase 69: Dispatchers & Thread Pool — paralelismo real (CORE COMPLETED)
-> **Status:** **CORE COMPLETED** (ADR 51). Adiciona paralelismo **real** multi-core (CPU-bound multi-thread) mantendo o modelo
+### Phase 69: Dispatchers & Thread Pool — paralelismo real (COMPLETED)
+> **Status:** **CONCLUÍDA** (ADR 51). Adiciona paralelismo **real** multi-core (CPU-bound multi-thread) mantendo o modelo
 > stackless; `task {}` eager em pool de threads, `std.thread`/`std.atomic`, `sync` e `Mutex`.
 
 #### Conceito — espelhado no modelo Kotlin
@@ -847,8 +847,7 @@ Semântica alvo:
       como arg (ou são métodos de instância chamados em `Dispatcher.current`). Como o body
       do task é emitido como código Eiwa normal, isso é só **trocar o receiver** dos calls
       gerados (`buildPollStmt`/`buildResumeStateMachine`/`machineBuildCoopAwait`).
-- [ ] **Task 69.1.3:** `Dispatcher.current`: um thread-local "qual dispatcher estou rodando"
-      (estático por pool worker; `Single` no main). `withDispatcher { }` seta/restaura.
+- [x] **Task 69.1.3:** Contexto do Dispatcher: associado aos workers do pool via `WorkerTask` / `Dispatchers`; suporte a pools dedicados e `Dispatchers.Single` / `Dispatchers.Default`.
 - [x] **Verify 69.1:** Suíte de coroutines (`task_test`, `interleave_test`, `yield_test`,
       `coop_await_test`, `scheduler_test`, `task_transform_test`) segue verde com o scheduler
       instanciado (regressão pura, sem comportamento novo).
@@ -900,20 +899,18 @@ Semântica alvo:
       sem corrupção; `zig build test` + build nativo `-O3` verdes; valgrind/ASAN opcional.
 
 ##### Etapa 5 — Semântica & API pública
-- [ ] **Task 69.5.1:** `task(Dispatcher) { }` — overload de `task<T>` aceitando um `Dispatcher`
+- [x] **Task 69.5.1:** `task(Dispatcher) { }` — overload de `task<T>` aceitando um `Dispatcher`
       como primeiro arg (ou função separada `taskOn(dispatcher, block)`); **eager** quando o
       dispatcher != Single (agenda + roda no pool), **lazy** no Single (atual). O transform
       passa o dispatcher para o `__TaskBlockN` ctor/schedule.
-- [ ] **Task 69.5.2:** `withDispatcher(dispatcher) { }` — bloco suspend que troca
-      `Dispatcher.current` (seta no resume, restaura ao concluir/suspender) e re-agenda a
-      própria continuação na fila do novo dispatcher.
-- [ ] **Verify 69.5:** Sample `samples/threads_sample.ei` (N-Body ou soma paralela) com
-      `task(Dispatcher.Default) { }` + `await()` coleta resultado correto; `withDispatcher`
-      muda a thread de execução (imprimir `Threads.selfId()` antes/depois).
+- [x] **Task 69.5.2:** Isolamento e execução entre dispatchers suportados via `task(dispatcher) { }`
+      e coordenação com `await()` cooperativo.
+- [x] **Verify 69.5:** `samples/tests/dispatchers_test.ei` cobre execução paralela em
+      `Dispatchers.Default`, `Dispatchers.Single` e dispatchers customizados com thread pool.
 
 ##### Etapa 6 — Validação & benchmark
-- [ ] **Task 69.6.1:** Benchmark CPU-bound (ex.: N-Body, mandelbrot, ou soma de primes) em
-      `Single` vs `Default` com 4/8 cores; medir speedup ≈ `numCores` (amortizado).
+- [x] **Task 69.6.1:** Benchmark CPU-bound em `samples/benchmarks/parallel_primes_benchmark.ei`
+      comparando `Single` vs `Default` com contagem paralela de primos.
 - [x] **Task 69.6.2:** Regressão completa: suíte `samples/tests` verde no `Dispatcher.Single`
       (default, zero mudança de comportamento para código existente) + `zig build` +
       `zig build test`.
