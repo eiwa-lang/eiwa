@@ -112,16 +112,54 @@ try {
     Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# --- create env helpers ---
+$EnvPs1 = Join-Path $InstallDir "env.ps1"
+$EnvCmd = Join-Path $InstallDir "env.cmd"
+
+$EnvPs1Content = @'
+$BinDir = Join-Path $PSScriptRoot "bin"
+if ($env:Path -split ';' -notcontains $BinDir) {
+    $env:Path = "$BinDir;$env:Path"
+}
+'@
+Set-Content -Path $EnvPs1 -Value $EnvPs1Content -Encoding UTF8
+
+$EnvCmdContent = @'
+@echo off
+set "PATH=%~dp0bin;%PATH%"
+'@
+Set-Content -Path $EnvCmd -Value $EnvCmdContent -Encoding ASCII
+
 # --- PATH setup ---
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($UserPath -split ';' -notcontains $BinDir) {
+$UserEntries = if ($UserPath) { ($UserPath -split ';') | Where-Object { $_.Trim() -ne "" } } else { @() }
+
+if ($UserEntries -notcontains $BinDir) {
     Say "Adding $BinDir to User PATH environment variable..."
-    $NewUserPath = if ($UserPath) { "$UserPath;$BinDir" } else { $BinDir }
+    $NewUserPath = ($UserEntries + $BinDir) -join ';'
     [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
-    $env:Path = "$env:Path;$BinDir"
-    Warn "Added $BinDir to PATH. Restart your terminal or editor to refresh environment variables."
-} else {
-    $env:Path = "$env:Path;$BinDir"
+
+    # Broadcast WM_SETTINGCHANGE to notify running applications
+    try {
+        Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(
+    System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+"@ -ErrorAction SilentlyContinue
+        $HWND_BROADCAST = [System.IntPtr]0xffff
+        $WM_SETTINGCHANGE = 0x001a
+        $result = [System.UIntPtr]::Zero
+        [Win32.NativeMethods]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [System.UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result) | Out-Null
+    } catch {
+        # Non-critical if P/Invoke is not supported in current environment
+    }
+}
+
+# Ensure current session has $BinDir in PATH
+$CurrentEntries = ($env:Path -split ';') | Where-Object { $_.Trim() -ne "" }
+if ($CurrentEntries -notcontains $BinDir) {
+    $env:Path = "$BinDir;$env:Path"
 }
 
 Say ""
@@ -129,10 +167,15 @@ Say "================================================="
 Say "  Eiwa $CleanVersion installed successfully!     "
 Say "================================================="
 Say ""
-Say "To get started:"
+Say "Eiwa is ready to use in this PowerShell session!"
 Say "  eiwa --help"
 Say "  eiwa init my-app"
 Say "  cd my-app && eiwa run"
 Say ""
+Say "For other already open terminals (CMD, VS Code, Git Bash):"
+Say "  PowerShell:  . ~\.eiwa\env.ps1"
+Say "  CMD:         %USERPROFILE%\.eiwa\env.cmd"
+Say "  Or restart the terminal to reload environment variables."
+Say ""
 Warn "Note: 'eiwac' links LLVM and C libraries on Windows."
-Warn "If needed, ensure LLVM/Clang or MSVC Build Tools are installed."
+Warn "If needed, install LLVM via winget: winget install LLVM.LLVM"
