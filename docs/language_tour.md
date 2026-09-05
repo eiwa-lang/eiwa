@@ -2956,40 +2956,60 @@ Arest decouples API ergonomics from network I/O through the `HttpEngine` contrac
 
 ### 32.2 HTTP Server & Routing (`arest.server`)
 
-Arest provides an asynchronous, coroutine-powered HTTP server inspired by Ktor routing:
+Arest provides an asynchronous, coroutine-powered HTTP server inspired by Ktor. Handlers run as receivers on `ApplicationCall` — no `call ->` lambda needed:
 
 ```kotlin
-import { arestServer } from "arest.arest"
+import { arest } from "arest.arest"
+import { Json } from "std.json"
+
+type User(val id: Int, val name: String) : Serializable + Json
 
 fun main() {
-    val server = arestServer {
-        port = 8080
-        
+    arest(8080) {
+        health()                      // GET /health -> {"status":"ok"}
+
         routing {
-            get("/health") { call ->
-                call.respondText("OK")
+            // Static text
+            get("/hello") {
+                respondText("Hello from Eiwa!")
             }
-            
-            get("/api/users") { call ->
-                call.respondJson(listOfUsers)
+
+            // Typed JSON serialization via ContentNegotiation
+            get("/users/me") {
+                respond(User(1, "Leo"))
             }
-            
-            post("/api/users") { call ->
-                val body = call.receiveText()
-                // Process request...
-                call.respondStatus(201)
+
+            // Path parameters  (:id or {id} syntax)
+            get("/users/:id") {
+                val id = pathParam("id") ?: "unknown"
+                respond(User(id.toInt(), "User $id"))
+            }
+
+            // Typed body deserialization
+            post("/users") {
+                val user = receive<User>()
+                respond(user, status = 201)
+            }
+
+            // Query params & headers
+            get("/search") {
+                val q    = queryOrDefault("q", "")
+                val auth = header("Authorization") ?: "anonymous"
+                respondText("q=$q auth=$auth")
             }
         }
     }
-    
-    server.start(wait = true)
 }
 ```
 
-* **`ApplicationCall`**: Encapsulates the HTTP request and response context, giving direct access to headers, query params, path parameters, status codes, and body serialization.
-* **Non-Blocking Architecture**: Driven by Eiwa's cooperative coroutines (`std.coroutines`) and event loop, allowing high concurrency across multi-core CPUs.
+* **`ApplicationCall`**: Encapsulates the HTTP request/response context — headers, query params, path parameters, status codes, and body serialization.
+* **`respond(Serializable)`**: Serializes any type that implements `Serializable + Json` through `ContentNegotiation`, avoiding manual `.toJson()` calls.
+* **`receive<T>()`**: Deserializes the request body into a typed value using the negotiated format.
+* **`pathParam(name)`**: Extracts a named segment from the matched route pattern (`:id` or `{id}`), with static routes taking priority.
+* **Non-Blocking Architecture**: Driven by Eiwa's cooperative coroutines (`std.coroutines`) across multi-core `Dispatchers`.
 
 ---
+
 
 ### 32.3 Model Context Protocol (MCP) (`arest.mcp`)
 
