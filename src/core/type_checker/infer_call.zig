@@ -451,6 +451,92 @@ pub fn resolveConstructorArguments(self: *TypeChecker, node: *ASTNode, props: []
     c.arguments = final_args;
 }
 
+fn propagateParamTypes(self: *TypeChecker, arguments: []const *ASTNode, params: []const ast.Param) void {
+    for (params, 0..) |p, pi| {
+        var target_arg: ?*ASTNode = null;
+        for (arguments) |arg| {
+            if (arg.data == .named_arg and std.mem.eql(u8, arg.data.named_arg.name, p.name)) {
+                target_arg = arg;
+                break;
+            }
+        }
+        if (target_arg == null and pi < arguments.len and arguments[pi].data != .named_arg) {
+            target_arg = arguments[pi];
+        }
+        if (target_arg) |arg| {
+            if (arg.expected_type == null and p.type_ref != null) {
+                if (self.resolveTypeRef(p.type_ref.?) catch null) |pt| {
+                    arg.expected_type = pt;
+                    if (arg.data == .named_arg) {
+                        arg.data.named_arg.value.expected_type = pt;
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn prePropagateExpectedTypes(self: *TypeChecker, node: *ASTNode, scope: *Scope) void {
+    var c = &node.data.call_expr;
+    if (c.callee.data == .identifier) {
+        const name = c.callee.data.identifier.name;
+        const class_name = self.alias_map.get(name) orelse name;
+        if (self.classes_ast.get(class_name)) |class_node| {
+            const type_decl = class_node.data.type_decl;
+            for (type_decl.primary_constructor, 0..) |prop, prop_i| {
+                if (getArgForProp(c.arguments, type_decl.primary_constructor, prop_i)) |arg| {
+                    if (arg.expected_type == null) {
+                        const pt = prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+                        if (pt) |resolved| {
+                            arg.expected_type = resolved;
+                            if (arg.data == .named_arg) {
+                                arg.data.named_arg.value.expected_type = resolved;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        if (scope.lookupFunctions(name)) |overloads| {
+            if (overloads.len == 1 and overloads[0].* == .Function) {
+                const f = overloads[0].Function;
+                if (self.functions_ast.get(f.c_name)) |fn_node| {
+                    propagateParamTypes(self, c.arguments, fn_node.data.fun_decl.params);
+                    return;
+                }
+            }
+        }
+
+        if (self.functions_ast.get(name)) |fn_node| {
+            propagateParamTypes(self, c.arguments, fn_node.data.fun_decl.params);
+            return;
+        }
+    } else if (c.callee.data == .get_expr) {
+        const g = &c.callee.data.get_expr;
+        if (g.object.resolved_type == null) {
+            _ = self.inferNode(g.object, scope) catch null;
+        }
+        if (g.object.resolved_type) |obj_t| {
+            const base_type = extractBaseType(obj_t);
+            if (base_type.* == .Custom) {
+                const class_name = self.alias_map.get(base_type.Custom) orelse base_type.Custom;
+                const methods_list: ?[]const *ASTNode = if (self.classes_ast.get(class_name)) |cn| cn.data.type_decl.methods else if (self.objects_ast.get(class_name)) |on| on.data.object_decl.members else null;
+                if (methods_list) |methods| {
+                    for (methods) |method| {
+                        if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
+                            propagateParamTypes(self, c.arguments, method.data.fun_decl.params);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 
 /// Resolves the element type `T` of a variadic parameter declared as `T...`.
 /// Returns null when the callee has no variadic parameter.
@@ -860,6 +946,8 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     if (c.callee.data == .identifier and std.mem.eql(u8, c.callee.data.identifier.name, "funPointer")) {
         if (try inferFunPointer(self, node, scope, t)) return;
     }
+
+    prePropagateExpectedTypes(self, node, scope);
 
     // 1. Infer all arguments that are NOT lambdas
     for (c.arguments) |arg| {

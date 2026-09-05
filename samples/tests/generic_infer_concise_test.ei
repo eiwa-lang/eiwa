@@ -1,0 +1,30 @@
+import { assert } from "std.core"
+import { List, Map } from "std.collections"
+
+type ResponsePayload(
+    val headers: Map<String, String> = Map(),
+    val tags: List<String> = []
+)
+
+test "generic_infer_concise: default constructor with Map() and []" {
+    val payload = ResponsePayload()
+    assert(payload.headers.size() == 0)
+    assert(payload.tags.size() == 0)
+}
+
+test "generic_infer_concise: explicit variable declarations with expected type" {
+    val m: Map<String, String> = Map()
+    assert(m.size() == 0)
+
+    val l1: List<String> = List()
+    assert(l1.size() == 0)
+
+    val l2: List<String> = []
+    assert(l2.size() == 0)
+}
+
+test "generic_infer_concise: arguments inferred from parameter types" {
+    val payload = ResponsePayload(Map(), [])
+    assert(payload.headers.size() == 0)
+    assert(payload.tags.size() == 0)
+}
