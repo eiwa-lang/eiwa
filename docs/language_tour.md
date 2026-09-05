@@ -2816,3 +2816,189 @@ eiwa build --target macos -o bin/app_mac src/main.ei
 | `wasm` | `wasm32-wasi` | WebAssembly WASI |
 | *Custom Triple* (e.g. `x86_64-unknown-linux-gnu`) | Exact LLVM/Zig target query | Target native format |
 
+---
+
+## 32. The Arest Framework (HTTP Client, Server & MCP)
+
+**Arest** is the pragmatic web and AI protocol framework for Eiwa, inspired by modern libraries like Ktor, Retrofit, and FastMCP. It provides a complete, native ecosystem for building microservices, REST APIs, HTTP clients, and Model Context Protocol (MCP) servers.
+
+---
+
+### 32.1 HTTP Client (`arest.client`)
+
+The Arest Client provides an expressive, type-safe DSL for issuing HTTP requests with pluggable transport engines and automatic Content Negotiation.
+
+#### Creating a Client
+
+Clients can be created with default configurations, custom builders, or specific engines:
+
+```kotlin
+import { arestClient, ArestClient } from "arest.client.client"
+import { CurlEngine } from "arest.client.engine.curl_engine"
+
+val client = arestClient {
+    baseUrl("https://api.github.com")
+    timeout(10000) // ms
+    header("User-Agent", "Arest-Client/1.0")
+    bearerAuth("ghp_secret_token")
+}
+```
+
+#### Making Requests & Verbs
+
+The client provides intuitive helpers for all standard HTTP methods:
+
+```kotlin
+// Simple GET
+val res = client.get("/user")
+
+// GET with query parameters and custom headers:
+val searchRes = client.get("/search/repositories") {
+    query("q", "eiwa")
+    query("sort", "stars")
+    header("Accept", "application/vnd.github.v3+json")
+}
+
+// POST with automatic JSON serialization from Serializable DTOs:
+type CreateUserPayload(val username: String, val role: String) : Serializable + Json
+
+val user = CreateUserPayload("alex", "admin")
+val createRes = client.post("/users", user)
+
+// PUT, PATCH, DELETE and HEAD:
+val putRes = client.put("/users/42", user)
+val patchRes = client.patch("/users/42", user)
+val delRes = client.delete("/users/42")
+val headRes = client.head("/users/42")
+```
+
+#### Inspecting the Response (`HttpResponse`)
+
+`HttpResponse` offers rich predicates and ergonomic accessors:
+
+```kotlin
+if (res.ok) {
+    print("Success: ${res.status}") // 200, 201, etc.
+    print("Body: ${res.body()}")    // raw text
+    
+    // Automatic JSON parsing:
+    val json = res.json()
+    print("Login: ${json.get("login")!!.asString()}")
+} else if (res.isNotFound) {
+    print("Resource was not found (404)")
+} else if (res.isUnauthorized) {
+    print("Bad or expired token (401)")
+} else if (res.isServerError) {
+    print("Server error (5xx)")
+}
+
+// Accessing response headers:
+val contentType = res.contentType() // e.g. "application/json"
+val customHeader = res.header("X-RateLimit-Remaining")
+val cached = res.headerOrDefault("X-Cache", "MISS")
+```
+
+#### Pluggable Transport Engines (`HttpEngine`)
+
+Arest decouples API ergonomics from network I/O through the `HttpEngine` contract:
+
+1. **`CurlEngine` (Production):** High-performance native HTTP engine built on top of `libcurl`. Supports HTTP/1.1, HTTP/2, TLS, redirects, connection timeouts, and full streaming header/body capture.
+   ```kotlin
+   val client = arestClient(CurlEngine()) {
+       baseUrl("https://httpbin.org")
+   }
+   ```
+
+2. **`MockEngine` (Unit Testing):** Programmatic mock engine for lightning-fast, zero-network unit and integration tests:
+   ```kotlin
+   import { MockEngine } from "arest.client.engine.mock_engine"
+
+   val mock = MockEngine()
+   mock.on("GET", "/users/1")
+       .reply(200, "{\"id\": 1, \"name\": \"Leo\"}")
+
+   val client = arestClient(mock)
+   val res = client.get("/users/1")
+   assert(res.ok)
+   assert(res.json().get("name")!!.asString() == "Leo")
+   ```
+
+---
+
+### 32.2 HTTP Server & Routing (`arest.server`)
+
+Arest provides an asynchronous, coroutine-powered HTTP server inspired by Ktor routing:
+
+```kotlin
+import { arestServer } from "arest.arest"
+
+fun main() {
+    val server = arestServer {
+        port = 8080
+        
+        routing {
+            get("/health") { call ->
+                call.respondText("OK")
+            }
+            
+            get("/api/users") { call ->
+                call.respondJson(listOfUsers)
+            }
+            
+            post("/api/users") { call ->
+                val body = call.receiveText()
+                // Process request...
+                call.respondStatus(201)
+            }
+        }
+    }
+    
+    server.start(wait = true)
+}
+```
+
+* **`ApplicationCall`**: Encapsulates the HTTP request and response context, giving direct access to headers, query params, path parameters, status codes, and body serialization.
+* **Non-Blocking Architecture**: Driven by Eiwa's cooperative coroutines (`std.coroutines`) and event loop, allowing high concurrency across multi-core CPUs.
+
+---
+
+### 32.3 Model Context Protocol (MCP) (`arest.mcp`)
+
+The **Model Context Protocol** is the open standard that connects AI assistants and LLMs to external tools, data sources, and context. Arest includes a complete, spec-compliant MCP server implementation.
+
+#### Defining Tools, Resources & Prompts
+
+```kotlin
+import { mcpServer } from "arest.mcp.mcp_builder"
+
+fun main() {
+    val server = mcpServer {
+        name = "eiwa-database-tools"
+        version = "1.0.0"
+
+        // Expose a Tool to the LLM
+        tool("query_database", "Executes a SQL query against the analytical DB") { call ->
+            val sql = call.argument("sql")
+            val results = db.query(sql)
+            call.respondText(results)
+        }
+
+        // Expose a Resource (File, URI, or contextual documentation)
+        resource("config://app", "Application settings schema", "application/json") { call ->
+            call.respondText("{\"env\": \"production\", \"version\": 2}")
+        }
+
+        // Expose a Prompt template
+        prompt("code_review", "Prompt to guide AI code reviews") { call ->
+            call.respondPrompt("Review the following Eiwa code for safety and performance:\n${call.argument("code")}")
+        }
+    }
+
+    server.startStdio()
+}
+```
+
+* **JSON-RPC 2.0 Compliant**: Implements the official protocol lifecycle (`initialize`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`).
+* **Stdio & SSE Transports**: Seamlessly plugs into AI developer tools (Claude Desktop, Cursor, Gemini IDE) via standard I/O or Server-Sent Events.
+
+
