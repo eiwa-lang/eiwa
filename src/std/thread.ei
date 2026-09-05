@@ -5,7 +5,7 @@
 import { Standard } from "std.core"
 
 @Header("<pthread.h>", "<unistd.h>")
-lib("posix") NativeThread {
+lib("posix") PosixThread {
     @Alias("pthread_create")
     fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
 
@@ -47,7 +47,7 @@ lib("posix") NativeThread {
 }
 
 @Header("<pthread.h>", "<windows.h>")
-lib("windows") NativeThread {
+lib("windows") Win32Thread {
     @Alias("pthread_create")
     fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
 
@@ -86,6 +86,51 @@ lib("windows") NativeThread {
 
     @Alias("GetActiveProcessorCount")
     fun getActiveProcessorCount(groupNumber: Int): Int
+}
+
+contract ThreadOpsContract {
+    fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
+    fun pthreadJoin(thread: Pointer, retval: Pointer): Int
+    fun pthreadSelf(): Pointer
+    fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int
+    fun pthreadMutexLock(mutex: Pointer): Int
+    fun pthreadMutexUnlock(mutex: Pointer): Int
+    fun pthreadMutexDestroy(mutex: Pointer): Int
+    fun pthreadCondInit(cond: Pointer, attr: Pointer): Int
+    fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int
+    fun pthreadCondSignal(cond: Pointer): Int
+    fun pthreadCondBroadcast(cond: Pointer): Int
+    fun pthreadCondDestroy(cond: Pointer): Int
+}
+
+object("posix") NativeThread : ThreadOpsContract {
+    implement fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int = PosixThread.pthreadCreate(threadOut, attr, startRoutine, arg)
+    implement fun pthreadJoin(thread: Pointer, retval: Pointer): Int = PosixThread.pthreadJoin(thread, retval)
+    implement fun pthreadSelf(): Pointer = PosixThread.pthreadSelf()
+    implement fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int = PosixThread.pthreadMutexInit(mutex, attr)
+    implement fun pthreadMutexLock(mutex: Pointer): Int = PosixThread.pthreadMutexLock(mutex)
+    implement fun pthreadMutexUnlock(mutex: Pointer): Int = PosixThread.pthreadMutexUnlock(mutex)
+    implement fun pthreadMutexDestroy(mutex: Pointer): Int = PosixThread.pthreadMutexDestroy(mutex)
+    implement fun pthreadCondInit(cond: Pointer, attr: Pointer): Int = PosixThread.pthreadCondInit(cond, attr)
+    implement fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int = PosixThread.pthreadCondWait(cond, mutex)
+    implement fun pthreadCondSignal(cond: Pointer): Int = PosixThread.pthreadCondSignal(cond)
+    implement fun pthreadCondBroadcast(cond: Pointer): Int = PosixThread.pthreadCondBroadcast(cond)
+    implement fun pthreadCondDestroy(cond: Pointer): Int = PosixThread.pthreadCondDestroy(cond)
+}
+
+object("windows") NativeThread : ThreadOpsContract {
+    implement fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int = Win32Thread.pthreadCreate(threadOut, attr, startRoutine, arg)
+    implement fun pthreadJoin(thread: Pointer, retval: Pointer): Int = Win32Thread.pthreadJoin(thread, retval)
+    implement fun pthreadSelf(): Pointer = Win32Thread.pthreadSelf()
+    implement fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int = Win32Thread.pthreadMutexInit(mutex, attr)
+    implement fun pthreadMutexLock(mutex: Pointer): Int = Win32Thread.pthreadMutexLock(mutex)
+    implement fun pthreadMutexUnlock(mutex: Pointer): Int = Win32Thread.pthreadMutexUnlock(mutex)
+    implement fun pthreadMutexDestroy(mutex: Pointer): Int = Win32Thread.pthreadMutexDestroy(mutex)
+    implement fun pthreadCondInit(cond: Pointer, attr: Pointer): Int = Win32Thread.pthreadCondInit(cond, attr)
+    implement fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int = Win32Thread.pthreadCondWait(cond, mutex)
+    implement fun pthreadCondSignal(cond: Pointer): Int = Win32Thread.pthreadCondSignal(cond)
+    implement fun pthreadCondBroadcast(cond: Pointer): Int = Win32Thread.pthreadCondBroadcast(cond)
+    implement fun pthreadCondDestroy(cond: Pointer): Int = Win32Thread.pthreadCondDestroy(cond)
 }
 
 object ThreadConstants {
@@ -212,9 +257,9 @@ contract CoreDetector {
 
 object("posix") CurrentCoreDetector : CoreDetector {
     implement fun getCores(): Int {
-        var cores = NativeThread.sysconf(ThreadConstants.SC_NPROCESSORS_ONLN_DARWIN)
+        var cores = PosixThread.sysconf(ThreadConstants.SC_NPROCESSORS_ONLN_DARWIN)
         if (cores <= 0) {
-            cores = NativeThread.sysconf(ThreadConstants.SC_NPROCESSORS_ONLN_LINUX)
+            cores = PosixThread.sysconf(ThreadConstants.SC_NPROCESSORS_ONLN_LINUX)
         }
         if (cores <= 0) {
             cores = 1
@@ -225,7 +270,7 @@ object("posix") CurrentCoreDetector : CoreDetector {
 
 object("windows") CurrentCoreDetector : CoreDetector {
     implement fun getCores(): Int {
-        val count = NativeThread.getActiveProcessorCount(ThreadConstants.ALL_PROCESSOR_GROUPS)
+        val count = Win32Thread.getActiveProcessorCount(ThreadConstants.ALL_PROCESSOR_GROUPS)
         if (count > 0) {
             return count
         }

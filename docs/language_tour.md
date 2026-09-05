@@ -2688,9 +2688,9 @@ always safe (nothing more than a speed hit).
 
 Eiwa provides first-class cross-compilation (`--target`) and declarative platform abstraction directly in user-space code. You can target Linux, Windows, macOS, and WebAssembly seamlessly without managing complex toolchains or writing platform-specific build scripts.
 
-### 31.1 Declarative Platform Specialization
+### 31.1 Declarative Platform Specialization & Strict Parity
 
-Rather than relying on magic filename conventions (like `_linux.ei` or `_windows.ei`), platform specializations are declared directly on `object`, `lib`, and `type` definitions using target tags:
+Rather than relying on magic filename conventions (like `_linux.ei` or `_windows.ei`), platform specializations are declared directly on `object` and `type` definitions using target tags:
 
 ```kotlin
 contract AudioDriver {
@@ -2713,7 +2713,7 @@ object("linux", "macos") CurrentAudioDriver : AudioDriver {
     }
 }
 
-// Universal Fallback (used when no specialized match exists for the target OS)
+// Optional Universal Fallback (only needed when a generic implementation makes sense)
 object CurrentAudioDriver : AudioDriver {
     implement fun playSound(frequency: Int) {
         print("Playing sound via generic driver")
@@ -2721,30 +2721,74 @@ object CurrentAudioDriver : AudioDriver {
 }
 ```
 
+#### Strict Parity Rules
+1. **Mandatory Contracts:** Any platform-specialized `type("...")` or `object("...")` **must implement at least one contract**. This ensures that the public API surface is identical across all operating systems.
+2. **Contract Consistency Across All Variants:** If any variant with a given name is platform-specialized, **every declaration sharing that name (including any universal default fallback)** must implement the **exact same list of contracts**.
+3. **No Leaked Extraneous Methods:** All methods declared inside a platform-specialized `type` or `object` must implement a method from a contract (`implement fun`) or come from a skill. Ad-hoc uncontracted methods are rejected by the compiler to prevent accidental platform lock-in.
+
 ### 31.2 FFI & Low-Level Specialization (`lib`)
 
-Low-level C bindings can also be specialized per platform, allowing seamless adaptation between POSIX APIs and Windows CRT equivalents:
+Low-level C bindings represent native system APIs that naturally differ across platforms. To avoid the dangerous illusion of a unified API where C signatures differ, **`lib` blocks must have explicit, unique names per platform**:
 
 ```kotlin
+// POSIX C library bindings
 @Header("<stdlib.h>", "<stdio.h>", "<unistd.h>")
-lib("posix") NativeProcess {
+lib("posix") PosixProcess {
     fun popen(cmd: String, mode: String): Pointer
     fun pclose(stream: Pointer): Int
     fun chdir(path: String): Int
+    fun realpath(path: String, resolved: Pointer): Pointer
 }
 
+// Windows Win32 / CRT library bindings
 @Header("<stdlib.h>", "<stdio.h>", "<direct.h>")
-lib("windows") NativeProcess {
+lib("windows") Win32Process {
     @Alias("_popen")
     fun popen(cmd: String, mode: String): Pointer
     @Alias("_pclose")
     fun pclose(stream: Pointer): Int
     @Alias("_chdir")
     fun chdir(path: String): Int
+    @Alias("_fullpath")
+    fun fullpath(resolved: Pointer, path: String, maxLen: Int): Pointer
 }
 ```
 
-### 31.3 Cross-Compilation CLI (`--target`)
+The compiler **strictly prohibits duplicate `lib` names** across platforms.
+
+### 31.3 The Three-Tier Architecture
+
+To bridge low-level native FFI to portable high-level application code, Eiwa uses a clean three-tier architecture:
+
+1. **`lib` (FFI):** Low-level C functions with honest, platform-specific names (`PosixProcess`, `Win32Process`).
+2. **`contract`:** The pure, portable public API specification (`ProcessOpsContract`).
+3. **`object` / `type` (Bridge):** Platform-specialized implementations implementing the contract and delegating to their respective native `lib`:
+
+```kotlin
+contract ProcessOpsContract {
+    fun runCommand(cmd: String): Int
+    fun resolve(path: String, buf: Pointer): Pointer
+}
+
+object("posix") ProcessOps : ProcessOpsContract {
+    implement fun runCommand(cmd: String): Int = PosixProcess.system(cmd)
+    implement fun resolve(path: String, buf: Pointer): Pointer = PosixProcess.realpath(path, buf)
+}
+
+object("windows") ProcessOps : ProcessOpsContract {
+    implement fun runCommand(cmd: String): Int = Win32Process.system(cmd)
+    implement fun resolve(path: String, buf: Pointer): Pointer = Win32Process.fullpath(buf, path, 4096)
+}
+
+// Application code only interacts with the uniform contract via ProcessOps:
+fun getNormalizedPath(path: String): String {
+    val buf = Standard.gcMalloc(4096)
+    val res = ProcessOps.resolve(path, buf)
+    return String(res, NativeString.strlen(res))
+}
+```
+
+### 31.4 Cross-Compilation CLI (`--target`)
 
 The `--target` option is available in both the compiler backend (`eiwac`) and the developer CLI (`eiwa`):
 

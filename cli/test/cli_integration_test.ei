@@ -2,21 +2,32 @@ import { File } from "std.fs"
 import { Env } from "std.env"
 import { Process } from "std.process"
 
-object("posix") CliEnv {
-    fun binName(): String { return "bin/eiwac" }
-    fun binExt(): String { return "" }
-    fun tmpDir(): String { return "/tmp" }
-    fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > /dev/null 2>&1") }
-    fun rmrf(dir: String): Int { return Process.exec("rm -rf " + dir + " > /dev/null 2>&1") }
-    fun mkdirp(dir: String): Int { return Process.exec("mkdir -p " + dir + " > /dev/null 2>&1") }
-    fun cdRun(dir: String, cmd: String): Int { return Process.exec("cd " + dir + " && " + cmd + " > /dev/null 2>&1") }
-    fun withEnv(name: String, value: String, cmd: String): String { return name + "=" + value + " " + cmd }
+contract CliEnvContract {
+    fun binName(): String
+    fun binExt(): String
+    fun tmpDir(): String
+    fun execQuiet(cmd: String): Int
+    fun rmrf(dir: String): Int
+    fun mkdirp(dir: String): Int
+    fun cdRun(dir: String, cmd: String): Int
+    fun withEnv(name: String, value: String, cmd: String): String
 }
 
-object("windows") CliEnv {
-    fun binName(): String { return "bin/eiwac.exe" }
-    fun binExt(): String { return ".exe" }
-    fun tmpDir(): String {
+object("posix") CliEnv : CliEnvContract {
+    implement fun binName(): String { return "bin/eiwac" }
+    implement fun binExt(): String { return "" }
+    implement fun tmpDir(): String { return "/tmp" }
+    implement fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > /dev/null 2>&1") }
+    implement fun rmrf(dir: String): Int { return Process.exec("rm -rf " + dir + " > /dev/null 2>&1") }
+    implement fun mkdirp(dir: String): Int { return Process.exec("mkdir -p " + dir + " > /dev/null 2>&1") }
+    implement fun cdRun(dir: String, cmd: String): Int { return Process.exec("cd " + dir + " && " + cmd + " > /dev/null 2>&1") }
+    implement fun withEnv(name: String, value: String, cmd: String): String { return name + "=" + value + " " + cmd }
+}
+
+object("windows") CliEnv : CliEnvContract {
+    implement fun binName(): String { return "bin/eiwac.exe" }
+    implement fun binExt(): String { return ".exe" }
+    implement fun tmpDir(): String {
         val t = Env.get("TEMP")
         if (t != null) {
             return t!!.replace("\\", "/")
@@ -27,31 +38,20 @@ object("windows") CliEnv {
         }
         return "C:/Windows/Temp"
     }
-    fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > NUL 2>&1") }
-    fun rmrf(dir: String): Int {
+    implement fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > NUL 2>&1") }
+    implement fun rmrf(dir: String): Int {
         val p = dir.replace("/", "\\")
         return Process.exec("if exist \"" + p + "\" rmdir /s /q \"" + p + "\" > NUL 2>&1")
     }
-    fun mkdirp(dir: String): Int {
+    implement fun mkdirp(dir: String): Int {
         val p = dir.replace("/", "\\")
         return Process.exec("if not exist \"" + p + "\" mkdir \"" + p + "\" > NUL 2>&1")
     }
-    fun cdRun(dir: String, cmd: String): Int {
+    implement fun cdRun(dir: String, cmd: String): Int {
         val p = dir.replace("/", "\\")
         return Process.exec("cd /d \"" + p + "\" && " + cmd + " > NUL 2>&1")
     }
-    fun withEnv(name: String, value: String, cmd: String): String { return "set " + name + "=" + value + " && " + cmd }
-}
-
-object CliEnv {
-    fun binName(): String { return "bin/eiwac" }
-    fun binExt(): String { return "" }
-    fun tmpDir(): String { return "/tmp" }
-    fun execQuiet(cmd: String): Int { return Process.exec(cmd + " > /dev/null 2>&1") }
-    fun rmrf(dir: String): Int { return Process.exec("rm -rf " + dir + " > /dev/null 2>&1") }
-    fun mkdirp(dir: String): Int { return Process.exec("mkdir -p " + dir + " > /dev/null 2>&1") }
-    fun cdRun(dir: String, cmd: String): Int { return Process.exec("cd " + dir + " && " + cmd + " > /dev/null 2>&1") }
-    fun withEnv(name: String, value: String, cmd: String): String { return name + "=" + value + " " + cmd }
+    implement fun withEnv(name: String, value: String, cmd: String): String { return "set " + name + "=" + value + " && " + cmd }
 }
 
 fun eiwacPathForTests(): String {

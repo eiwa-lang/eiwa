@@ -12,28 +12,37 @@ object("posix") Greeter : Greeting {
     implement fun greet(): String = "Hello from POSIX"
 }
 
-object("windows") PlatformSpecificConfig {
-    fun platformName(): String = "Win32"
+contract PlatformConfig {
+    fun platformName(): String
+}
+
+object("windows") PlatformSpecificConfig : PlatformConfig {
+    implement fun platformName(): String = "Win32"
 }
 
 // Fallback universal for non-Windows
-object PlatformSpecificConfig {
-    fun platformName(): String = "Universal/Default"
+object PlatformSpecificConfig : PlatformConfig {
+    implement fun platformName(): String = "Universal/Default"
 }
 
-object("windows") ExpectedPlatform {
-    fun greeting(): String = "Hello from Windows"
-    fun config(): String = "Win32"
+contract ExpectedPlatformContract {
+    fun greeting(): String
+    fun config(): String
 }
 
-object("posix") ExpectedPlatform {
-    fun greeting(): String = "Hello from POSIX"
-    fun config(): String = "Universal/Default"
+object("windows") ExpectedPlatform : ExpectedPlatformContract {
+    implement fun greeting(): String = "Hello from Windows"
+    implement fun config(): String = "Win32"
 }
 
-object ExpectedPlatform {
-    fun greeting(): String = "Hello from POSIX"
-    fun config(): String = "Universal/Default"
+object("posix") ExpectedPlatform : ExpectedPlatformContract {
+    implement fun greeting(): String = "Hello from POSIX"
+    implement fun config(): String = "Universal/Default"
+}
+
+object ExpectedPlatform : ExpectedPlatformContract {
+    implement fun greeting(): String = "Hello from POSIX"
+    implement fun config(): String = "Universal/Default"
 }
 
 test "platform specialized object resolution" {

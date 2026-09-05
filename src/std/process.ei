@@ -5,7 +5,7 @@
 import { List, MutableList } from "std.collections"
 
 @Header("<stdlib.h>", "<stdio.h>", "<unistd.h>")
-lib("posix") NativeProcess {
+lib("posix") PosixProcess {
     fun system(cmd: String): Int
     fun popen(cmd: String, mode: String): Pointer
     fun pclose(stream: Pointer): Int
@@ -17,7 +17,7 @@ lib("posix") NativeProcess {
 }
 
 @Header("<stdlib.h>", "<stdio.h>", "<direct.h>")
-lib("windows") NativeProcess {
+lib("windows") Win32Process {
     fun system(cmd: String): Int
     @Alias("_popen")
     fun popen(cmd: String, mode: String): Pointer
@@ -32,16 +32,50 @@ lib("windows") NativeProcess {
     fun eiwa_args_get(i: Int): Pointer
 }
 
-object("posix") PathResolver {
-    fun resolve(path: String, buf: Pointer): Pointer {
-        return NativeProcess.realpath(path, buf)
+contract PathResolverContract {
+    fun resolve(path: String, buf: Pointer): Pointer
+}
+
+object("posix") PathResolver : PathResolverContract {
+    implement fun resolve(path: String, buf: Pointer): Pointer {
+        return PosixProcess.realpath(path, buf)
     }
 }
 
-object("windows") PathResolver {
-    fun resolve(path: String, buf: Pointer): Pointer {
-        return NativeProcess.fullpath(buf, path, 4096)
+object("windows") PathResolver : PathResolverContract {
+    implement fun resolve(path: String, buf: Pointer): Pointer {
+        return Win32Process.fullpath(buf, path, 4096)
     }
+}
+
+contract NativeProcessOpsContract {
+    fun system(cmd: String): Int
+    fun popen(cmd: String, mode: String): Pointer
+    fun pclose(stream: Pointer): Int
+    fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer
+    fun chdir(path: String): Int
+    fun eiwa_args_count(): Int
+    fun eiwa_args_get(i: Int): Pointer
+}
+
+object("posix") NativeProcess : NativeProcessOpsContract {
+    implement fun system(cmd: String): Int = PosixProcess.system(cmd)
+    implement fun popen(cmd: String, mode: String): Pointer = PosixProcess.popen(cmd, mode)
+    implement fun pclose(stream: Pointer): Int = PosixProcess.pclose(stream)
+    implement fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer = PosixProcess.fgets(buffer, size, stream)
+    implement fun chdir(path: String): Int = PosixProcess.chdir(path)
+    implement fun eiwa_args_count(): Int = PosixProcess.eiwa_args_count()
+    implement fun eiwa_args_get(i: Int): Pointer = PosixProcess.eiwa_args_get(i)
+}
+
+object("windows") NativeProcess : NativeProcessOpsContract {
+    implement fun system(cmd: String): Int = Win32Process.system(cmd)
+    implement fun popen(cmd: String, mode: String): Pointer = Win32Process.popen(cmd, mode)
+    implement fun pclose(stream: Pointer): Int = Win32Process.pclose(stream)
+    implement fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer = Win32Process.fgets(buffer, size, stream)
+    implement fun chdir(path: String): Int = Win32Process.chdir(path)
+    implement fun eiwa_args_count(): Int = Win32Process.eiwa_args_count()
+    implement fun eiwa_args_get(i: Int): Pointer = Win32Process.eiwa_args_get(i)
 }
 
 object Process {

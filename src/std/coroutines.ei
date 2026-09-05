@@ -27,37 +27,55 @@ lib NativeSched {
 }
 
 @Header("<poll.h>")
-lib("posix") NativePoll {
+lib("posix") PosixPoll {
     @Alias("poll")
     fun poll(fds: Pointer, nfds: Int, timeout: Int): Int
 }
 
 @Header("<winsock2.h>")
-lib("windows") NativePoll {
+lib("windows") Win32Poll {
     @Alias("WSAPoll")
     fun poll(fds: Pointer, nfds: Int, timeout: Int): Int
 }
 
-object("posix") PollLayout {
-    fun entrySize(): Int = 8
-    fun eventsOffset(): Int = 4
-    fun reventsOffset(): Int = 6
-    fun fdBytes(): Int = 4
-    fun pollInLow(): Int = 1
-    fun pollInHigh(): Int = 0
-    fun pollOutLow(): Int = 4
-    fun pollOutHigh(): Int = 0
+contract PollLayoutContract {
+    fun entrySize(): Int
+    fun eventsOffset(): Int
+    fun reventsOffset(): Int
+    fun fdBytes(): Int
+    fun pollInLow(): Int
+    fun pollInHigh(): Int
+    fun pollOutLow(): Int
+    fun pollOutHigh(): Int
+    fun poll(fds: Pointer, nfds: Int, timeout: Int): Int
 }
 
-object("windows") PollLayout {
-    fun entrySize(): Int = 16
-    fun eventsOffset(): Int = 8
-    fun reventsOffset(): Int = 10
-    fun fdBytes(): Int = 8
-    fun pollInLow(): Int = 0
-    fun pollInHigh(): Int = 3
-    fun pollOutLow(): Int = 16
-    fun pollOutHigh(): Int = 0
+object("posix") PollLayout : PollLayoutContract {
+    implement fun entrySize(): Int = 8
+    implement fun eventsOffset(): Int = 4
+    implement fun reventsOffset(): Int = 6
+    implement fun fdBytes(): Int = 4
+    implement fun pollInLow(): Int = 1
+    implement fun pollInHigh(): Int = 0
+    implement fun pollOutLow(): Int = 4
+    implement fun pollOutHigh(): Int = 0
+    implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
+        return PosixPoll.poll(fds, nfds, timeout)
+    }
+}
+
+object("windows") PollLayout : PollLayoutContract {
+    implement fun entrySize(): Int = 16
+    implement fun eventsOffset(): Int = 8
+    implement fun reventsOffset(): Int = 10
+    implement fun fdBytes(): Int = 8
+    implement fun pollInLow(): Int = 0
+    implement fun pollInHigh(): Int = 3
+    implement fun pollOutLow(): Int = 16
+    implement fun pollOutHigh(): Int = 0
+    implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
+        return Win32Poll.poll(fds, nfds, timeout)
+    }
 }
 
 // ============================================================================
@@ -206,7 +224,7 @@ type TaskScheduler(
             actualTimeout = 0
         }
         this.mutex.unlock()
-        val n = NativePoll.poll(pfd, count, actualTimeout)
+        val n = PollLayout.poll(pfd, count, actualTimeout)
         this.mutex.lock()
         this.isPolling = false
 
@@ -576,7 +594,7 @@ object EventLoop {
         val evOff = PollLayout.eventsOffset()
         NativeMemory.writeByte(pfd, evOff, PollLayout.pollInLow())
         NativeMemory.writeByte(pfd, evOff + 1, PollLayout.pollInHigh())
-        return NativePoll.poll(pfd, 1, -1)
+        return PollLayout.poll(pfd, 1, -1)
     }
 
     @Suspend
@@ -599,7 +617,7 @@ object EventLoop {
         val evOff = PollLayout.eventsOffset()
         NativeMemory.writeByte(pfd, evOff, PollLayout.pollOutLow())
         NativeMemory.writeByte(pfd, evOff + 1, PollLayout.pollOutHigh())
-        return NativePoll.poll(pfd, 1, -1)
+        return PollLayout.poll(pfd, 1, -1)
     }
 }
 

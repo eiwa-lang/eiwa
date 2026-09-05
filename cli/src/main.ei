@@ -199,36 +199,44 @@ fun runOrFail(cmd: String) {
     }
 }
 
-object("posix") Fs {
-    fun mkdirP(path: String) {
+contract FsContract {
+    fun mkdirP(path: String)
+    fun rmrf(dir: String): Int
+    fun tmpDir(): String
+    fun trueCmd(): String
+    fun pwd(): String
+}
+
+object("posix") Fs : FsContract {
+    implement fun mkdirP(path: String) {
         runOrFail("mkdir -p " + path)
     }
-    fun rmrf(dir: String): Int {
+    implement fun rmrf(dir: String): Int {
         return Process.exec("rm -rf " + dir)
     }
-    fun tmpDir(): String {
+    implement fun tmpDir(): String {
         return "/tmp"
     }
-    fun trueCmd(): String {
+    implement fun trueCmd(): String {
         return "true"
     }
-    fun pwd(): String {
+    implement fun pwd(): String {
         return trim(Process.capture("pwd"))
     }
 }
 
-object("windows") Fs {
-    fun mkdirP(path: String) {
+object("windows") Fs : FsContract {
+    implement fun mkdirP(path: String) {
         // `mkdir` errors if the directory already exists, so guard it. Uses
         // backslashes because cmd treats '/' as a switch prefix.
         val p = path.replace("/", "\\")
         runOrFail("if not exist \"" + p + "\" mkdir \"" + p + "\"")
     }
-    fun rmrf(dir: String): Int {
+    implement fun rmrf(dir: String): Int {
         val p = dir.replace("/", "\\")
         return Process.exec("if exist \"" + p + "\" rmdir /s /q \"" + p + "\"")
     }
-    fun tmpDir(): String {
+    implement fun tmpDir(): String {
         val t = Env.get("TEMP")
         if (t != null) {
             return t!!.replace("\\", "/")
@@ -239,29 +247,11 @@ object("windows") Fs {
         }
         return "C:/Windows/Temp"
     }
-    fun trueCmd(): String {
+    implement fun trueCmd(): String {
         return "ver > NUL"
     }
-    fun pwd(): String {
+    implement fun pwd(): String {
         return trim(Process.capture("cd"))
-    }
-}
-
-object Fs {
-    fun mkdirP(path: String) {
-        runOrFail("mkdir -p " + path)
-    }
-    fun rmrf(dir: String): Int {
-        return Process.exec("rm -rf " + dir)
-    }
-    fun tmpDir(): String {
-        return "/tmp"
-    }
-    fun trueCmd(): String {
-        return "true"
-    }
-    fun pwd(): String {
-        return trim(Process.capture("pwd"))
     }
 }
 

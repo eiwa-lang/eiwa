@@ -568,6 +568,21 @@ fn reportTypeNameCollision(self: *TypeChecker, stmt: *ASTNode, kind: []const u8,
     }
 }
 
+fn areContractsEqual(a: []const []const u8, b: []const []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a) |c_a| {
+        var found = false;
+        for (b) |c_b| {
+            if (std.mem.eql(u8, c_a, c_b)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
 fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
     if (self.status == .declaring_types or self.status == .declared_types or
         self.status == .declaring_signatures or self.status == .declared_signatures or
@@ -635,6 +650,130 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // Enforce ADR 60: Unique explicit lib names and mandatory contract consistency across platform variants
+        var seen_libs = std.StringHashMap(*ASTNode).init(self.allocator);
+        defer seen_libs.deinit();
+
+        var type_groups = std.StringHashMap(ArrayList(*ASTNode)).init(self.allocator);
+        defer {
+            var it = type_groups.valueIterator();
+            while (it.next()) |list| list.deinit();
+            type_groups.deinit();
+        }
+        var object_groups = std.StringHashMap(ArrayList(*ASTNode)).init(self.allocator);
+        defer {
+            var it = object_groups.valueIterator();
+            while (it.next()) |list| list.deinit();
+            object_groups.deinit();
+        }
+
+        for (node.data.program.statements) |stmt| {
+            if (stmt.data == .lib_decl) {
+                const l = &stmt.data.lib_decl;
+                if (seen_libs.get(l.name)) |prev| {
+                    _ = prev;
+                    self.reportError(stmt.line, stmt.column, "TypeError: Duplicate lib declaration '{s}'. Platform-specific FFI libraries must use distinct, explicit names (e.g. Posix{s}, Win32{s}).", .{ l.name, l.name, l.name });
+                    return error.TypeError;
+                }
+                try seen_libs.put(l.name, stmt);
+            } else if (stmt.data == .type_decl) {
+                const c = &stmt.data.type_decl;
+                const g = try type_groups.getOrPut(c.name);
+                if (!g.found_existing) {
+                    g.value_ptr.* = ArrayList(*ASTNode).init(self.allocator);
+                }
+                try g.value_ptr.append(stmt);
+            } else if (stmt.data == .object_decl) {
+                const o = &stmt.data.object_decl;
+                if (o.name) |o_name| {
+                    const g = try object_groups.getOrPut(o_name);
+                    if (!g.found_existing) {
+                        g.value_ptr.* = ArrayList(*ASTNode).init(self.allocator);
+                    }
+                    try g.value_ptr.append(stmt);
+                }
+            }
+        }
+
+        // Validate contract consistency across all type variants with the same name
+        var tg_it = type_groups.iterator();
+        while (tg_it.next()) |entry| {
+            const list = entry.value_ptr.*;
+            var has_platform = false;
+            for (list.items) |s| {
+                if (s.data.type_decl.platform_targets.len > 0) {
+                    has_platform = true;
+                    break;
+                }
+            }
+            if (has_platform) {
+                var ref_contracts: ?[]const []const u8 = null;
+                for (list.items) |s| {
+                    if (s.data.type_decl.contracts.len > 0) {
+                        ref_contracts = s.data.type_decl.contracts;
+                        break;
+                    }
+                }
+                if (ref_contracts == null) {
+                    const first_stmt = list.items[0];
+                    self.reportError(first_stmt.line, first_stmt.column, "TypeError: Platform-specialized type '{s}' must implement at least one contract.", .{entry.key_ptr.*});
+                    return error.TypeError;
+                }
+                const expected_contracts = ref_contracts.?;
+                for (list.items) |s| {
+                    const c = &s.data.type_decl;
+                    if (c.contracts.len == 0) {
+                        self.reportError(s.line, s.column, "TypeError: Default/platform declaration '{s}' must implement the same contract(s) as other variants.", .{c.name});
+                        return error.TypeError;
+                    }
+                    if (!areContractsEqual(expected_contracts, c.contracts)) {
+                        self.reportError(s.line, s.column, "TypeError: Variant of type '{s}' has inconsistent contract list. All variants (including default) must implement the same contracts.", .{c.name});
+                        return error.TypeError;
+                    }
+                }
+            }
+        }
+
+        // Validate contract consistency across all object variants with the same name
+        var og_it = object_groups.iterator();
+        while (og_it.next()) |entry| {
+            const list = entry.value_ptr.*;
+            var has_platform = false;
+            for (list.items) |s| {
+                if (s.data.object_decl.platform_targets.len > 0) {
+                    has_platform = true;
+                    break;
+                }
+            }
+            if (has_platform) {
+                var ref_contracts: ?[]const []const u8 = null;
+                for (list.items) |s| {
+                    if (s.data.object_decl.contracts.len > 0) {
+                        ref_contracts = s.data.object_decl.contracts;
+                        break;
+                    }
+                }
+                if (ref_contracts == null) {
+                    const first_stmt = list.items[0];
+                    self.reportError(first_stmt.line, first_stmt.column, "TypeError: Platform-specialized object '{s}' must implement at least one contract.", .{entry.key_ptr.*});
+                    return error.TypeError;
+                }
+                const expected_contracts = ref_contracts.?;
+                for (list.items) |s| {
+                    const o = &s.data.object_decl;
+                    const o_name = o.name orelse "object";
+                    if (o.contracts.len == 0) {
+                        self.reportError(s.line, s.column, "TypeError: Default/platform declaration '{s}' must implement the same contract(s) as other variants.", .{o_name});
+                        return error.TypeError;
+                    }
+                    if (!areContractsEqual(expected_contracts, o.contracts)) {
+                        self.reportError(s.line, s.column, "TypeError: Variant of object '{s}' has inconsistent contract list. All variants (including default) must implement the same contracts.", .{o_name});
+                        return error.TypeError;
                     }
                 }
             }

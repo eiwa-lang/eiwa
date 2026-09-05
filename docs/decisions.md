@@ -851,9 +851,33 @@ Permite aos desenvolvedores distribuir binários estáticos portáveis para qual
 **Razão:**
 Entrega a melhor ergonomia de desenvolvimento moderna (DX alinhada à filosofia do Kotlin) combinada com a máxima performance nativa possível em sistemas orientados a Boehm GC, eliminando buffers transitórios e reduzindo a pressão sobre o coletor de lixo.
 
+---
 
+## ADR 60: Paridade Estrita de Plataforma — Contratos Obrigatórios em `type`/`object` e Nomes Únicos em `lib`
+**Status:** Aprovado  
+**Data:** Setembro 2026  
 
+**Contexto:**
+1. A ADR 57 introduziu a compilação cruzada e anotações de alvo em `lib("target")`, `type("target")` e `object("target")`.
+2. Contudo, permitir declarações heterogêneas sob o mesmo nome para alvos diferentes (ex.: `type("posix") Process` vs `type("windows") Process`, ou `lib("posix") NativeProcess` vs `lib("windows") NativeProcess`) introduzia um grave risco de **falsa simetria de API**:
+   - Uma plataforma poderia conter métodos públicos ou assinaturas que a outra não possuía.
+   - O código compilava perfeitamente no sistema operacional do desenvolvedor (ex.: macOS/POSIX), mas falhava silenciosamente em tempo de compilação quando submetido ao CI ou compilado cruzado para Windows (`error: member not found`).
+3. Além disso, blocos `lib` representam FFI de baixo nível com APIs de C/SO que são intrinsecamente distintas (`fork`/`kill` vs `CreateProcess`/`TerminateProcess`). Fingir que duas bibliotecas FFI diferentes compartilham o mesmo identificador universal mascarava a falta de interoperabilidade real no nível C.
 
+**Decisão:**
+1. **Contrato Obrigatório e Consistência Estrita entre Variantes:**
+   - Toda declaração `type("...")` ou `object("...")` com discriminador de plataforma é **estritamente obrigada** a implementar ao menos um `contract` (ex.: `type("posix") Process : ProcessContract`).
+   - Se existir qualquer variante especializada por plataforma, **todas as declarações com o mesmo nome (incluindo a versão universal/default de fallback)** devem obrigatoriamente implementar **a mesma lista de contratos**.
+   - O `contract` funciona como a única superfície de API pública permitida e canônica visível para consumidores da abstração.
+   - Métodos públicos não declarados no contrato são proibidos nas especializações (ou exigem visibilidade estritamente privada/local de módulo).
+2. **Proibição de Nomes Duplicados em `lib` (Nomes Explícitos por Plataforma):**
+   - Blocos `lib` não podem compartilhar o mesmo nome entre plataformas quando suas assinaturas divergirem.
+   - O identificador do bloco `lib` deve refletir explicitamente seu contexto nativo (ex.: `lib("posix") PosixProcess`, `lib("windows") Win32Process`, `lib("linux") LinuxEpoll`).
+   - O compilador rejeita colisões de nomes de `lib` entre plataformas. Caso código consumidor referencie uma `lib` indisponível no target ativo, o compilador reporta erro imediato e explícito de disponibilidade de plataforma.
+3. **Separação Arquitetural de Responsabilidades:**
+   - **`lib` (FFI):** Baixo nível, específica por SO, com nomes claros e inequívocos.
+   - **`contract`:** Especificação pura da API pública uniforme, compartilhada e portável.
+   - **`type`/`object`:** Ponte de implementação que conecta a FFI nativa ao contrato do ecossistema Eiwa.
 
-
-
+**Razão:**
+Elimina 100% dos erros de assimetria de API entre sistemas operacionais antes do runtime, garante portabilidade verificável pelo compilador no TypeChecker, e mantém a pureza do sistema de tipos por composição (ADR 25) sem sobrecarga ou ilusões em tempo de execução.

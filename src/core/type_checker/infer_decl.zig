@@ -924,6 +924,10 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
                 self.reportError(method.line, method.column, "TypeError: Method '{s}' in type '{s}' is marked with 'implement', but is not declared in any contract implemented by '{s}'.", .{ m.name, c_name_str, c_name_str });
                 return error.TypeError;
             }
+        } else if (c.platform_targets.len > 0 and !m.from_skill) {
+            const kind_str = if (@hasField(@TypeOf(c.*), "methods")) "type" else "object";
+            self.reportError(method.line, method.column, "TypeError: Method '{s}' in platform-specialized {s} '{s}' must implement a contract method.", .{ m.name, kind_str, c_name_str });
+            return error.TypeError;
         }
     }
 }
