@@ -195,16 +195,21 @@ const posix_crash = if (builtin.os.tag != .windows) struct {
             else => null,
         };
 
-        write("\n\x1b[1;31mRuntime Error:\x1b[0m ");
-        write(name);
         if (sig == .SEGV and (fault_addr == null or fault_addr.? < 4096)) {
-            write(" (null pointer dereference)");
-        }
-        if (fault_addr) |a| {
-            write(" at address ");
-            writeFrame(a);
+            write("\n\x1b[1;31m💥 Panic: NullPointerException:\x1b[0m attempted to access a member or method on a null reference\n");
+            if (fault_addr) |a| {
+                write("  Fault address: ");
+                writeFrame(a);
+            }
         } else {
-            write("\n");
+            write("\n\x1b[1;31mRuntime Error:\x1b[0m ");
+            write(name);
+            if (fault_addr) |a| {
+                write(" at address ");
+                writeFrame(a);
+            } else {
+                write("\n");
+            }
         }
         write("\x1b[1;36mStack Trace (JIT):\x1b[0m\n");
         var addr_buf: [48]usize = undefined;
