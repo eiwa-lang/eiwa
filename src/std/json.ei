@@ -1,4 +1,4 @@
-import { Serializable, SerdeField, SerdeValue, SerdeInt, SerdeDouble, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
+import { Serializable, SerdeField, SerdeValue, SerdeNull, SerdeInt, SerdeDouble, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
 import { Map, MutableMap, List, MutableList } from "std.collections"
 
 enum JsonKind {
@@ -8,6 +8,14 @@ enum JsonKind {
     NUMBER,
     BOOL,
     NULL
+}
+
+type JsonSerdeList(val arr: List<JsonValue>) : SerdeList {
+    implement fun size(): Int = this.arr.size()
+    implement fun getAt(index: Int): SerdeValue {
+        val elem = this.arr.get(index)
+        return elem.toSerde()
+    }
 }
 
 type JsonValue(
@@ -50,6 +58,33 @@ type JsonValue(
     fun asObject(): Map<String, JsonValue> = this.obj
 
     fun asArray(): List<JsonValue> = this.arr
+
+    fun toSerdeObject(): SerdeObject {
+        val fieldList: MutableList<SerdeField> = MutableList()
+        var i = 0
+        while (i < this.obj.entries.size()) {
+            var curr = this.obj.entries.get(i)
+            while (curr != null) {
+                val k = curr!!.key
+                val v = curr!!.value
+                val sv = v.toSerde()
+                fieldList.add(SerdeField(k, sv))
+                curr = curr!!.next
+            }
+            i = i + 1
+        }
+        return SerdeObject(fieldList.freeze())
+    }
+
+    fun toSerde(): SerdeValue = when (this.kind) {
+        JsonKind.OBJECT -> this.toSerdeObject()
+        JsonKind.ARRAY -> SerdeListValue(JsonSerdeList(this.arr))
+        JsonKind.STRING -> SerdeString(this.str)
+        JsonKind.NUMBER -> SerdeDouble(this.num)
+        JsonKind.BOOL -> SerdeBool(this.boolean)
+        JsonKind.NULL -> SerdeNull()
+        else -> SerdeNull()
+    }
 
     fun write(): String = when (this.kind) {
         JsonKind.OBJECT -> this.writeObject()
@@ -458,4 +493,11 @@ fun serializeJsonList(list: SerdeList): String {
         i = i + 1
     }
     return "$out]"
+}
+
+fun parseJsonToSerde(raw: String): SerdeValue = parseJson(raw).toSerde()
+
+fun fromJson<T>(raw: String): T {
+    val serdeVal = parseJsonToSerde(raw)
+    return T.deserialize(serdeVal)
 }

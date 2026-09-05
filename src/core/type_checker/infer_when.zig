@@ -106,6 +106,10 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
         }
 
+        if (node.expected_type) |et| {
+            case.body.expected_type = et;
+        }
+
         // 3. Infer case body type
         const body_type = if (case.body.data == .block)
             try inferBlockAsExpression(self, case.body, &case_scope)
@@ -113,7 +117,13 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             try self.inferNode(case.body, &case_scope);
 
         // 4. Accumulate/verify return type
-        if (resolved_type) |curr_res| {
+        if (node.expected_type) |exp_t| {
+            if (!self.isCompatible(exp_t, body_type)) {
+                self.reportError(case.body.line, case.body.column, "TypeError: when branch has type {} which is incompatible with expected type {}.", .{ body_type.*, exp_t.* });
+                return error.TypeError;
+            }
+            resolved_type = exp_t;
+        } else if (resolved_type) |curr_res| {
             if (self.isCompatible(curr_res, body_type)) {
                 resolved_type = curr_res;
             } else if (self.isCompatible(body_type, curr_res)) {
@@ -138,4 +148,5 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     }
 
     t.* = final_t.*;
+    node.resolved_type = t;
 }

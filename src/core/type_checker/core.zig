@@ -1043,6 +1043,11 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
         if (mono_node.data == .type_decl) {
             const class_type = try self.allocator.create(EiwaType);
             try infer_decl_mod.inferTypeDecl(self, mono_node, &self.global_scope, class_type);
+        } else if (mono_node.data == .object_decl) {
+            if (mono_node.resolved_type == null) {
+                const obj_type = try self.allocator.create(EiwaType);
+                try infer_decl_mod.inferObjectDecl(self, mono_node, &self.global_scope, obj_type);
+            }
         }
     }
 

@@ -10,6 +10,10 @@ type SerdeField(val name: String, val value: SerdeValue) : Serializable {
     implement fun toString(): String = this.name
 }
 
+contract Deserializable<T> {
+    fun deserialize(value: SerdeValue): T
+}
+
 contract SerdeValue
 
 contract SerdeList {
@@ -17,12 +21,86 @@ contract SerdeList {
     fun getAt(index: Int): SerdeValue
 }
 
+type SerdeNull() : SerdeValue
 type SerdeInt(val v: Int) : SerdeValue
 type SerdeDouble(val v: Double) : SerdeValue
 type SerdeBool(val v: Bool) : SerdeValue
 type SerdeString(val v: String) : SerdeValue
-type SerdeObject(val fields: List<SerdeField>) : SerdeValue
 type SerdeListValue(val list: SerdeList) : SerdeValue
+
+type SerdeObject(val fields: List<SerdeField>) : SerdeValue {
+    fun get(name: String): SerdeValue? {
+        var i = 0
+        while (i < this.fields.size()) {
+            val f = this.fields.get(i)
+            if (f.name == name) {
+                return f.value
+            }
+            i = i + 1
+        }
+        return null
+    }
+
+    fun getString(name: String): String {
+        val v = this.get(name)
+        if (v != null && v is SerdeString) {
+            return (v as SerdeString).v
+        }
+        return ""
+    }
+
+    fun getInt(name: String): Int {
+        val v = this.get(name)
+        if (v != null) {
+            if (v is SerdeInt) {
+                return (v as SerdeInt).v
+            }
+            if (v is SerdeDouble) {
+                val d = (v as SerdeDouble).v
+                return d.toInt()
+            }
+        }
+        return 0
+    }
+
+    fun getDouble(name: String): Double {
+        val v = this.get(name)
+        if (v != null) {
+            if (v is SerdeDouble) {
+                return (v as SerdeDouble).v
+            }
+            if (v is SerdeInt) {
+                val i = (v as SerdeInt).v
+                return i.toDouble()
+            }
+        }
+        return 0.0
+    }
+
+    fun getBool(name: String): Bool {
+        val v = this.get(name)
+        if (v != null && v is SerdeBool) {
+            return (v as SerdeBool).v
+        }
+        return false
+    }
+
+    fun getObject(name: String): SerdeObject? {
+        val v = this.get(name)
+        if (v != null && v is SerdeObject) {
+            return v as SerdeObject
+        }
+        return null
+    }
+
+    fun getList(name: String): SerdeList? {
+        val v = this.get(name)
+        if (v != null && v is SerdeListValue) {
+            return (v as SerdeListValue).list
+        }
+        return null
+    }
+}
 
 type SerdeIntList(val list: List<Int>) : SerdeList {
     implement fun size(): Int = list.size()
@@ -52,4 +130,11 @@ type SerdeObjectList<T>(val list: List<T>) : SerdeList {
 type SerdeGenericList<T>(val list: List<T>) : SerdeList {
     implement fun size(): Int = 0
     implement fun getAt(index: Int): SerdeValue = SerdeString("")
+}
+
+fun asSerdeObject(v: SerdeValue): SerdeObject {
+    if (v is SerdeObject) {
+        return v as SerdeObject
+    }
+    return SerdeObject(List<SerdeField>())
 }

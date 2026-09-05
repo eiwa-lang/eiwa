@@ -154,6 +154,7 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
     new_type_decl.name = mangled_name;
     new_type_decl.resolved_c_name = mangled_name;
     new_type_decl.generic_params = &.{};
+    new_type_decl.is_monomorphized = true;
     new_node.data = .{ .type_decl = new_type_decl };
 
     // Insert monomorphized node into classes_ast & alias_map

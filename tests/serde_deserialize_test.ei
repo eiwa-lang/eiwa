@@ -1,0 +1,19 @@
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson, serializeJson } from "std.json"
+
+type User(val id: Int, val name: String, val active: Bool) : Serializable
+
+test "serde: automatic static deserialization from json" {
+    val jsonStr = "{\"id\": 42, \"name\": \"Alice\", \"active\": true}"
+    val user = fromJson<User>(jsonStr)
+    assert(user.id == 42)
+    assert(user.name == "Alice")
+    assert(user.active == true)
+
+    val reencoded = serializeJson(user)
+    val user2 = fromJson<User>(reencoded)
+    assert(user2.id == user.id)
+    assert(user2.name == user.name)
+    assert(user2.active == user.active)
+}

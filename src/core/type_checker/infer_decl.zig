@@ -449,6 +449,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         try generateDefaultHashCode(self, node, c);
         try generateDefaultEquals(self, node, c);
         try generateSerdeFields(self, node, c);
+        try generateSerdeDeserialize(self, node, c);
     }
 
     var class_scope = Scope.init(self.allocator, scope);
@@ -1193,6 +1194,9 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
 
     if (!body_inferred) {
+        if (f.is_expr_body) {
+            f.body.expected_type = return_type;
+        }
         _ = try self.inferNode(f.body, &fun_scope);
     }
 
@@ -2343,5 +2347,272 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
             new_methods[c.methods.len + i] = to_add[i].?;
         }
         c.methods = new_methods;
+    }
+}
+
+fn makeObjMethodCall(self: *TypeChecker, line: usize, col: usize, obj: *ASTNode, method_name: []const u8, args: []const *ASTNode) !*ASTNode {
+    const get_node = try self.allocator.create(ASTNode);
+    get_node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .get_expr = .{
+                .object = obj,
+                .name = method_name,
+                .is_safe = false,
+            },
+        },
+    };
+    const call_node = try self.allocator.create(ASTNode);
+    call_node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .call_expr = .{
+                .callee = get_node,
+                .arguments = args,
+                .type_args = &.{},
+            },
+        },
+    };
+    return call_node;
+}
+
+fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
+    if (!self.implementsContract(c.name, "Serializable")) return;
+    if (c.generic_params.len > 0) return;
+    if (c.is_monomorphized) return;
+    if (c.primary_constructor.len == 0) return;
+    for (c.annotations) |ann| {
+        if (std.mem.eql(u8, ann.name, "Primitive")) return;
+    }
+
+    const actual_c_name = self.alias_map.get(c.name) orelse c.name;
+
+    // Check if companion object already has deserialize
+    if (self.objects_ast.get(actual_c_name)) |existing_obj| {
+        for (existing_obj.data.object_decl.members) |m| {
+            if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "deserialize")) return;
+        }
+    }
+
+    // 1. Parameter `value: SerdeValue`
+    const val_type_ref = try self.allocator.create(ast.ASTTypeRef);
+    val_type_ref.* = .{
+        .name = "SerdeValue",
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+    const param = ast.Param{
+        .name = "value",
+        .type_ref = val_type_ref,
+        .initializer = null,
+        .is_varargs = false,
+    };
+    const params_slice = try self.allocator.alloc(ast.Param, 1);
+    params_slice[0] = param;
+
+    // 2. Return type: `c.name`
+    const ret_type_ref = try self.allocator.create(ast.ASTTypeRef);
+    ret_type_ref.* = .{
+        .name = c.name,
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+
+    // 3. `val obj = asSerdeObject(value)`
+    const val_ident = try makeIdent(self, node.line, node.column, "value");
+    const as_obj_args = try self.allocator.alloc(*ASTNode, 1);
+    as_obj_args[0] = val_ident;
+    const as_obj_call = try makeCall(self, node.line, node.column, "asSerdeObject", as_obj_args, &.{});
+
+    const var_stmt = try self.allocator.create(ASTNode);
+    var_stmt.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .var_decl = .{
+                .is_mut = false,
+                .name = "obj",
+                .type_ref = null,
+                .initializer = as_obj_call,
+                .is_boxed = false,
+                .resolved_c_name = null,
+            },
+        },
+    };
+
+    // 4. Constructor arguments for `c.name(arg0, arg1, ...)`
+    var ctor_args = ArrayList(*ASTNode).init(self.allocator);
+    defer ctor_args.deinit();
+
+    for (c.primary_constructor) |prop| {
+        if (!prop.is_property) continue;
+
+        const obj_ident = try makeIdent(self, node.line, node.column, "obj");
+        const str_lit = try makeStringLiteral(self, node.line, node.column, prop.name);
+        const name = prop.type_ref.name;
+
+        if (std.mem.eql(u8, name, "Int")) {
+            const get_args = try self.allocator.alloc(*ASTNode, 1);
+            get_args[0] = str_lit;
+            const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getInt", get_args);
+            try ctor_args.append(call_val);
+        } else if (std.mem.eql(u8, name, "Double")) {
+            const get_args = try self.allocator.alloc(*ASTNode, 1);
+            get_args[0] = str_lit;
+            const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getDouble", get_args);
+            try ctor_args.append(call_val);
+        } else if (std.mem.eql(u8, name, "Bool")) {
+            const get_args = try self.allocator.alloc(*ASTNode, 1);
+            get_args[0] = str_lit;
+            const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getBool", get_args);
+            try ctor_args.append(call_val);
+        } else if (std.mem.eql(u8, name, "String")) {
+            const get_args = try self.allocator.alloc(*ASTNode, 1);
+            get_args[0] = str_lit;
+            const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getString", get_args);
+            try ctor_args.append(call_val);
+        } else if (self.implementsContract(name, "Serializable")) {
+            // Child.deserialize(asSerdeObject(obj.get("child")))
+            const get_args = try self.allocator.alloc(*ASTNode, 1);
+            get_args[0] = str_lit;
+            const raw_field_call = try makeObjMethodCall(self, node.line, node.column, obj_ident, "get", get_args);
+
+            const as_obj_child_args = try self.allocator.alloc(*ASTNode, 1);
+            as_obj_child_args[0] = raw_field_call;
+            const as_child_call = try makeCall(self, node.line, node.column, "asSerdeObject", as_obj_child_args, &.{});
+
+            const child_ident = try makeIdent(self, node.line, node.column, name);
+            const des_args = try self.allocator.alloc(*ASTNode, 1);
+            des_args[0] = as_child_call;
+            const child_call = try makeObjMethodCall(self, node.line, node.column, child_ident, "deserialize", des_args);
+            try ctor_args.append(child_call);
+        } else {
+            if (prop.initializer) |init_expr| {
+                try ctor_args.append(init_expr);
+            } else {
+                const null_lit = try self.allocator.create(ASTNode);
+                null_lit.* = .{
+                    .line = node.line,
+                    .column = node.column,
+                    .resolved_type = null,
+                    .expected_type = null,
+                    .data = .null_literal,
+                };
+                try ctor_args.append(null_lit);
+            }
+        }
+    }
+
+    const ctor_call = try makeCall(self, node.line, node.column, c.name, try ctor_args.toOwnedSlice(), &.{});
+
+    // 5. return ctor_call
+    const ret_stmt = try self.allocator.create(ASTNode);
+    ret_stmt.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .return_stmt = .{
+                .value = ctor_call,
+            },
+        },
+    };
+
+    // 6. Block { val obj = asSerdeObject(value); return User(...) }
+    const block_stmts = try self.allocator.alloc(*ASTNode, 2);
+    block_stmts[0] = var_stmt;
+    block_stmts[1] = ret_stmt;
+    const block_node = try self.allocator.create(ASTNode);
+    block_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .block = .{
+                .statements = block_stmts,
+            },
+        },
+    };
+
+    // 7. fun_decl deserialize
+    const deserialize_fn = try self.allocator.create(ASTNode);
+    deserialize_fn.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .fun_decl = .{
+                .annotations = &.{},
+                .modifiers = &.{},
+                .name = "deserialize",
+                .generic_params = &.{},
+                .params = params_slice,
+                .type_ref = ret_type_ref,
+                .body = block_node,
+                .is_expr_body = false,
+                .resolved_c_name = null,
+            },
+        },
+    };
+
+    if (self.objects_ast.get(actual_c_name)) |existing_obj| {
+        var new_members = try self.allocator.alloc(*ASTNode, existing_obj.data.object_decl.members.len + 1);
+        for (existing_obj.data.object_decl.members, 0..) |m, i| {
+            new_members[i] = m;
+        }
+        new_members[existing_obj.data.object_decl.members.len] = deserialize_fn;
+        existing_obj.data.object_decl.members = new_members;
+        if (existing_obj.resolved_type != null) {
+            var obj_scope = Scope.init(self.allocator, &self.global_scope);
+            defer obj_scope.deinit();
+            const old_class_name = self.current_class_name;
+            const old_class_methods = self.current_class_methods;
+            self.current_class_name = c.name;
+            self.current_class_methods = existing_obj.data.object_decl.members;
+            defer {
+                self.current_class_name = old_class_name;
+                self.current_class_methods = old_class_methods;
+            }
+            _ = try self.inferNode(deserialize_fn, &obj_scope);
+        }
+    } else {
+        const members_slice = try self.allocator.alloc(*ASTNode, 1);
+        members_slice[0] = deserialize_fn;
+        const obj_node = try self.allocator.create(ASTNode);
+        obj_node.* = .{
+            .line = node.line,
+            .column = node.column,
+            .resolved_type = null,
+            .expected_type = null,
+            .data = .{
+                .object_decl = .{
+                    .annotations = &.{},
+                    .name = c.name,
+                    .members = members_slice,
+                    .resolved_c_name = actual_c_name,
+                    .contracts = &.{},
+                    .skills = &.{},
+                    .platform_targets = c.platform_targets,
+                },
+            },
+        };
+        try self.objects_ast.put(actual_c_name, obj_node);
+        if (!std.mem.eql(u8, c.name, actual_c_name)) {
+            try self.objects_ast.put(c.name, obj_node);
+        }
+        try self.monomorphized_nodes.append(obj_node);
     }
 }

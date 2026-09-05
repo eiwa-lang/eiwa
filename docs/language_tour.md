@@ -2881,7 +2881,11 @@ if (res.ok) {
     print("Success: ${res.status}") // 200, 201, etc.
     print("Body: ${res.body()}")    // raw text
     
-    // Automatic JSON parsing:
+    // Automatic typed deserialization using client-configured ContentNegotiation:
+    val user = res.body<UserDto>()
+    print("User: ${user.username}")
+
+    // Or parse as generic JSON AST:
     val json = res.json()
     print("Login: ${json.get("login")!!.asString()}")
 } else if (res.isNotFound) {
@@ -2897,6 +2901,31 @@ val contentType = res.contentType() // e.g. "application/json"
 val customHeader = res.header("X-RateLimit-Remaining")
 val cached = res.headerOrDefault("X-Cache", "MISS")
 ```
+
+#### Pluggable Content Negotiation (`ContentNegotiation`)
+
+Arest decouples data serialization and deserialization from specific formats via the `ContentNegotiation` contract:
+
+```kotlin
+contract ContentNegotiation {
+    fun contentType(): String
+    fun serialize(payload: Serializable): String
+    fun deserialize(raw: String): SerdeValue
+}
+```
+
+By default, the client uses `JsonNegotiation()`. Any wire format (YAML, Protobuf, MessagePack) can be plugged in seamlessly:
+
+```kotlin
+val client = arestClient {
+    baseUrl("https://api.myapp.com")
+    negotiation(CustomNegotiation())
+}
+
+// res.body<T>() automatically delegates to the client's configured negotiation:
+val dto = client.get("/profile").body<ProfileDto>()
+```
+
 
 #### Pluggable Transport Engines (`HttpEngine`)
 
