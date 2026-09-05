@@ -1,5 +1,5 @@
 import { mod } from "std.math"
-import { Serializable } from "std.serde"
+import { Serializable, SerdeValue, SerdeString } from "std.serde"
 import { Json } from "std.json"
 import { Yaml } from "std.yaml"
 
@@ -147,9 +147,7 @@ type Time(val sec: Int) : Serializable {
         return Duration(this.sec - other.sec)
     }
 
-    implement fun serdeFields(): List<SerdeField> {
-        return [SerdeField("time", SerdeString(this.toString()))]
-    }
+    implement fun serialize(): SerdeValue = SerdeString(this.toString())
 
     implement fun toString(): String = this.format("YYYY-MM-DD HH:mm:ss")
 

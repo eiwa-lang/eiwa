@@ -378,23 +378,10 @@ skill Json : Serializable {
     }
 
     fun toJson(): String {
-        val fields = this.serdeFields()
-        if (fields.size() == 1) {
-            val first = fields.get(0)
-            if (first.name == "__list__" || first.name == "value" || first.name == "time") {
-                return this.writeJsonValue(first.value)
-            }
-        }
-        return this.writeJson(fields)
+        return this.writeJsonValue(this.serialize())
     }
 
     fun writeJson(fields: List<SerdeField>): String {
-        if (fields.size() == 1) {
-            val first = fields.get(0)
-            if (first.name == "__list__" || first.name == "value" || first.name == "time") {
-                return this.writeJsonValue(first.value)
-            }
-        }
         var out = "{"
         var i = 0
         while (i < fields.size()) {
@@ -413,7 +400,7 @@ skill Json : Serializable {
         is SerdeDouble -> v.v.toString()
         is SerdeBool -> v.v.toString()
         is SerdeString -> "\"${this.escapeJsonString(v.v)}\""
-        is SerdeObject -> this.writeJson(v.obj.serdeFields())
+        is SerdeObject -> this.writeJson(v.fields)
         is SerdeListValue -> this.writeJsonList(v.list)
         else -> "null"
     }
@@ -430,4 +417,45 @@ skill Json : Serializable {
         }
         return "$out]"
     }
+}
+
+fun serializeJson(obj: Serializable): String {
+    return serializeJsonValue(obj.serialize())
+}
+
+fun serializeJsonFields(fields: List<SerdeField>): String {
+    var out = "{"
+    var i = 0
+    while (i < fields.size()) {
+        if (i > 0) {
+            out = "$out, "
+        }
+        val f = fields.get(i)
+        out = "$out\"${f.name}\": ${serializeJsonValue(f.value)}"
+        i = i + 1
+    }
+    return "$out}"
+}
+
+fun serializeJsonValue(v: SerdeValue): String = when (v) {
+    is SerdeInt -> v.v.toString()
+    is SerdeDouble -> v.v.toString()
+    is SerdeBool -> v.v.toString()
+    is SerdeString -> "\"${jsonEscape(v.v)}\""
+    is SerdeObject -> serializeJsonFields(v.fields)
+    is SerdeListValue -> serializeJsonList(v.list)
+    else -> "null"
+}
+
+fun serializeJsonList(list: SerdeList): String {
+    var out = "["
+    var i = 0
+    while (i < list.size()) {
+        if (i > 0) {
+            out = "$out, "
+        }
+        out = "$out${serializeJsonValue(list.getAt(i))}"
+        i = i + 1
+    }
+    return "$out]"
 }

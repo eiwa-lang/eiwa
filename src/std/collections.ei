@@ -2,7 +2,7 @@
 // Powered by True Generics and Native Arrays!
 
 import { Json } from "std.json"
-import { Serializable, SerdeField, SerdeList, SerdeObjectList, SerdeValue, SerdeString } from "std.serde"
+import { Serializable, SerdeField, SerdeList, SerdeObjectList, SerdeValue, SerdeString, SerdeObject } from "std.serde"
 
 type MutableList<T>(val list: List<T> = []) : Serializable + Json {
     fun add(element: T): Void {
@@ -37,6 +37,8 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
     fun freeze(): List<T> {
         return this.list
     }
+
+    implement fun serialize(): SerdeValue = this.list.serialize()
 }
 
 type List<T>(val items: NativeArray<T> = []) : Equatable, Serializable + Json {
@@ -154,7 +156,8 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json
 
     fun freeze(): Map<K, V> = Map(this.entries)
 
-    implement fun serdeFields(): List<SerdeField> = Map(this.entries).serdeFields()
+    fun serdeFields(): List<SerdeField> = Map(this.entries).serdeFields()
+    implement fun serialize(): SerdeValue = Map(this.entries).serialize()
 }
 
 type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
@@ -202,7 +205,7 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
 
     fun mut(): MutableMap<K, V> = MutableMap(this.entries)
 
-    implement fun serdeFields(): List<SerdeField> {
+    fun serdeFields(): List<SerdeField> {
         val fields = MutableList<SerdeField>()
         var i = 0
         while (i < this.entries.size()) {
@@ -215,6 +218,8 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
         }
         return fields.freeze()
     }
+
+    implement fun serialize(): SerdeValue = SerdeObject(this.serdeFields())
 }
 
 type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap()) {

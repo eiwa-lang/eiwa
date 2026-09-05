@@ -2,15 +2,10 @@ import { List } from "std.collections"
 import { Serializable, SerdeField, SerdeValue, SerdeInt, SerdeDouble, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
 
 skill Yaml : Serializable {
-    fun toYaml(): String {
-        val fields = this.serdeFields()
-        if (fields.size() == 1) {
-            val first = fields.get(0)
-            if (first.name == "__list__" || first.name == "value" || first.name == "time") {
-                return this.writeYamlScalar(first.value)
-            }
-        }
-        return this.writeYaml(fields)
+    fun toYaml(): String = when (this.serialize()) {
+        is SerdeObject -> this.writeYamlBlock((this.serialize() as SerdeObject).fields, "")
+        is SerdeListValue -> this.writeYamlList((this.serialize() as SerdeListValue).list, "")
+        else -> this.writeYamlScalar(this.serialize())
     }
 
     fun writeYaml(fields: List<SerdeField>): String = this.writeYamlBlock(fields, "")
@@ -31,7 +26,7 @@ skill Yaml : Serializable {
         is SerdeDouble -> " ${v.v}\n"
         is SerdeBool -> " ${v.v}\n"
         is SerdeString -> " \"${v.v}\"\n"
-        is SerdeObject -> v.obj.serdeFields().size() == 1 ? this.writeYamlValueSuffix(v.obj.serdeFields()[0].value, indent) : "\n${this.writeYamlBlock(v.obj.serdeFields(), "$indent  ")}"
+        is SerdeObject -> "\n${this.writeYamlBlock(v.fields, "$indent  ")}"
         is SerdeListValue -> "\n${this.writeYamlList(v.list, "$indent  ")}"
         else -> " null\n"
     }
@@ -48,7 +43,7 @@ skill Yaml : Serializable {
     }
 
     fun writeYamlListItem(v: SerdeValue, indent: String): String = when (v) {
-        is SerdeObject -> "-\n${this.writeYamlBlock(v.obj.serdeFields(), "$indent  ")}"
+        is SerdeObject -> "-\n${this.writeYamlBlock(v.fields, "$indent  ")}"
         is SerdeListValue -> "-\n${this.writeYamlList(v.list, "$indent  ")}"
         else -> "- ${this.writeYamlScalar(v)}\n"
     }

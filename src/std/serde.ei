@@ -2,10 +2,11 @@ import { print } from "std.core"
 import { List, MutableList } from "std.collections"
 
 contract Serializable {
-    fun serdeFields(): List<SerdeField>
+    fun serialize(): SerdeValue
 }
 
-type SerdeField(val name: String, val value: SerdeValue) {
+type SerdeField(val name: String, val value: SerdeValue) : Serializable {
+    implement fun serialize(): SerdeValue = this.value
     implement fun toString(): String = this.name
 }
 
@@ -20,7 +21,7 @@ type SerdeInt(val v: Int) : SerdeValue
 type SerdeDouble(val v: Double) : SerdeValue
 type SerdeBool(val v: Bool) : SerdeValue
 type SerdeString(val v: String) : SerdeValue
-type SerdeObject(val obj: Serializable) : SerdeValue
+type SerdeObject(val fields: List<SerdeField>) : SerdeValue
 type SerdeListValue(val list: SerdeList) : SerdeValue
 
 type SerdeIntList(val list: List<Int>) : SerdeList {
@@ -45,5 +46,10 @@ type SerdeStringList(val list: List<String>) : SerdeList {
 
 type SerdeObjectList<T>(val list: List<T>) : SerdeList {
     implement fun size(): Int = list.size()
-    implement fun getAt(index: Int): SerdeValue = SerdeObject(list.get(index))
+    implement fun getAt(index: Int): SerdeValue = list.get(index).serialize()
+}
+
+type SerdeGenericList<T>(val list: List<T>) : SerdeList {
+    implement fun size(): Int = 0
+    implement fun getAt(index: Int): SerdeValue = SerdeString("")
 }

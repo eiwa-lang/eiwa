@@ -1,0 +1,33 @@
+import { assert } from "std.core"
+import { List } from "std.collections"
+import { Serializable, SerdeValue, SerdeObject, SerdeListValue, SerdeString } from "std.serde"
+import { Json, serializeJson } from "std.json"
+import { Time } from "std.time"
+
+type UserProfile(val id: Int, val name: String) : Serializable + Json
+
+test "clean_serde: user dto serializes cleanly" {
+    val u = UserProfile(1, "Leo")
+    val ser = u.serialize()
+    assert(ser is SerdeObject)
+    val json = u.toJson()
+    assert(json.indexOf("\"id\": 1") >= 0)
+    assert(json.indexOf("\"name\": \"Leo\"") >= 0)
+}
+
+test "clean_serde: list serializes as array without __list__ wrapper" {
+    val list: List<Int> = [1, 2, 3]
+    val ser = list.serialize()
+    assert(ser is SerdeListValue)
+    val json = serializeJson(list)
+    assert(json == "[1, 2, 3]")
+    assert(json.indexOf("__list__") == -1)
+}
+
+test "clean_serde: time serializes as string without time field wrapper" {
+    val t = Time(100)
+    val ser = t.serialize()
+    assert(ser is SerdeString)
+    val json = serializeJson(t)
+    assert(json.indexOf("{\"time\":") == -1)
+}
