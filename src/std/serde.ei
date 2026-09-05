@@ -138,3 +138,53 @@ fun asSerdeObject(v: SerdeValue): SerdeObject {
     }
     return SerdeObject(List<SerdeField>())
 }
+
+fun asString(v: SerdeValue): String {
+    if (v is SerdeString) {
+        return (v as SerdeString).v
+    }
+    return ""
+}
+
+fun asInt(v: SerdeValue): Int {
+    if (v is SerdeInt) {
+        return (v as SerdeInt).v
+    }
+    if (v is SerdeDouble) {
+        val d = (v as SerdeDouble).v
+        return d.toInt()
+    }
+    return 0
+}
+
+fun asDouble(v: SerdeValue): Double {
+    if (v is SerdeDouble) {
+        return (v as SerdeDouble).v
+    }
+    if (v is SerdeInt) {
+        val i = (v as SerdeInt).v
+        return i.toDouble()
+    }
+    return 0.0
+}
+
+fun asBool(v: SerdeValue): Bool {
+    if (v is SerdeBool) {
+        return (v as SerdeBool).v
+    }
+    return false
+}
+
+fun deserializeList<T>(serdeList: SerdeList?, mapper: (SerdeValue) -> T): List<T> {
+    if (serdeList == null) {
+        return List<T>()
+    }
+    val out = MutableList<T>()
+    var i = 0
+    while (i < serdeList!!.size()) {
+        out.add(mapper(serdeList!!.getAt(i)))
+        i = i + 1
+    }
+    return out.freeze()
+}
+

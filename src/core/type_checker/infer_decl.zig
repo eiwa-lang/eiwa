@@ -1467,6 +1467,10 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
         const args = try self.allocator.alloc(*ASTNode, 1);
         args[0] = field_ident;
         return try makeCall(self, line, col, "SerdeInt", args, &.{});
+    } else if (std.mem.eql(u8, name, "Double")) {
+        const args = try self.allocator.alloc(*ASTNode, 1);
+        args[0] = field_ident;
+        return try makeCall(self, line, col, "SerdeDouble", args, &.{});
     } else if (std.mem.eql(u8, name, "Bool")) {
         const args = try self.allocator.alloc(*ASTNode, 1);
         args[0] = field_ident;
@@ -2386,7 +2390,6 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
     if (!self.implementsContract(c.name, "Serializable")) return;
     if (c.generic_params.len > 0) return;
     if (c.is_monomorphized) return;
-    if (c.primary_constructor.len == 0) return;
     for (c.annotations) |ann| {
         if (std.mem.eql(u8, ann.name, "Primitive")) return;
     }
@@ -2481,7 +2484,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
             get_args[0] = str_lit;
             const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getString", get_args);
             try ctor_args.append(call_val);
-        } else if (self.implementsContract(name, "Serializable")) {
+        } else if (prop.type_ref.generic_args.len == 0 and self.implementsContract(name, "Serializable")) {
             // Child.deserialize(asSerdeObject(obj.get("child")))
             const get_args = try self.allocator.alloc(*ASTNode, 1);
             get_args[0] = str_lit;
@@ -2496,6 +2499,98 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
             des_args[0] = as_child_call;
             const child_call = try makeObjMethodCall(self, node.line, node.column, child_ident, "deserialize", des_args);
             try ctor_args.append(child_call);
+        } else if (std.mem.eql(u8, name, "List") and prop.type_ref.generic_args.len == 1) {
+            const elem_tr = prop.type_ref.generic_args[0];
+            const elem_name = elem_tr.name;
+
+            const get_args = try self.allocator.alloc(*ASTNode, 1);
+            get_args[0] = str_lit;
+            const raw_list_call = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getList", get_args);
+
+            const param_type_ref = try self.allocator.create(ast.ASTTypeRef);
+            param_type_ref.* = .{
+                .name = "SerdeValue",
+                .generic_args = &.{},
+                .is_array = false,
+                .is_nullable = false,
+            };
+            const lambda_params = try self.allocator.alloc(ast.Param, 1);
+            lambda_params[0] = .{
+                .name = "v",
+                .type_ref = param_type_ref,
+                .initializer = null,
+            };
+
+            const v_ident = try makeIdent(self, node.line, node.column, "v");
+            var map_expr: ?*ASTNode = null;
+
+            if (std.mem.eql(u8, elem_name, "String")) {
+                const as_args = try self.allocator.alloc(*ASTNode, 1);
+                as_args[0] = v_ident;
+                map_expr = try makeCall(self, node.line, node.column, "asString", as_args, &.{});
+            } else if (std.mem.eql(u8, elem_name, "Int")) {
+                const as_args = try self.allocator.alloc(*ASTNode, 1);
+                as_args[0] = v_ident;
+                map_expr = try makeCall(self, node.line, node.column, "asInt", as_args, &.{});
+            } else if (std.mem.eql(u8, elem_name, "Double")) {
+                const as_args = try self.allocator.alloc(*ASTNode, 1);
+                as_args[0] = v_ident;
+                map_expr = try makeCall(self, node.line, node.column, "asDouble", as_args, &.{});
+            } else if (std.mem.eql(u8, elem_name, "Bool")) {
+                const as_args = try self.allocator.alloc(*ASTNode, 1);
+                as_args[0] = v_ident;
+                map_expr = try makeCall(self, node.line, node.column, "asBool", as_args, &.{});
+            } else if (self.implementsContract(elem_name, "Serializable")) {
+                const elem_ident = try makeIdent(self, node.line, node.column, elem_name);
+                const des_item_args = try self.allocator.alloc(*ASTNode, 1);
+                des_item_args[0] = v_ident;
+                map_expr = try makeObjMethodCall(self, node.line, node.column, elem_ident, "deserialize", des_item_args);
+            }
+
+            if (map_expr) |me| {
+                const lambda_body = try self.allocator.alloc(*ASTNode, 1);
+                lambda_body[0] = me;
+
+                const lambda_node = try self.allocator.create(ASTNode);
+                lambda_node.* = .{
+                    .line = node.line,
+                    .column = node.column,
+                    .resolved_type = null,
+                    .expected_type = null,
+                    .data = .{
+                        .lambda_expr = .{
+                            .params = lambda_params,
+                            .body = lambda_body,
+                        },
+                    },
+                };
+
+                const des_list_args = try self.allocator.alloc(*ASTNode, 2);
+                des_list_args[0] = raw_list_call;
+                des_list_args[1] = lambda_node;
+
+                const t_args = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
+                t_args[0] = elem_tr;
+
+                const call_val = try makeCall(self, node.line, node.column, "deserializeList", des_list_args, t_args);
+                try ctor_args.append(call_val);
+            } else if (prop.initializer) |init_expr| {
+                try ctor_args.append(init_expr);
+            } else {
+                const arr_node = try self.allocator.create(ASTNode);
+                arr_node.* = .{
+                    .line = node.line,
+                    .column = node.column,
+                    .resolved_type = null,
+                    .expected_type = null,
+                    .data = .{
+                        .array_literal = .{
+                            .elements = &.{},
+                        },
+                    },
+                };
+                try ctor_args.append(arr_node);
+            }
         } else {
             if (prop.initializer) |init_expr| {
                 try ctor_args.append(init_expr);
@@ -2547,6 +2642,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
     };
 
     // 7. fun_decl deserialize
+    const des_c_name = try std.fmt.allocPrint(self.allocator, "{s}_deserialize", .{actual_c_name});
     const deserialize_fn = try self.allocator.create(ASTNode);
     deserialize_fn.* = .{
         .line = node.line,
@@ -2563,7 +2659,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
                 .type_ref = ret_type_ref,
                 .body = block_node,
                 .is_expr_body = false,
-                .resolved_c_name = null,
+                .resolved_c_name = des_c_name,
             },
         },
     };

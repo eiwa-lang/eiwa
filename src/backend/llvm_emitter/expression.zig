@@ -5472,32 +5472,34 @@ fn storeBlockOrExprResult(
     if (res_ptr) |rp| {
         if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(raw_val)) != llvm.LLVMVoidTypeKind) {
             var val = raw_val;
-            const alloc_t = llvm.LLVMGetAllocatedType(rp);
-            const fat_t = types_mapping.getFatPointerType(ctx);
-            if (alloc_t == fat_t and llvm.LLVMTypeOf(val) != fat_t) {
-                var contract_c_name: []const u8 = "";
-                if (expected_type) |et| {
-                    const eb = ts.extractBaseType(et);
-                    switch (eb.*) {
-                        .Custom => |n| contract_c_name = n,
-                        .GenericInstance => |gi| contract_c_name = gi.base_name,
-                        else => {},
+            if (llvm.LLVMIsAAllocaInst(rp) != null) {
+                const alloc_t = llvm.LLVMGetAllocatedType(rp);
+                const fat_t = types_mapping.getFatPointerType(ctx);
+                if (alloc_t == fat_t and llvm.LLVMTypeOf(val) != fat_t) {
+                    var contract_c_name: []const u8 = "";
+                    if (expected_type) |et| {
+                        const eb = ts.extractBaseType(et);
+                        switch (eb.*) {
+                            .Custom => |n| contract_c_name = n,
+                            .GenericInstance => |gi| contract_c_name = gi.base_name,
+                            else => {},
+                        }
+                    }
+                    if (val_node.resolved_type) |vrt| {
+                        const vb = ts.extractBaseType(vrt);
+                        const val_c_name = switch (vb.*) {
+                            .Custom => |n| n,
+                            .GenericInstance => |gi| gi.base_name,
+                            else => "",
+                        };
+                        if (val_c_name.len > 0) {
+                            val = coerceToContract(ctx, mod, builder, val, val_c_name, contract_c_name) catch val;
+                        }
                     }
                 }
-                if (val_node.resolved_type) |vrt| {
-                    const vb = ts.extractBaseType(vrt);
-                    const val_c_name = switch (vb.*) {
-                        .Custom => |n| n,
-                        .GenericInstance => |gi| gi.base_name,
-                        else => "",
-                    };
-                    if (val_c_name.len > 0) {
-                        val = coerceToContract(ctx, mod, builder, val, val_c_name, contract_c_name) catch val;
-                    }
+                if (llvm.LLVMTypeOf(val) != alloc_t) {
+                    val = coerceArg(builder, val, alloc_t);
                 }
-            }
-            if (llvm.LLVMTypeOf(val) != alloc_t) {
-                val = coerceArg(builder, val, alloc_t);
             }
             _ = llvm.LLVMBuildStore(builder, val, rp);
         }

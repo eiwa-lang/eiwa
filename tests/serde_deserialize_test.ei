@@ -3,6 +3,7 @@ import { Serializable } from "std.serde"
 import { fromJson, serializeJson } from "std.json"
 
 type User(val id: Int, val name: String, val active: Bool) : Serializable
+type Team(val name: String, val tags: List<String>, val scores: List<Int>, val members: List<User>) : Serializable
 
 test "serde: automatic static deserialization from json" {
     val jsonStr = "{\"id\": 42, \"name\": \"Alice\", \"active\": true}"
@@ -17,3 +18,36 @@ test "serde: automatic static deserialization from json" {
     assert(user2.name == user.name)
     assert(user2.active == user.active)
 }
+
+test "serde: collection deserialization and serialization round-trip" {
+    val teamJson = "{\"name\": \"CoreTeam\", \"tags\": [\"compiler\", \"systems\"], \"scores\": [10, 20], \"members\": [{\"id\": 1, \"name\": \"Alice\", \"active\": true}, {\"id\": 2, \"name\": \"Bob\", \"active\": false}]}"
+    val team = fromJson<Team>(teamJson)
+    assert(team.name == "CoreTeam")
+    assert(team.tags.size() == 2)
+    assert(team.tags.get(0) == "compiler")
+    assert(team.tags.get(1) == "systems")
+    assert(team.scores.size() == 2)
+    assert(team.scores.get(0) == 10)
+    assert(team.scores.get(1) == 20)
+    assert(team.members.size() == 2)
+    assert(team.members.get(0).id == 1)
+    assert(team.members.get(0).name == "Alice")
+    assert(team.members.get(0).active == true)
+    assert(team.members.get(1).id == 2)
+    assert(team.members.get(1).name == "Bob")
+    assert(team.members.get(1).active == false)
+
+    val encoded = serializeJson(team)
+    val team2 = fromJson<Team>(encoded)
+    assert(team2.name == team.name)
+    assert(team2.tags.size() == 2)
+    assert(team2.tags.get(0) == "compiler")
+    assert(team2.tags.get(1) == "systems")
+    assert(team2.scores.size() == 2)
+    assert(team2.scores.get(0) == 10)
+    assert(team2.scores.get(1) == 20)
+    assert(team2.members.size() == 2)
+    assert(team2.members.get(0).name == "Alice")
+    assert(team2.members.get(1).name == "Bob")
+}
+
