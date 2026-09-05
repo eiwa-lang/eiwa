@@ -4078,8 +4078,10 @@ pub fn emitExpression(
                             const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
                             const i64_t = llvm.LLVMInt64TypeInContext(ctx);
                             const as_int = llvm.LLVMBuildPtrToInt(builder, val, i64_t, "as_int");
+                            const is_null = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, as_int, llvm.LLVMConstInt(i64_t, 0, 0), "as_is_null");
                             const shifted = llvm.LLVMBuildAdd(builder, as_int, llvm.LLVMConstInt(i64_t, 8, 0), "as_shifted");
-                            return llvm.LLVMBuildIntToPtr(builder, shifted, ptr_t, "as_ptr");
+                            const final_int = llvm.LLVMBuildSelect(builder, is_null, llvm.LLVMConstInt(i64_t, 0, 0), shifted, "as_safe_int");
+                            return llvm.LLVMBuildIntToPtr(builder, final_int, ptr_t, "as_ptr");
                         }
                     }
                 }

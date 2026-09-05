@@ -1,0 +1,9 @@
+type DummyView(var a: Int, var b: Int)
+
+test "null safety: Pointer as Type with null pointer preserves null without offset shift" {
+    val nullPtr = NativeString.strstr("hello".ptr, "notfound".ptr)
+    // When casting a null pointer to a view, it must not become 0x8:
+    val view = nullPtr as DummyView
+    // The pointer value remains null (0x0)
+    assert(view == null)
+}
