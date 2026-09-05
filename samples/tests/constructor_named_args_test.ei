@@ -1,0 +1,53 @@
+import { assert } from "std.core"
+
+type ServerConfig(
+    val host: String = "127.0.0.1",
+    val port: Int = 8080,
+    val ssl: Bool = false,
+    val workers: Int = 4
+)
+
+type GenericHolder<T>(
+    val name: String = "unnamed",
+    val value: T
+)
+
+test "constructor_named_args: reorders arguments out of order" {
+    val cfg = ServerConfig(port = 3000, host = "0.0.0.0")
+    assert(cfg.host == "0.0.0.0")
+    assert(cfg.port == 3000)
+    assert(cfg.ssl == false)
+    assert(cfg.workers == 4)
+}
+
+test "constructor_named_args: partial named arguments with defaults" {
+    val cfg1 = ServerConfig(ssl = true)
+    assert(cfg1.host == "127.0.0.1")
+    assert(cfg1.port == 8080)
+    assert(cfg1.ssl == true)
+    assert(cfg1.workers == 4)
+
+    val cfg2 = ServerConfig(workers = 16, ssl = true)
+    assert(cfg2.host == "127.0.0.1")
+    assert(cfg2.port == 8080)
+    assert(cfg2.ssl == true)
+    assert(cfg2.workers == 16)
+}
+
+test "constructor_named_args: mixed positional and named arguments" {
+    val cfg = ServerConfig("api.eiwa.dev", ssl = true, port = 443)
+    assert(cfg.host == "api.eiwa.dev")
+    assert(cfg.port == 443)
+    assert(cfg.ssl == true)
+    assert(cfg.workers == 4)
+}
+
+test "constructor_named_args: generic constructor with named arguments" {
+    val h1 = GenericHolder(value = 42)
+    assert(h1.name == "unnamed")
+    assert(h1.value == 42)
+
+    val h2 = GenericHolder(value = "eiwa", name = "custom")
+    assert(h2.name == "custom")
+    assert(h2.value == "eiwa")
+}

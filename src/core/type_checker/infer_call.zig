@@ -335,6 +335,123 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
     c.arguments = final_args;
 }
 
+pub fn getArgForProp(arguments: []const *ASTNode, props: []const ast.ClassProp, prop_i: usize) ?*ASTNode {
+    if (prop_i >= props.len) return null;
+    const target_prop = props[prop_i];
+
+    // 1. If any argument explicitly names this property:
+    for (arguments) |arg| {
+        if (arg.data == .named_arg and std.mem.eql(u8, arg.data.named_arg.name, target_prop.name)) {
+            return arg.data.named_arg.value;
+        }
+    }
+
+    // 2. Otherwise map positional arguments to un-named slots:
+    var pos_i: usize = 0;
+    for (arguments) |arg| {
+        if (arg.data == .named_arg) continue;
+        while (pos_i < props.len) {
+            var is_named_slot = false;
+            for (arguments) |other| {
+                if (other.data == .named_arg and std.mem.eql(u8, other.data.named_arg.name, props[pos_idx_inner: {
+                    break :pos_idx_inner pos_i;
+                }].name)) {
+                    is_named_slot = true;
+                    break;
+                }
+            }
+            if (!is_named_slot) break;
+            pos_i += 1;
+        }
+        if (pos_i == prop_i) return arg;
+        pos_i += 1;
+    }
+    return null;
+}
+
+pub fn resolveConstructorArguments(self: *TypeChecker, node: *ASTNode, props: []const ast.ClassProp, scope: *Scope) anyerror!void {
+    var c = &node.data.call_expr;
+    var has_named = false;
+    for (c.arguments) |arg| {
+        if (arg.data == .named_arg) {
+            has_named = true;
+            break;
+        }
+    }
+
+    if (!has_named and c.arguments.len == props.len) return;
+
+    if (c.arguments.len > props.len) {
+        self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for constructor, got {}.", .{ props.len, c.arguments.len });
+        return error.TypeError;
+    }
+
+    var new_args = try self.allocator.alloc(?*ASTNode, props.len);
+    for (new_args) |*slot| {
+        slot.* = null;
+    }
+
+    var pos_i: usize = 0;
+    for (c.arguments) |arg| {
+        if (arg.data == .named_arg) {
+            const name = arg.data.named_arg.name;
+            const val = arg.data.named_arg.value;
+            var prop_match: ?usize = null;
+            for (props, 0..) |p, pi| {
+                if (std.mem.eql(u8, p.name, name)) {
+                    prop_match = pi;
+                    break;
+                }
+            }
+            if (prop_match) |pi| {
+                if (new_args[pi] != null) {
+                    self.reportError(arg.line, arg.column, "TypeError: Duplicate argument provided for parameter '{s}'.", .{name});
+                    return error.TypeError;
+                }
+                new_args[pi] = val;
+            } else {
+                self.reportError(arg.line, arg.column, "TypeError: Unknown parameter '{s}' in constructor call.", .{name});
+                return error.TypeError;
+            }
+        } else {
+            while (pos_i < props.len and new_args[pos_i] != null) : (pos_i += 1) {}
+            if (pos_i >= props.len) {
+                self.reportError(arg.line, arg.column, "TypeError: Too many positional arguments in constructor call.", .{});
+                return error.TypeError;
+            }
+            new_args[pos_i] = arg;
+            pos_i += 1;
+        }
+    }
+
+    for (props, 0..) |p, pi| {
+        if (new_args[pi] == null) {
+            if (p.initializer) |init_node| {
+                const cloned = try self.cloneNode(init_node);
+                for (props[0..pi], 0..) |prev_p, prev_i| {
+                    if (new_args[prev_i]) |prev_arg| {
+                        try self.substituteParam(cloned, prev_p.name, prev_arg);
+                    }
+                }
+                cloned.expected_type = p.resolved_type orelse (self.resolveTypeRef(p.type_ref) catch null);
+                _ = try self.inferNode(cloned, scope);
+                new_args[pi] = cloned;
+            } else {
+                self.reportError(node.line, node.column, "TypeError: Missing argument for constructor parameter '{s}' which has no default value.", .{p.name});
+                return error.TypeError;
+            }
+        }
+    }
+
+    var final_args = try self.allocator.alloc(*ASTNode, props.len);
+    for (new_args, 0..) |opt_arg, i| {
+        final_args[i] = opt_arg.?;
+    }
+
+    c.arguments = final_args;
+}
+
+
 /// Resolves the element type `T` of a variadic parameter declared as `T...`.
 /// Returns null when the callee has no variadic parameter.
 fn varargsElemType(self: *TypeChecker, fun_decl: anytype) ?*EiwaType {
@@ -692,32 +809,8 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
     const mono_node = self.classes_ast.get(final_mangled).?;
     const mono_decl = mono_node.data.type_decl;
 
-    if (c.arguments.len < mono_decl.primary_constructor.len) {
-        var new_args = try self.allocator.alloc(*ASTNode, mono_decl.primary_constructor.len);
-        for (c.arguments, 0..) |arg, arg_i| {
-            new_args[arg_i] = arg;
-        }
-        var i = c.arguments.len;
-        while (i < mono_decl.primary_constructor.len) : (i += 1) {
-            const prop = mono_decl.primary_constructor[i];
-            if (prop.initializer) |init_node| {
-                const cloned = try self.cloneNode(init_node);
-                for (mono_decl.primary_constructor[0..i], 0..) |prev_p, prev_i| {
-                    try self.substituteParam(cloned, prev_p.name, new_args[prev_i]);
-                }
-                cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
-                new_args[i] = cloned;
-                _ = try self.inferNode(cloned, scope);
-            } else {
-                self.reportError(node.line, node.column, "TypeError: Missing argument for generic constructor parameter '{s}' of '{s}' which has no default value.", .{ prop.name, name });
-                return error.TypeError;
-            }
-        }
-        c.arguments = new_args;
-    } else if (c.arguments.len > mono_decl.primary_constructor.len) {
-        self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for generic constructor of '{s}', got {}.", .{ mono_decl.primary_constructor.len, name, c.arguments.len });
-        return error.TypeError;
-    }
+    try resolveConstructorArguments(self, node, mono_decl.primary_constructor, scope);
+
 
     for (c.arguments, 0..) |arg, arg_i| {
         const expected = mono_decl.primary_constructor[arg_i].resolved_type orelse try self.resolveTypeRef(mono_decl.primary_constructor[arg_i].type_ref);
@@ -1216,62 +1309,113 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             }
                             if (found_type == null) {
                                 for (type_decl.primary_constructor, 0..) |prop, prop_i| {
-                                if (std.mem.eql(u8, prop.type_ref.name, g_param) and prop.type_ref.generic_args.len == 0 and !prop.type_ref.is_array) {
-                                    found_type = c.arguments[prop_i].resolved_type.?;
-                                    break;
-                                } else {
-                                    if (std.mem.eql(u8, prop.type_ref.name, "NativeArray") and prop.type_ref.generic_args.len == 1 and std.mem.eql(u8, prop.type_ref.generic_args[0].name, g_param)) {
-                                        if (c.arguments[prop_i].resolved_type.?.* == .Array) {
-                                            found_type = c.arguments[prop_i].resolved_type.?.Array;
-                                            break;
+                                    const arg_node = getArgForProp(c.arguments, type_decl.primary_constructor, prop_i) orelse continue;
+                                    const arg_type = arg_node.resolved_type orelse (if (arg_node.data == .named_arg) arg_node.data.named_arg.value.resolved_type else null) orelse continue;
+
+                                    if (std.mem.eql(u8, prop.type_ref.name, g_param) and prop.type_ref.generic_args.len == 0 and !prop.type_ref.is_array) {
+                                        found_type = arg_type;
+                                        break;
+                                    } else {
+                                        if (std.mem.eql(u8, prop.type_ref.name, "NativeArray") and prop.type_ref.generic_args.len == 1 and std.mem.eql(u8, prop.type_ref.generic_args[0].name, g_param)) {
+                                            if (arg_type.* == .Array) {
+                                                found_type = arg_type.Array;
+                                                break;
+                                            }
                                         }
-                                    }
-                                    
-                                    if (prop.type_ref.is_function) {
-                                        if (prop.type_ref.return_type) |ret_ref| {
-                                            if (std.mem.eql(u8, ret_ref.name, g_param)) {
-                                                if (c.arguments[prop_i].resolved_type == null and c.arguments[prop_i].data == .lambda_expr) {
-                                                    _ = self.inferNode(c.arguments[prop_i], scope) catch null;
-                                                }
-                                                if (c.arguments[prop_i].resolved_type) |arg_t| {
-                                                    const base_arg = extractBaseType(arg_t);
-                                                    if (base_arg.* == .Function) {
-                                                        found_type = base_arg.Function.return_type;
-                                                        break;
+                                        
+                                        if (prop.type_ref.is_function) {
+                                            if (prop.type_ref.return_type) |ret_ref| {
+                                                if (std.mem.eql(u8, ret_ref.name, g_param)) {
+                                                    const actual_arg = if (arg_node.data == .named_arg) arg_node.data.named_arg.value else arg_node;
+                                                    if (actual_arg.resolved_type == null and actual_arg.data == .lambda_expr) {
+                                                        _ = self.inferNode(actual_arg, scope) catch null;
+                                                    }
+                                                    if (actual_arg.resolved_type) |arg_t| {
+                                                        const base_arg = extractBaseType(arg_t);
+                                                        if (base_arg.* == .Function) {
+                                                            found_type = base_arg.Function.return_type;
+                                                            break;
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
-                                    }
-                                    
-                                    const is_list_gparam = (std.mem.eql(u8, prop.type_ref.name, "List") and prop.type_ref.generic_args.len == 1 and std.mem.eql(u8, prop.type_ref.generic_args[0].name, g_param)) or (prop.type_ref.is_array and prop.type_ref.generic_args.len == 1 and std.mem.eql(u8, prop.type_ref.generic_args[0].name, g_param));
-                                    if (is_list_gparam) {
-                                        if (c.arguments[prop_i].resolved_type.?.* == .Custom) {
-                                            const c_name = c.arguments[prop_i].resolved_type.?.Custom;
-                                            if (std.mem.indexOf(u8, c_name, "List_") != null) {
-                                                const arg_part = c_name[std.mem.indexOf(u8, c_name, "List_").? + 5 ..];
-                                                found_type = try self.resolveTypeName(arg_part, false);
-                                                break;
+                                        
+                                        const is_list_gparam = (std.mem.eql(u8, prop.type_ref.name, "List") and prop.type_ref.generic_args.len == 1 and std.mem.eql(u8, prop.type_ref.generic_args[0].name, g_param)) or (prop.type_ref.is_array and prop.type_ref.generic_args.len == 1 and std.mem.eql(u8, prop.type_ref.generic_args[0].name, g_param));
+                                        if (is_list_gparam) {
+                                            if (arg_type.* == .Custom) {
+                                                const c_name = arg_type.Custom;
+                                                if (std.mem.indexOf(u8, c_name, "List_") != null) {
+                                                    const arg_part = c_name[std.mem.indexOf(u8, c_name, "List_").? + 5 ..];
+                                                    found_type = try self.resolveTypeName(arg_part, false);
+                                                    break;
+                                                }
                                             }
                                         }
-                                    }
-                                    
-                                    var is_list_node = false;
-                                    if (std.mem.eql(u8, prop.type_ref.name, "List") and prop.type_ref.generic_args.len == 1) {
-                                        const inner = prop.type_ref.generic_args[0];
-                                        if (std.mem.eql(u8, inner.name, "Node") and inner.generic_args.len == 2) {
-                                            if (std.mem.eql(u8, inner.generic_args[0].name, g_param) or std.mem.eql(u8, inner.generic_args[1].name, g_param)) {
-                                                is_list_node = true;
+                                        
+                                        var is_list_node = false;
+                                        if (std.mem.eql(u8, prop.type_ref.name, "List") and prop.type_ref.generic_args.len == 1) {
+                                            const inner = prop.type_ref.generic_args[0];
+                                            if (std.mem.eql(u8, inner.name, "Node") and inner.generic_args.len == 2) {
+                                                if (std.mem.eql(u8, inner.generic_args[0].name, g_param) or std.mem.eql(u8, inner.generic_args[1].name, g_param)) {
+                                                    is_list_node = true;
+                                                }
                                             }
                                         }
-                                    }
-                                    if (is_list_node) {
-                                        if (c.arguments[prop_i].resolved_type.?.* == .Custom) {
-                                            const c_name = c.arguments[prop_i].resolved_type.?.Custom;
-                                            if (std.mem.indexOf(u8, c_name, "List_") != null) {
-                                                const list_part = c_name[std.mem.indexOf(u8, c_name, "List_").? + 5 ..];
-                                                if (std.mem.indexOf(u8, list_part, "Node_") != null) {
-                                                    var inner = list_part[std.mem.indexOf(u8, list_part, "Node_").? + 5 ..];
+                                        if (is_list_node) {
+                                            if (arg_type.* == .Custom) {
+                                                const c_name = arg_type.Custom;
+                                                if (std.mem.indexOf(u8, c_name, "List_") != null) {
+                                                    const list_part = c_name[std.mem.indexOf(u8, c_name, "List_").? + 5 ..];
+                                                    if (std.mem.indexOf(u8, list_part, "Node_") != null) {
+                                                        var inner = list_part[std.mem.indexOf(u8, list_part, "Node_").? + 5 ..];
+                                                        if (std.mem.endsWith(u8, inner, "Opt")) {
+                                                            inner = inner[0 .. inner.len - 3];
+                                                        }
+                                                        var split_idx: usize = 0;
+                                                        while (std.mem.indexOfPos(u8, inner, split_idx, "_")) |idx| {
+                                                            const part1 = inner[0..idx];
+                                                            const part2 = inner[idx + 1..];
+                                                            const t1 = self.resolveTypeName(part1, false) catch null;
+                                                            const t2 = self.resolveTypeName(part2, false) catch null;
+                                                            if (t1 != null and t2 != null and isValidType(self, t1.?) and isValidType(self, t2.?)) {
+                                                                if (std.mem.eql(u8, g_param, "K")) {
+                                                                     found_type = t1;
+                                                                } else if (std.mem.eql(u8, g_param, "V")) {
+                                                                     found_type = t2;
+                                                                }
+                                                                break;
+                                                            }
+                                                            split_idx = idx + 1;
+                                                        }
+                                                        if (found_type != null) break;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        var is_map_gparam = false;
+                                        var map_arg_match_idx: ?usize = null;
+                                        if ((std.mem.eql(u8, prop.type_ref.name, "MutableMap") or std.mem.eql(u8, prop.type_ref.name, "Map")) and prop.type_ref.generic_args.len >= 1) {
+                                            for (prop.type_ref.generic_args, 0..) |arg, g_idx| {
+                                                if (std.mem.eql(u8, arg.name, g_param)) {
+                                                    is_map_gparam = true;
+                                                    map_arg_match_idx = g_idx;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        if (is_map_gparam) {
+                                            if (arg_type.* == .Custom) {
+                                                const c_name = arg_type.Custom;
+                                                var base_idx: ?usize = null;
+                                                if (std.mem.indexOf(u8, c_name, "MutableMap_") != null) {
+                                                    base_idx = std.mem.indexOf(u8, c_name, "MutableMap_").? + "MutableMap_".len;
+                                                } else if (std.mem.indexOf(u8, c_name, "Map_") != null) {
+                                                    base_idx = std.mem.indexOf(u8, c_name, "Map_").? + "Map_".len;
+                                                }
+                                                if (base_idx) |b_idx| {
+                                                    var inner = c_name[b_idx..];
                                                     if (std.mem.endsWith(u8, inner, "Opt")) {
                                                         inner = inner[0 .. inner.len - 3];
                                                     }
@@ -1282,10 +1426,10 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                                         const t1 = self.resolveTypeName(part1, false) catch null;
                                                         const t2 = self.resolveTypeName(part2, false) catch null;
                                                         if (t1 != null and t2 != null and isValidType(self, t1.?) and isValidType(self, t2.?)) {
-                                                            if (std.mem.eql(u8, g_param, "K")) {
-                                                                 found_type = t1;
-                                                            } else if (std.mem.eql(u8, g_param, "V")) {
-                                                                 found_type = t2;
+                                                            if (map_arg_match_idx != null and map_arg_match_idx.? == 1) {
+                                                                found_type = t2;
+                                                            } else {
+                                                                found_type = t1;
                                                             }
                                                             break;
                                                         }
@@ -1296,48 +1440,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                             }
                                         }
                                     }
-
-                                    var is_map_gparam = false;
-                                    if ((std.mem.eql(u8, prop.type_ref.name, "MutableMap") or std.mem.eql(u8, prop.type_ref.name, "Map")) and prop.type_ref.generic_args.len >= 1) {
-                                        for (prop.type_ref.generic_args) |arg| {
-                                            if (std.mem.eql(u8, arg.name, g_param)) {
-                                                is_map_gparam = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if (is_map_gparam) {
-                                        if (c.arguments[prop_i].resolved_type.?.* == .Custom) {
-                                            const c_name = c.arguments[prop_i].resolved_type.?.Custom;
-                                            var base_idx: ?usize = null;
-                                            if (std.mem.indexOf(u8, c_name, "MutableMap_") != null) {
-                                                base_idx = std.mem.indexOf(u8, c_name, "MutableMap_").? + "MutableMap_".len;
-                                            } else if (std.mem.indexOf(u8, c_name, "Map_") != null) {
-                                                base_idx = std.mem.indexOf(u8, c_name, "Map_").? + "Map_".len;
-                                            }
-                                            if (base_idx) |b_idx| {
-                                                var inner = c_name[b_idx..];
-                                                if (std.mem.endsWith(u8, inner, "Opt")) {
-                                                    inner = inner[0 .. inner.len - 3];
-                                                }
-                                                var split_idx: usize = 0;
-                                                while (std.mem.indexOfPos(u8, inner, split_idx, "_")) |idx| {
-                                                    const part1 = inner[0..idx];
-                                                    const part2 = inner[idx + 1..];
-                                                    const t1 = self.resolveTypeName(part1, false) catch null;
-                                                    const t2 = self.resolveTypeName(part2, false) catch null;
-                                                    if (t1 != null and t2 != null and isValidType(self, t1.?) and isValidType(self, t2.?)) {
-                                                        found_type = t1;
-                                                        break;
-                                                    }
-                                                    split_idx = idx + 1;
-                                                }
-                                                if (found_type != null) break;
-                                            }
-                                        }
-                                    }
                                 }
-                            }
                             }
                             if (found_type) |ft| {
                                 type_args[i] = ft;
@@ -1362,32 +1465,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
                         const mono_class_node = self.classes_ast.get(actual_mangled) orelse cn;
                         const mono_type_decl = mono_class_node.data.type_decl;
-                        if (c.arguments.len < mono_type_decl.primary_constructor.len) {
-                            var new_args = try self.allocator.alloc(*ASTNode, mono_type_decl.primary_constructor.len);
-                            for (c.arguments, 0..) |arg, arg_i| {
-                                new_args[arg_i] = arg;
-                            }
-                            var i = c.arguments.len;
-                            while (i < mono_type_decl.primary_constructor.len) : (i += 1) {
-                                const prop = mono_type_decl.primary_constructor[i];
-                                if (prop.initializer) |init_node| {
-                                    const cloned = try self.cloneNode(init_node);
-                                    cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
-                                    for (mono_type_decl.primary_constructor[0..i], 0..) |prev_prop, prev_i| {
-                                        try self.substituteParam(cloned, prev_prop.name, new_args[prev_i]);
-                                    }
-                                    _ = try self.inferNode(cloned, scope);
-                                    new_args[i] = cloned;
-                                } else {
-                                    self.reportError(node.line, node.column, "TypeError: Missing argument for generic constructor parameter '{s}' of '{s}' which has no default value.", .{ prop.name, name });
-                                    return error.TypeError;
-                                }
-                            }
-                            c.arguments = new_args;
-                        } else if (c.arguments.len > mono_type_decl.primary_constructor.len) {
-                            self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for generic constructor of '{s}', got {}.", .{ mono_type_decl.primary_constructor.len, name, c.arguments.len });
-                            return error.TypeError;
-                        }
+                        try resolveConstructorArguments(self, node, mono_type_decl.primary_constructor, scope);
 
                         for (c.arguments, 0..) |arg, arg_i| {
                             if (arg_i < mono_type_decl.primary_constructor.len) {
@@ -1409,32 +1487,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         c.callee.data.identifier.resolved_c_name = actual_mangled;
                         return;
                     } else {
-                        if (c.arguments.len < type_decl.primary_constructor.len) {
-                            var new_args = try self.allocator.alloc(*ASTNode, type_decl.primary_constructor.len);
-                            for (c.arguments, 0..) |arg, arg_i| {
-                                new_args[arg_i] = arg;
-                            }
-                            var i = c.arguments.len;
-                            while (i < type_decl.primary_constructor.len) : (i += 1) {
-                                const prop = type_decl.primary_constructor[i];
-                                if (prop.initializer) |init_node| {
-                                    const cloned = try self.cloneNode(init_node);
-                                    cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
-                                    for (type_decl.primary_constructor[0..i], 0..) |prev_prop, prev_i| {
-                                        try self.substituteParam(cloned, prev_prop.name, new_args[prev_i]);
-                                    }
-                                    _ = try self.inferNode(cloned, scope);
-                                    new_args[i] = cloned;
-                                } else {
-                                    self.reportError(node.line, node.column, "TypeError: Missing argument for constructor parameter '{s}' of '{s}' which has no default value.", .{ prop.name, name });
-                                    return error.TypeError;
-                                }
-                            }
-                            c.arguments = new_args;
-                        } else if (c.arguments.len > type_decl.primary_constructor.len) {
-                            self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for constructor of '{s}', got {}.", .{ type_decl.primary_constructor.len, name, c.arguments.len });
-                            return error.TypeError;
-                        }
+                        try resolveConstructorArguments(self, node, type_decl.primary_constructor, scope);
 
                         // Propagate the declared parameter types to the provided
                         // args so the backend can coerce to the exact contract
@@ -1472,32 +1525,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     const class_node = self.classes_ast.get(rn);
                     if (class_node) |cn| {
                         const type_decl = cn.data.type_decl;
-                        if (c.arguments.len < type_decl.primary_constructor.len) {
-                            var new_args = try self.allocator.alloc(*ASTNode, type_decl.primary_constructor.len);
-                            for (c.arguments, 0..) |arg, arg_i| {
-                                new_args[arg_i] = arg;
-                            }
-                            var i = c.arguments.len;
-                            while (i < type_decl.primary_constructor.len) : (i += 1) {
-                                const prop = type_decl.primary_constructor[i];
-                                if (prop.initializer) |init_node| {
-                                    const cloned = try self.cloneNode(init_node);
-                                    for (type_decl.primary_constructor[0..i], 0..) |prev_p, prev_i| {
-                                        try self.substituteParam(cloned, prev_p.name, new_args[prev_i]);
-                                    }
-                                    cloned.expected_type = prop.resolved_type orelse self.resolveTypeRef(prop.type_ref) catch null;
-                                    new_args[i] = cloned;
-                                    _ = try self.inferNode(cloned, scope);
-                                } else {
-                                    self.reportError(node.line, node.column, "TypeError: Missing argument for constructor parameter '{s}' of '{s}' which has no default value.", .{ prop.name, name });
-                                    return error.TypeError;
-                                }
-                            }
-                            c.arguments = new_args;
-                        } else if (c.arguments.len > type_decl.primary_constructor.len) {
-                            self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for constructor of '{s}', got {}.", .{ type_decl.primary_constructor.len, name, c.arguments.len });
-                            return error.TypeError;
-                        }
+                        try resolveConstructorArguments(self, node, type_decl.primary_constructor, scope);
 
                         for (c.arguments, 0..) |arg, arg_i| {
                             if (arg_i < type_decl.primary_constructor.len) {
