@@ -139,10 +139,14 @@ fn countLines(output: []const u8, prefix: []const u8) usize {
 
 /// Spawns `eiwac test <file>` with piped stdio so the parent can capture and
 /// count the child's per-test-block output.
-fn spawnTestChild(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, tfile: []const u8, is_release: bool) !TestProc {
+fn spawnTestChild(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, tfile: []const u8, is_release: bool, module_paths: []const []const u8) !TestProc {
     var child_args = ArrayList([]const u8).init(allocator);
     defer child_args.deinit();
-    try child_args.appendSlice(&[_][]const u8{ args[0], "test", tfile });
+    try child_args.appendSlice(&[_][]const u8{ args[0], "test" });
+    for (module_paths) |mp| {
+        try child_args.appendSlice(&[_][]const u8{ "--module-path", mp });
+    }
+    try child_args.append(tfile);
     if (is_release) try child_args.append("--release");
     const child = try std.process.spawn(io, .{ .argv = child_args.items, .stdout = .pipe, .stderr = .pipe });
     return .{ .tfile = tfile, .child = child };
@@ -449,14 +453,15 @@ fn run(init: std.process.Init) !void {
             \\  test       Run test blocks ("test \"name\" {{ ... }}")
             \\
             \\Options:
-            \\  --release        Optimized build
-            \\  --target <name>  Target triple or alias (windows, linux, macos, wasm)
-            \\  -o <name>        Output binary name (build command)
-            \\  --aot            run: build a cached native binary and execute
-            \\                   it instead of JIT (used by eiwa run on projects)
-            \\  --no-cache       Disable the incremental build cache
-            \\  -I, -L, -l, -D   Extra flags forwarded to the C compiler
-            \\  -h, --help       Show this help
+            \\  --release            Optimized build
+            \\  --target <name>      Target triple or alias (windows, linux, macos, wasm)
+            \\  -o <name>            Output binary name (build command)
+            \\  --module-path <dir>  Root directory for module resolution (can be repeated)
+            \\  --aot                run: build a cached native binary and execute
+            \\                       it instead of JIT (used by eiwa run on projects)
+            \\  --no-cache           Disable the incremental build cache
+            \\  -I, -L, -l, -D       Extra flags forwarded to the C compiler
+            \\  -h, --help           Show this help
             \\
             \\Extra positional arguments after the file are forwarded to
             \\the program when using the run command.
@@ -632,7 +637,7 @@ fn run(init: std.process.Init) !void {
 
             var next_idx: usize = 0;
             while (running.items.len < window and next_idx < test_files.items.len) : (next_idx += 1) {
-                try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release));
+                try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release, module_paths.items));
             }
 
             while (running.items.len > 0) {
@@ -677,7 +682,7 @@ fn run(init: std.process.Init) !void {
                 }
 
                 if (next_idx < test_files.items.len) {
-                    try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release));
+                    try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release, module_paths.items));
                     next_idx += 1;
                 }
             }
