@@ -25,17 +25,14 @@ Precedência de resolução de versão (`loadProject`, `main.ei:475`):
 
 ---
 
-## 1. `eiwa.freeze` sobrepõe o manifesto silenciosamente
+## 1. ~~`eiwa.freeze` sobrepõe o manifesto silenciosamente~~ (RESOLVIDO)
 
-`loadProject` (`main.ei:496`) substitui toda a lista de deps pelo conteúdo de
-`eiwa.freeze` quando este existe. Os comandos `add`/`remove` (que editam apenas
-`eiwa.yaml`) **não** atualizam o freeze. Consequências:
-
-- Um dep adicionado depois de um `freeze` é **ignorado** no build/run/test.
-- Um dep removido do manifesto continua **sendo compilado** (presente no freeze).
-
-**Sugestão**: sincronizar `add`/`remove` com o freeze, ou tratar o freeze como
-aditivo/cache em vez de fonte de verdade.
+`loadProject` (`main.ei:509`) usa `mergeResolvedDeps`: itera as deps do
+**manifesto** e só pega o commit pinado do freeze/cache quando o nome bate.
+Deps removidas do manifesto não são mais compiladas, e deps novas (ausentes do
+freeze) são resolvidas on-the-fly por `resolveMissing` (com aviso no console).
+O freeze funciona como cache aditivo, não como fonte de verdade. Rode
+`eiwa freeze` para re-piná-lo após `add`/`remove`.
 
 ## 2. Parser YAML caseiro, frágil
 

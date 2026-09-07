@@ -508,8 +508,10 @@ fun loadProject(eiwacResolved: String): ProjectContext {
 
     if (hasFreeze) {
         deps = mergeResolvedDeps(manifestDeps, parseManifest(File.read("eiwa.freeze")))
+        resolveMissing(deps)
     } else if (File.exists(resolutionsFile)) {
         deps = mergeResolvedDeps(manifestDeps, parseManifest(File.read(resolutionsFile)))
+        resolveMissing(deps)
     } else {
         resolveAll(deps)
         if (deps.size() > 0) {
@@ -550,6 +552,18 @@ fun mergeResolvedDeps(manifestDeps: MutableList<Dependency>, resolvedDeps: Mutab
         i = i + 1
     }
     return out
+}
+
+fun resolveMissing(deps: MutableList<Dependency>) {
+    var j = 0
+    while (j < deps.size()) {
+        val dep = deps[j]
+        if (dep.path == "" && hasSource(dep) && dep.commit == "") {
+            println("Resolving new dependency '" + dep.name + "' (not in eiwa.freeze)...")
+            resolveCommit(dep)
+        }
+        j = j + 1
+    }
 }
 
 fun resolveAll(deps: MutableList<Dependency>) {
