@@ -34,17 +34,19 @@ freeze) são resolvidas on-the-fly por `resolveMissing` (com aviso no console).
 O freeze funciona como cache aditivo, não como fonte de verdade. Rode
 `eiwa freeze` para re-piná-lo após `add`/`remove`.
 
-## 2. Parser YAML caseiro, frágil
+## 2. ~~Parser YAML caseiro, frágil~~ (PARCIALMENTE RESOLVIDO)
 
-Não há parser YAML no projeto (TODO em `main.ei:6`). O parser
-`parseManifest` (`main.ei:296`) é baseado em indentação por **espaços**:
+Não há parser YAML completo no projeto (TODO em `main.ei:6`) — continua sendo
+a solução definitiva. Mas o parser minimalista foi robustecido:
 
-- `indentOf` (`main.ei:172`) só conta `" "`; **tabs quebram** a estrutura.
-- Exige indentação exata (deps em 2 espaços, campos em 4).
-- Não suporta aspas, comentários inline, anchors/aliases, listas ou strings
-  multilinha.
+- `indentOf` conta **tabs e espaços** como unidades de indentação.
+- `parseManifest`/`removeCommand` usam **indentação relativa** (o primeiro
+  nível indentado sob `dependencies:` define o nível das deps; campos são
+  qualquer nível mais profundo) — não exigem mais 2/4 espaços exatos.
+- Valores passam por `parseScalar`: remove **comentários inline** (` # ...`,
+  respeitando aspas) e **aspas simples/duplas** ao redor do valor.
 
-**Sugestão**: adotar um parser YAML/serde quando disponível (conforme TODO).
+Ainda não suporta: anchors/aliases, listas ou strings multilinha.
 
 ## 3. Teste integrado de dependências desabilitado
 

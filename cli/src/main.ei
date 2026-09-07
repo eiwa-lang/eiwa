@@ -169,12 +169,55 @@ fun endsWith(s: String, suffix: String): Bool {
     return s.substring(s.length - suffix.length, s.length) == suffix
 }
 
+// Counts leading whitespace (spaces OR tabs) as indentation units.
 fun indentOf(line: String): Int {
     var n = 0
-    while (n < line.length && line.substring(n, n + 1) == " ") {
-        n = n + 1
+    while (n < line.length) {
+        val c = line.substring(n, n + 1)
+        if (c == " " || c == "\t") {
+            n = n + 1
+        } else {
+            return n
+        }
     }
     return n
+}
+
+// Removes a " # ..." trailing comment, respecting single/double quotes.
+fun stripInlineComment(s: String): String {
+    var inSingle = false
+    var inDouble = false
+    var i = 0
+    while (i < s.length) {
+        val c = s.substring(i, i + 1)
+        if (c == "'" && inDouble == false) {
+            inSingle = inSingle == false
+        } else if (c == "\"" && inSingle == false) {
+            inDouble = inDouble == false
+        } else if (c == "#" && inSingle == false && inDouble == false) {
+            if (i == 0 || s.substring(i - 1, i) == " " || s.substring(i - 1, i) == "\t") {
+                return s.substring(0, i)
+            }
+        }
+        i = i + 1
+    }
+    return s
+}
+
+// Strips matching surrounding quotes ('...' or "...") from a scalar value.
+fun unquote(s: String): String {
+    if (s.length >= 2) {
+        val first = s.substring(0, 1)
+        val last = s.substring(s.length - 1, s.length)
+        if ((first == "\"" && last == "\"") || (first == "'" && last == "'")) {
+            return s.substring(1, s.length - 1)
+        }
+    }
+    return s
+}
+
+fun parseScalar(s: String): String {
+    return unquote(trim(stripInlineComment(s)))
 }
 
 fun gitUrl(dep: Dependency): String {
@@ -279,7 +322,7 @@ fun parseTopField(content: String, key: String): String? {
         val line = if (idx == -1) rest else rest.substring(0, idx)
         val trimmed = trim(line)
         if (trimmed != "" && indentOf(line) == 0 && startsWith(trimmed, key + ":")) {
-            val value = trim(trimmed.substring(key.length + 1, trimmed.length))
+            val value = parseScalar(trimmed.substring(key.length + 1, trimmed.length))
             if (value != "") {
                 return value
             }
@@ -297,6 +340,7 @@ fun parseManifest(content: String): MutableList<Dependency> {
     val deps = MutableList<Dependency>()
     var inDeps = false
     var current: Dependency? = null
+    var depIndent = -1
 
     var rest = content
     var looping = true
@@ -310,31 +354,40 @@ fun parseManifest(content: String): MutableList<Dependency> {
             if (indent == 0) {
                 inDeps = trimmed == "dependencies:"
                 current = null
-            } else if (inDeps && indent == 2 && endsWith(trimmed, ":")) {
-                val name = trim(trimmed.substring(0, trimmed.length - 1))
-                val dep = Dependency(name)
-                deps.add(dep)
-                current = dep
-            } else if (inDeps && indent >= 4 && current != null) {
-                val colon = trimmed.indexOf(":")
-                if (colon != -1) {
-                    val key = trim(trimmed.substring(0, colon))
-                    val value = trim(trimmed.substring(colon + 1, trimmed.length))
-                    val dep = current!!
-                    if (key == "github") {
-                        dep.github = value
-                    } else if (key == "gitlab") {
-                        dep.gitlab = value
-                    } else if (key == "git") {
-                        dep.git = value
-                    } else if (key == "path") {
-                        dep.path = value
-                    } else if (key == "branch") {
-                        dep.branch = value
-                    } else if (key == "tag") {
-                        dep.tag = value
-                    } else if (key == "commit") {
-                        dep.commit = value
+                depIndent = -1
+            } else if (inDeps) {
+                // Relative indentation: the first indented line under
+                // `dependencies:` defines the dep-entry level; anything deeper
+                // is a field of the current dep. Tabs or any width work.
+                if (depIndent == -1) {
+                    depIndent = indent
+                }
+                if (indent == depIndent && endsWith(trimmed, ":")) {
+                    val name = trim(trimmed.substring(0, trimmed.length - 1))
+                    val dep = Dependency(name)
+                    deps.add(dep)
+                    current = dep
+                } else if (indent > depIndent && current != null) {
+                    val colon = trimmed.indexOf(":")
+                    if (colon != -1) {
+                        val key = trim(trimmed.substring(0, colon))
+                        val value = parseScalar(trimmed.substring(colon + 1, trimmed.length))
+                        val dep = current!!
+                        if (key == "github") {
+                            dep.github = value
+                        } else if (key == "gitlab") {
+                            dep.gitlab = value
+                        } else if (key == "git") {
+                            dep.git = value
+                        } else if (key == "path") {
+                            dep.path = value
+                        } else if (key == "branch") {
+                            dep.branch = value
+                        } else if (key == "tag") {
+                            dep.tag = value
+                        } else if (key == "commit") {
+                            dep.commit = value
+                        }
                     }
                 }
             }
@@ -928,6 +981,7 @@ fun removeCommand() {
     var inDeps = false
     var skipBlock = false
     var found = false
+    var depIndent = -1
 
     var rest = content
     var looping = true
@@ -942,16 +996,22 @@ fun removeCommand() {
             if (indent == 0) {
                 skipBlock = false
                 inDeps = trimmed == "dependencies:"
-            } else if (inDeps && indent == 2 && endsWith(trimmed, ":")) {
-                skipBlock = trim(trimmed.substring(0, trimmed.length - 1)) == name
-                if (skipBlock) {
-                    found = true
-                    emit = false
+                depIndent = -1
+            } else if (inDeps) {
+                if (depIndent == -1) {
+                    depIndent = indent
                 }
-            } else if (inDeps && indent >= 4 && skipBlock) {
-                emit = false
-            } else if (inDeps && indent == 2) {
-                skipBlock = false
+                if (indent == depIndent && endsWith(trimmed, ":")) {
+                    skipBlock = trim(trimmed.substring(0, trimmed.length - 1)) == name
+                    if (skipBlock) {
+                        found = true
+                        emit = false
+                    }
+                } else if (indent > depIndent && skipBlock) {
+                    emit = false
+                } else if (indent == depIndent) {
+                    skipBlock = false
+                }
             }
         }
 
