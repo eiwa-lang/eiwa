@@ -881,3 +881,31 @@ Entrega a melhor ergonomia de desenvolvimento moderna (DX alinhada à filosofia 
 
 **Razão:**
 Elimina 100% dos erros de assimetria de API entre sistemas operacionais antes do runtime, garante portabilidade verificável pelo compilador no TypeChecker, e mantém a pureza do sistema de tipos por composição (ADR 25) sem sobrecarga ou ilusões em tempo de execução.
+
+---
+
+## ADR 61: Dependências Locais via `path:` — Dependências de Diretório Sem Clone nem Versão
+**Status:** Aprovado
+**Data:** Setembro 2026
+
+**Contexto:**
+1. O gerenciador de dependências do CLI (`cli/src/main.ei`) suporta exclusivamente **fontes git** (`github:`, `gitlab:`, `git:`) — não há registry (decisão de `plan_package_manager.md`). Toda dependência é clonada para `~/.eiwa/repository/<name>/<commit>` e passada ao `eiwac` como `--module-path <repo>/src`.
+2. Para desenvolvimento de múltiplos pacotes no mesmo workspace/monorepo (ou ajuste iterativo de uma biblioteca local), esse fluxo é excessivo: exige repositório git, resolução de ref, clonagem e versionamento — quando o desenvolvedor quer simplesmente apontar para um diretório já presente no disco e ver as mudanças refletidas a cada build.
+3. O `parseDepSpec` tratava caminhos locais (ex.: `/tmp/foo`, `../foo`) como fonte `git:` genérica, o que acarretava os problemas de clone/cache da Seção 4 de `cli/dependency-issues.md` (re-clone de deps sem `eiwa.yaml`, dependência de rede, sem introspecção).
+
+**Decisão:**
+1. **Novo campo de manifesto `path:`:** uma dependência pode declarar `path: <caminho>` (estilo Cargo `path` / npm `link:`):
+   ```yaml
+   dependencies:
+     meulib:
+       path: ../meulib
+   ```
+   O caminho é um diretório local qualquer; **não** há `branch`/`tag`/`commit` associados.
+2. **Semântica "aponta para o diretório":** a dependência `path:` é usada **diretamente** a cada build. Não há clone, não há cache de resolução nem versão — as mudanças no diretório refletem imediatamente em `run`/`build`/`test`.
+3. **Convenção de módulos:** segue a mesma convenção das deps git — os módulos são resolvidos de `<path>/src`, passado ao `eiwac` como `--module-path <path>/src` (sem `ensureCloned`).
+4. **Independente de git:** uma dep `path:` coexiste com deps git no mesmo `eiwa.yaml`; não é um mecanismo de "override/substituição" de um dep git existente (diferente do `replace` do Go).
+5. **Escopo dev/build apenas:** deps `path:` **não participam** de `eiwa freeze` nem de `eiwa update` — são sempre "atuais". Assim, `freeze`/`update` e os serializadores de resolução ignoram deps com `path:`.
+6. **Cobertura CLI:** `eiwa add <name> --path <dir>` (ou `path:<dir>` no spec) adiciona o campo; `parseManifest`/`serializeSource` tratam `path:` como fonte; `compilerCommand` adiciona `<path>/src` ao module-path.
+
+**Razão:**
+Alinha o Eiwa ao padrão dominante de dependências de diretório local (Cargo `path` / npm `link:` / uv `path`), que já é o modelo *standalone* independente de git — em contraste com o `replace` do Go, que é apenas override. Mantém o ciclo de desenvolvimento sem rede nem cache stale, preservando builds reproduzíveis para deps git via freeze sem misturar conceitos de versionamento em deps locais. Não exige mudança no compilador `eiwac` (que já resolve por `--module-path`).

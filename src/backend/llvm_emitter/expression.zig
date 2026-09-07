@@ -3511,7 +3511,7 @@ pub fn emitExpression(
                 _ = llvm.LLVMBuildStore(builder, subj_val, subj_ptr.?);
             }
 
-            const res_ptr: llvm.LLVMValueRef = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "when_res") else null;
+            const res_ptr: ?llvm.LLVMValueRef = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "when_res") else null;
 
             const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "when.merge");
 
@@ -5470,6 +5470,7 @@ fn storeBlockOrExprResult(
     expected_type: ?*const ts.EiwaType,
 ) !void {
     if (res_ptr) |rp| {
+        if (@intFromPtr(rp) == 0) return;
         if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(raw_val)) != llvm.LLVMVoidTypeKind) {
             var val = raw_val;
             if (llvm.LLVMIsAAllocaInst(rp) != null) {

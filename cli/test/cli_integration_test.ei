@@ -235,3 +235,29 @@ fun trimForTest(s: String): String {
     }
     return s.substring(0, end)
 }
+
+test "cli: path dependency (local dir, no git) build/run/test" {
+    val eiwac = eiwacPathForTests()
+    val bin = cliBinary(eiwac)
+    val dir = CliEnv.tmpDir() + "/eiwa_cli_itest_pathproj"
+    val libdir = CliEnv.tmpDir() + "/eiwa_cli_itest_pathlib"
+    CliEnv.rmrf(dir)
+    CliEnv.rmrf(libdir)
+
+    assert(CliEnv.mkdirp(libdir + "/src") == 0)
+    File.write(libdir + "/src/mylib.ei", "fun greet(): String {\n    return \"path-lib-ok\"\n}\n")
+
+    assert(CliEnv.execQuiet(bin + " init " + dir) == 0)
+    File.write(dir + "/src/main.ei", "import { greet } from \"mylib\"\n\nfun main() {\n    println(greet())\n}\n")
+
+    assert(CliEnv.cdRun(dir, bin + " add mylib path:" + libdir) == 0)
+    var manifest = File.read(dir + "/eiwa.yaml")
+    assert(manifest.indexOf("path: " + libdir) != -1)
+
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " build --no-cache")) == 0)
+    assert(File.exists(dir + "/bin/eiwa_cli_itest_pathproj" + CliEnv.binExt()))
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " run --no-cache")) == 0)
+
+    CliEnv.rmrf(dir)
+    CliEnv.rmrf(libdir)
+}

@@ -5,7 +5,7 @@ import { MutableList } from "std.collections"
 
 // TODO: converter este parser minimalista em um DTO tipado do manifesto
 // (eiwa.yaml) quando houver um parser YAML/serde disponivel em Eiwa.
-type Dependency(val name: String, var github: String = "", var gitlab: String = "", var git: String = "", var branch: String = "", var tag: String = "", var commit: String = "")
+type Dependency(val name: String, var github: String = "", var gitlab: String = "", var git: String = "", var path: String = "", var branch: String = "", var tag: String = "", var commit: String = "")
 
 type ProjectContext(
     val eiwac: String,
@@ -33,7 +33,7 @@ type CliArgs(
 // Options that consume the next argument as their value.
 fun isValueOption(arg: String): Bool {
     return arg == "-o" || arg == "--branch" || arg == "--tag" || arg == "--commit" ||
-        arg == "--module-path" || arg == "--github" || arg == "--gitlab" || arg == "--git" ||
+        arg == "--module-path" || arg == "--github" || arg == "--gitlab" || arg == "--git" || arg == "--path" ||
         arg == "--target"
 }
 
@@ -188,7 +188,7 @@ fun gitUrl(dep: Dependency): String {
 }
 
 fun hasSource(dep: Dependency): Bool {
-    return dep.github != "" || dep.gitlab != "" || dep.git != ""
+    return dep.github != "" || dep.gitlab != "" || dep.git != "" || dep.path != ""
 }
 
 fun runOrFail(cmd: String) {
@@ -327,6 +327,8 @@ fun parseManifest(content: String): MutableList<Dependency> {
                         dep.gitlab = value
                     } else if (key == "git") {
                         dep.git = value
+                    } else if (key == "path") {
+                        dep.path = value
                     } else if (key == "branch") {
                         dep.branch = value
                     } else if (key == "tag") {
@@ -348,6 +350,9 @@ fun parseManifest(content: String): MutableList<Dependency> {
 }
 
 fun resolveCommit(dep: Dependency) {
+    if (dep.path != "") {
+        return
+    }
     if (dep.commit != "" && dep.branch == "" && dep.tag == "") {
         return
     }
@@ -378,6 +383,9 @@ fun ensureCloned(dep: Dependency, repositoryRoot: String): String {
 }
 
 fun serializeSource(dep: Dependency): String {
+    if (dep.path != "") {
+        return "    path: " + dep.path + "\n"
+    }
     if (dep.github != "") {
         return "    github: " + dep.github + "\n"
     }
@@ -395,15 +403,17 @@ fun serializeResolutions(deps: MutableList<Dependency>): String {
     var i = 0
     while (i < deps.size()) {
         val dep = deps[i]
-        out = out + "  " + dep.name + ":\n"
-        out = out + serializeSource(dep)
-        if (dep.branch != "") {
-            out = out + "    branch: " + dep.branch + "\n"
+        if (dep.path == "") {
+            out = out + "  " + dep.name + ":\n"
+            out = out + serializeSource(dep)
+            if (dep.branch != "") {
+                out = out + "    branch: " + dep.branch + "\n"
+            }
+            if (dep.tag != "") {
+                out = out + "    tag: " + dep.tag + "\n"
+            }
+            out = out + "    commit: " + dep.commit + "\n"
         }
-        if (dep.tag != "") {
-            out = out + "    tag: " + dep.tag + "\n"
-        }
-        out = out + "    commit: " + dep.commit + "\n"
         i = i + 1
     }
     return out
@@ -414,9 +424,11 @@ fun serializeFreeze(deps: MutableList<Dependency>): String {
     var i = 0
     while (i < deps.size()) {
         val dep = deps[i]
-        out = out + "  " + dep.name + ":\n"
-        out = out + serializeSource(dep)
-        out = out + "    commit: " + dep.commit + "\n"
+        if (dep.path == "") {
+            out = out + "  " + dep.name + ":\n"
+            out = out + serializeSource(dep)
+            out = out + "    commit: " + dep.commit + "\n"
+        }
         i = i + 1
     }
     return out
@@ -429,7 +441,7 @@ fun printHelp() {
     println("")
     println("Commands:")
     println("  init       Create a new project (eiwa init [dir])")
-    println("  add        Add a dependency (eiwa add <name> <source> [--branch|--tag|--commit <ref>])")
+    println("  add        Add a dependency (eiwa add <name> <source> [--branch|--tag|--commit <ref>] | --path <dir>)")
     println("  remove     Remove a dependency (eiwa remove <name>)")
     println("  build      Compile the project (src/main.ei) to a native binary")
     println("  run        Compile and execute the project")
@@ -487,16 +499,17 @@ fun loadProject(eiwacResolved: String): ProjectContext {
     val repositoryRoot = home + "/.eiwa/repository"
 
     val manifest = File.read("eiwa.yaml")
-    var deps = parseManifest(manifest)
+    val manifestDeps = parseManifest(manifest)
+    var deps = manifestDeps
 
     val resolutionsDir = home + "/.eiwa/resolutions"
     val resolutionsFile = resolutionsDir + "/" + manifest.hashCode().toString() + ".yaml"
     val hasFreeze = File.exists("eiwa.freeze")
 
     if (hasFreeze) {
-        deps = parseManifest(File.read("eiwa.freeze"))
+        deps = mergeResolvedDeps(manifestDeps, parseManifest(File.read("eiwa.freeze")))
     } else if (File.exists(resolutionsFile)) {
-        deps = parseManifest(File.read(resolutionsFile))
+        deps = mergeResolvedDeps(manifestDeps, parseManifest(File.read(resolutionsFile)))
     } else {
         resolveAll(deps)
         if (deps.size() > 0) {
@@ -508,6 +521,35 @@ fun loadProject(eiwacResolved: String): ProjectContext {
     val ctx = ProjectContext(eiwacResolved, repositoryRoot, resolutionsDir, resolutionsFile, manifest, deps, hasFreeze)
     checkFrozen(ctx)
     return ctx
+}
+
+// git deps (name) come from freeze/resolution cache; path deps always come
+// from the manifest (they are never frozen, ADR 61).
+fun mergeResolvedDeps(manifestDeps: MutableList<Dependency>, resolvedDeps: MutableList<Dependency>): MutableList<Dependency> {
+    val out = MutableList<Dependency>()
+    var i = 0
+    while (i < manifestDeps.size()) {
+        val dep = manifestDeps[i]
+        if (dep.path != "") {
+            out.add(dep)
+        } else {
+            var merged: Dependency? = null
+            var j = 0
+            while (j < resolvedDeps.size()) {
+                if (resolvedDeps[j].name == dep.name) {
+                    merged = resolvedDeps[j]
+                }
+                j = j + 1
+            }
+            if (merged != null) {
+                out.add(merged!!)
+            } else {
+                out.add(dep)
+            }
+        }
+        i = i + 1
+    }
+    return out
 }
 
 fun resolveAll(deps: MutableList<Dependency>) {
@@ -563,35 +605,43 @@ fun updateCommand() {
     var k = 0
     while (k < deps.size()) {
         val dep = deps[k]
-        var old = ""
-        var m = 0
-        while (m < ctx.deps.size()) {
-            if (ctx.deps[m].name == dep.name) {
-                old = ctx.deps[m].commit
-            }
-            m = m + 1
-        }
-        if (updateTarget == null || dep.name == updateTarget!!) {
-            matched = true
-            if (hasSource(dep) == false) {
-                println("Error: dependency '" + dep.name + "' is not a git dependency")
+        if (dep.path != "") {
+            if (dep.name == updateTarget) {
+                println("Error: dependency '" + dep.name + "' is a path dependency and cannot be updated.")
                 exit(1)
             }
-            resolveCommit(dep)
-            if (old == dep.commit) {
-                println(dep.name + " already up to date (" + dep.commit + ")")
-            } else if (old == "") {
-                println(dep.name + " resolved: " + dep.commit)
-            } else {
-                println(dep.name + " updated: " + old + " -> " + dep.commit)
-            }
+            k = k + 1
         } else {
-            // Keep the already-resolved commit for deps that were NOT the
-            // update target — otherwise serializing them with an empty commit
-            // makes the next build try to re-clone them (and fail).
-            dep.commit = old
+            var old = ""
+            var m = 0
+            while (m < ctx.deps.size()) {
+                if (ctx.deps[m].name == dep.name) {
+                    old = ctx.deps[m].commit
+                }
+                m = m + 1
+            }
+            if (updateTarget == null || dep.name == updateTarget!!) {
+                matched = true
+                if (hasSource(dep) == false) {
+                    println("Error: dependency '" + dep.name + "' is not a git dependency")
+                    exit(1)
+                }
+                resolveCommit(dep)
+                if (old == dep.commit) {
+                    println(dep.name + " already up to date (" + dep.commit + ")")
+                } else if (old == "") {
+                    println(dep.name + " resolved: " + dep.commit)
+                } else {
+                    println(dep.name + " updated: " + old + " -> " + dep.commit)
+                }
+            } else {
+                // Keep the already-resolved commit for deps that were NOT the
+                // update target — otherwise serializing them with an empty commit
+                // makes the next build try to re-clone them (and fail).
+                dep.commit = old
+            }
+            k = k + 1
         }
-        k = k + 1
     }
     if (matched == false) {
         println("Error: dependency not found: " + updateTarget!!)
@@ -680,8 +730,12 @@ fun parseDepSpec(rawSpec: String, explicitName: String?): Dependency {
     var github = ""
     var gitlab = ""
     var gitUrl = ""
+    var pathUrl = ""
 
-    if (startsWith(spec, "github:")) {
+    if (startsWith(spec, "path:")) {
+        pathUrl = spec.substring(5, spec.length)
+        depName = extractRepoName(pathUrl)
+    } else if (startsWith(spec, "github:")) {
         github = spec.substring(7, spec.length)
         depName = extractRepoName(github)
     } else if (startsWith(spec, "gitlab:")) {
@@ -706,14 +760,14 @@ fun parseDepSpec(rawSpec: String, explicitName: String?): Dependency {
         depName = explicitName!!
     }
 
-    val dep = Dependency(depName, github, gitlab, gitUrl)
-    if (ref != "") {
+    val dep = Dependency(depName, github, gitlab, gitUrl, pathUrl)
+    if (ref != "" && pathUrl == "") {
         if (startsWith(ref, "v") || startsWith(ref, "0") || startsWith(ref, "1") || startsWith(ref, "2") || startsWith(ref, "3") || startsWith(ref, "4") || startsWith(ref, "5") || startsWith(ref, "6") || startsWith(ref, "7") || startsWith(ref, "8") || startsWith(ref, "9")) {
             dep.tag = ref
         } else {
             dep.branch = ref
         }
-    } else {
+    } else if (pathUrl == "") {
         dep.branch = "main"
     }
 
@@ -724,13 +778,14 @@ fun addCommand() {
     val args = parseArgs()
     val firstOpt = positional(args, 0)
     if (firstOpt == null) {
-        println("Usage: eiwa add <package[@version]> [source] [--branch <b> | --tag <t> | --commit <c>]")
+        println("Usage: eiwa add <package[@version]> [source] [--branch <b> | --tag <t> | --commit <c> | --path <dir>]")
         println("Examples:")
         println("  eiwa add eiwa-lang/arest")
         println("  eiwa add eiwa-lang/arest@v1.0.0")
         println("  eiwa add eiwa-lang/arest@main")
         println("  eiwa add gitlab:org/repo@v2.0")
         println("  eiwa add custom_name eiwa-lang/arest@v1.0.0")
+        println("  eiwa add mylib --path ../mylib")
         exit(1)
     }
     if (File.exists("eiwa.yaml") == false) {
@@ -759,6 +814,16 @@ fun addCommand() {
     val githubOpt = optionValue(args, "--github")
     val gitlabOpt = optionValue(args, "--gitlab")
     val gitOpt = optionValue(args, "--git")
+    val pathOpt = optionValue(args, "--path")
+    if (pathOpt != null) {
+        dep.path = pathOpt!!
+        dep.github = ""
+        dep.gitlab = ""
+        dep.git = ""
+        dep.branch = ""
+        dep.tag = ""
+        dep.commit = ""
+    }
     if (githubOpt != null) {
         dep.github = githubOpt!!
         dep.gitlab = ""
@@ -788,6 +853,13 @@ fun addCommand() {
     }
     if (commitOpt != null) {
         dep.commit = commitOpt!!
+    }
+
+    // A path dependency has no branch/tag/commit.
+    if (dep.path != "") {
+        dep.branch = ""
+        dep.tag = ""
+        dep.commit = ""
     }
 
     val content = File.read("eiwa.yaml")
@@ -978,7 +1050,9 @@ fun compilerCommand(cmd: String) {
     i = 0
     while (i < ctx.deps.size()) {
         val dep = ctx.deps[i]
-        if (hasSource(dep)) {
+        if (dep.path != "") {
+            modulePaths = modulePaths + " --module-path " + dep.path + "/src"
+        } else if (hasSource(dep)) {
             val dest = ensureCloned(dep, ctx.repositoryRoot)
             modulePaths = modulePaths + " --module-path " + dest + "/src"
         }

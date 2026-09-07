@@ -2,6 +2,8 @@ contract Animal
 type Dog(val name: String) : Animal
 type Cat(val lives: Int) : Animal
 
+fun simpleEmptyFun() {}
+
 test "basic when with single value match" {
     val x = 2
     val res = when (x) {
@@ -56,6 +58,28 @@ test "when with negated type checking" {
         else -> false
     }
     assert(isNotDog == true)
+}
+
+test "when without return value" {
+    var x = 2
+    when (x) {
+        1 -> { x = 1 }
+        2 -> { x = 2 }
+        else -> { simpleEmptyFun() }
+    }
+    assert(x == 2)
+}
+
+test "when using if sintax" {
+    val x = 3
+    when (3) {
+        1 -> { simpleEmptyFun() }
+        2 -> simpleEmptyFun()
+        else -> {
+            if (true) { simpleEmptyFun() }
+        }
+    }
+    assert(true)
 }
 
 test "when with a String subject compares by content" {

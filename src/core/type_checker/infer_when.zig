@@ -124,7 +124,11 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
             resolved_type = exp_t;
         } else if (resolved_type) |curr_res| {
-            if (self.isCompatible(curr_res, body_type)) {
+            if (curr_res.* == .Void or body_type.* == .Void) {
+                const void_t = try self.allocator.create(EiwaType);
+                void_t.* = .Void;
+                resolved_type = void_t;
+            } else if (self.isCompatible(curr_res, body_type)) {
                 resolved_type = curr_res;
             } else if (self.isCompatible(body_type, curr_res)) {
                 resolved_type = body_type;

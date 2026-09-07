@@ -2542,7 +2542,7 @@ eiwa <command> [project-dir|file.ei] [options]
 
 Commands (implemented):
   init         Create a new project (eiwa init [dir])
-  add          Add a dependency (eiwa add <name> <source> [--branch|--tag|--commit <ref>])
+  add          Add a dependency (eiwa add <name> <source> [--branch|--tag|--commit <ref>] | --path <dir>)
   remove       Remove a dependency (eiwa remove <name>)
   build        Compile the project (src/main.ei) to a native binary
   run          Compile and execute the project
@@ -2633,6 +2633,37 @@ dependencies:
   html:
     github: eiwa-lang/html
     commit: 84d2ab3
+```
+
+### 30.4.1 Local Dependencies (`path:`)
+
+Alongside git dependencies, `eiwa.yaml` accepts **local path dependencies** (ADR 61) — a directory on disk used directly, without cloning, resolution or versioning. This mirrors Cargo `path` / npm `link:` and is ideal for workspace/monorepo development or iterating on a local library.
+
+```yaml
+name: my-project
+version: 1.0.0
+
+dependencies:
+  meulib:
+    path: ../meulib
+```
+
+Semantics:
+- **Points at the directory:** no clone, no `~/.eiwa/repository`, no resolution cache — changes to the directory are reflected on the very next `run`/`build`/`test`.
+- **Module convention:** modules are resolved from `<path>/src` (same convention as git deps), passed to `eiwac` as `--module-path <path>/src`.
+- **Independent of git:** a `path:` dep coexists with git deps in the same manifest; it is not an "override" of an existing git dep.
+- **Dev/build scope only:** `path:` deps do **not** participate in `eiwa freeze` or `eiwa update` — they are always "current".
+
+Add one from the CLI:
+
+```bash
+eiwa add meulib --path ../meulib
+eiwa add meulib path:../meulib
+```
+
+```kotlin
+// src/main.ei
+import { hello } from "meulib"
 ```
 
 ### 30.5 Compiler Location
