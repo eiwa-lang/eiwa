@@ -103,6 +103,22 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             mod_ast = m.ast_root;
             prefix = m.module_prefix;
             tc_opt = m.checker;
+            // Guarantee the imported module has declared its signatures
+            // before we copy symbols from it. Imports are now inferred during
+            // the declaring_signatures pass (so object property initializers
+            // can call imported functions), which means a module may be
+            // imported before its own declareSignatures ran via the
+            // deps-first loop. The status guard makes this idempotent.
+            // Circular case: implicit std imports make modules like
+            // std.coroutines and std.math mutually recursive. If the module
+            // is mid-declaration, defer this import to the resolveImports
+            // pass (which re-infers every import) instead of failing on
+            // symbols that simply have not been declared yet.
+            if (m.checker.status == .declaring_types or m.checker.status == .declaring_signatures) {
+                t.* = .Void;
+                return;
+            }
+            try m.checker.declareSignatures(m.ast_root);
         } else {
             self.reportError(node.line, node.column, "ImportError: Module '{s}' not found in registry.", .{mod_path});
             return error.ImportError;

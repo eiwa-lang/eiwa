@@ -139,13 +139,14 @@ fn countLines(output: []const u8, prefix: []const u8) usize {
 
 /// Spawns `eiwac test <file>` with piped stdio so the parent can capture and
 /// count the child's per-test-block output.
-fn spawnTestChild(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, tfile: []const u8, is_release: bool, module_paths: []const []const u8) !TestProc {
+fn spawnTestChild(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, tfile: []const u8, is_release: bool, module_paths: []const []const u8, module_root: []const u8) !TestProc {
     var child_args = ArrayList([]const u8).init(allocator);
     defer child_args.deinit();
     try child_args.appendSlice(&[_][]const u8{ args[0], "test" });
     for (module_paths) |mp| {
         try child_args.appendSlice(&[_][]const u8{ "--module-path", mp });
     }
+    try child_args.appendSlice(&[_][]const u8{ "--module-root", module_root });
     try child_args.append(tfile);
     if (is_release) try child_args.append("--release");
     const child = try std.process.spawn(io, .{ .argv = child_args.items, .stdout = .pipe, .stderr = .pipe });
@@ -505,6 +506,10 @@ fn run(init: std.process.Init) !void {
     var target_arg: ?[]const u8 = null;
     var output_name: ?[]const u8 = null;
     var module_paths = ArrayList([]const u8).init(allocator);
+    // Root used for "."-prefixed (root-relative) imports when compiling a
+    // single test file. The `eiwa` CLI passes --module-root src so tests see
+    // the same root as `run`/`build` (whose root is the entry file's dir).
+    var test_module_root: []const u8 = ".";
     defer module_paths.deinit();
 
     var arg_idx: usize = 2;
@@ -535,6 +540,13 @@ fn run(init: std.process.Init) !void {
             }
             arg_idx += 1;
             try module_paths.append(args[arg_idx]);
+        } else if (std.mem.eql(u8, arg, "--module-root")) {
+            if (arg_idx + 1 >= args.len) {
+                std.debug.print("Error: --module-root requires a directory\n", .{});
+                return;
+            }
+            arg_idx += 1;
+            test_module_root = args[arg_idx];
         } else if (std.mem.eql(u8, arg, "--release")) {
             is_release = true;
         } else if (std.mem.startsWith(u8, arg, "-I") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-D")) {
@@ -637,7 +649,7 @@ fn run(init: std.process.Init) !void {
 
             var next_idx: usize = 0;
             while (running.items.len < window and next_idx < test_files.items.len) : (next_idx += 1) {
-                try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release, module_paths.items));
+                try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release, module_paths.items, test_module_root));
             }
 
             while (running.items.len > 0) {
@@ -682,7 +694,7 @@ fn run(init: std.process.Init) !void {
                 }
 
                 if (next_idx < test_files.items.len) {
-                    try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release, module_paths.items));
+                    try running.append(allocator, try spawnTestChild(allocator, io, args, test_files.items[next_idx], is_release, module_paths.items, test_module_root));
                     next_idx += 1;
                 }
             }
@@ -702,7 +714,7 @@ fn run(init: std.process.Init) !void {
         }
 
         filename = search_path;
-        type_checker.module_root = ".";
+        type_checker.module_root = test_module_root;
         const file_content = try std.Io.Dir.cwd().readFileAlloc(io, filename, allocator, .limited(1024 * 1024));
         defer allocator.free(file_content);
         try source_alloc.appendSlice(file_content);

@@ -259,7 +259,18 @@ pub fn resolveModulePath(allocator: std.mem.Allocator, dir_path: []const u8, act
         const inner = actual_module_path[1..];
         const file_path = try modulePathToFile(allocator, inner);
         const root = findLibraryRoot(dir_path) orelse module_root;
-        return try canonicalModulePath(allocator, try std.fs.path.join(allocator, &.{ root, file_path }));
+        const joined = try std.fs.path.join(allocator, &.{ root, file_path });
+        // Project sources conventionally live in src/ (entry src/main.ei),
+        // but test files compile with the project root as module_root. Fall
+        // back to src/ when the root-relative path does not exist, so tests
+        // can import project sources with the same "." paths used in src/.
+        if (!std.mem.eql(u8, root, "src") and !pathExists(joined)) {
+            const src_candidate = try std.fs.path.join(allocator, &.{ "src", file_path });
+            if (pathExists(src_candidate)) {
+                return try canonicalModulePath(allocator, src_candidate);
+            }
+        }
+        return try canonicalModulePath(allocator, joined);
     }
 
     // Bare module path: resolve relative to the importing file's directory,
@@ -956,6 +967,16 @@ fn core_declareSignatures(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         try m.checker.declareSignatures(m.ast_root);
                     }
                 }
+            }
+        }
+
+        // Resolve local imports BEFORE declaring object/type/fun signatures:
+        // object property initializers (and const-folded defaults) may call
+        // imported functions, which only enter functions_ast once the import
+        // statement is inferred. resolveImports re-infers them idempotently.
+        for (node.data.program.statements) |stmt| {
+            if (stmt.data == .import_stmt) {
+                _ = try self.inferNode(stmt, &self.global_scope);
             }
         }
 
