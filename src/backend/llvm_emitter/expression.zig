@@ -182,6 +182,15 @@ fn collectCapturesLLVM(
             defer std.heap.page_allocator.free(iname_z);
             if (llvm.LLVMGetNamedFunction(mod, iname_z.ptr) != null) return;
             if (structs.contains(name) or structs.contains(i.name)) return;
+            // Object singletons are not values: they have no instance global
+            // (members live in `{Obj}_{field}` globals) and member access is
+            // emitted through the object-global path in emitExpression.
+            // Capturing the name would shadow that path with a bogus env
+            // field and fail emission with VariableNotFound (imported object
+            // `val` read inside a lambda).
+            if (global_objects_ast_ptr) |objects| {
+                if (objects.contains(name) or objects.contains(i.name)) return;
+            }
             // Already captured?
             for (captures.items) |cap| {
                 if (std.mem.eql(u8, cap.name, i.name)) return;
@@ -287,6 +296,7 @@ fn collectCapturesLLVM(
 /// Global contracts AST pointer set during emitModule for contract vtable lookups.
 pub var global_contracts_ast_ptr: ?*std.StringHashMap(*ast.ASTNode) = null;
 pub var global_classes_ast_ptr: ?*std.StringHashMap(*ast.ASTNode) = null;
+pub var global_objects_ast_ptr: ?*std.StringHashMap(*ast.ASTNode) = null;
 
 /// Returns a monotonically increasing counter for unique lambda naming.
 /// Uses a file-level variable (safe: single-threaded compilation).
@@ -453,7 +463,7 @@ pub fn emitExpression(
                 return f;
             }
 
-            if (core.verbose) std.debug.print("LLVM Emitter Error: Variable '{s}' not found in local or global scope.\n", .{name});
+            std.debug.print("LLVM Emitter Error: Variable '{s}' not found in local or global scope.\n", .{name});
             return error.VariableNotFound;
         },
         .get_expr => |get| {

@@ -1020,6 +1020,7 @@ fn run(init: std.process.Init) !void {
     emitter.is_test_mode = is_test;
     emitter.contracts_ast = &global_contracts_ast;
     emitter.classes_ast = &global_classes_ast;
+    emitter.objects_ast = &global_objects_ast;
     emitter.cli_c_flags = cli_c_flags.items;
     emitter.registry = &registry;
     emitter.target_info = target_info;
@@ -1079,6 +1080,7 @@ fn run(init: std.process.Init) !void {
                 deps_emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
                 deps_emitter.contracts_ast = &global_contracts_ast;
                 deps_emitter.classes_ast = &global_classes_ast;
+                deps_emitter.objects_ast = &global_objects_ast;
                 deps_emitter.cli_c_flags = cli_c_flags.items;
                 deps_emitter.registry = &registry;
                 deps_emitter.target_info = target_info;

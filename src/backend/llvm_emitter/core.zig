@@ -201,6 +201,7 @@ pub const LLVMEmitter = struct {
     libs: std.StringHashMap(std.StringHashMap([]const u8)),
     contracts_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
     classes_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
+    objects_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
     /// Build requirements declared by `lib` annotations (@Source/@Include/@Define/@Link),
     /// mirroring the C transpiler (Phase 65 — LLVM backend compiles the C sources too).
     lib_declarations: std.StringHashMap(LibDeclEntry),
@@ -557,6 +558,7 @@ pub const LLVMEmitter = struct {
 
         expression.global_contracts_ast_ptr = self.contracts_ast;
         expression.global_classes_ast_ptr = self.classes_ast;
+        expression.global_objects_ast_ptr = self.objects_ast;
 
         // Collect the entry module and every module it (transitively) imports.
         var modules = ArrayList(*ast.ASTNode).init(self.allocator);
