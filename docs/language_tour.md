@@ -1333,7 +1333,7 @@ Annotated `lib` blocks instruct the compiler and linker on how to process native
 - **`@Include` (Extra Include Directories)**: Appends a `-I<dir>` flag when compiling vendored C sources. Relative paths starting with `./` or `../` (e.g. `@Include("./native")`) are automatically resolved relative to the directory containing the `.ei` file.
 - **`@Source` (Vendored C Sources)**: Appends a C source file to the compilation, e.g. `@Source("src/runtime/third_party/mylib/mylib.c")`. Use for vendored C libraries compiled together with the program.
 - **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag when compiling vendored C sources, e.g. `@Define("MYLIB_BUFFER_SIZE=4096")`.
-- **`@Alias` (Function Names Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions.
+- **`@Alias` (Name Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions. Also accepted on `type` primary-constructor properties to rename the serialized field (see §21.5).
 
 ### 16.1 Self-Contained Library Bindings
 
@@ -1941,7 +1941,32 @@ fun main() {
 }
 ```
 
-### 21.5 Custom `serdeFields()`
+### 21.5 Renaming Fields with `@Alias`
+
+Primary-constructor properties accept the `@Alias("wire_name")` annotation (the same one used for FFI function mapping) to decouple the Eiwa field name from the serialized name. The alias is honored by **both directions** — it becomes the `SerdeField` name on serialize and the lookup key on deserialize — and is **format-agnostic**, because it lives at the `SerdeValue` layer, not in any specific encoder.
+
+```kotlin
+import { Json, fromJson } from "std.json"
+
+type PersonaDto(
+    val id: String,
+    @Alias("avatar_url") val avatarUrl: String,
+    @Alias("created_at") val createdAt: String
+) : Serializable + Json
+
+fun main() {
+    val p = PersonaDto("p-1", "http://img/a.png", "2026-01-01")
+    print(p.toJson())
+    // {"id": "p-1", "avatar_url": "http://img/a.png", "created_at": "2026-01-01"}
+
+    val back = fromJson<PersonaDto>(p.toJson())
+    print(back.avatarUrl)  // http://img/a.png
+}
+```
+
+The same type works unchanged with `+ Yaml` or any other format skill — `toYaml()` emits `avatar_url:` too.
+
+### 21.6 Custom `serdeFields()`
 
 You can override `serdeFields()` manually to rename, reorder, or omit fields — no annotation system needed.
 
@@ -1956,7 +1981,7 @@ type User(val fullName: String, val age: Int) : Serializable + Json {
 }
 ```
 
-### 21.6 Adding a New Format
+### 21.7 Adding a New Format
 
 New formats (Toml, XML, binary) are skills written in pure Eiwa — zero compiler changes.
 
@@ -1968,12 +1993,11 @@ skill Toml : Serializable {
 // Then use: type Config : Serializable + Toml
 ```
 
-### 21.7 Limitations (v1)
+### 21.8 Limitations (v1)
 
 - **Serialization only** — deserialization (`fromJson`/`fromYaml`) is a future phase.
 - **No `Map<K,V>` support** — only primitive fields, nested `: Serializable` objects, and `List<T>`.
 - **No nullable field support** — nullable fields are skipped.
-- **No field customization** — rename/skip/format annotations are future work (override `serdeFields` as a workaround).
 - **Boxing overhead** — each field is boxed into `SerdeInt`/`SerdeString`/etc. at the point of `serdeFields()` construction. This is a one-time cost per call; the encoders themselves are pure function calls that walk the list with contract dispatch.
 
 ---

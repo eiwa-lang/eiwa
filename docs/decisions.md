@@ -909,3 +909,27 @@ Elimina 100% dos erros de assimetria de API entre sistemas operacionais antes do
 
 **Razão:**
 Alinha o Eiwa ao padrão dominante de dependências de diretório local (Cargo `path` / npm `link:` / uv `path`), que já é o modelo *standalone* independente de git — em contraste com o `replace` do Go, que é apenas override. Mantém o ciclo de desenvolvimento sem rede nem cache stale, preservando builds reproduzíveis para deps git via freeze sem misturar conceitos de versionamento em deps locais. Não exige mudança no compilador `eiwac` (que já resolve por `--module-path`).
+
+## ADR 62: `@Alias` em Propriedades de `type` para Nomes de Campo na Serialização
+**Status:** Aprovado
+**Data:** Setembro 2026
+
+**Contexto:**
+1. A derivação automática de `Serializable` (ADR 27) usava o nome Eiwa da propriedade como nome no formato serializado, nos dois sentidos: como nome do `SerdeField` gerado no `serialize()` e como chave de lookup no `deserialize()`.
+2. APIs externas com convenções distintas (ex.: REST em `snake_case`) forçavam DTOs com campos em `snake_case`, quebrando a convenção `camelCase` da linguagem e vazando o formato do wire para o código de domínio.
+3. Já existia a anotação `@Alias("nome")` para mapear funções `lib` (FFI) — um precedente de "nome Eiwa ↔ nome externo" com semântica equivalente.
+
+**Decisão:**
+1. **Anotação em propriedades do construtor primário:** `ClassProp` (AST) passa a carregar `annotations`, e o parser aceita anotações antes de `val`/`var` nos parâmetros do construtor primário de `type`:
+   ```kotlin
+   type PersonaDto(
+       val id: String,
+       @Alias("avatar_url") val avatarUrl: String,
+   ) : Serializable + Json
+   ```
+2. **Ponto único de aplicação (format-agnostic):** o helper `serdeWireName(prop)` retorna o alias (se presente) ou o nome da propriedade, e é usado nos dois lados da derivação — nome do `SerdeField` no serialize e chave de lookup no deserialize. Como ambos operam sobre `SerdeValue`, a renomeação é transparente para JSON, YAML e qualquer formato futuro baseado em serde — nenhum encoder/decoder específico é alterado.
+3. **Apenas serde:** o `@Alias` de propriedade não afeta o nome do campo na linguagem (acesso continua `p.avatarUrl`), nem o nome C emitido — atua exclusivamente na camada de serialização.
+4. **Opt-in e compatível:** propriedades sem `@Alias` comportam-se exatamente como antes.
+
+**Razão:**
+Reutiliza uma anotação já conhecida da linguagem em vez de criar um mecanismo novo (evita proliferar `@SerialName`-like por formato, como no Kotlinx). Aplicar o rename na camada `SerdeValue` (e não nos encoders) garante que novos formatos (`skill Toml : Serializable`, etc.) herdam o comportamento sem nenhuma mudança, preservando o design de "formatos como skills em Eiwa puro" da ADR 27. Cobertura: `samples/tests/serde_alias_test.ei` (serialize, deserialize, round-trip e YAML).
