@@ -1390,6 +1390,22 @@ eiwac test samples/tests/postgres_test.ei -I /opt/homebrew/opt/libpq/include
 
 All C flags passed on the CLI are automatically collected and forwarded to `zig cc` during compilation.
 
+### 16.2.1 Converting C Strings: `cstr()`
+
+C APIs return null-terminated `char*`. Since Eiwa `String` is `{ptr, length}` and the `String(ptr, len)` constructor takes **exactly** `len` bytes (reading past the terminator when oversized), use the `std.core` helper `cstr(ptr)` to convert a null-terminated C string — it computes the length with `strlen`:
+
+```kotlin
+lib NativeFoo {
+    @Alias("foo_greet")
+    fun greet(): Pointer
+}
+
+val s = cstr(NativeFoo.greet())   // String, exact length
+println(s)
+```
+
+Use `String(ptr, len)` only when the C side is not null-terminated or you need an exact byte count (e.g. truncating random bytes).
+
 *(Note: In the current phase, Annotations are structural compiler pragmas. In future phases, Eiwa will support declaring custom user-defined annotations natively).*
 
 ### 16.3 Compiler Options & Program Arguments
