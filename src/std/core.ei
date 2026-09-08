@@ -168,13 +168,10 @@ object Memory {
     }
 }
 
-/// Builds a `String` from a null-terminated C string pointer, computing the
-/// length with `strlen`. Preferred over `String(ptr, len)` whenever the C
-/// side null-terminates (which is the common case), since `String(ptr, len)`
-/// takes exactly `len` bytes and reads past the terminator when oversized.
-fun cstr(p: Pointer): String = String(p, NativeString.strlen(p))
-
-type String(val ptr: Pointer, val length: Int) : Stringable, Equatable, Hashable {
+/// `length` defaults to `strlen(ptr)`, covering the common case of
+/// null-terminated C strings: `String(cPtr)`. Pass an explicit length only
+/// when the buffer is not null-terminated or needs truncation.
+type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stringable, Equatable, Hashable {
     implement fun toString(): String = this
     implement operator fun equals(other: Equatable): Bool {
         if (other is String) {
