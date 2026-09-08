@@ -210,10 +210,9 @@ test "cli: freeze, update, --frozen, build, run and test with a local git depend
     assert(freeze.indexOf("commit: ") != -1)
     assert(freeze.indexOf("branch") == -1)
 
-    //TODO........NAO PASSA ESSA BOSTA
-    // assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " build --frozen")) == 0)
-    // assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " run")) == 0)
-    // assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " test")) == 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " build --frozen")) == 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " run")) == 0)
+    assert(CliEnv.cdRun(dir, CliEnv.withEnv("EIWAC", eiwac, bin + " test")) == 0)
 
     File.write(repo + "/eiwa.yaml", "name: dep\nversion: 0.2.0\n")
     assert(CliEnv.execQuiet("git -C " + repo + " -c user.email=t@t -c user.name=t commit -qam v2") == 0)

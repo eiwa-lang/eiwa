@@ -641,13 +641,26 @@ fun freezeCommand() {
     val eiwacResolved = eiwacPath()
     enterProjectDir(Process.argAt(2))
     val ctx = loadProject(eiwacResolved)
-    if (ctx.deps.size() == 0) {
+    // Freeze pins what the refs point to NOW, so re-resolve from the manifest
+    // instead of trusting the (possibly stale) resolutions cache.
+    val deps = parseManifest(ctx.manifest)
+    var j = 0
+    while (j < deps.size()) {
+        val dep = deps[j]
+        if (dep.path == "" && hasSource(dep)) {
+            resolveCommit(dep)
+        }
+        j = j + 1
+    }
+    if (deps.size() == 0) {
         println("No dependencies to freeze.")
         exit(0)
     }
-    File.write("eiwa.freeze", serializeFreeze(ctx.deps))
+    File.write("eiwa.freeze", serializeFreeze(deps))
+    Fs.mkdirP(ctx.resolutionsDir)
+    File.write(ctx.resolutionsFile, serializeResolutions(deps))
     println("Wrote eiwa.freeze:")
-    print(serializeFreeze(ctx.deps))
+    print(serializeFreeze(deps))
 }
 
 fun updateCommand() {

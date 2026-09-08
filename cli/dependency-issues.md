@@ -48,15 +48,17 @@ a solução definitiva. Mas o parser minimalista foi robustecido:
 
 Ainda não suporta: anchors/aliases, listas ou strings multilinha.
 
-## 3. Teste integrado de dependências desabilitado
+## 3. ~~Teste integrado de dependências desabilitado~~ (RESOLVIDO)
 
-`cli/test/cli_integration_test.ei:213-216` — as asserções críticas de
-`build --frozen` / `run` / `test` com um git dep + freeze estão **comentadas**
-com a nota `// TODO........NAO PASSA ESSA BOSTA`.
+`cli/test/cli_integration_test.ei:213` — as asserções de `build --frozen` /
+`run` / `test` com git dep + freeze foram **reativadas**.
 
-O cenário foi reproduzido manualmente e **passa** hoje (build/run/test com git
-dep + freeze + `import { hello } from "dep"`). O comentário está obsoleto:
-vale reativar as linhas.
+Ao reativar, o teste revelou um bug real (flaky ~50%): o `freeze` gravava o
+commit do **cache de resoluções** (chaveado pelo hash do manifesto), que podia
+estar velho em relação ao HEAD remoto — o build então tentava clonar um commit
+inexistente no repo (`fatal: unable to read tree`). Corrigido:
+`freezeCommand` agora re-resolve as refs a partir do manifesto (como
+`updateCommand` faz) e atualiza o cache de resoluções junto com o freeze.
 
 ## 4. Re-clone e acúmulo de clones
 
