@@ -398,6 +398,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
     if (self.match(.l_paren)) {
         if (!self.check(.r_paren)) {
             while (true) {
+                const prop_annotations = try self.parseAnnotations();
                 var is_property = true;
                 var is_mut = false;
                 if (self.match(.kw_var)) {
@@ -427,6 +428,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
                     .type_ref = parsed_type,
                     .is_property = is_property,
                     .initializer = initializer,
+                    .annotations = prop_annotations,
                 });
 
                 if (!self.match(.comma)) break;

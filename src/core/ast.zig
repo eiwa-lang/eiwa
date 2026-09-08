@@ -121,6 +121,8 @@ pub const ClassProp = struct {
     resolved_type: ?*const type_system.EiwaType = null,
     is_property: bool = true,
     initializer: ?*ASTNode = null,
+    /// Property annotations (e.g. `@Alias("wire_name")` for serde field naming).
+    annotations: []const Annotation = &.{},
     /// True when the field holds a box pointer to a shared mutable capture;
     /// the emitter stores/loads through the box (stackless task capture).
     is_boxed: bool = false,

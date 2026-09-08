@@ -2148,6 +2148,19 @@ fn generateDefaultEquals(self: *TypeChecker, node: *ASTNode, c: anytype) anyerro
     c.methods = new_methods;
 }
 
+/// Wire name of a serializable property: `@Alias("wire_name")` when present,
+/// otherwise the property name. Format-agnostic — used identically by the
+/// generated serialize (SerdeField name) and deserialize (lookup key), so
+/// JSON, YAML and any other SerdeValue-based format stay transparent.
+fn serdeWireName(prop: anytype) []const u8 {
+    for (prop.annotations) |ann| {
+        if (std.mem.eql(u8, ann.name, "Alias") and ann.arguments.len > 0) {
+            return ann.arguments[0];
+        }
+    }
+    return prop.name;
+}
+
 fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
     if (!self.implementsContract(c.name, "Serializable")) return;
 
@@ -2251,7 +2264,7 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
 
         const boxed = try serdeBoxFor(self, node.line, node.column, prop.type_ref, prop.name) orelse continue;
         const field_args = try self.allocator.alloc(*ASTNode, 2);
-        field_args[0] = try makeStringLiteral(self, node.line, node.column, prop.name);
+        field_args[0] = try makeStringLiteral(self, node.line, node.column, serdeWireName(&prop));
         field_args[1] = boxed;
 
         const serde_field_call = try makeCall(self, node.line, node.column, "SerdeField", field_args, &.{});
@@ -2477,7 +2490,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
         if (!prop.is_property) continue;
 
         const obj_ident = try makeIdent(self, node.line, node.column, "obj");
-        const str_lit = try makeStringLiteral(self, node.line, node.column, prop.name);
+        const str_lit = try makeStringLiteral(self, node.line, node.column, serdeWireName(&prop));
         const name = prop.type_ref.name;
 
         if (std.mem.eql(u8, name, "Int")) {

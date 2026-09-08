@@ -1,0 +1,44 @@
+import { assert } from "std.core"
+import { Serializable, SerdeValue, SerdeObject } from "std.serde"
+import { Json, fromJson, serializeJson } from "std.json"
+import { Yaml } from "std.yaml"
+
+// @Alias renames the wire field for both serialization directions and is
+// format-agnostic: the generated SerdeField name and the deserialize lookup
+// key both use the alias, so JSON/YAML/any SerdeValue format stay transparent.
+type PersonaDto(
+    val id: String,
+    val name: String,
+    @Alias("avatar_url") val avatarUrl: String,
+    @Alias("created_at") val createdAt: String
+) : Serializable + Json + Yaml
+
+test "serde alias: serialize uses wire names" {
+    val p = PersonaDto("p-1", "leo", "http://img/a.png", "2026-01-01")
+    val json = serializeJson(p)
+    assert(json.indexOf("\"avatar_url\"") >= 0)
+    assert(json.indexOf("\"created_at\"") >= 0)
+    assert(json.indexOf("avatarUrl") < 0)
+}
+
+test "serde alias: deserialize maps wire names back to fields" {
+    val p = fromJson<PersonaDto>("{\"id\": \"p-2\", \"name\": \"ana\", \"avatar_url\": \"http://img/b.png\", \"created_at\": \"2026-02-02\"}")
+    assert(p.id == "p-2")
+    assert(p.name == "ana")
+    assert(p.avatarUrl == "http://img/b.png")
+    assert(p.createdAt == "2026-02-02")
+}
+
+test "serde alias: round-trip preserves values" {
+    val p = PersonaDto("p-3", "max", "http://img/c.png", "2026-03-03")
+    val p2 = fromJson<PersonaDto>(serializeJson(p))
+    assert(p2.avatarUrl == p.avatarUrl)
+    assert(p2.createdAt == p.createdAt)
+}
+
+test "serde alias: yaml serialization uses wire names" {
+    val p = PersonaDto("p-4", "lua", "http://img/d.png", "2026-04-04")
+    val yaml = p.toYaml()
+    assert(yaml.indexOf("avatar_url") >= 0)
+    assert(yaml.indexOf("created_at") >= 0)
+}
