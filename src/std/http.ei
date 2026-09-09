@@ -389,3 +389,25 @@ type Server(val tcpServer: TCPServer = TCPServer(-1)) {
         this.tcpServer.close()
     }
 }
+
+// Percent-encodes a string for URLs and application/x-www-form-urlencoded
+// bodies (RFC 3986 unreserved set left as-is, space becomes %20).
+// Used for query parameters, form fields and redirect targets.
+fun urlEncode(s: String): String {
+    val hex = "0123456789ABCDEF"
+    var out = ""
+    var i = 0
+    while (i < s.length) {
+        val b = NativeMemory.readByte(s.ptr!!, i)
+        val unreserved = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 46 || b == 95 || b == 126
+        if (unreserved) {
+            out = out + s.substring(i, i + 1)
+        } else {
+            val hi = b / 16
+            val lo = b - hi * 16
+            out = out + "%" + hex.substring(hi, hi + 1) + hex.substring(lo, lo + 1)
+        }
+        i = i + 1
+    }
+    return out
+}

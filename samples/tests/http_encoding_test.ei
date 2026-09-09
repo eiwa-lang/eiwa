@@ -1,0 +1,16 @@
+import { assert } from "std.core"
+import { urlEncode } from "std.http"
+
+test "arest.encoding: urlEncode leaves unreserved chars" {
+    assert(urlEncode("abcXYZ019-_.~") == "abcXYZ019-_.~")
+}
+
+test "arest.encoding: urlEncode encodes reserved chars" {
+    assert(urlEncode("a b+c") == "a%20b%2Bc")
+    assert(urlEncode("http://x:8080/a?b=c") == "http%3A%2F%2Fx%3A8080%2Fa%3Fb%3Dc")
+    assert(urlEncode("openid profile") == "openid%20profile")
+}
+
+test "arest.encoding: urlEncode empty string" {
+    assert(urlEncode("") == "")
+}
