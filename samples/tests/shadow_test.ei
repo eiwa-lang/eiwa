@@ -1,0 +1,14 @@
+import { assert } from "std.core"
+
+fun error(msg: String): String {
+    return "fn:$msg"
+}
+
+// A local variable must shadow a same-named global function: the identifier
+// must resolve to the variable, never to the function's C name (which used
+// to emit the wrong symbol and crash at runtime).
+test "checker: local variable shadows global function" {
+    val error = "oops"
+    assert(error == "oops")
+    assert("${error!!}" == "oops")
+}

@@ -262,10 +262,23 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
 pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var i = &node.data.identifier;
-    if (self.alias_map.get(i.name)) |c_name| {
-        i.resolved_c_name = c_name;
-    }
     if (scope.lookupVariableSymbol(i.name)) |vs| {
+        // Locals shadow same-named functions/imports: only root-scope
+        // entities keep their aliased C name (imported `prefix_name` globals).
+        var is_local = false;
+        var owner: ?*Scope = scope;
+        while (owner) |s| {
+            if (s.symbols.contains(i.name)) {
+                if (s.parent != null) is_local = true;
+                break;
+            }
+            owner = s.parent;
+        }
+        if (is_local) {
+            i.resolved_c_name = null;
+        } else if (self.alias_map.get(i.name)) |c_name| {
+            i.resolved_c_name = c_name;
+        }
         i.is_boxed = vs.is_boxed;
         if (self.current_class_props) |props| {
             if (props.contains(i.name)) {
