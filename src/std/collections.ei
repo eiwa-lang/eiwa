@@ -265,3 +265,26 @@ type Set<T>(val map: Map<T, Bool> = Map()) {
         return m
     }
 }
+
+// Splits on a literal delimiter. Returns a List with at least one element
+// (the whole string when the delimiter is absent). Empty parts are kept
+// ("a,,b" splits on "," into ["a", "", "b"]).
+fun String.split(delimiter: String): List<String> {
+    var parts = MutableList<String>()
+    if (delimiter.length == 0) {
+        parts.add(this)
+        return parts.freeze()
+    }
+    var start = 0
+    var idx = this.indexOf(delimiter)
+    while (idx >= 0) {
+        parts.add(this.substring(start, idx))
+        start = idx + delimiter.length
+        idx = this.substring(start, this.length).indexOf(delimiter)
+        if (idx >= 0) {
+            idx = idx + start
+        }
+    }
+    parts.add(this.substring(start, this.length))
+    return parts.freeze()
+}
