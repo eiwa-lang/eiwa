@@ -1,0 +1,153 @@
+import { assert } from "std.core"
+import { Map, MutableMap } from "std.collections"
+
+test "for over empty Map and MutableMap runs zero iterations" {
+    val empty = Map<String, Int>()
+    var count = 0
+    for (empty) { entry ->
+        count = count + 1
+    }
+    assert(count == 0)
+
+    val mempty = MutableMap<String, Int>()
+    for (mempty) {
+        count = count + 1
+    }
+    assert(count == 0)
+}
+
+test "for over MutableMap with transparent it" {
+    val map = MutableMap<String, Int>()
+    map.put("a", 10)
+    map.put("b", 20)
+    map.put("c", 30)
+
+    var sum = 0
+    var count = 0
+    for (map) {
+        sum = sum + it.value
+        count = count + 1
+    }
+    assert(count == 3)
+    assert(sum == 60)
+}
+
+test "for over MutableMap with explicit entry param" {
+    val map = MutableMap<String, Int>()
+    map.put("x", 1)
+    map.put("y", 2)
+
+    var sum = 0
+    for (map) { entry ->
+        sum = sum + entry.value
+    }
+    assert(sum == 3)
+}
+
+test "for over Map keys are reachable via entry.key" {
+    val mmap = MutableMap<String, Int>()
+    mmap.put("nome", 1)
+    mmap.put("cidade", 2)
+    val map = mmap.freeze()
+
+    var seenNome = false
+    var seenCidade = false
+    for (map) { entry ->
+        if (entry.key == "nome") {
+            seenNome = true
+            assert(entry.value == 1)
+        }
+        if (entry.key == "cidade") {
+            seenCidade = true
+            assert(entry.value == 2)
+        }
+    }
+    assert(seenNome == true)
+    assert(seenCidade == true)
+}
+
+test "for over Map with index and entry" {
+    val map = MutableMap<String, Int>()
+    map.put("a", 1)
+    map.put("b", 2)
+    map.put("c", 3)
+
+    var indexSum = 0
+    var valueSum = 0
+    var count = 0
+    for (map) { i, entry ->
+        indexSum = indexSum + i
+        valueSum = valueSum + entry.value
+        count = count + 1
+    }
+    assert(count == 3)
+    assert(indexSum == 3)
+    assert(valueSum == 6)
+}
+
+test "for over Map sees put and update before loop" {
+    val map = MutableMap<String, Int>()
+    map.put("k", 1)
+    map.put("k", 41)
+
+    var sum = 0
+    var count = 0
+    for (map) { entry ->
+        sum = sum + entry.value
+        count = count + 1
+    }
+    assert(count == 1)
+    assert(sum == 41)
+}
+
+test "for over Map with suspension inside task" {
+    val t = task {
+        val map = MutableMap<String, Int>()
+        map.put("a", 1)
+        map.put("b", 2)
+        var sum = 0
+        for (map) { entry ->
+            sleepMs(1)
+            sum = sum + entry.value
+        }
+        sum
+    }
+    val res = t.await()
+    assert(res == 3)
+}
+
+test "map sugar literal of plus bracket get works with for" {
+    val map = ["name" of "Leo", "city" of "Bauru"]
+    assert(map["name"] == "Leo")
+    assert(map["city"] == "Bauru")
+
+    var count = 0
+    for (map) {
+        count = count + 1
+    }
+    assert(count == 2)
+
+    var seenName = false
+    for (map) { entry ->
+        if (entry.key == "name") {
+            seenName = true
+            assert(entry.value == "Leo")
+        }
+    }
+    assert(seenName == true)
+}
+
+test "mutable bracket set sugar map[k] = v works with for" {
+    val map = MutableMap<String, String>()
+    map["name"] = "Leo"
+    assert(map["name"] == "Leo")
+    map["name"] = "Leo Douglas Padilha"
+    assert(map["name"] == "Leo Douglas Padilha")
+    map["city"] = "Bauru"
+
+    var count = 0
+    for (map) { i, entry ->
+        count = count + 1
+    }
+    assert(count == 2)
+}

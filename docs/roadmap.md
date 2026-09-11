@@ -1065,7 +1065,33 @@ Semântica alvo:
 - [ ] **Verify:** Projeto com 50.000+ LOC de código de usuário recompila e linka uma alteração pontual em ≤ 0.35s.
 
 ---
-### Phase 75: for loop usando map
+### Phase 75: `for` sobre `Map` / `MutableMap` (OPEN)
+> **Contexto:** O `for` estilo lambda da Phase 71 (`for (xs) { it }`, `for (xs) { n -> }`, `for (xs) { i, n -> }`)
+> só funciona com `Array` / `List<T>` / `MutableList<T>`. `Map<K, V>` e `MutableMap<K, V>`
+> (`src/std/collections.ei`, hash table sobre `entries: List<Node<K, V>?>`) caem no erro do
+> `inferForStmt` (`src/core/type_checker/infer_stmt.zig:104`):
+> `TypeError: for loop iterable must be an Array or List`. O emissor LLVM
+> (`src/backend/llvm_emitter/statement.zig:329`) também só sabe iterar o layout de buffer
+> de array (slot 0 = size, slots 2.. = elementos).
+>
+> **Semântica alvo (mantém o índice natural do `for` Eiwa — sem desestruturação `(k, v)`):**
+> ```kotlin
+> for (map) { echo(it.key) }   // `it: Node<K, V>` transparente, sem `->`
+> for (map) { entry -> println(entry.key.toString() + "=" + entry.value.toString()) }
+> for (map) { i, entry -> println(i.toString() + ":" + entry.key.toString()) } // i: Int, entry: Node<K, V>
+> ```
+> * 1 param = `Node<K, V>` (acesso `.key` / `.value`), nas duas formas: `it` implícito transparente (`for (map) { echo(it.key) }`) ou nome explícito (`entry ->`).
+> * 2 params (`i, entry ->`) = **índice de enumeração `Int` + `Node<K, V>`** — o primeiro slot continua sendo índice como em `List` (`i, item ->`); **não** há forma `(k, v)` porque ela colidiria com `(índice, item)`. Chave/valor via `entry.key` / `entry.value`.
+> * `i` é o contador de iteração `0..size()-1` (ordem de visitação dos buckets/cadeias), não o bucket hash.
+> * Mapa vazio = zero iterações; buckets `null` pulados; colisões percorridas via `Node.next`.
+> * Suspensão (`sleepMs`/`yield`/`await`) no corpo segue o caminho `for`+suspend da Task 68.1.1.
+
+- [ ] **Task 75.1:** TypeChecker (`inferForStmt`): detectar `Map`/`MutableMap` (`GenericInstance.base_name` + fallback `Custom` como já feito para `List`), extrair `K, V`, definir bindings do escopo (1 param → `Node<K,V>`; 2 params → `Int` índice + `Node<K,V>`) e atualizar a mensagem de erro para `Array or List or Map`.
+- [ ] **Task 75.2:** Emissor LLVM (`statement.zig` `for_stmt`): iterar o buffer `entries` (size + slots), pular slots `null`, percorrer a cadeia `next`, fazer bind do `Node` (1 param) ou de `índice + Node` (2 params) em allocas como já feito para `item`/`index`.
+- [ ] **Task 75.3:** Coroutines transform (`coroutines_transform.zig` `for_stmt`): validar `sleep`/`yield`/`await` no corpo do `for` sobre Map (caminho já genérico sobre `f.body`; sem split novo salvo se o teste mostrar gap).
+- [ ] **Task 75.4:** Testes `samples/tests/for_map_test.ei`: mapa vazio, 1 param (`entry.key`/`entry.value` + `it` transparente sem `->`, ex. `for (map) { echo(it.key) }`), 2 params (`i, entry ->` com índice `0..size()-1`), `MutableMap.put`/update antes do loop, `Map.freeze()`/`mut()`, loop aninhado, `sleepMs(1)` dentro de `task {}`.
+- [ ] **Task 75.5:** Docs/samples: documentar a forma Map em `docs/language_tour.md` (seção `for`) + exemplo em `samples/`.
+- [ ] **Verify:** `for_map_test.ei` verde + suíte completa (`eiwac test samples/tests`) e `zig build test` verdes sem regressão em `for_lambda_test` / `for_index_test` / `arrays_and_loops_test`.
 ---
 ### Phase 76: for return valores como .map de kotlin
 ---
