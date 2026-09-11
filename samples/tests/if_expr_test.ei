@@ -1,0 +1,77 @@
+fun pickIfBlock(c: Bool): Int {
+    return if (c) {
+        1
+    } else {
+        2
+    }
+}
+
+test "if with blocks returns value (true branch)" {
+    val x = if (true) {
+        "yes"
+    } else {
+        "no"
+    }
+    assert(x == "yes")
+}
+
+test "if with blocks returns value (false branch)" {
+    val x = if (false) {
+        "yes"
+    } else {
+        "no"
+    }
+    assert(x == "no")
+}
+
+test "if with blocks returns Int" {
+    val n = if (true) {
+        42
+    } else {
+        0
+    }
+    assert(n == 42)
+}
+
+test "if with blocks uses last expression of multi-statement block" {
+    val n = if (true) {
+        val y = 1
+        y + 41
+    } else {
+        0
+    }
+    assert(n == 42)
+}
+
+test "nested if with blocks returns value" {
+    val x = if (true) {
+        if (false) {
+            "a"
+        } else {
+            "b"
+        }
+    } else {
+        "c"
+    }
+    assert(x == "b")
+}
+
+test "if with blocks in return position" {
+    assert(pickIfBlock(true) == 1)
+    assert(pickIfBlock(false) == 2)
+}
+
+test "if as statement without else still works" {
+    var s = 0
+    if (true) {
+        s = 1
+    }
+    assert(s == 1)
+}
+
+test "if expression without braces still works (regression guard)" {
+    val cmd = if (true) "run" else "other"
+    assert(cmd == "run")
+    val n = if (false) 1 else 2
+    assert(n == 2)
+}
