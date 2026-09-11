@@ -516,7 +516,26 @@ pub fn prePropagateExpectedTypes(self: *TypeChecker, node: *ASTNode, scope: *Sco
     } else if (c.callee.data == .get_expr) {
         const g = &c.callee.data.get_expr;
         if (g.object.resolved_type == null) {
-            _ = self.inferNode(g.object, scope) catch null;
+            // Qualified skill access is rewritten by infer_member to `this.Skill_member`.
+            var is_skill_receiver = false;
+            if (g.object.data == .identifier) {
+                const skill_src = g.object.data.identifier.name;
+                const skill_actual = self.alias_map.get(skill_src) orelse skill_src;
+                is_skill_receiver = self.skills_ast.contains(skill_actual);
+                if (!is_skill_receiver and self.registry != null) {
+                    var mod_it = self.registry.?.modules.iterator();
+                    while (mod_it.next()) |entry| {
+                        const reg_actual = entry.value_ptr.checker.alias_map.get(skill_src) orelse skill_actual;
+                        if (entry.value_ptr.checker.skills_ast.contains(reg_actual)) {
+                            is_skill_receiver = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!is_skill_receiver) {
+                _ = self.inferNode(g.object, scope) catch null;
+            }
         }
         if (g.object.resolved_type) |obj_t| {
             const base_type = extractBaseType(obj_t);
