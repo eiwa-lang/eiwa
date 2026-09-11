@@ -1,0 +1,33 @@
+import { MutableMap } from "std.collections"
+
+fun main() {
+    val capitals = [
+        "Brazil" of "Brasília",
+        "France" of "Paris"
+    ]
+
+    for (capitals) {
+        println(it.key + " -> " + it.value)
+    }
+
+    for (capitals) { i, entry ->
+        println(i.toString() + ": " + entry.key)
+    }
+
+    for (capitals.keys()) { k ->
+        println("key: " + k)
+    }
+
+    for (capitals.values()) { v ->
+        println("value: " + v)
+    }
+
+    val m = MutableMap<String, Int>()
+    m["a"] = 1
+    m["b"] = 2
+    var sum = 0
+    for (m) { entry ->
+        sum = sum + entry.value
+    }
+    println("sum: " + sum.toString())
+}

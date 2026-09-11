@@ -93,7 +93,7 @@ type List<T>(val items: NativeArray<T> = []) : Equatable, Serializable + Json {
 }
 
 type Node<K, V>(val key: K, var value: V, var next: Node<K, V>?) {
-    implement fun toString(): String = ""
+    implement fun toString(): String = "Node(key=${this.key}, value=${this.value})"
 }
 
 type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {

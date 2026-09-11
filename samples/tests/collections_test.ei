@@ -241,3 +241,15 @@ test "should create a empty set" {
     assert(mutableSet.contains("test") == true)
 }
 
+test "explicit toString on generic Node survives monomorphization" {
+    val n = Node("k", 42, null)
+    assert(n.toString() == "Node(key=k, value=42)")
+
+    val m = Node(1, "x", null)
+    assert(m.toString() == "Node(key=1, value=x)")
+
+    val chained = Node("a", 1, Node("b", 2, null))
+    assert(chained.toString() == "Node(key=a, value=1)")
+    assert(chained.next!!.toString() == "Node(key=b, value=2)")
+}
+

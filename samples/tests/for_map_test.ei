@@ -213,3 +213,10 @@ test "keys and values views are live and empty-safe" {
     assert(ks.size() == 2)
     assert(ks.isNotEmpty() == true)
 }
+
+test "map entry toString uses explicit Node format" {
+    val map = ["a" of 1]
+    for (map) { entry ->
+        assert(entry.toString() == "Node(key=a, value=1)")
+    }
+}

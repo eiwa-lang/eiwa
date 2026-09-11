@@ -10,6 +10,43 @@ const ASTNode = ast.ASTNode;
 const TypeChecker = core.TypeChecker;
 const EiwaType = type_system.EiwaType;
 
+fn typeContainsGenericParam(self: *TypeChecker, t: *const EiwaType, generic_params: []const []const u8) bool {
+    switch (t.*) {
+        .GenericParam => return true,
+        .Unknown => return true,
+        .Custom => |name| {
+            for (generic_params) |p| {
+                if (std.mem.eql(u8, name, p)) return true;
+            }
+            const lookup = self.alias_map.get(name) orelse name;
+            if (self.classes_ast.get(lookup) != null) return false;
+            if (self.classes_ast.get(name) != null) return false;
+            if (self.contracts_ast.get(lookup) != null) return false;
+            if (self.enums_ast.get(lookup) != null) return false;
+            return true;
+        },
+        .Pointer => |inner| return typeContainsGenericParam(self, inner, generic_params),
+        .Array => |elem| return typeContainsGenericParam(self, elem, generic_params),
+        .Union => |u| return typeContainsGenericParam(self, u.left, generic_params) or typeContainsGenericParam(self, u.right, generic_params),
+        .Function => |f| {
+            for (f.params) |p| {
+                if (typeContainsGenericParam(self, p, generic_params)) return true;
+            }
+            if (f.receiver) |r| {
+                if (typeContainsGenericParam(self, r, generic_params)) return true;
+            }
+            return typeContainsGenericParam(self, f.return_type, generic_params);
+        },
+        .GenericInstance => |gi| {
+            for (gi.type_args) |a| {
+                if (typeContainsGenericParam(self, a, generic_params)) return true;
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
 pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8) !void {
     if (self.classes_ast.get(mangled_name) != null) return;
     
@@ -98,9 +135,16 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
         }
     }
     
+    var has_unresolved_param = false;
+    for (type_args) |ta| {
+        if (typeContainsGenericParam(self, ta, type_decl.generic_params)) {
+            has_unresolved_param = true;
+            break;
+        }
+    }
     var filtered_methods = ArrayList(*ASTNode).init(self.allocator);
     for (type_decl.methods) |method| {
-        if (method.data == .fun_decl) {
+        if (has_unresolved_param and method.data == .fun_decl) {
             const mname = method.data.fun_decl.name;
             if (std.mem.eql(u8, mname, "toString") or std.mem.eql(u8, mname, "hashCode")) {
                 continue;
