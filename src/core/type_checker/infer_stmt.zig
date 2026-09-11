@@ -35,18 +35,38 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
         }
     }
 
-    const then_type = try self.inferNode(i.then_branch, then_scope);
+    const then_type = try inferBranchAsExpression(self, i.then_branch, then_scope);
     if (has_smart_cast) {
         local_then_scope.deinit();
     }
 
     if (i.else_branch) |else_b| {
-        const else_type = try self.inferNode(else_b, scope);
-        if (!self.isCompatible(then_type, else_type) and !self.isCompatible(else_type, then_type)) {
-            self.reportError(node.line, node.column, "TypeError: if branches have incompatible types: {} and {}.", .{ then_type.*, else_type.* });
-            return error.TypeError;
+        const else_type = try inferBranchAsExpression(self, else_b, scope);
+        if (then_type) |tt| {
+            if (else_type) |et| {
+                if (node.expected_type) |exp_t| {
+                    if (!self.isCompatible(exp_t, tt)) {
+                        self.reportError(i.then_branch.line, i.then_branch.column, "TypeError: if branch has type {} which is incompatible with expected type {}.", .{ tt.*, exp_t.* });
+                        return error.TypeError;
+                    }
+                    if (!self.isCompatible(exp_t, et)) {
+                        self.reportError(else_b.line, else_b.column, "TypeError: if branch has type {} which is incompatible with expected type {}.", .{ et.*, exp_t.* });
+                        return error.TypeError;
+                    }
+                    t.* = exp_t.*;
+                } else if (self.isCompatible(tt, et) or self.isCompatible(et, tt)) {
+                    t.* = tt.*;
+                } else {
+                    t.* = .Void;
+                }
+            } else {
+                t.* = tt.*;
+            }
+        } else if (else_type) |et| {
+            t.* = et.*;
+        } else {
+            t.* = .Void;
         }
-        t.* = then_type.*;
     } else {
         t.* = .Void;
     }
@@ -322,6 +342,40 @@ pub fn checkBlock(self: *TypeChecker, block: []const *ASTNode, parent_scope: *Sc
 
     const t = try self.allocator.create(EiwaType);
     t.* = .Void;
+    return t;
+}
+
+pub fn inferBranchAsExpression(self: *TypeChecker, branch: *ASTNode, scope: *Scope) anyerror!?*const EiwaType {
+    if (branch.data != .block) return try self.inferNode(branch, scope);
+    return try inferBlockAsExpression(self, branch, scope);
+}
+
+pub fn inferBlockAsExpression(self: *TypeChecker, block_node: *ASTNode, scope: *Scope) anyerror!?*const EiwaType {
+    const b = block_node.data.block;
+    var local_scope = Scope.init(self.allocator, scope);
+    defer local_scope.deinit();
+
+    var last: ?*ASTNode = null;
+    var last_type: ?*const EiwaType = null;
+    for (b.statements) |stmt| {
+        last = stmt;
+        last_type = try self.inferNode(stmt, &local_scope);
+    }
+
+    const t = try self.allocator.create(EiwaType);
+    if (last) |l| {
+        if (l.data == .return_stmt or l.data == .throw_stmt) {
+            t.* = .Void;
+            block_node.resolved_type = t;
+            return null;
+        }
+    }
+    if (last_type) |lt| {
+        t.* = lt.*;
+    } else {
+        t.* = .Void;
+    }
+    block_node.resolved_type = t;
     return t;
 }
 

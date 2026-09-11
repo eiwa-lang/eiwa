@@ -7,26 +7,6 @@ const TypeChecker = core.TypeChecker;
 const Scope = core.Scope;
 const EiwaType = core.EiwaType;
 
-fn inferBlockAsExpression(self: *TypeChecker, block_node: *ASTNode, scope: *Scope) anyerror!*const EiwaType {
-    const b = block_node.data.block;
-    var local_scope = Scope.init(self.allocator, scope);
-    defer local_scope.deinit();
-
-    var last_type: ?*const EiwaType = null;
-    for (b.statements) |stmt| {
-        last_type = try self.inferNode(stmt, &local_scope);
-    }
-
-    const t = try self.allocator.create(EiwaType);
-    if (last_type) |lt| {
-        t.* = lt.*;
-    } else {
-        t.* = .Void;
-    }
-    block_node.resolved_type = t;
-    return t;
-}
-
 pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const w = &node.data.when_expr;
 
@@ -110,34 +90,37 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             case.body.expected_type = et;
         }
 
-        // 3. Infer case body type
+        // 3. Infer case body type (null = diverging body: `return`/`throw`
+        //    as the last statement, Kotlin `Nothing` — no fall-through value)
         const body_type = if (case.body.data == .block)
-            try inferBlockAsExpression(self, case.body, &case_scope)
+            try self.inferBlockAsExpression(case.body, &case_scope)
         else
             try self.inferNode(case.body, &case_scope);
 
-        // 4. Accumulate/verify return type
-        if (node.expected_type) |exp_t| {
-            if (!self.isCompatible(exp_t, body_type)) {
-                self.reportError(case.body.line, case.body.column, "TypeError: when branch has type {} which is incompatible with expected type {}.", .{ body_type.*, exp_t.* });
-                return error.TypeError;
-            }
-            resolved_type = exp_t;
-        } else if (resolved_type) |curr_res| {
-            if (curr_res.* == .Void or body_type.* == .Void) {
-                const void_t = try self.allocator.create(EiwaType);
-                void_t.* = .Void;
-                resolved_type = void_t;
-            } else if (self.isCompatible(curr_res, body_type)) {
-                resolved_type = curr_res;
-            } else if (self.isCompatible(body_type, curr_res)) {
-                resolved_type = body_type;
+        // 4. Accumulate/verify return type (diverging bodies are skipped)
+        if (body_type) |bt| {
+            if (node.expected_type) |exp_t| {
+                if (!self.isCompatible(exp_t, bt)) {
+                    self.reportError(case.body.line, case.body.column, "TypeError: when branch has type {} which is incompatible with expected type {}.", .{ bt.*, exp_t.* });
+                    return error.TypeError;
+                }
+                resolved_type = exp_t;
+            } else if (resolved_type) |curr_res| {
+                if (curr_res.* == .Void or bt.* == .Void) {
+                    const void_t = try self.allocator.create(EiwaType);
+                    void_t.* = .Void;
+                    resolved_type = void_t;
+                } else if (self.isCompatible(curr_res, bt)) {
+                    resolved_type = curr_res;
+                } else if (self.isCompatible(bt, curr_res)) {
+                    resolved_type = bt;
+                } else {
+                    self.reportError(case.body.line, case.body.column, "TypeError: when branches have incompatible types: {} and {}.", .{ curr_res.*, bt.* });
+                    return error.TypeError;
+                }
             } else {
-                self.reportError(case.body.line, case.body.column, "TypeError: when branches have incompatible types: {} and {}.", .{ curr_res.*, body_type.* });
-                return error.TypeError;
+                resolved_type = bt;
             }
-        } else {
-            resolved_type = body_type;
         }
     }
 

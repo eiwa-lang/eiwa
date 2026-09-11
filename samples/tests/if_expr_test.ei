@@ -75,3 +75,38 @@ test "if expression without braces still works (regression guard)" {
     val n = if (false) 1 else 2
     assert(n == 2)
 }
+
+test "mixed then-block else-expr returns value" {
+    val x = if (true) {
+        "yes"
+    } else "no"
+    assert(x == "yes")
+}
+
+test "mixed then-expr else-block returns value" {
+    val x = if (false) "yes" else {
+        "no"
+    }
+    assert(x == "no")
+}
+
+test "else-if chain with blocks returns value" {
+    val v = 2
+    val s = if (v == 1) {
+        "one"
+    } else if (v == 2) {
+        "two"
+    } else {
+        "other"
+    }
+    assert(s == "two")
+}
+
+test "if with annotated expected type checks branches precisely" {
+    val n: Int = if (true) {
+        42
+    } else {
+        0
+    }
+    assert(n == 42)
+}

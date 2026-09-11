@@ -1104,52 +1104,55 @@ Semântica alvo:
 ### Phase 78: retorno antecipado em lambdas e loopings (break vs return ou outro termo?) analisar swift e outra linguagens
 ---
 ### Phase 79: if com blocos retorna valor (estilo Kotlin)
-> **Status:** RED validado (2026-09-11). `val x = if (c) { v1 } else { v2 }` hoje
-> tipa os branches como `Void` e nunca retorna o valor — só a forma sem chaves
-> (`if (c) v1 else v2`) funciona como expressão.
+> **Status:** GREEN (2026-09-11). `val x = if (c) { v1 } else { v2 }` retorna a
+> última expressão do bloco executado, como em Kotlin.
 >
-> **Sintomas validados:**
-> - `val n: Int = if (true) { 42 } else { 0 }` → `Expected Int but found Void for variable 'n'`.
-> - `val x = if (true) { "yes" } else { "no" }` → `x: Void`; `print(x)` falha com
->   `Undeclared function 'print'` (sem overload para `Void`); `assert(x == "yes")`
->   compila mas falha em runtime.
-> - `return if (c) { 1 } else { 2 }` em `fun pick(c: Bool): Int` compila mas
->   retorna valor nulo → assert em runtime falha (NullPointerException em `print`).
+> **Causa raiz (validada no RED):** o Parser cria branch `{ ... }` como nó
+> `.block`, e o `inferIfExpr` (`src/core/type_checker/infer_stmt.zig`) inferia
+> o branch via `inferNode` → `checkBlock`, que **sempre retorna `Void`**. O
+> `when` não tinha esse bug (`inferBlockAsExpression`); o emissor LLVM já
+> estava pronto (`emitBlockOrExpr`).
 >
-> **Causa raiz:** o Parser cria branch `{ ... }` como nó `.block`, e o
-> `inferIfExpr` (`src/core/type_checker/infer_stmt.zig`) infere o branch via
-> `inferNode` → `checkBlock`, que **sempre retorna `Void`** (ignora a última
-> expressão). O `when` não tem esse bug: usa `inferBlockAsExpression`
-> (`src/core/type_checker/infer_when.zig`), que retorna o tipo da última
-> statement. O emissor LLVM já está pronto (`emitBlockOrExpr` em
-> `src/backend/llvm_emitter/expression.zig` armazena a última expressão no
-> `res_ptr`) — o fix é no checker, espelhando o `when`.
->
-> **Semântica alvo (Kotlin):** bloco `if`/`else` como expressão retorna a última
-> expressão do bloco executado; branches precisam ser compatíveis (mesma regra
-> de `isCompatible` já existente); `if` sem `else` usado como statement
-> continua `Void`.
+> **Regras implementadas (Task 79.1):**
+> - Branch em bloco vale a última statement (`inferBranchAsExpression` /
+>   `inferBlockAsExpression` compartilhados com o `when`, que teve sua cópia
+>   privada removida — `if` e `when` concordam).
+> - Branch que diverge (`return`/`throw` como última statement) é `Nothing`:
+>   não participa da compatibilidade (ex.: `takeIf` em `std/core.ei`,
+>   `if (p(this)) { return this } else { return null }`, que quebrava o build
+>   do stdlib no primeiro GREEN).
+> - Com `expected_type` (`val x: String = if ...`), cada branch é checado
+>   contra o tipo esperado com erro preciso.
+> - Sem tipo esperado e branches incompatíveis → `Void` (Kotlin: `Unit`), sem
+>   erro: `if` statement idiomático (`skipWhitespace` em `std/json.ei` tem
+>   branches terminando em assignments `Int` vs `Bool` — como assignment em
+>   Eiwa retorna valor, exigir compatibilidade quebraria todo `if` statement).
+>   O mau uso como valor ainda falha downstream (o `Void` inferido não casa
+>   com uso anotado).
 
-- [x] **Task 79.0 (RED):** Suíte `samples/tests/if_expr_test.ei` (6 RED + 2 guards verdes):
+- [x] **Task 79.0 (RED → GREEN):** Suíte `samples/tests/if_expr_test.ei` (12 testes):
   `if` com blocos retorna `String` (true/false), retorna `Int`, bloco
-  multi-statement usa a última expressão, `if` aninhado com blocos, `if` com
-  blocos em posição de `return` (`fun` top-level — sem `fun` local, cf. Phase 67);
-  guards: `if` statement sem `else` e expressão **sem chaves**
-  (`if (c) v1 else v2`, único caso que já funcionava — cf. `when_test.ei:86`).
-  Verify: `./bin/eiwac test samples/tests/if_expr_test.ei` → **2 passed, 6 failed**.
-  Cobertura pré-existente: statement com chaves (dezenas de usos na suíte) e
-  statement sem chaves (`varargs_test.ei`). Formas **mistas** (bloco de um lado,
-  expressão do outro) quebram hoje em *compile time*
-  (`incompatible types: Void and String`) — ficam fora do arquivo RED (um erro
-  de compilação abortaria o arquivo inteiro) e entram no GREEN.
-- [ ] **Task 79.1:** Checker — `inferIfExpr` infere branches em bloco como expressão
-  (última statement dita o tipo, como `inferBlockAsExpression` do `when`),
-  mantendo `Void` para `if` sem `else` e erro de incompatibilidade entre branches.
-- [ ] **Task 79.2:** Cobrir formas mistas (bloco × expressão), `else if` encadeado
-  com blocos e `if` com blocos dentro de `task {}`/posição `await` (transform de
-  corrotinas já trata `if_expr` como valor).
-- [ ] **Verify 79:** `if_expr_test.ei` 8/8 verde + suíte completa
-  (`./bin/eiwac test samples/tests`) e `zig build test` sem regressão.
+  multi-statement usa a última expressão, `if` aninhado, `if` com blocos em
+  posição de `return` (`fun` top-level — sem `fun` local, cf. Phase 67),
+  formas mistas (bloco × expressão, validadas: antes falhavam em *compile time*
+  com `incompatible types: Void and String`), `else if` encadeado, tipo
+  esperado anotado (`val n: Int = if ...`); guards: `if` statement sem `else`
+  e expressão sem chaves (`when_test.ei:86`).
+  Verify: `./bin/eiwac test samples/tests/if_expr_test.ei` → **12 passed, 0 failed**.
+- [x] **Task 79.1:** Checker — `inferIfExpr` infere branches em bloco como expressão
+  (regras acima). `checkBlock` (blocos como statement) inalterado: `if` sem
+  `else` continua `Void`.
+- [ ] **Task 79.2 (follow-up, gap pré-existente do transform):** `if` como valor
+  *dentro* de `task {}` falha em runtime — inclusive sem chaves
+  (`if (true) 1 else 2`), logo é ortogonal a esta fase. Evidência via stash:
+  falha idêntica no código pré-fix. Requer plumbing de valores na state machine
+  (domínio das Phases 68.x). Não coberto pela suíte (manter gate verde).
+- [x] **Verify 79:** `if_expr_test.ei` 12/12 + suíte completa
+  (`./bin/eiwac test samples/tests` → **ALL 448 TESTS PASSED**) e
+  `zig build test` verdes, sem regressão.
+> **Notas de investigação:** `{ "a" }` solitário é lambda, não bloco aninhado —
+> `.block` só existe em posições estruturais, então não há caso "bloco trailing
+> aninhado" a tratar (tentativas de recursão checker/emissor revertidas).
 ---
 ### Phase 80: Erro ao passar named param invalido em funcoes
 ---
