@@ -1065,6 +1065,19 @@ Semântica alvo:
 - [ ] **Verify:** Projeto com 50.000+ LOC de código de usuário recompila e linka uma alteração pontual em ≤ 0.35s.
 
 ---
+### Phase 75: for loop usando map
+---
+### Phase 76: for return valores como .map de kotlin
+---
+### Phase 77: analisar feature de dart para adicionar em eiwa
+---
+### Phase 78: retorno antecipado em lambdas e loopings (break vs return ou outro termo?)
+---
+### Phase 79: if com blocos não retorna valor
+---
+### Phase 80: Erro ao passar named param invalido em funcoes
+---
+
 * [x] **Errors:** Semantic validations fail gracefully, emitting rich terminal errors.
 
 ---

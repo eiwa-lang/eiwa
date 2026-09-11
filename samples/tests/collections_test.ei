@@ -39,8 +39,8 @@ test "should add and read from MutableMap" {
     assert(map["Zig"] == 300)
     assert(map["Rust"] == null)
 
-    assert(map.containsKey("Eiwa") == true)
-    assert(map.containsKey("Rust") == false)
+    assert(map.contains("Eiwa") == true)
+    assert(map.contains("Rust") == false)
 
     // Update existing
     map["Eiwa"] = 999
@@ -196,7 +196,7 @@ test "should create a empty map" {
     assert(map.isEmpty() == true)
     assert(map.isNotEmpty() == false)
     assert(map.get("test") == null)
-    assert(map.containsKey("test") == false)
+    assert(map.contains("test") == false)
 
     val mutableMap = MutableMap<String, Int>()
     mutableMap.put("test", 1)
@@ -204,7 +204,7 @@ test "should create a empty map" {
     assert(mutableMap.isEmpty() == false)
     assert(mutableMap.isNotEmpty() == true)
     assert(mutableMap.get("test") == 1)
-    assert(mutableMap.containsKey("test") == true)
+    assert(mutableMap.contains("test") == true)
 }
 
 test "should create a empty list" {

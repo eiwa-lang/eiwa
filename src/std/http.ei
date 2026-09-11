@@ -130,6 +130,7 @@ type Client() {
 type Request(val method: String, val path: String, val body: String, val headers: Map<String, String>, val queries: Map<String, String>)
 
 type ServerConnection(val sock: Socket) {
+
     fun readRequest(): Request {
         // The request (headers + body) may arrive in several TCP segments
         // (e.g. via a proxy like Traefik). Keep reading until the headers are

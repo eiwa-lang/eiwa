@@ -38,6 +38,10 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
         return this.list
     }
 
+    fun contains(element: T): Bool {
+        return this.list.contains(element)
+    }
+
     implement fun serialize(): SerdeValue = this.list.serialize()
 }
 
@@ -68,6 +72,17 @@ type List<T>(val items: NativeArray<T> = []) : Equatable, Serializable + Json {
                 i = i + 1
             }
             return true
+        }
+        return false
+    }
+
+    fun contains(element: T): Bool {
+        var i = 0
+        while (i < this.items.length) {
+            if (this.items[i] == element) {
+                return true
+            }
+            i = i + 1
         }
         return false
     }
@@ -132,7 +147,7 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json
         return null
     }
 
-    fun containsKey(key: K): Bool {
+    fun contains(key: K): Bool {
         return this.get(key) != null
     }
 
@@ -181,7 +196,7 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
         return null
     }
 
-    fun containsKey(key: K): Bool {
+    fun contains(key: K): Bool {
         return this.get(key) != null
     }
 
@@ -228,7 +243,7 @@ type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap()) {
     }
 
     fun contains(element: T): Bool {
-        return this.map.containsKey(element)
+        return this.map.contains(element)
     }
 
     fun size(): Int = this.map.size()
@@ -242,7 +257,7 @@ type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap()) {
 
 type Set<T>(val map: Map<T, Bool> = Map()) {
     fun contains(element: T): Bool {
-        return this.map.containsKey(element)
+        return this.map.contains(element)
     }
 
     fun size(): Int = this.map.size()

@@ -45,6 +45,10 @@ lib NativeString {
     fun strncmp(s1: Pointer, s2: Pointer, n: Int): Int
 
     fun strlen(s: Pointer): Int
+
+    fun tolower(c: Int): Int
+
+    fun toupper(c: Int): Int
 }
 
 lib NativeMemory {
@@ -172,7 +176,9 @@ object Memory {
 /// null-terminated C strings: `String(cPtr)`. Pass an explicit length only
 /// when the buffer is not null-terminated or needs truncation.
 type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stringable, Equatable, Hashable {
+    
     implement fun toString(): String = this
+
     implement operator fun equals(other: Equatable): Bool {
         if (other is String) {
             return NativeString.strcmp(this.ptr, other.ptr) == 0
@@ -304,6 +310,22 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
 
     fun toInt(): Int {
         return this.toDouble() as Int
+    }
+
+    fun isEmpty(): Bool {
+        return this.length == 0
+    }
+
+    fun isNotEmpty(): Bool {
+        return !this.isEmpty()
+    }
+
+    fun lowercase(): String {
+        return NativeString.tolower(this.ptr)
+    }
+
+    fun uppercase(): String {
+        return NativeString.toupper(this.ptr)
     }
 
     implement fun hashCode(): Int {

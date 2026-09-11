@@ -485,7 +485,7 @@ val missing  = capitals["India"]  // null
 
 The `of` keyword is a reserved **infix pair constructor**. Each `key of value` expression creates one entry. The compiler deduces `K` and `V` from the first pair.
 
-`Map<K, V>` (immutable) exposes only `.get(key)` and `.containsKey(key)`.
+`Map<K, V>` (immutable) exposes only `.get(key)` and `.contains(key)`.
 
 ---
 

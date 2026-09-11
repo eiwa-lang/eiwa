@@ -68,7 +68,7 @@ test "should create contextual loggers using with" {
     val base = Logger(Map<String, String>(), LogLevel.INFO, JsonLogFormatter())
     val child = base.with("module", "http")
     
-    assert(child.fields.containsKey("module") == true)
+    assert(child.fields.contains("module") == true)
     assert(child.fields.get("module") == "http")
 }
 
