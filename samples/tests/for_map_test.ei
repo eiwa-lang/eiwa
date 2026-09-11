@@ -151,3 +151,65 @@ test "mutable bracket set sugar map[k] = v works with for" {
     }
     assert(count == 2)
 }
+
+test "for over map.keys() yields keys with transparent it" {
+    val map = ["name" of "Leo", "city" of "Bauru"]
+    assert(map.keys().size() == 2)
+
+    var count = 0
+    for (map.keys()) {
+        count = count + 1
+    }
+    assert(count == 2)
+
+    var seenName = false
+    var seenCity = false
+    for (map.keys()) { k ->
+        if (k == "name") {
+            seenName = true
+        }
+        if (k == "city") {
+            seenCity = true
+        }
+    }
+    assert(seenName == true)
+    assert(seenCity == true)
+}
+
+test "for over map.values() yields values with index" {
+    val map = MutableMap<String, Int>()
+    map.put("a", 10)
+    map.put("b", 20)
+    assert(map.values().size() == 2)
+
+    var sum = 0
+    var indexSum = 0
+    var count = 0
+    for (map.values()) { i, v ->
+        sum = sum + v
+        indexSum = indexSum + i
+        count = count + 1
+    }
+    assert(count == 2)
+    assert(sum == 30)
+    assert(indexSum == 1)
+}
+
+test "keys and values views are live and empty-safe" {
+    val empty = Map<String, Int>()
+    assert(empty.keys().size() == 0)
+    assert(empty.values().isEmpty() == true)
+    var count = 0
+    for (empty.keys()) { k ->
+        count = count + 1
+    }
+    assert(count == 0)
+
+    val map = MutableMap<String, Int>()
+    map.put("a", 1)
+    val ks = map.keys()
+    assert(ks.size() == 1)
+    map.put("b", 2)
+    assert(ks.size() == 2)
+    assert(ks.isNotEmpty() == true)
+}

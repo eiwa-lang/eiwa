@@ -171,6 +171,10 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json
 
     fun freeze(): Map<K, V> = Map(this.entries)
 
+    fun keys(): MapKeys<K, V> = MapKeys(this.entries)
+
+    fun values(): MapValues<K, V> = MapValues(this.entries)
+
     fun serdeFields(): List<SerdeField> = Map(this.entries).serdeFields()
     implement fun serialize(): SerdeValue = Map(this.entries).serialize()
 }
@@ -220,6 +224,10 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
 
     fun mut(): MutableMap<K, V> = MutableMap(this.entries)
 
+    fun keys(): MapKeys<K, V> = MapKeys(this.entries)
+
+    fun values(): MapValues<K, V> = MapValues(this.entries)
+
     fun serdeFields(): List<SerdeField> {
         val fields = MutableList<SerdeField>()
         var i = 0
@@ -235,6 +243,49 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
     }
 
     implement fun serialize(): SerdeValue = SerdeObject(this.serdeFields())
+}
+
+// Lazy zero-allocation views over a map's hash buckets (Phase 75).
+// A view holds the same `entries` list (no copy, live view): `for` over a
+// view walks the buckets directly, and `size()` counts by walking.
+type MapKeys<K, V>(val entries: List<Node<K, V>?> = []) {
+    fun size(): Int {
+        var count = 0
+        var i = 0
+        while (i < this.entries.size()) {
+            var curr = this.entries.items[i]
+            while (curr != null) {
+                count = count + 1
+                curr = curr!!.next
+            }
+            i = i + 1
+        }
+        return count
+    }
+
+    fun isEmpty(): Bool = this.size() == 0
+
+    fun isNotEmpty(): Bool = this.size() > 0
+}
+
+type MapValues<K, V>(val entries: List<Node<K, V>?> = []) {
+    fun size(): Int {
+        var count = 0
+        var i = 0
+        while (i < this.entries.size()) {
+            var curr = this.entries.items[i]
+            while (curr != null) {
+                count = count + 1
+                curr = curr!!.next
+            }
+            i = i + 1
+        }
+        return count
+    }
+
+    fun isEmpty(): Bool = this.size() == 0
+
+    fun isNotEmpty(): Bool = this.size() > 0
 }
 
 type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap()) {

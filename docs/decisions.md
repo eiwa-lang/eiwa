@@ -933,3 +933,22 @@ Alinha o Eiwa ao padrão dominante de dependências de diretório local (Cargo `
 
 **Razão:**
 Reutiliza uma anotação já conhecida da linguagem em vez de criar um mecanismo novo (evita proliferar `@SerialName`-like por formato, como no Kotlinx). Aplicar o rename na camada `SerdeValue` (e não nos encoders) garante que novos formatos (`skill Toml : Serializable`, etc.) herdam o comportamento sem nenhuma mudança, preservando o design de "formatos como skills em Eiwa puro" da ADR 27. Cobertura: `samples/tests/serde_alias_test.ei` (serialize, deserialize, round-trip e YAML).
+
+## ADR 63: `for` sobre `Map`/`MutableMap` via Desugar + Views Lazy `keys()`/`values()`
+**Status:** Aprovado
+**Data:** Setembro 2026
+
+**Contexto:**
+1. O `for` estilo lambda da Phase 71 (`for (xs) { it }`, `for (xs) { n -> }`, `for (xs) { i, n -> }`) funcionava apenas com `Array`/`List<T>`/`MutableList<T>`. `Map<K, V>` e `MutableMap<K, V>` (hash table sobre `entries: List<Node<K, V>?>` em `src/std/collections.ei`) abortavam com `TypeError: for loop iterable must be an Array or List`.
+2. O armazenamento do Map não é flat: cada slot de `entries.items` é a cabeça nullable de um bucket com cadeia de colisões via `Node.next`. O lowering da lista (reescrever o iterável para `.items`) só alcança o array de buckets — ainda faltam null-skip, walk da cadeia e contador de enumeração.
+3. O primeiro slot do `for` Eiwa é **sempre índice** (`i, item ->`). Uma forma `(k, v ->)` de desestruturação colidiria com `(índice, item)`, então foi descartada.
+4. Faltavam as projeções ergonômicas `keys()`/`values()` para iterar só chaves ou só valores.
+
+**Decisão:**
+1. **Semântica (índice preservado, sem `(k, v)`):** 1 param = `Node<K, V>` nas duas formas — `it` transparente (`for (map) { echo(it.key) }`) ou nome explícito (`entry ->`), com acesso `.key`/`.value`. 2 params = índice de enumeração `Int` (`0..size()-1`, ordem de visitação, não bucket hash) + `Node` (`for (map) { i, entry -> }`). Vale para `Map` e `MutableMap`; mapa vazio = zero iterações.
+2. **Implementação via desugar no checker (`inferForStmt`, `src/core/type_checker/infer_stmt.zig`):** o `for` sobre Map é reescrito para `while` aninhado sobre `entries.items` (mesmo walk do `Set.mut`), sem alocar nada e sem tocar o emissor LLVM nem a transform de corrotinas — a detecção de suspend e o split de estados enxergam só `while`, caminho já validado (ADR 54). Segue o precedente de desugar no checker (`List → .items`, `a[i] → .get()`, `a+b → .plus()`).
+3. **Detalhe do avanço (`__node` intermediário):** o cursor avança com `__curr = __node.next` (get em val não-nulo) em vez de `curr!!.next`. Um `get` cujo objeto é resultado de `!!` sobre `var` boxeada quebra na re-inferência do estado resumido da corrotina; `!!` apenas como inicializador de `val` (`val __node = __curr!!`) é seguro antes e depois de suspensões.
+4. **Views lazy `MapKeys<K, V>` / `MapValues<K, V>` + `keys()`/`values()` em `Map` e `MutableMap`:** seguram o mesmo `entries` (sem cópia, live view — mutações refletem em `size()`). `for` sobre a view anda nos buckets direto (O(n) total, zero-alloc) com projeção `.key`/`.value` (`for (map.keys()) { k -> }`, `for (map.values()) { i, v -> }`). Sem `get(i)` indexado — como `Set` de Kotlin/Java, são tipos de iteração + `size()`.
+
+**Razão:**
+Reusar `while` + suspend já testado minimiza o risco no compilador (nenhuma lógica nova de loop no backend) e entrega iteração O(n) zero-alloc com visão viva — o mesmo modelo de Java (`entrySet` backed), Kotlin (`Map.Entry`), Go (`range` sobre buckets) e Python (`items()` view), em contraste com coletor snapshot que alocaria por loop e divergiria sob mutação. Preservar o índice como primeiro slot mantém a convenção única do `for` Eiwa em vez de importar a desestruturação Kotlin. Cobertura: `samples/tests/for_map_test.ei` (12 testes, incl. `sleepMs` em `task`); suíte 434 PASSED + `zig build test` verdes.

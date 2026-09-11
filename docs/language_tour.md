@@ -81,7 +81,7 @@ Eiwa features a native type system for dynamic arrays and full-featured generic 
 
 The `[Type]` syntax is syntactic sugar for an immutable **`List<T>`**. Read elements with `[index]` or `.get(index)`, and check size with `.size()`. For mutation, call `.mut()` on any collection to get a `MutableList<T>` (see [Section 7.5](#75-mutability-conversion----mut-and-freeze)).
 
-Eiwa uses an ergonomic **lambda-style `for` block** to iterate over `List<T>`, `MutableList<T>`, and native arrays:
+Eiwa uses an ergonomic **lambda-style `for` block** to iterate over `List<T>`, `MutableList<T>`, native arrays — and, since Phase 75, over `Map<K, V>` / `MutableMap<K, V>` (see [Section 7.2](#72-map--mutablemap) for map iteration and `keys()`/`values()` views):
 - **Implicit parameter (`it`)**: When no parameter is specified, `it` is injected into the loop scope.
 - **Explicit parameter (`name ->`)**: Define a custom parameter name.
 - **Explicit typed parameter (`name: Type ->`)**: Optionally add type annotations.
@@ -486,6 +486,61 @@ val missing  = capitals["India"]  // null
 The `of` keyword is a reserved **infix pair constructor**. Each `key of value` expression creates one entry. The compiler deduces `K` and `V` from the first pair.
 
 `Map<K, V>` (immutable) exposes only `.get(key)` and `.contains(key)`.
+
+`MutableMap<K, V>` adds writes via `put` — or the bracket sugar `map[key] = value` (which desugars to `put`):
+
+```kotlin
+val m = MutableMap<String, Int>()
+m.put("a", 1)
+m["b"] = 2          // same as m.put("b", 2)
+m["a"] = 41         // update
+
+assert(m["a"] == 41)
+assert(m.size() == 2)
+```
+
+#### Iterating over maps with `for`
+
+`for` over a map yields each entry as a `Node<K, V>` (access `.key` / `.value`). Like lists, the first slot stays the **0-based enumeration index** — there is no `(k, v)` destructuring form, since it would collide with `(index, item)`:
+
+```kotlin
+val capitals = [
+    "Brazil" of "Brasília",
+    "France" of "Paris"
+]
+
+// Transparent 'it' (no arrow): it is the Node
+for (capitals) {
+    println(it.key + " -> " + it.value)
+}
+
+// Explicit entry name
+for (capitals) { entry ->
+    println(entry.key + " -> " + entry.value)
+}
+
+// Index + entry
+for (capitals) { i, entry ->
+    println(i.toString() + ": " + entry.key)
+}
+```
+
+#### `keys()` / `values()` views
+
+`map.keys()` and `map.values()` return **lazy, zero-allocation views** over the same buckets (no copy — a live view). Iterating a view walks the table directly; `size()` counts by walking:
+
+```kotlin
+for (capitals.keys()) { k ->
+    println(k)   // "Brazil", "France" (visitation order)
+}
+
+for (capitals.values()) { i, v ->
+    println(i.toString() + ": " + v)
+}
+
+assert(capitals.keys().size() == 2)
+assert(capitals.values().isNotEmpty() == true)
+```
 
 ---
 

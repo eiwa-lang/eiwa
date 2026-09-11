@@ -1,6 +1,9 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 const core = @import("core.zig");
+const compat = @import("../compat.zig");
+
+const ArrayList = compat.ArrayList;
 
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
@@ -63,7 +66,7 @@ pub fn inferWhileStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const f = node.data.for_stmt;
     var iter_type = try self.inferNode(f.iterable, scope);
-    
+
     var is_mutable_list = false;
     var is_list = false;
     if (iter_type.* == .GenericInstance) {
@@ -102,7 +105,8 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
     
     if (iter_type.* != .Array) {
-        self.reportError(node.line, node.column, "TypeError: for loop iterable must be an Array or List, found {}.", .{iter_type.*});
+        if (try desugarMapFor(self, node, scope, t, iter_type)) return;
+        self.reportError(node.line, node.column, "TypeError: for loop iterable must be an Array, List or Map, found {}.", .{iter_type.*});
         return error.TypeError;
     }
     
@@ -118,6 +122,167 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     
     _ = try self.inferNode(f.body, &for_scope);
     t.* = .Void;
+}
+
+/// Projection of the loop item for map-like iterables (Phase 75).
+/// `.map` binds the whole `Node<K, V>`; `.keys`/`.values` bind `.key`/`.value`.
+const MapForKind = enum { map, keys, values };
+
+/// Detects `Map`/`MutableMap` (whole entry) and the lazy views
+/// `MapKeys`/`MapValues` (key/value projection). Returns null otherwise.
+fn mapForKind(iter_type: *const EiwaType) ?MapForKind {
+    if (iter_type.* == .GenericInstance) {
+        const bn = iter_type.GenericInstance.base_name;
+        if (std.mem.eql(u8, bn, "Map") or std.mem.eql(u8, bn, "MutableMap")) return .map;
+        if (std.mem.eql(u8, bn, "MapKeys")) return .keys;
+        if (std.mem.eql(u8, bn, "MapValues")) return .values;
+        return null;
+    } else if (iter_type.* == .Custom) {
+        const n = iter_type.Custom;
+        if (std.mem.indexOf(u8, n, "_MapKeys_") != null) return .keys;
+        if (std.mem.indexOf(u8, n, "_MapValues_") != null) return .values;
+        if (std.mem.indexOf(u8, n, "_MutableMap_") != null) return .map;
+        if (std.mem.indexOf(u8, n, "_Map_") != null) return .map;
+        return null;
+    }
+    return null;
+}
+
+fn mkDesugarNode(self: *TypeChecker, line: usize, col: usize, data: ast.ASTNodeType) anyerror!*ASTNode {
+    const n = try self.allocator.create(ASTNode);
+    n.* = .{ .line = line, .column = col, .resolved_type = null, .data = data };
+    return n;
+}
+
+fn mkDesugarIdent(self: *TypeChecker, line: usize, col: usize, name: []const u8) anyerror!*ASTNode {
+    return try mkDesugarNode(self, line, col, .{ .identifier = .{ .name = name, .resolved_c_name = null } });
+}
+
+fn mkDesugarGet(self: *TypeChecker, line: usize, col: usize, object: *ASTNode, name: []const u8) anyerror!*ASTNode {
+    return try mkDesugarNode(self, line, col, .{ .get_expr = .{ .object = object, .name = name, .is_safe = false } });
+}
+
+/// Desugars `for (map)` / `for (map.keys())` / `for (map.values())` into a
+/// zero-allocation nested `while` walk over the hash buckets, mirroring the
+/// bucket walk in `Set.mut` (`src/std/collections.ei`)
+/// The generated tree uses only `while`/`block`/decls the coroutine
+/// transform and the LLVM emitter already support (incl. suspend in body),
+/// so no emitter or transform changes are needed. Returns true when the
+/// iterable was map-like (node rewritten to `.block` and inferred).
+fn desugarMapFor(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType, iter_type: *const EiwaType) anyerror!bool {
+    const kind = mapForKind(iter_type) orelse return false;
+    const f = node.data.for_stmt;
+    const line = node.line;
+    const col = node.column;
+
+    const buckets_name = try std.fmt.allocPrint(self.allocator, "__for_map_{d}_{d}_buckets", .{ line, col });
+    const b_name = try std.fmt.allocPrint(self.allocator, "__for_map_{d}_{d}_b", .{ line, col });
+    const i_name = try std.fmt.allocPrint(self.allocator, "__for_map_{d}_{d}_i", .{ line, col });
+    const curr_name = try std.fmt.allocPrint(self.allocator, "__for_map_{d}_{d}_curr", .{ line, col });
+    const node_name = try std.fmt.allocPrint(self.allocator, "__for_map_{d}_{d}_node", .{ line, col });
+
+    // val __buckets = <iter>.entries.items
+    const get_entries = try mkDesugarGet(self, line, col, f.iterable, "entries");
+    const get_items = try mkDesugarGet(self, line, col, get_entries, "items");
+    const val_buckets = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = false, .name = buckets_name, .type_ref = null, .initializer = get_items } });
+
+    // var __b = 0
+    const zero_b = try mkDesugarNode(self, line, col, .{ .int_literal = 0 });
+    const var_b = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = b_name, .type_ref = null, .initializer = zero_b } });
+
+    // var __i = 0 (only with `i, entry ->`)
+    var var_i: ?*ASTNode = null;
+    if (f.index_name != null) {
+        const zero_i = try mkDesugarNode(self, line, col, .{ .int_literal = 0 });
+        var_i = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = i_name, .type_ref = null, .initializer = zero_i } });
+    }
+
+    // var __curr = __buckets[__b]
+    const buckets_ident = try mkDesugarIdent(self, line, col, buckets_name);
+    const b_ident_idx = try mkDesugarIdent(self, line, col, b_name);
+    const bucket_access = try mkDesugarNode(self, line, col, .{ .index_expr = .{ .object = buckets_ident, .index = b_ident_idx } });
+    const var_curr = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = curr_name, .type_ref = null, .initializer = bucket_access } });
+
+    // val __node = __curr!! (non-null Node; the only `!!` in the expansion,
+    // used as a val initializer only — safe across suspend splits).
+    // val <item> = __node[.key|.value|<self>]
+    const curr_ident_item = try mkDesugarIdent(self, line, col, curr_name);
+    const unwrapped = try mkDesugarNode(self, line, col, .{ .unary_expr = .{ .operator = .bang_bang, .operand = curr_ident_item } });
+    const val_node = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = false, .name = node_name, .type_ref = null, .initializer = unwrapped } });
+    const node_ident_item = try mkDesugarIdent(self, line, col, node_name);
+    var item_init: *ASTNode = node_ident_item;
+    if (kind == .keys) {
+        item_init = try mkDesugarGet(self, line, col, node_ident_item, "key");
+    } else if (kind == .values) {
+        item_init = try mkDesugarGet(self, line, col, node_ident_item, "value");
+    }
+    const val_item = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = false, .name = f.item_name, .type_ref = null, .initializer = item_init } });
+
+    // [val <index> = __i] + [...body...] + [__i = __i + 1] + [__curr = __node.next]
+    // NOTE: the advance reads `.next` off the non-null `__node` val, never a
+    // get on a `!!` result: `curr!!.next` mis-infers when re-checked inside a
+    // resumed coroutine state (boxed nullable var).
+    var inner = ArrayList(*ASTNode).init(self.allocator);
+    try inner.append(val_node);
+    try inner.append(val_item);
+    if (f.index_name) |idx_name| {
+        const i_ident = try mkDesugarIdent(self, line, col, i_name);
+        const val_idx = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = false, .name = idx_name, .type_ref = null, .initializer = i_ident } });
+        try inner.append(val_idx);
+    }
+    if (f.body.data == .block) {
+        for (f.body.data.block.statements) |stmt| try inner.append(stmt);
+    } else {
+        try inner.append(f.body);
+    }
+    if (f.index_name != null) {
+        const i_lhs = try mkDesugarIdent(self, line, col, i_name);
+        const one = try mkDesugarNode(self, line, col, .{ .int_literal = 1 });
+        const incr = try mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .plus, .right = one } });
+        const incr_i = try mkDesugarNode(self, line, col, .{ .assignment = .{ .name = i_name, .value = incr } });
+        try inner.append(incr_i);
+    }
+    const curr_ident_next = try mkDesugarIdent(self, line, col, node_name);
+    const get_next = try mkDesugarGet(self, line, col, curr_ident_next, "next");
+    const advance_curr = try mkDesugarNode(self, line, col, .{ .assignment = .{ .name = curr_name, .value = get_next } });
+    try inner.append(advance_curr);
+
+    const inner_body = try mkDesugarNode(self, line, col, .{ .block = .{ .statements = try inner.toOwnedSlice() } });
+    const curr_ident_cond = try mkDesugarIdent(self, line, col, curr_name);
+    const null_lit = try mkDesugarNode(self, line, col, .{ .null_literal = {} });
+    const curr_cond = try mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = curr_ident_cond, .op = .bang_eq, .right = null_lit } });
+    const inner_while = try mkDesugarNode(self, line, col, .{ .while_stmt = .{ .condition = curr_cond, .body = inner_body } });
+
+    var outer_body_list = ArrayList(*ASTNode).init(self.allocator);
+    try outer_body_list.append(var_curr);
+    try outer_body_list.append(inner_while);
+
+    // __b = __b + 1
+    const b_ident_incr = try mkDesugarIdent(self, line, col, b_name);
+    const one_b = try mkDesugarNode(self, line, col, .{ .int_literal = 1 });
+    const incr_b_expr = try mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = b_ident_incr, .op = .plus, .right = one_b } });
+    const incr_b = try mkDesugarNode(self, line, col, .{ .assignment = .{ .name = b_name, .value = incr_b_expr } });
+    try outer_body_list.append(incr_b);
+    const outer_body = try mkDesugarNode(self, line, col, .{ .block = .{ .statements = try outer_body_list.toOwnedSlice() } });
+
+    // while (__b < __buckets.length) { ... }
+    const b_ident_cond = try mkDesugarIdent(self, line, col, b_name);
+    const buckets_ident_len = try mkDesugarIdent(self, line, col, buckets_name);
+    const get_len = try mkDesugarGet(self, line, col, buckets_ident_len, "length");
+    const outer_cond = try mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = b_ident_cond, .op = .less, .right = get_len } });
+    const outer_while = try mkDesugarNode(self, line, col, .{ .while_stmt = .{ .condition = outer_cond, .body = outer_body } });
+
+    var outer = ArrayList(*ASTNode).init(self.allocator);
+    try outer.append(val_buckets);
+    try outer.append(var_b);
+    if (var_i) |vi| try outer.append(vi);
+    try outer.append(outer_while);
+    const stmts = try outer.toOwnedSlice();
+
+    node.data = .{ .block = .{ .statements = stmts } };
+    const bt = try self.checkBlock(stmts, scope);
+    t.* = bt.*;
+    return true;
 }
 
 pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
