@@ -1097,7 +1097,22 @@ Semântica alvo:
 - [ ] **Task 75.9 (limpeza futura):** Não monomorfizar defaults com type params abertos — `= MutableMap()` dentro de `type MutableSet<T>` gera instanciações zumbi (`Node<T, Bool>`, `MapKeys<T, Bool>`, …) que hoje só sobrevivem via strip + default null-safe da Task 75.7. Quando a criação for suprimida/adiada, remover o `typeContainsGenericParam` e o caminho de exceção no `monomorphizeClass`.
 - [x] **Verify:** `for_map_test.ei` verde (13/13) + `collections_test.ei` (16/16) + suíte completa (`eiwac test samples/tests`, 436 PASSED) e `zig build test` verdes sem regressão em `for_lambda_test` / `for_index_test` / `arrays_and_loops_test`.
 ---
-### Phase 76: for return valores como .map de kotlin
+### Phase 76: `for` como expressão (`List<T>`, estilo `.map`) (IN PROGRESS — RED)
+> **Status:** RED. Plano em `docs/plan_phase76_forvalue.md`, decisão em ADR 65,
+> cobertura em `samples/tests/for_value_test.ei` (11 testes, falhando no parse:
+> `return for` ainda é `Expected expression`).
+>
+> **Decisões:** sempre `List<T>` (`break v` anexa e encerra); skip por null
+> (corpo `Void` em posição de valor = erro); `if` sem `else` em posição de valor
+> vale `T?` (conserto do `Void` calado — statement continua `Void`); MVP sync +
+> `List`/`Array` (Map e `task` = erro explícito).
+>
+> - [x] **Task 76.0 (RED):** plano + ADR 65 + `for_value_test.ei`.
+> - [ ] **Task 76.1:** investigação (slots-valor, `List<T>` do literal, `add`/`freeze` no emissor).
+> - [ ] **Task 76.2:** parser cirúrgico (`for` em init/`return`/RHS) + flags `collect`/`is_value`.
+> - [ ] **Task 76.3:** checker (`T?` no `if`-valor, `List<T>` no `for`-valor, rejeições Map/task).
+> - [ ] **Task 76.4:** emissor (builder + null-skip + `break v` append + `freeze`).
+> - [ ] **Verify:** `for_value_test.ei` verde + suíte completa + `zig build test` sem regressão.
 ---
 ### Phase 77: analisar feature de dart para adicionar em eiwa
 ---
