@@ -954,7 +954,7 @@ Reutiliza uma anotação já conhecida da linguagem em vez de criar um mecanismo
 Reusar `while` + suspend já testado minimiza o risco no compilador (nenhuma lógica nova de loop no backend) e entrega iteração O(n) zero-alloc com visão viva — o mesmo modelo de Java (`entrySet` backed), Kotlin (`Map.Entry`), Go (`range` sobre buckets) e Python (`items()` view), em contraste com coletor snapshot que alocaria por loop e divergiria sob mutação. Preservar o índice como primeiro slot mantém a convenção única do `for` Eiwa em vez de importar a desestruturação Kotlin. Cobertura: `samples/tests/for_map_test.ei` (12 testes, incl. `sleepMs` em `task`); suíte 434 PASSED + `zig build test` verdes.
 
 ## ADR 64: `break` / `break v` — Saída Antecipada de Loops e Lambdas (sem `return`, sem `continue`)
-**Status:** Proposto (Phase 78, RED)
+**Status:** Aprovado (Phase 78, GREEN)
 **Data:** Setembro 2026
 
 **Contexto:**
@@ -973,3 +973,43 @@ Reusar `while` + suspend já testado minimiza o risco no compilador (nenhuma ló
 
 **Razão:**
 `break` é o consenso entre Swift/Kotlin/Rust/Dart/Ruby para sair de loop (curva de aprendizado zero); o modelo Ruby/Rust do `break v` preserva a filosofia trailing-expression do Eiwa sem ressuscitar `return`. `continue` foi descartado por decisão de escopo — `if`/`else` cobre o caso sem custo. O `break v` em loop-statement é deliberadamente um no-op de valor hoje para que a Phase 76 não precise de sintaxe nova. Plano completo em `docs/plan_phase78_break.md`; cobertura RED em `samples/tests/break_test.ei` (9 testes).
+
+## ADR 65: `for` como Expressão (`List<T>`) + `if` sem `else` em Posição de Valor vale `T?`
+**Status:** Proposto (Phase 76, RED)
+**Data:** Setembro 2026
+
+**Contexto:**
+1. Em Kotlin, `for` é statement (`Unit`) — quem retorna é `list.map {}`. A Phase 76
+   vai além: o próprio `for` Eiwa vira expressão (`val ys = for (xs) { it * 2 }`).
+2. `val a = if (false) { "asd" }` compila hoje com `a: Void` silencioso e só
+   explode depois (`PropertyNotFound` longe da causa) — o buraco documentado na
+   Phase 79. Em posição de valor, `if` sem `else` deveria valer `T?` (o short
+   ternary de bloco: `c ? v` já vale `T?`).
+3. `for` não aninha em expressões (só existe em posição de declaração), então os
+   slots-valor são exaustivos e locais: init de `val`/`var`, RHS de atribuição,
+   valor de `return`, trailing de bloco-valor. O parser hoje nem aceita `for`
+   nesses slots (só `expression()`).
+
+**Decisão:**
+1. **Sempre `List<T>`:** `for`-valor coleta a trailing expression por iteração;
+   `break v` anexa e encerra; `break` bare devolve o prefixo. Nada de união
+   `List<T> | R` (sem Rust-`loop`).
+2. **Skip por null:** iteração `null` (`T?`) não entra na lista (filter
+   implícito); corpo `Void` em posição de valor = `TypeError` dedicado.
+3. **`if`/`when` sem `else` + `is_value` → `T?`** (achata `T??`; branch `Void` →
+   erro, Void Safety do short ternary). Sem `is_value` → `Void` como hoje:
+   statement tem regressão zero por construção. Consequência gratuita: o bare-if
+   filtra (`for ([1,2,3]) { n -> if (n > 1) n }` → `[2, 3]`), sem regra própria.
+4. **MVP:** sync + `List`/`Array`; `for`-valor sobre `Map` e em `task {}` =
+   `TypeError` explícito (espelho da 78); vazio exige anotação; statement
+   continua zero-alloc por construção (o emissor nem cria o builder).
+5. Parser cirúrgico: aceitar `for_stmt` nos slots-valor (init, `return`,
+   RHS) — sem virar expressão geral (args de call e elementos de literal ficam
+   de fora nesta fase).
+
+**Razão:**
+Uma flag (`collect` no `for`, `is_value` no `if`/`when`) e uma regra de nulidade
+resolvem três coisas de uma vez: o `for`-`map`, o `Void` calado do `if`, e o
+filtro bare — tudo na filosofia trailing-expression, sem keyword nova e sem
+tocar o statement path. Plano completo em `docs/plan_phase76_forvalue.md`;
+cobertura RED em `samples/tests/for_value_test.ei` (11 testes).

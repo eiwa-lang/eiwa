@@ -1,0 +1,100 @@
+import { assert } from "std.core"
+import { mod } from "std.math"
+import { List } from "std.collections"
+
+fun firstDoubled(nums: List<Int>): List<Int> {
+    return for (nums) { it * 2 }
+}
+
+test "for as value collects trailing expression" {
+    val doubled = for ([1, 2, 3]) { it * 2 }
+    assert(doubled.size() == 3)
+    assert(doubled[0] == 2)
+    assert(doubled[1] == 4)
+    assert(doubled[2] == 6)
+}
+
+test "for as value with named param and index" {
+    val tens = for ([1, 2, 3, 4]) { i, n ->
+        if (i == 2) {
+            break
+        }
+        n * 10
+    }
+    assert(tens.size() == 2)
+    assert(tens[0] == 10)
+    assert(tens[1] == 20)
+}
+
+test "for as value skips null (explicit else null)" {
+    val evens = for ([1, 2, 3, 4]) { n ->
+        if (mod(n, 2) == 0) n else null
+    }
+    assert(evens.size() == 2)
+    assert(evens[0] == 2)
+    assert(evens[1] == 4)
+}
+
+test "for as value skips null (short ternary)" {
+    val odds = for ([1, 2, 3, 4]) { n -> mod(n, 2) == 1 ? n }
+    assert(odds.size() == 2)
+    assert(odds[0] == 1)
+    assert(odds[1] == 3)
+}
+
+test "for as value with bare if filters" {
+    val odds = for ([1, 2, 3, 4]) { n ->
+        if (mod(n, 2) == 1) n
+    }
+    assert(odds.size() == 2)
+    assert(odds[0] == 1)
+    assert(odds[1] == 3)
+}
+
+test "break appends value and ends collection" {
+    val withEnd = for ([1, 2, 3]) { n ->
+        if (n == 2) {
+            break -1
+        }
+        n
+    }
+    assert(withEnd.size() == 2)
+    assert(withEnd[0] == 1)
+    assert(withEnd[1] == -1)
+}
+
+test "for as value with annotated type" {
+    val xs: List<Int> = for ([1, 2]) { it * 3 }
+    assert(xs.size() == 2)
+    assert(xs[1] == 6)
+}
+
+test "for as value filtered to empty" {
+    val none = for ([1, 2]) { n ->
+        if (n > 5) n else null
+    }
+    assert(none.size() == 0)
+}
+
+test "for as value in return position" {
+    val got = firstDoubled([4, 5])
+    assert(got.size() == 2)
+    assert(got[0] == 8)
+    assert(got[1] == 10)
+}
+
+test "for as statement still works without collecting" {
+    var total = 0
+    for ([1, 2, 3]) { n ->
+        total = total + n
+    }
+    assert(total == 6)
+}
+
+test "if without else in value position is nullable" {
+    val a = if (false) {
+        "asd"
+    }
+    val b = a ?: "fallback"
+    assert(b == "fallback")
+}
