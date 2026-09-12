@@ -35,7 +35,9 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
         }
     }
 
-    const need = i.is_value;
+    // Value position: explicit flag or a non-Void expectation (call args,
+    // annotated slots). An explicit `Void` expectation stays statement-like.
+    const need = i.is_value or (node.expected_type != null and node.expected_type.?.* != .Void);
     if (need) {
         markTrailingValue(i.then_branch, true);
         if (i.else_branch) |else_b| markTrailingValue(else_b, true);

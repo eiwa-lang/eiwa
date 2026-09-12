@@ -1127,6 +1127,37 @@ Semântica alvo:
 > - [x] **Verify:** `for_value_test.ei` 11/11 + suíte completa (**ALL 468 TESTS
 >   PASSED**) e `zig build test` verdes; 4 negativas manuais (Map, task, corpo
 >   `Void`, `break v` incompatível) + `for` aninhado + single-execution.
+
+---
+
+### Follow-ups Phase 76/78 & Known Gaps (OPEN)
+> Consolidado da auditoria pós-76. Nada aqui quebra código existente; são
+> extensões, cobertura e um bug pré-existente encontrado por probing.
+
+- [x] **G1 — `if`/`when` em args de call com tratamento-valor:** `foo(if (c) { 1 })`
+  com param `Int?` agora vale `T?` (`need = is_value or expected`, excluindo
+  `Void` explícito — espelha a regra da lambda).
+- [ ] **G2 — `for` como argumento de call:** `foo(for (xs) { it })` nem parseia
+  (`Expected expression`). Fácil no futuro: só aceitar no parser, o `expected`
+  já flui (igual G1).
+- [ ] **G3 — Atribuição em membro com `for`:** `obj.x = for ...` (path `set_expr`)
+  sem marking — cai em erro de compat. Mesmo tratamento dos slots.
+- [ ] **G4 — `for`-valor sobre `Map`/`keys()`/`values()`:** append-adiado do
+  `__brk_val` + `if (__brk_val != null)` no desugar da 75.
+- [ ] **G5 — `for`-valor em `task {}`/`@Suspend`:** coletor como body field da
+  state machine (hoje: `TypeError` uniforme).
+- [ ] **G6 — Labels de `break` (`break@outer`):** aninhados hoje = mais interno.
+- [ ] **G7 — `T` heterogêneo no collect:** união como elemento (hoje: primeiro
+  tipo comum, como branches do `if`).
+- [ ] **G8 — Mensagens cruas em `@Suspend fun`:** `CollectForInSuspendContext` /
+  `BreakInSuspendContext` vazam o nome interno (em `task` já há mensagem dedicada).
+- [ ] **G9 — Cobertura:** `for`-valor como trailing de `when`, `for`+`sleep` com
+  `break` (68.1.1 × 78), `break`/`for`-valor em lambda aninhada dentro de `task`
+  (passa por desenho — sem teste), `for` sobre `MutableList` em modo-valor.
+- [ ] **G10 — `while` como valor:** fora de escopo por desenho (só `for` coleta).
+- [ ] **BUG (pré-existente, achado por probing):** elvis com default `Int`
+  (`x ?: -1`, `x: Int?`) quebra o verifier (PHI ptr vs i64) — reproduz sem nada
+  de 76/78.
 ---
 ### Phase 77: analisar feature de dart para adicionar em eiwa
 ---

@@ -91,7 +91,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             case.body.expected_type = et;
         }
 
-        if (w.is_value) infer_stmt_mod.markTrailingValue(case.body, true);
+        if (w.is_value or (node.expected_type != null and node.expected_type.?.* != .Void)) infer_stmt_mod.markTrailingValue(case.body, true);
 
         // 3. Infer case body type (null = diverging body: `return`/`throw`
         //    as the last statement, Kotlin `Nothing` — no fall-through value)

@@ -6,6 +6,10 @@ fun firstDoubled(nums: List<Int>): List<Int> {
     return for (nums) { it * 2 }
 }
 
+fun isSet(x: Int?): Bool {
+    return x != null
+}
+
 test "for as value collects trailing expression" {
     val doubled = for ([1, 2, 3]) { it * 2 }
     assert(doubled.size() == 3)
@@ -97,4 +101,9 @@ test "if without else in value position is nullable" {
     }
     val b = a ?: "fallback"
     assert(b == "fallback")
+}
+
+test "bare if in call args types as nullable" {
+    assert(isSet(if (true) { 42 }))
+    assert(isSet(if (false) { 42 }) == false)
 }
