@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 const core = @import("core.zig");
+const infer_stmt_mod = @import("infer_stmt.zig");
 
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
@@ -89,6 +90,8 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         if (node.expected_type) |et| {
             case.body.expected_type = et;
         }
+
+        if (w.is_value) infer_stmt_mod.markTrailingValue(case.body, true);
 
         // 3. Infer case body type (null = diverging body: `return`/`throw`
         //    as the last statement, Kotlin `Nothing` — no fall-through value)

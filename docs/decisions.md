@@ -975,7 +975,7 @@ Reusar `while` + suspend já testado minimiza o risco no compilador (nenhuma ló
 `break` é o consenso entre Swift/Kotlin/Rust/Dart/Ruby para sair de loop (curva de aprendizado zero); o modelo Ruby/Rust do `break v` preserva a filosofia trailing-expression do Eiwa sem ressuscitar `return`. `continue` foi descartado por decisão de escopo — `if`/`else` cobre o caso sem custo. O `break v` em loop-statement é deliberadamente um no-op de valor hoje para que a Phase 76 não precise de sintaxe nova. Plano completo em `docs/plan_phase78_break.md`; cobertura RED em `samples/tests/break_test.ei` (9 testes).
 
 ## ADR 65: `for` como Expressão (`List<T>`) + `if` sem `else` em Posição de Valor vale `T?`
-**Status:** Proposto (Phase 76, RED)
+**Status:** Aprovado (Phase 76, GREEN)
 **Data:** Setembro 2026
 
 **Contexto:**

@@ -20,6 +20,7 @@ pub const inferIndexSetExpr = @import("infer_member.zig").inferIndexSetExpr;
 pub const inferArrayLiteral = @import("infer_literal.zig").inferArrayLiteral;
 pub const inferMapLiteral = @import("infer_literal.zig").inferMapLiteral;
 const checkLambdaBreaks = @import("infer_stmt.zig").checkLambdaBreaks;
+const markTrailingValue = @import("infer_stmt.zig").markTrailingValue;
 
 
 fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
@@ -45,6 +46,7 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     if (scope.lookupVariableSymbol(a.name)) |vs| {
         a.value.expected_type = vs.eiwa_type;
         a.value.resolved_type = null;
+        markTrailingValue(a.value, true);
         assigned_type = try self.inferNode(a.value, scope);
         if (!vs.is_mut) {
             self.reportError(node.line, node.column, "TypeError: Cannot reassign constant variable '{s}'.", .{a.name});
@@ -587,6 +589,9 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         void_t.* = .Void;
         body_type = void_t;
     } else {
+        // A trailing `for`/`if`/`when` collects iff the lambda yields a value.
+        const lam_need = expected_return == null or (expected_return.?).* != .Void;
+        if (lam_need) markTrailingValue(l.body[l.body.len - 1], true);
         var last_t: ?*const EiwaType = null;
         for (l.body) |stmt| {
             last_t = try self.inferNode(stmt, &lambda_scope);

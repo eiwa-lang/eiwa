@@ -35,6 +35,12 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
         }
     }
 
+    const need = i.is_value;
+    if (need) {
+        markTrailingValue(i.then_branch, true);
+        if (i.else_branch) |else_b| markTrailingValue(else_b, true);
+    }
+
     const then_type = try inferBranchAsExpression(self, i.then_branch, then_scope);
     if (has_smart_cast) {
         local_then_scope.deinit();
@@ -56,6 +62,24 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
                     t.* = exp_t.*;
                 } else if (self.isCompatible(tt, et) or self.isCompatible(et, tt)) {
                     t.* = tt.*;
+                } else if (need) {
+                    // `if (c) v else null` in value position types as `T?`.
+                    const nn = if (tt.* == .Null) et else if (et.* == .Null) tt else null;
+                    if (nn) |non_null| {
+                        if (non_null.* == .Void) {
+                            t.* = .Void;
+                        } else if (core.isNullable(non_null)) {
+                            t.* = non_null.*;
+                        } else {
+                            const left_t = try self.allocator.create(EiwaType);
+                            left_t.* = non_null.*;
+                            const right_t = try self.allocator.create(EiwaType);
+                            right_t.* = .Null;
+                            t.* = .{ .Union = .{ .left = left_t, .right = right_t } };
+                        }
+                    } else {
+                        t.* = .Void;
+                    }
                 } else {
                     t.* = .Void;
                 }
@@ -68,7 +92,41 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
             t.* = .Void;
         }
     } else {
-        t.* = .Void;
+        if (!need) {
+            t.* = .Void;
+            return;
+        }
+        // `if` without `else` in value position is the block short-ternary.
+        const tt = then_type orelse {
+            t.* = .Void;
+            return;
+        };
+        if (tt.* == .Void) {
+            self.reportError(node.line, node.column, "TypeError: if without else in value position cannot yield Void.", .{});
+            return error.TypeError;
+        }
+        if (core.isNullable(tt)) {
+            if (node.expected_type) |exp_t| {
+                if (!self.isCompatible(exp_t, tt)) {
+                    self.reportError(node.line, node.column, "TypeError: if branch has type {} which is incompatible with expected type {}.", .{ tt.*, exp_t.* });
+                    return error.TypeError;
+                }
+            }
+            t.* = tt.*;
+        } else {
+            const left_t = try self.allocator.create(EiwaType);
+            left_t.* = tt.*;
+            const right_t = try self.allocator.create(EiwaType);
+            right_t.* = .Null;
+            const nullable = EiwaType{ .Union = .{ .left = left_t, .right = right_t } };
+            if (node.expected_type) |exp_t| {
+                if (!self.isCompatible(exp_t, &nullable)) {
+                    self.reportError(node.line, node.column, "TypeError: if branch has type {} which is incompatible with expected type {}.", .{ nullable, exp_t.* });
+                    return error.TypeError;
+                }
+            }
+            t.* = nullable;
+        }
     }
 }
 
@@ -107,8 +165,8 @@ pub fn inferBreakStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
     }
     const b = node.data.break_stmt;
     if (in_loop) {
-        // Loop target: a value is checked and discarded here (Phase 76
-        // consumes it as the `for` result); bare break is just Void.
+        // Loop target: the value is only checked here (a collecting `for`
+        // appends it at emission); bare break is just Void.
         if (b.value) |v| {
             _ = try self.inferNode(v, scope);
         }
@@ -176,11 +234,16 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
     
     if (iter_type.* != .Array) {
+        // Value-collecting over Map is not supported yet.
+        if (f.collect and mapForKind(iter_type) != null) {
+            self.reportError(node.line, node.column, "TypeError: for used as a value over Map is not supported yet.", .{});
+            return error.TypeError;
+        }
         if (try desugarMapFor(self, node, scope, t, iter_type)) return;
         self.reportError(node.line, node.column, "TypeError: for loop iterable must be an Array, List or Map, found {}.", .{iter_type.*});
         return error.TypeError;
     }
-    
+
     var for_scope = Scope.init(self.allocator, scope);
     for_scope.is_loop_boundary = true;
     defer for_scope.deinit();
@@ -191,9 +254,102 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         try for_scope.define(idx_name, int_type, false, false);
     }
     try for_scope.define(f.item_name, iter_type.Array, false, false);
-    
+
+    if (f.collect) {
+        try inferForCollect(self, node, &for_scope, t);
+        return;
+    }
+
     _ = try self.inferNode(f.body, &for_scope);
     t.* = .Void;
+}
+
+/// Infers a value-positioned `for`: the body trailing type gives the
+/// collected element (`T` collected, `T?` with null-skip, `Void` rejected).
+/// Result is `List<T>`, built exactly like an array literal.
+fn inferForCollect(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
+    const f = node.data.for_stmt;
+    // Only the trailing statement yields; earlier ones are effects. Nested
+    // value positions mark themselves during inference below.
+    markTrailingValue(f.body, true);
+    const body_t = try self.inferBlockAsExpression(f.body, scope);
+    // A Void (or diverging) body in value position is an error, mirroring
+    // the `if`-value Void Safety rule — except against an explicit `Void`
+    // expectation, which is statement intent (`val x: Void = for ...`).
+    const vt = body_t orelse {
+        if (node.expected_type) |exp_t| {
+            if (exp_t.* == .Void) {
+                node.data.for_stmt.collect = false;
+                t.* = .Void;
+                return;
+            }
+        }
+        self.reportError(node.line, node.column, "TypeError: for used as a value with a Void body.", .{});
+        return error.TypeError;
+    };
+    if (vt.* == .Void) {
+        if (node.expected_type) |exp_t| {
+            if (exp_t.* == .Void) {
+                node.data.for_stmt.collect = false;
+                t.* = .Void;
+                return;
+            }
+        }
+        self.reportError(node.line, node.column, "TypeError: for used as a value with a Void body.", .{});
+        return error.TypeError;
+    }
+
+    // The collected List, built exactly like an array literal so downstream
+    // (emitter struct lookup, generic unification) resolves it unchanged.
+    const list_t = try self.makeListType(vt, node.line, node.column);
+    if (node.expected_type) |exp| {
+        if (!self.isCompatible(exp, list_t)) {
+            if (core.isNullable(vt)) {
+                self.reportError(node.line, node.column, "TypeError: for with null iterations is incompatible with expected {}. Annotate List<T?> to collect nullables.", .{exp.*});
+            } else {
+                self.reportError(node.line, node.column, "TypeError: for used as a value yields {} but expected {}.", .{ list_t.*, exp.* });
+            }
+            return error.TypeError;
+        }
+        t.* = exp.*;
+        try checkForBreakValues(self, f.body, vt);
+        return;
+    }
+
+    t.* = list_t.*;
+    try checkForBreakValues(self, f.body, vt);
+}
+
+/// Verifies `break v` values inside a collecting `for` body against the
+/// iteration type. Stops at nested loop/lambda/function boundaries.
+fn checkForBreakValues(self: *TypeChecker, node: *ASTNode, accept: *const EiwaType) anyerror!void {
+    switch (node.data) {
+        .block => |b| {
+            for (b.statements) |s| try checkForBreakValues(self, s, accept);
+        },
+        .if_expr => |i| {
+            try checkForBreakValues(self, i.then_branch, accept);
+            if (i.else_branch) |e| try checkForBreakValues(self, e, accept);
+        },
+        .try_stmt => |ts| {
+            try checkForBreakValues(self, ts.body, accept);
+            for (ts.catches) |c| try checkForBreakValues(self, c.body, accept);
+        },
+        .when_expr => |w| {
+            for (w.cases) |c| try checkForBreakValues(self, c.body, accept);
+        },
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
+        .break_stmt => |b| {
+            if (b.value) |v| {
+                const bt = v.resolved_type orelse return;
+                if (!self.isCompatible(accept, bt) and !self.isCompatible(bt, accept)) {
+                    self.reportError(node.line, node.column, "TypeError: break value type {} is incompatible with for element type {}.", .{ bt.*, accept.* });
+                    return error.TypeError;
+                }
+            }
+        },
+        else => {},
+    }
 }
 
 /// Projection of the loop item for map-like iterables (Phase 75).
@@ -458,6 +614,7 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
     const r = node.data.return_stmt;
     if (r.value) |v| {
+        markTrailingValue(v, true);
         const ret_type = try self.inferNode(v, scope);
         t.* = ret_type.*;
         return;
@@ -504,6 +661,21 @@ fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const Ei
                     return error.TypeError;
                 }
             }
+        },
+        else => {},
+    }
+}
+
+/// Marks a trailing `for`/`if`/`when` as value-positioned: `for` collects,
+/// `if`/`when` propagate to their own branches. Applied to a block's last
+/// statement, or directly to a bare branch node.
+pub fn markTrailingValue(node: *ASTNode, need: bool) void {
+    switch (node.data) {
+        .for_stmt => |*f| f.collect = need,
+        .if_expr => |*i| i.is_value = need,
+        .when_expr => |*w| w.is_value = need,
+        .block => |b| {
+            if (b.statements.len > 0) markTrailingValue(b.statements[b.statements.len - 1], need);
         },
         else => {},
     }

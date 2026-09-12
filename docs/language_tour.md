@@ -146,7 +146,57 @@ fun main() {
 }
 ```
 
-### 3.3 Loop Utility Functions (`repeat`, `loop`, `retry`)
+### 3.3 `for` as an Expression (map-style)
+
+When a `for` loop appears where a value is used (variable initializer, assignment right-hand side, `return`, or the trailing position of a value block), it collects each iteration's trailing expression into a `List<T>` — like Kotlin's `list.map {}`:
+
+```kotlin
+val doubled = for ([1, 2, 3]) { it * 2 }
+assert(doubled.size() == 3)
+assert(doubled[0] == 2)
+assert(doubled[2] == 6)
+
+// `break` ends early with what was collected so far;
+// `break v` appends `v` and ends
+val first2 = for ([1, 2, 3, 4]) { i, n ->
+    if (i == 2) {
+        break
+    }
+    n * 10
+}
+assert(first2.size() == 2)
+assert(first2[1] == 20)
+
+// Iterations yielding `null` are skipped (inline filter)
+val odds = for ([1, 2, 3, 4]) { n ->
+    if (mod(n, 2) == 1) n
+}
+assert(odds.size() == 2)
+assert(odds[0] == 1)
+assert(odds[1] == 3)
+```
+
+Correspondence with Kotlin (`for` is Eiwa's `map` + `filter` — no separate functions needed):
+
+| Kotlin | Eiwa |
+|---|---|
+| `xs.map { it * 2 }` | `for (xs) { it * 2 }` |
+| `xs.filter { c(it) }` | `for (xs) { if (c(it)) it }` |
+| `xs.filter { c(it) }.map { f(it) }` | `for (xs) { v -> if (c(v)) f(v) }` |
+
+```kotlin
+// map + filter in a single pass
+val big = for ([1, 2, 3, 4, 5]) { n ->
+    if (n * 10 > 20) n * 10 else null
+}
+assert(big.size() == 3)
+assert(big[0] == 30)
+assert(big[2] == 50)
+```
+
+Rules: the loop always yields `List<T>`; a `Void` body in value position is a compile-time error; `for`-as-value over `Map` and inside `task {}` is rejected (sync `List` iteration only, for now). Used as a statement, `for` behaves exactly as before with zero allocation.
+
+### 3.4 Loop Utility Functions (`repeat`, `loop`, `retry`)
 
 Eiwa's standard library (`std.system`, implicitly imported into every program) provides higher-order loop helpers:
 
@@ -1366,7 +1416,10 @@ assert(f(5) == 10)
 assert(f(-3) == 0)
 ```
 
-The `break` value must be compatible with the lambda return type. Bare `break` inside a loop exits the innermost loop; `break v` in a loop body is checked and discarded today (it becomes the loop result once `for` returns values). `break` inside `task {}` is a compile-time error (synchronous code only).
+Rules for `break`:
+- The `break` value must be compatible with the lambda return type (or with the collected element type inside a value-`for`); a bare `break` in a lambda requires a `Void` lambda.
+- Bare `break` inside a loop exits the innermost loop (no labels); in a statement loop, `break v` is checked and discarded.
+- `break` outside any loop or lambda is a compile-time error, as is `break` inside `task {}` (synchronous code only). There is no `continue` — skipping an iteration is written with `if`/`else`.
 
 ### 15.6 Extension Functions
 Eiwa allows you to extend existing types (including standard types like `String`, `Int`, `List<T>` or user-defined types) with new methods without modifying their original declaration or using inheritance.

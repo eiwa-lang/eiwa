@@ -15,6 +15,20 @@ const llvm = c_bindings.llvm;
 const LoopFrame = struct {
     func: llvm.LLVMValueRef,
     after_bb: llvm.LLVMBasicBlockRef,
+    /// Phase 76: when set, the loop collects iteration values into the
+    /// buffer at `buf_addr` (an alloca holding the raw NativeArray pointer).
+    collect: ?ForCollect = null,
+};
+
+/// Collection state for a value-positioned `for`.
+pub const ForCollect = struct {
+    buf_addr: llvm.LLVMValueRef,
+    elem_type: llvm.LLVMTypeRef,
+    elem_stride: i64,
+    /// True when iteration values are nullable (`T?`): nulls are skipped.
+    nullable: bool,
+    /// The body's trailing value node, evaluated once per iteration.
+    trailing: *ast.ASTNode,
 };
 
 const LoopStack = struct {
@@ -22,8 +36,8 @@ const LoopStack = struct {
     inline_len: usize = 0,
     spilled: std.ArrayListUnmanaged(LoopFrame) = .empty,
 
-    fn push(self: *LoopStack, func: llvm.LLVMValueRef, after_bb: llvm.LLVMBasicBlockRef) anyerror!void {
-        const frame = LoopFrame{ .func = func, .after_bb = after_bb };
+    fn push(self: *LoopStack, func: llvm.LLVMValueRef, after_bb: llvm.LLVMBasicBlockRef, collect: ?ForCollect) anyerror!void {
+        const frame = LoopFrame{ .func = func, .after_bb = after_bb, .collect = collect };
         if (self.inline_len < self.inline_frames.len) {
             self.inline_frames[self.inline_len] = frame;
             self.inline_len += 1;
@@ -40,16 +54,16 @@ const LoopStack = struct {
         if (self.inline_len > 0) self.inline_len -= 1;
     }
 
-    fn innermostAfter(self: *LoopStack, func: llvm.LLVMValueRef) ?llvm.LLVMBasicBlockRef {
+    fn innermostFor(self: *LoopStack, func: llvm.LLVMValueRef) ?LoopFrame {
         var i = self.spilled.items.len;
         while (i > 0) {
             i -= 1;
-            if (self.spilled.items[i].func == func) return self.spilled.items[i].after_bb;
+            if (self.spilled.items[i].func == func) return self.spilled.items[i];
         }
         var j = self.inline_len;
         while (j > 0) {
             j -= 1;
-            if (self.inline_frames[j].func == func) return self.inline_frames[j].after_bb;
+            if (self.inline_frames[j].func == func) return self.inline_frames[j];
         }
         return null;
     }
@@ -335,9 +349,7 @@ pub fn emitStatement(
 
                 if (selected_struct) |s_info| {
                     const val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, assign.value);
-                    const field_ptr = llvm.LLVMBuildStructGEP2(
-                        builder, s_info.struct_type, this_val, @intCast(selected_f_idx), "assign_field_ptr",
-                    );
+                    const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, this_val, @intCast(selected_f_idx), "assign_field_ptr");
                     if (expression.storeValue(val, s_info.field_types[selected_f_idx])) |sv| {
                         _ = llvm.LLVMBuildStore(builder, sv, field_ptr);
                     }
@@ -424,7 +436,7 @@ pub fn emitStatement(
 
             // Body block
             llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
-            try loop_stack.push(func_val, after_bb);
+            try loop_stack.push(func_val, after_bb, null);
             defer loop_stack.pop();
             try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, w.body, declared_ret);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
@@ -435,92 +447,8 @@ pub fn emitStatement(
             llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
         },
         .for_stmt => |f| {
-            // For-in over NativeArray/List on the raw buffer layout
-            // (slot 0 = size, slots 2.. = elements). Item values are loaded as
-            // i64 slots and bitcast to pointers when the element type is a
-            // reference type. LLVM-SPECIFIC (NOT inherited from C): the C
-            // transpiler iterated EiwaArray struct fields (data/length).
-            const arr_rt = if (f.iterable.resolved_type) |rt| rt.* else return error.UnsupportedForIterable;
-            if (arr_rt != .Array and arr_rt != .Custom) return error.UnsupportedForIterable;
-
-            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-            const arr_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, f.iterable);
-
-            var idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
-            const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &idx0, 1, "for_size_ptr");
-            const size_val = llvm.LLVMBuildLoad2(builder, i64_type, size_ptr, "for_size");
-
-            const i_ptr = llvm.LLVMBuildAlloca(builder, i64_type, "for_i");
-            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), i_ptr);
-
-            const cond_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.cond");
-            const body_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.body");
-            const after_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.after");
-
-            _ = llvm.LLVMBuildBr(builder, cond_bb);
-
-            llvm.LLVMPositionBuilderAtEnd(builder, cond_bb);
-            const i_cur = llvm.LLVMBuildLoad2(builder, i64_type, i_ptr, "for_i_cur");
-            const cond = llvm.LLVMBuildICmp(builder, llvm.LLVMIntSLT, i_cur, size_val, "for_cond");
-            _ = llvm.LLVMBuildCondBr(builder, cond, body_bb, after_bb);
-
-            llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
-            const i_body = llvm.LLVMBuildLoad2(builder, i64_type, i_ptr, "for_i_body");
-            // Load the element using the array's element stride/type (mirrors the
-            // index path): contract elements are 16-byte fat pointers {data,
-            // vtable}, so loading them as i64 slots would truncate the vtable.
-            const elem_type = expression.arrayElemLLVMType(ctx, f.iterable.resolved_type);
-            const elem_stride = expression.arrayElemStride(ctx, elem_type);
-            const for_elem_name = try std.heap.page_allocator.dupeZ(u8, "for_elem_ptr");
-            defer std.heap.page_allocator.free(for_elem_name);
-            const elem_ptr = expression.arrayElemTypedPtr(builder, ctx, arr_val, i_body, elem_type, elem_stride, for_elem_name.ptr);
-            var item_val = llvm.LLVMBuildLoad2(builder, elem_type, elem_ptr, "for_item");
-            // Only when the element type fell back to an i64 slot (arrayElemLLVMType
-            // could not resolve it): reconstruct ref/double values the old way.
-            if (llvm.LLVMGetTypeKind(elem_type) == llvm.LLVMIntegerTypeKind and arr_rt == .Array) {
-                const elem_t = arr_rt.Array.*;
-                if (elem_t == .Custom or elem_t == .String or elem_t == .Pointer or elem_t == .Array or elem_t == .Union or elem_t == .Function) {
-                    item_val = llvm.LLVMBuildIntToPtr(builder, item_val, llvm.LLVMPointerTypeInContext(ctx, 0), "for_item_ptr");
-                } else if (elem_t == .Double) {
-                    item_val = llvm.LLVMBuildBitCast(builder, item_val, llvm.LLVMDoubleTypeInContext(ctx), "for_item_double");
-                }
-            }
-
-            var loop_scope = std.StringHashMap(llvm.LLVMValueRef).init(scope.allocator);
-            defer loop_scope.deinit();
-            var scope_it = scope.iterator();
-            while (scope_it.next()) |entry| {
-                try loop_scope.put(entry.key_ptr.*, entry.value_ptr.*);
-            }
-            // The item lives in an alloca (like function params and var decls)
-            // so the identifier path loads it correctly instead of treating a
-            // direct pointer value as an alloca address.
-            if (f.index_name) |idx_name| {
-                const idx_name_z = try std.heap.page_allocator.dupeZ(u8, idx_name);
-                defer std.heap.page_allocator.free(idx_name_z);
-                const idx_alloca = llvm.LLVMBuildAlloca(builder, i64_type, idx_name_z.ptr);
-                _ = llvm.LLVMBuildStore(builder, i_body, idx_alloca);
-                try loop_scope.put(idx_name, idx_alloca);
-            }
-
-            const item_type = llvm.LLVMTypeOf(item_val);
-            const item_name_z = try std.heap.page_allocator.dupeZ(u8, f.item_name);
-            defer std.heap.page_allocator.free(item_name_z);
-            const item_alloca = llvm.LLVMBuildAlloca(builder, item_type, item_name_z.ptr);
-            _ = llvm.LLVMBuildStore(builder, item_val, item_alloca);
-            try loop_scope.put(f.item_name, item_alloca);
-
-            try loop_stack.push(func_val, after_bb);
-            defer loop_stack.pop();
-            try emitStatement(ctx, mod, builder, func_val, &loop_scope, structs, libs, f.body, declared_ret);
-
-            const i_next = llvm.LLVMBuildAdd(builder, i_body, llvm.LLVMConstInt(i64_type, 1, 0), "for_i_next");
-            _ = llvm.LLVMBuildStore(builder, i_next, i_ptr);
-            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
-                _ = llvm.LLVMBuildBr(builder, cond_bb);
-            }
-
-            llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
+            if (f.collect) return error.ForValueAsStatement;
+            try emitForLoop(ctx, mod, builder, func_val, scope, structs, libs, node, declared_ret, null);
         },
         .return_stmt => |ret| {
             if (ret.value) |val_node| {
@@ -532,13 +460,19 @@ pub fn emitStatement(
         .break_stmt => |b| {
             // Innermost loop of this function wins; a valued break with no
             // enclosing loop is a lambda-local exit (same lowering as `return`).
-            if (loop_stack.innermostAfter(func_val)) |after_bb| {
+            if (loop_stack.innermostFor(func_val)) |frame| {
                 if (b.value) |val_node| {
-                    // Loop target: evaluate and discard (Phase 76 consumes
-                    // it as the `for` result).
-                    _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+                    if (frame.collect) |ci| {
+                        // `break v` appends and ends the collection.
+                        var v = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+                        v = expression.coerceArg(builder, v, ci.elem_type);
+                        _ = try expression.emitBufferPushRaw(ctx, mod, builder, ci.buf_addr, v, ci.elem_type, ci.elem_stride);
+                    } else {
+                        // Loop target: evaluate and discard.
+                        _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+                    }
                 }
-                _ = llvm.LLVMBuildBr(builder, after_bb);
+                _ = llvm.LLVMBuildBr(builder, frame.after_bb);
             } else if (b.value) |val_node| {
                 try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
             } else {
@@ -783,4 +717,209 @@ pub fn emitStatement(
             _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, node);
         },
     }
+}
+
+/// Shared `for`-in emission over NativeArray/List raw buffers (slot 0 =
+/// size, slots 2.. = elements). With `collect`, each normally-completed
+/// iteration appends its trailing value to the collection buffer.
+fn emitForLoop(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    node: *ast.ASTNode,
+    declared_ret: ?*const eiwa_types.EiwaType,
+    collect: ?ForCollect,
+) anyerror!void {
+    const f = node.data.for_stmt;
+    // For-in over NativeArray/List on the raw buffer layout
+    // (slot 0 = size, slots 2.. = elements). Item values are loaded as
+    // i64 slots and bitcast to pointers when the element type is a
+    // reference type. LLVM-SPECIFIC (NOT inherited from C): the C
+    // transpiler iterated EiwaArray struct fields (data/length).
+    const arr_rt = if (f.iterable.resolved_type) |rt| rt.* else return error.UnsupportedForIterable;
+    if (arr_rt != .Array and arr_rt != .Custom) return error.UnsupportedForIterable;
+
+    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+    const arr_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, f.iterable);
+
+    var idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+    const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &idx0, 1, "for_size_ptr");
+    const size_val = llvm.LLVMBuildLoad2(builder, i64_type, size_ptr, "for_size");
+
+    const i_ptr = llvm.LLVMBuildAlloca(builder, i64_type, "for_i");
+    _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), i_ptr);
+
+    const cond_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.cond");
+    const body_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.body");
+    const after_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.after");
+
+    _ = llvm.LLVMBuildBr(builder, cond_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, cond_bb);
+    const i_cur = llvm.LLVMBuildLoad2(builder, i64_type, i_ptr, "for_i_cur");
+    const cond = llvm.LLVMBuildICmp(builder, llvm.LLVMIntSLT, i_cur, size_val, "for_cond");
+    _ = llvm.LLVMBuildCondBr(builder, cond, body_bb, after_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
+    const i_body = llvm.LLVMBuildLoad2(builder, i64_type, i_ptr, "for_i_body");
+    // Load the element using the array's element stride/type (mirrors the
+    // index path): contract elements are 16-byte fat pointers {data,
+    // vtable}, so loading them as i64 slots would truncate the vtable.
+    const elem_type = expression.arrayElemLLVMType(ctx, f.iterable.resolved_type);
+    const elem_stride = expression.arrayElemStride(ctx, elem_type);
+    const for_elem_name = try std.heap.page_allocator.dupeZ(u8, "for_elem_ptr");
+    defer std.heap.page_allocator.free(for_elem_name);
+    const elem_ptr = expression.arrayElemTypedPtr(builder, ctx, arr_val, i_body, elem_type, elem_stride, for_elem_name.ptr);
+    var item_val = llvm.LLVMBuildLoad2(builder, elem_type, elem_ptr, "for_item");
+    // Only when the element type fell back to an i64 slot (arrayElemLLVMType
+    // could not resolve it): reconstruct ref/double values the old way.
+    if (llvm.LLVMGetTypeKind(elem_type) == llvm.LLVMIntegerTypeKind and arr_rt == .Array) {
+        const elem_t = arr_rt.Array.*;
+        if (elem_t == .Custom or elem_t == .String or elem_t == .Pointer or elem_t == .Array or elem_t == .Union or elem_t == .Function) {
+            item_val = llvm.LLVMBuildIntToPtr(builder, item_val, llvm.LLVMPointerTypeInContext(ctx, 0), "for_item_ptr");
+        } else if (elem_t == .Double) {
+            item_val = llvm.LLVMBuildBitCast(builder, item_val, llvm.LLVMDoubleTypeInContext(ctx), "for_item_double");
+        }
+    }
+
+    var loop_scope = std.StringHashMap(llvm.LLVMValueRef).init(scope.allocator);
+    defer loop_scope.deinit();
+    var scope_it = scope.iterator();
+    while (scope_it.next()) |entry| {
+        try loop_scope.put(entry.key_ptr.*, entry.value_ptr.*);
+    }
+    // The item lives in an alloca (like function params and var decls)
+    // so the identifier path loads it correctly instead of treating a
+    // direct pointer value as an alloca address.
+    if (f.index_name) |idx_name| {
+        const idx_name_z = try std.heap.page_allocator.dupeZ(u8, idx_name);
+        defer std.heap.page_allocator.free(idx_name_z);
+        const idx_alloca = llvm.LLVMBuildAlloca(builder, i64_type, idx_name_z.ptr);
+        _ = llvm.LLVMBuildStore(builder, i_body, idx_alloca);
+        try loop_scope.put(idx_name, idx_alloca);
+    }
+
+    const item_type = llvm.LLVMTypeOf(item_val);
+    const item_name_z = try std.heap.page_allocator.dupeZ(u8, f.item_name);
+    defer std.heap.page_allocator.free(item_name_z);
+    const item_alloca = llvm.LLVMBuildAlloca(builder, item_type, item_name_z.ptr);
+    _ = llvm.LLVMBuildStore(builder, item_val, item_alloca);
+    try loop_scope.put(f.item_name, item_alloca);
+
+            try loop_stack.push(func_val, after_bb, collect);
+            defer loop_stack.pop();
+            if (collect != null and f.body.data == .block and f.body.data.block.statements.len > 0) {
+                // Phase 76: all but the trailing statement run for effects;
+                // the trailing value is evaluated once at the bottom (never
+                // twice — it may carry side effects). Mirrors lambda bodies.
+                const stmts = f.body.data.block.statements;
+                for (stmts[0 .. stmts.len - 1]) |stmt| {
+                    try emitStatement(ctx, mod, builder, func_val, &loop_scope, structs, libs, stmt, declared_ret);
+                }
+            } else {
+                try emitStatement(ctx, mod, builder, func_val, &loop_scope, structs, libs, f.body, declared_ret);
+            }
+
+            // Collect the iteration value (skipped when the body broke out).
+            if (collect) |ci| {
+                if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
+                    try emitForIterValue(ctx, mod, builder, &loop_scope, structs, libs, ci);
+                }
+            }
+
+    const i_next = llvm.LLVMBuildAdd(builder, i_body, llvm.LLVMConstInt(i64_type, 1, 0), "for_i_next");
+    _ = llvm.LLVMBuildStore(builder, i_next, i_ptr);
+    if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
+        _ = llvm.LLVMBuildBr(builder, cond_bb);
+    }
+
+    llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
+}
+
+/// Evaluates a collecting `for` body's trailing value and appends it,
+/// skipping nulls for nullable (`T?`) iteration types.
+fn emitForIterValue(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    ci: ForCollect,
+) anyerror!void {
+    var val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, ci.trailing);
+    val = expression.coerceArg(builder, val, ci.elem_type);
+    if (ci.nullable and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) == llvm.LLVMPointerTypeKind) {
+        const is_null = llvm.LLVMBuildIsNull(builder, val, "for_val_is_null");
+        const cur_bb = llvm.LLVMGetInsertBlock(builder);
+        const func_val = llvm.LLVMGetBasicBlockParent(cur_bb);
+        const append_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.append");
+        const skip_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.skip");
+        _ = llvm.LLVMBuildCondBr(builder, is_null, skip_bb, append_bb);
+        llvm.LLVMPositionBuilderAtEnd(builder, append_bb);
+        _ = try expression.emitBufferPushRaw(ctx, mod, builder, ci.buf_addr, val, ci.elem_type, ci.elem_stride);
+        _ = llvm.LLVMBuildBr(builder, skip_bb);
+        llvm.LLVMPositionBuilderAtEnd(builder, skip_bb);
+        return;
+    }
+    _ = try expression.emitBufferPushRaw(ctx, mod, builder, ci.buf_addr, val, ci.elem_type, ci.elem_stride);
+}
+
+/// Emits a value-positioned `for`: collects iteration values into a fresh
+/// buffer, then wraps it as `List<T>`.
+pub fn emitForCollect(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    node: *ast.ASTNode,
+) anyerror!llvm.LLVMValueRef {
+    const f = node.data.for_stmt;
+    if (!f.collect) return error.ForStatementAsValue;
+    const trailing = blk: {
+        if (f.body.data != .block) break :blk f.body;
+        const stmts = f.body.data.block.statements;
+        if (stmts.len == 0) return error.ForValueMissingTrailing;
+        break :blk stmts[stmts.len - 1];
+    };
+    const trailing_rt = trailing.resolved_type orelse return error.MissingTypeForForValue;
+    const elem_type = types_mapping.getLLVMTypeWithContracts(ctx, trailing_rt.*, expression.global_contracts_ast_ptr);
+    const elem_stride = expression.arrayElemStride(ctx, elem_type);
+
+    // Fresh collection buffer: size = 0, capacity = 0 (first push grows to 4,
+    // same as `NativeArray.push`). The address lives in an alloca so pushes
+    // can write back the (possibly reallocated) pointer.
+    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const malloc_fn = core.getHeapAllocFn(mod);
+    const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+    var malloc_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
+    const buf_val = llvm.LLVMBuildCall2(builder, malloc_type, malloc_fn, &malloc_args, 1, "for_buf");
+    var zero_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+    const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, buf_val, &zero_idx, 1, "for_buf_size");
+    _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), size_ptr);
+    var one_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
+    const cap_ptr = llvm.LLVMBuildGEP2(builder, i64_type, buf_val, &one_idx, 1, "for_buf_cap");
+    _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), cap_ptr);
+    const buf_addr = llvm.LLVMBuildAlloca(builder, ptr_type, "for_buf_addr");
+    _ = llvm.LLVMBuildStore(builder, buf_val, buf_addr);
+
+    const ci = ForCollect{
+        .buf_addr = buf_addr,
+        .elem_type = elem_type,
+        .elem_stride = elem_stride,
+        .nullable = eiwa_types.isNullable(trailing_rt),
+        .trailing = trailing,
+    };
+    try emitForLoop(ctx, mod, builder, func_val, scope, structs, libs, node, null, ci);
+
+    const final_buf = llvm.LLVMBuildLoad2(builder, ptr_type, buf_addr, "for_buf_final");
+    return expression.wrapBufferAsList(ctx, mod, builder, structs, node.resolved_type, final_buf);
 }

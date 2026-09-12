@@ -92,9 +92,14 @@ pub fn returnStatement(self: *Parser) anyerror!*ASTNode {
     const col = self.previous.column;
     var value: ?*ASTNode = null;
     if (!self.check(.r_brace) and !self.check(.eof)) {
-        value = try self.expression();
+        // Value slot: `return for (...) { ... }`.
+        if (self.match(.kw_for)) {
+            value = try self.forStatement();
+        } else {
+            value = try self.expression();
+        }
     }
-    
+
     return try self.createNodeAt(.{ .return_stmt = .{ .value = value } }, line, col);
 }
 

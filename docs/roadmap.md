@@ -1097,22 +1097,36 @@ Semântica alvo:
 - [ ] **Task 75.9 (limpeza futura):** Não monomorfizar defaults com type params abertos — `= MutableMap()` dentro de `type MutableSet<T>` gera instanciações zumbi (`Node<T, Bool>`, `MapKeys<T, Bool>`, …) que hoje só sobrevivem via strip + default null-safe da Task 75.7. Quando a criação for suprimida/adiada, remover o `typeContainsGenericParam` e o caminho de exceção no `monomorphizeClass`.
 - [x] **Verify:** `for_map_test.ei` verde (13/13) + `collections_test.ei` (16/16) + suíte completa (`eiwac test samples/tests`, 436 PASSED) e `zig build test` verdes sem regressão em `for_lambda_test` / `for_index_test` / `arrays_and_loops_test`.
 ---
-### Phase 76: `for` como expressão (`List<T>`, estilo `.map`) (IN PROGRESS — RED)
-> **Status:** RED. Plano em `docs/plan_phase76_forvalue.md`, decisão em ADR 65,
-> cobertura em `samples/tests/for_value_test.ei` (11 testes, falhando no parse:
-> `return for` ainda é `Expected expression`).
+### Phase 76: `for` como expressão (`List<T>`, estilo `.map`) (COMPLETED)
+> **Status:** GREEN. Plano em `docs/plan_phase76_forvalue.md`, decisão em ADR 65,
+> cobertura em `samples/tests/for_value_test.ei` (11 testes).
 >
-> **Decisões:** sempre `List<T>` (`break v` anexa e encerra); skip por null
-> (corpo `Void` em posição de valor = erro); `if` sem `else` em posição de valor
-> vale `T?` (conserto do `Void` calado — statement continua `Void`); MVP sync +
+> **Semântica:** sempre `List<T>` (`break v` anexa e encerra, `break` bare devolve
+> o prefixo); skip por null (corpo `Void` em posição de valor = erro dedicado);
+> `if` sem `else` em posição de valor vale `T?` (conserto do `Void` calado —
+> statement continua `Void`, regressão zero por construção); MVP sync +
 > `List`/`Array` (Map e `task` = erro explícito).
 >
-> - [x] **Task 76.0 (RED):** plano + ADR 65 + `for_value_test.ei`.
-> - [ ] **Task 76.1:** investigação (slots-valor, `List<T>` do literal, `add`/`freeze` no emissor).
-> - [ ] **Task 76.2:** parser cirúrgico (`for` em init/`return`/RHS) + flags `collect`/`is_value`.
-> - [ ] **Task 76.3:** checker (`T?` no `if`-valor, `List<T>` no `for`-valor, rejeições Map/task).
-> - [ ] **Task 76.4:** emissor (builder + null-skip + `break v` append + `freeze`).
-> - [ ] **Verify:** `for_value_test.ei` verde + suíte completa + `zig build test` sem regressão.
+> **Implementação:**
+> - Parser cirúrgico: `for` em init de `val`/`var`, `return` e RHS (nunca
+>   expressão geral — args, operandos e condições seguem rejeitando).
+> - Checker: `markTrailingValue` (slots-valor locais, sem mudar assinaturas);
+>   `T?` no `if`-valor (achata, Void Safety) + unificação `T/Null` no
+>   `if`/`else`; `List<T>` via `makeListType` (igual ao literal); pós-passe de
+>   `break v`; trailing `Void` estrito (só anotação `Void` explícita escapa).
+> - Emissor: `emitForCollect` (buffer + `emitBufferPushRaw`/`wrapBufferAsList`
+>   extraídos do literal/`push`, trailing avaliado uma vez); `break v` anexa
+>   via `LoopFrame.collect`; `if`-valor sem `else` armazena `null`.
+> - Transform: rejeição uniforme em `task` + guarda no desugar `for→while` +
+>   erro na state machine.
+>
+> - [x] **Task 76.1:** investigação (slots, `List<T>`, push com realloc).
+> - [x] **Task 76.2:** parser + flags `collect`/`is_value` (+ `clone`).
+> - [x] **Task 76.3:** checker + rejeições Map/task.
+> - [x] **Task 76.4:** emissor + extrações compartilhadas.
+> - [x] **Verify:** `for_value_test.ei` 11/11 + suíte completa (**ALL 468 TESTS
+>   PASSED**) e `zig build test` verdes; 4 negativas manuais (Map, task, corpo
+>   `Void`, `break v` incompatível) + `for` aninhado + single-execution.
 ---
 ### Phase 77: analisar feature de dart para adicionar em eiwa
 ---
@@ -1199,8 +1213,6 @@ Semântica alvo:
 > **Notas de investigação:** `{ "a" }` solitário é lambda, não bloco aninhado —
 > `.block` só existe em posições estruturais, então não há caso "bloco trailing
 > aninhado" a tratar (tentativas de recursão checker/emissor revertidas).
----
-### Phase 80: Erro ao passar named param invalido em funcoes
 ---
 
 * [x] **Errors:** Semantic validations fail gracefully, emitting rich terminal errors.

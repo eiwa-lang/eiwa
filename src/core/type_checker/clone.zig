@@ -169,6 +169,7 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
                 .item_name = f.item_name,
                 .iterable = try self.cloneNode(f.iterable),
                 .body = try self.cloneNode(f.body),
+                .collect = f.collect,
             }};
         },
         .ternary_expr => |t| {

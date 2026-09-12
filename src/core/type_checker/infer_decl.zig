@@ -5,6 +5,7 @@ const ast = @import("../ast.zig");
 const parser_mod = @import("../../frontend/parser/core.zig");
 const case_checker = @import("../case_checker.zig");
 const core = @import("core.zig");
+const infer_stmt_mod = @import("infer_stmt.zig");
 
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
@@ -1242,6 +1243,7 @@ pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             init_node.expected_type = d;
             init_node.resolved_type = null;
         }
+        infer_stmt_mod.markTrailingValue(init_node, true);
         inferred = try self.inferNode(init_node, scope);
     }
 

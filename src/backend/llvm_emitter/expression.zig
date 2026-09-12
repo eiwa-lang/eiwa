@@ -990,55 +990,7 @@ pub fn emitExpression(
             // `List<T>` struct (`type List<T>(val items: NativeArray<T>)`),
             // If the literal is expected/resolved as a List wrapper (type List<T>(val items: NativeArray<T>)),
             // allocate the List struct and store the raw array buffer into its `.items` field.
-            const target_rt = node.resolved_type orelse node.expected_type;
-            if (target_rt) |rt| {
-                const base_rt = ts.extractBaseType(rt);
-                if (base_rt.* != .Array) {
-                    var mangled_buf: [128]u8 = undefined;
-                    var type_name: ?[]const u8 = null;
-                    var dyn_buf: ?[]u8 = null;
-                    defer if (dyn_buf) |b| std.heap.page_allocator.free(b);
-
-                    switch (base_rt.*) {
-                        .Custom => |cn| type_name = cn,
-                        .GenericInstance => {
-                            var buf = compat.ArrayList(u8).init(std.heap.page_allocator);
-                            defer buf.deinit();
-                            base_rt.formatSafe(buf.writer()) catch {};
-                            if (buf.items.len > 0) {
-                                dyn_buf = buf.toOwnedSlice() catch null;
-                                if (dyn_buf) |d| type_name = d;
-                            }
-                        },
-                        else => {},
-                    }
-
-                    const is_list = if (type_name) |tn| (std.mem.indexOf(u8, tn, "List") != null) else false;
-                    if (is_list) {
-                        const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
-                        const s_type = blk: {
-                            if (type_name) |tn| {
-                                if (structs.get(tn)) |si| break :blk si.struct_type;
-                                if (std.fmt.bufPrint(&mangled_buf, "collections_{s}", .{tn})) |pref| {
-                                    if (structs.get(pref)) |si| break :blk si.struct_type;
-                                } else |_| {}
-                            }
-                            var fields = [_]llvm.LLVMTypeRef{ptr_t};
-                            break :blk llvm.LLVMStructTypeInContext(ctx, &fields, 1, 0);
-                        };
-
-                        const malloc_fn2 = core.getHeapAllocFn(mod);
-                        const malloc_type2 = llvm.LLVMGlobalGetValueType(malloc_fn2);
-                        var size_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
-                        const struct_ptr = llvm.LLVMBuildCall2(builder, malloc_type2, malloc_fn2, &size_args, 1, "list_alloc");
-                        const items_ptr = llvm.LLVMBuildStructGEP2(builder, s_type, struct_ptr, 0, "items");
-                        _ = llvm.LLVMBuildStore(builder, arr_ptr, items_ptr);
-                        return struct_ptr;
-                    }
-                }
-            }
-
-            return arr_ptr;
+            return wrapBufferAsList(ctx, mod, builder, structs, node.resolved_type orelse node.expected_type, arr_ptr);
         },
         .index_expr => |idx_expr| {
             var arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, idx_expr.object);
@@ -3463,7 +3415,8 @@ pub fn emitExpression(
             }
 
             const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "expr_if.then");
-            const else_bb = if (i.else_branch != null) llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "expr_if.else") else null;
+            // Value `if` without `else` needs a false block storing `null`.
+            const else_bb = if (i.else_branch != null or !is_void) llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "expr_if.else") else null;
             const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "expr_if.merge");
 
             const res_ptr: llvm.LLVMValueRef = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "expr_if_res") else null;
@@ -3486,6 +3439,9 @@ pub fn emitExpression(
             } else {
                 if (else_bb) |eb| {
                     llvm.LLVMPositionBuilderAtEnd(builder, eb);
+                    if (!is_void) {
+                        _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ret_type), res_ptr.?);
+                    }
                     if (llvm.LLVMGetBasicBlockTerminator(eb) == null) {
                         _ = llvm.LLVMBuildBr(builder, merge_bb);
                     }
@@ -4170,6 +4126,19 @@ pub fn emitExpression(
                 return llvm.LLVMBuildExtractValue(builder, val, 0, "fat_data");
             }
             return val;
+        },
+        .for_stmt => |f| {
+            // A collecting `for` builds a List; a statement one runs for
+            // effects with a dummy value.
+            if (f.collect) {
+                const cur_bb = llvm.LLVMGetInsertBlock(builder);
+                const func_val = llvm.LLVMGetBasicBlockParent(cur_bb);
+                return try statement.emitForCollect(ctx, mod, builder, func_val, scope, structs, libs, node);
+            }
+            const cur_bb = llvm.LLVMGetInsertBlock(builder);
+            const func_val = llvm.LLVMGetBasicBlockParent(cur_bb);
+            try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, node, null);
+            return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
         },
         else => {
             if (core.verbose) std.debug.print("LLVM Debug: unsupported expression node type {any}\n", .{node.data});
@@ -5392,6 +5361,68 @@ fn emitArrayLvalue(
     }
 }
 
+/// Wraps a raw array buffer in its monomorphized `List<T>` struct
+/// (`type List<T>(val items: NativeArray<T>)`): allocates the List struct and
+/// stores the buffer into `.items`. Non-List targets (raw `.Array`) return
+/// the buffer unchanged. Shared by array literals and `for`-collection.
+pub fn wrapBufferAsList(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    structs: *std.StringHashMap(core.StructInfo),
+    list_rt: ?*const ts.EiwaType,
+    arr_ptr: llvm.LLVMValueRef,
+) llvm.LLVMValueRef {
+    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+    if (list_rt) |rt| {
+        const base_rt = ts.extractBaseType(rt);
+        if (base_rt.* != .Array) {
+            var mangled_buf: [128]u8 = undefined;
+            var type_name: ?[]const u8 = null;
+            var dyn_buf: ?[]u8 = null;
+            defer if (dyn_buf) |b| std.heap.page_allocator.free(b);
+
+            switch (base_rt.*) {
+                .Custom => |cn| type_name = cn,
+                .GenericInstance => {
+                    var buf = compat.ArrayList(u8).init(std.heap.page_allocator);
+                    defer buf.deinit();
+                    base_rt.formatSafe(buf.writer()) catch {};
+                    if (buf.items.len > 0) {
+                        dyn_buf = buf.toOwnedSlice() catch null;
+                        if (dyn_buf) |d| type_name = d;
+                    }
+                },
+                else => {},
+            }
+
+            const is_list = if (type_name) |tn| (std.mem.indexOf(u8, tn, "List") != null) else false;
+            if (is_list) {
+                const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+                const s_type = blk: {
+                    if (type_name) |tn| {
+                        if (structs.get(tn)) |si| break :blk si.struct_type;
+                        if (std.fmt.bufPrint(&mangled_buf, "collections_{s}", .{tn})) |pref| {
+                            if (structs.get(pref)) |si| break :blk si.struct_type;
+                        } else |_| {}
+                    }
+                    var fields = [_]llvm.LLVMTypeRef{ptr_t};
+                    break :blk llvm.LLVMStructTypeInContext(ctx, &fields, 1, 0);
+                };
+
+                const malloc_fn2 = core.getHeapAllocFn(mod);
+                const malloc_type2 = llvm.LLVMGlobalGetValueType(malloc_fn2);
+                var size_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
+                const struct_ptr = llvm.LLVMBuildCall2(builder, malloc_type2, malloc_fn2, &size_args, 1, "list_alloc");
+                const items_ptr = llvm.LLVMBuildStructGEP2(builder, s_type, struct_ptr, 0, "items");
+                _ = llvm.LLVMBuildStore(builder, arr_ptr, items_ptr);
+                return struct_ptr;
+            }
+        }
+    }
+    return arr_ptr;
+}
+
 /// Emits `arr.push(val)` on the raw buffer layout (slot 0 = size,
 /// slot 1 = capacity, slots 2.. = elements), growing via the active heap
 /// reallocator (GC_realloc when prefer_gc_alloc — matching the C backend's
@@ -5407,14 +5438,29 @@ fn emitNativeArrayPush(
     object_node: *ast.ASTNode,
     value_node: *ast.ASTNode,
 ) anyerror!llvm.LLVMValueRef {
-    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
     const elem_type = arrayElemLLVMType(ctx, object_node.resolved_type);
     const elem_stride = arrayElemStride(ctx, elem_type);
 
     const arr_addr = try emitArrayLvalue(ctx, mod, builder, scope, structs, libs, object_node);
-    const arr_val = llvm.LLVMBuildLoad2(builder, ptr_type, arr_addr, "arr_buf");
     const val = try emitExpression(ctx, mod, builder, scope, structs, libs, value_node);
+    return try emitBufferPushRaw(ctx, mod, builder, arr_addr, val, elem_type, elem_stride);
+}
+
+/// Pushes `val` onto a raw array buffer (slot 0 = size, slot 1 = capacity),
+/// growing via the active heap reallocator. Shared by `NativeArray.push`
+/// lowering and `for`-collection (whose buffer has no AST lvalue).
+pub fn emitBufferPushRaw(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    arr_addr: llvm.LLVMValueRef,
+    val: llvm.LLVMValueRef,
+    elem_type: llvm.LLVMTypeRef,
+    elem_stride: i64,
+) anyerror!llvm.LLVMValueRef {
+    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const arr_val = llvm.LLVMBuildLoad2(builder, ptr_type, arr_addr, "arr_buf");
 
     var idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
     const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &idx0, 1, "size_ptr");

@@ -164,7 +164,12 @@ pub fn varDeclaration(self: *Parser, is_mut: bool) anyerror!*ASTNode {
 
     var initializer: ?*ASTNode = null;
     if (self.match(.eq)) {
-        initializer = try self.expression();
+        // Value slot: `val xs = for (...) { ... }` (never a general expression).
+        if (self.match(.kw_for)) {
+            initializer = try self.forStatement();
+        } else {
+            initializer = try self.expression();
+        }
     }
 
     return try self.createNodeAt(.{ .var_decl = .{

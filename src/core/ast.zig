@@ -306,6 +306,8 @@ pub const ASTNodeType = union(enum) {
         condition: *ASTNode,
         then_branch: *ASTNode,
         else_branch: ?*ASTNode,
+        /// True when the `if` is used as a value (no-`else` types as `T?`).
+        is_value: bool = false,
     },
     index_expr: struct {
         object: *ASTNode,
@@ -353,6 +355,8 @@ pub const ASTNodeType = union(enum) {
         item_name: []const u8,
         iterable: *ASTNode,
         body: *ASTNode,
+        /// True when the `for` is used as a value and collects a `List<T>`.
+        collect: bool = false,
     },
     return_stmt: struct {
         value: ?*ASTNode,
@@ -389,6 +393,8 @@ pub const ASTNodeType = union(enum) {
     when_expr: struct {
         subject: ?*ASTNode,
         cases: []const WhenCase,
+        /// True when the `when` is used as a value.
+        is_value: bool = false,
     },
     lambda_expr: struct {
         params: []const Param,

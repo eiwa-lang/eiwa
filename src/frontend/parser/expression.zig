@@ -16,8 +16,10 @@ pub fn assignment(self: *Parser) anyerror!*ASTNode {
     if (self.match(.eq)) {
         const line = self.previous.line;
         const col = self.previous.column;
-        
-        const value = try self.assignment();
+
+        // Value slot only: `x = for (...) { ... }` (`for` stays out of
+        // general expressions: call args, operands, conditions).
+        const value = if (self.match(.kw_for)) try self.forStatement() else try self.assignment();
 
         if (expr.data == .identifier) {
             const name = expr.data.identifier.name;
