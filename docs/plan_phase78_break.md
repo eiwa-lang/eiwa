@@ -106,8 +106,13 @@ Regras:
 - `return` em lambda: sem mudança (erro ADR 53).
 
 ### 3.5 Emissor LLVM (`statement.zig`)
-- Pilha de loop por função: ao emitir `while_stmt`/`for_stmt`, empilha
-  `{ after_bb }`; desempilha ao sair.
+- Pilha de loop por função (`LoopStack` em `statement.zig`, cf. Clang
+  `BreakContinueStack` / Swift `BreakContinueDestStack` / Go `breakTo`):
+  ao emitir `while_stmt`/`for_stmt`, empilha `{ func, after_bb }` com `defer`
+  pop; lookup pelo `func_val` separa lambdas (funções LLVM próprias).
+  Armazenamento small-vector (8 inline + spill, zero alloc no comum, sem
+  limite mágico); emissão single-thread, sem threading por parâmetro para não
+  arrastar `emitExpression` (expression-zones 2021/4075/5536) para uma cascata.
   - `break` bare → `br after_bb`.
   - `break v` em loop (statement) → avalia `v` e **descarta** (emite expressão,
     ignora valor), depois `br after_bb` (comportamento Kotlin de statement;

@@ -277,6 +277,9 @@ fn walkChildren(node: *ASTNode, registry: *ModuleRegistry, global_functions: *st
         .return_stmt => |r| {
             if (r.value) |v| walkForSuspend(v, registry, global_functions, suspend_set, vis, found);
         },
+        .break_stmt => |b| {
+            if (b.value) |v| walkForSuspend(v, registry, global_functions, suspend_set, vis, found);
+        },
         .as_expr => |a| walkForSuspend(a.value, registry, global_functions, suspend_set, vis, found),
         .is_expr => |i| walkForSuspend(i.value, registry, global_functions, suspend_set, vis, found),
         .try_stmt => |t| {
@@ -389,6 +392,9 @@ fn markWalk(node: *ASTNode, registry: *ModuleRegistry, global_functions: *std.St
         },
         .return_stmt => |r| {
             if (r.value) |v| try markWalk(v, registry, global_functions, suspend_set, vis);
+        },
+        .break_stmt => |b| {
+            if (b.value) |v| try markWalk(v, registry, global_functions, suspend_set, vis);
         },
         .as_expr => |a| try markWalk(a.value, registry, global_functions, suspend_set, vis),
         .is_expr => |i| try markWalk(i.value, registry, global_functions, suspend_set, vis),

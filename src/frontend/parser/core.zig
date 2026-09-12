@@ -60,6 +60,7 @@ pub const Parser = struct {
     pub const whileStatement = statement_mod.whileStatement;
     pub const forStatement = statement_mod.forStatement;
     pub const returnStatement = statement_mod.returnStatement;
+    pub const breakStatement = statement_mod.breakStatement;
     pub const tryStatement = statement_mod.tryStatement;
     pub const throwStatement = statement_mod.throwStatement;
 

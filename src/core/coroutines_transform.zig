@@ -237,6 +237,7 @@ fn hasTaskOrAwait(node: *ASTNode) bool {
         .while_stmt => |w| return hasTaskOrAwait(w.condition) or hasTaskOrAwait(w.body),
         .for_stmt => |f| return hasTaskOrAwait(f.iterable) or hasTaskOrAwait(f.body),
         .return_stmt => |r| return if (r.value) |v| hasTaskOrAwait(v) else false,
+        .break_stmt => |b| return if (b.value) |v| hasTaskOrAwait(v) else false,
         .assignment => |a| return hasTaskOrAwait(a.value),
         .index_expr => |i| return hasTaskOrAwait(i.object) or hasTaskOrAwait(i.index),
         .index_set_expr => |i| return hasTaskOrAwait(i.object) or hasTaskOrAwait(i.index) or hasTaskOrAwait(i.value),
@@ -405,6 +406,22 @@ fn rewriteStatement(
                     try out.appendSlice(gen);
                     return true;
                 }
+                if (containsAwait(val)) {
+                    var preamble = ArrayList(*ASTNode).init(allocator);
+                    defer preamble.deinit();
+                    if (try hoistAwaitsFromExpr(allocator, checker, val, counter, &preamble)) {
+                        try rewritePreamble(allocator, checker, &preamble, counter, generated, out, coop);
+                        try out.append(stmt);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        },
+        .break_stmt => |b| {
+            // Hoist awaits out of the break value; the state machine itself
+            // still rejects `break` below.
+            if (b.value) |val| {
                 if (containsAwait(val)) {
                     var preamble = ArrayList(*ASTNode).init(allocator);
                     defer preamble.deinit();
@@ -625,6 +642,7 @@ fn containsAwait(node: *ASTNode) bool {
         .while_stmt => |w| return containsAwait(w.condition) or containsAwait(w.body),
         .for_stmt => |f| return containsAwait(f.iterable) or containsAwait(f.body),
         .return_stmt => |r| return if (r.value) |v| containsAwait(v) else false,
+        .break_stmt => |b| return if (b.value) |v| containsAwait(v) else false,
         .assignment => |a| return containsAwait(a.value),
         .index_expr => |i| return containsAwait(i.object) or containsAwait(i.index),
         .index_set_expr => |i| return containsAwait(i.object) or containsAwait(i.index) or containsAwait(i.value),
@@ -762,6 +780,7 @@ fn collectLocalDecls(allocator: std.mem.Allocator, node: *ASTNode, locals: *std.
             }
         },
         .return_stmt => |r| if (r.value) |v| try collectLocalDecls(allocator, v, locals),
+        .break_stmt => |b| if (b.value) |v| try collectLocalDecls(allocator, v, locals),
         .index_expr => |i| {
             try collectLocalDecls(allocator, i.object, locals);
             try collectLocalDecls(allocator, i.index, locals);
@@ -853,6 +872,7 @@ fn collectFreeIdents(
             try collectFreeIdents(allocator, checker, f.body, locals, captures);
         },
         .return_stmt => |r| if (r.value) |v| try collectFreeIdents(allocator, checker, v, locals, captures),
+        .break_stmt => |b| if (b.value) |v| try collectFreeIdents(allocator, checker, v, locals, captures),
         .try_stmt => |t| {
             try collectFreeIdents(allocator, checker, t.body, locals, captures);
             for (t.catches) |cb| {
@@ -1021,6 +1041,7 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
             try rewriteCapturedRefs(allocator, captures, f.body);
         },
         .return_stmt => |r| if (r.value) |v| try rewriteCapturedRefs(allocator, captures, v),
+        .break_stmt => |b| if (b.value) |v| try rewriteCapturedRefs(allocator, captures, v),
         .try_stmt => |t| {
             try rewriteCapturedRefs(allocator, captures, t.body);
             for (t.catches) |cb| {
@@ -1485,6 +1506,7 @@ fn containsTrueSuspend(node: *ASTNode) bool {
         .while_stmt => |w| return containsTrueSuspend(w.condition) or containsTrueSuspend(w.body),
         .for_stmt => |f| return containsTrueSuspend(f.iterable) or containsTrueSuspend(f.body),
         .return_stmt => |r| return if (r.value) |v| containsTrueSuspend(v) else false,
+        .break_stmt => |b| return if (b.value) |v| containsTrueSuspend(v) else false,
         .assignment => |a| return containsTrueSuspend(a.value),
         .index_expr => |i| return containsTrueSuspend(i.object) or containsTrueSuspend(i.index),
         .index_set_expr => |i| return containsTrueSuspend(i.object) or containsTrueSuspend(i.index) or containsTrueSuspend(i.value),
@@ -1639,6 +1661,7 @@ fn collectLocalVars(
             try collectLocalVars(allocator, f.body, seen, out);
         },
         .return_stmt => |r| if (r.value) |v| try collectLocalVars(allocator, v, seen, out),
+        .break_stmt => |b| if (b.value) |v| try collectLocalVars(allocator, v, seen, out),
         .assignment => |a| try collectLocalVars(allocator, a.value, seen, out),
         .binary_expr => |b| {
             try collectLocalVars(allocator, b.left, seen, out);
@@ -1796,6 +1819,7 @@ fn collectNewLocals(
             try collectNewLocals(allocator, f.body, promoted_names, out);
         },
         .return_stmt => |r| if (r.value) |v| try collectNewLocals(allocator, v, promoted_names, out),
+        .break_stmt => |b| if (b.value) |v| try collectNewLocals(allocator, v, promoted_names, out),
         .assignment => |a| try collectNewLocals(allocator, a.value, promoted_names, out),
         .binary_expr => |b| {
             try collectNewLocals(allocator, b.left, promoted_names, out);
@@ -2011,6 +2035,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
             try rewritePromotedRefs(allocator, promoted, f.body);
         },
         .return_stmt => |r| if (r.value) |v| try rewritePromotedRefs(allocator, promoted, v),
+        .break_stmt => |b| if (b.value) |v| try rewritePromotedRefs(allocator, promoted, v),
         .try_stmt => |t| {
             try rewritePromotedRefs(allocator, promoted, t.body);
             for (t.catches) |cb| {
@@ -2139,6 +2164,10 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
             return entry;
         },
         .block => |b| return machineBuildStmts(m, b.statements, after),
+        .break_stmt => {
+            // Sync-only: `break` never lowers into a state machine.
+            return error.BreakInSuspendContext;
+        },
         .try_stmt => return machineBuildTryStmt(m, stmt, after),
         else => {
             // Cooperative await marker: `val x = __CoopAwait(<recv>)`.
@@ -2157,6 +2186,7 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
 fn isStateSuspendOrReturn(node: *ASTNode) bool {
     switch (node.data) {
         .return_stmt => return true,
+        .break_stmt => return true,
         .call_expr => |c| {
             if (c.callee.data == .get_expr) {
                 const g = c.callee.data.get_expr;
@@ -2413,6 +2443,36 @@ fn buildResumeStateMachine(
 // ---------------------------------------------------------------------------
 
 /// `val t = task { block }` -> machinery + `val t = __taskN`.
+/// Finds a `break` lexically inside a task block. Stops at nested
+/// lambda/task boundaries, whose breaks belong to those constructs.
+fn taskNodeHasBreak(node: *ASTNode) ?*ASTNode {
+    switch (node.data) {
+        .break_stmt => return node,
+        .lambda_expr, .fun_decl => return null,
+        .block => |b| {
+            for (b.statements) |s| if (taskNodeHasBreak(s)) |brk| return brk;
+            return null;
+        },
+        .if_expr => |i| {
+            if (taskNodeHasBreak(i.then_branch)) |brk| return brk;
+            if (i.else_branch) |e| if (taskNodeHasBreak(e)) |brk| return brk;
+            return null;
+        },
+        .while_stmt => |w| return taskNodeHasBreak(w.body),
+        .for_stmt => |f| return taskNodeHasBreak(f.body),
+        .try_stmt => |t| {
+            if (taskNodeHasBreak(t.body)) |brk| return brk;
+            for (t.catches) |c| if (taskNodeHasBreak(c.body)) |brk| return brk;
+            return null;
+        },
+        .when_expr => |w| {
+            for (w.cases) |c| if (taskNodeHasBreak(c.body)) |brk| return brk;
+            return null;
+        },
+        else => return null,
+    }
+}
+
 /// Returns the sequence: `val __taskN = StackTask<T>(false, null, null)`,
 /// `Scheduler.schedule(__TaskBlockN(__taskN, <captured...>))`, `val t = __taskN`.
 fn rewriteTaskCall(
@@ -2429,6 +2489,16 @@ fn rewriteTaskCall(
     const lambda = if (has_disp) task_call.data.call_expr.arguments[1] else task_call.data.call_expr.arguments[0];
     if (lambda.data != .lambda_expr) return error.InvalidTaskCall;
     const body = lambda.data.lambda_expr.body;
+
+    // Reject in every task block uniformly, even without suspension points
+    // (accepting it there would break the build as soon as a `sleep` lands
+    // elsewhere in the same task).
+    for (body) |bstmt| {
+        if (taskNodeHasBreak(bstmt)) |brk| {
+            checker.reportError(brk.line, brk.column, "TypeError: 'break' is not supported inside task blocks (synchronous code only).", .{});
+            return error.TypeError;
+        }
+    }
 
     const captures = try collectCaptures(allocator, checker, body);
     const result_type = blockReturnType(body);
@@ -3177,6 +3247,7 @@ fn clearResolvedTypes(allocator: std.mem.Allocator, node: *ASTNode) !void {
             try clearResolvedTypes(allocator, f.body);
         },
         .return_stmt => |r| if (r.value) |v| try clearResolvedTypes(allocator, v),
+        .break_stmt => |b| if (b.value) |v| try clearResolvedTypes(allocator, v),
         .assignment => |a| try clearResolvedTypes(allocator, a.value),
         .try_stmt => |t| {
             try clearResolvedTypes(allocator, t.body);

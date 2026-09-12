@@ -98,6 +98,17 @@ pub fn returnStatement(self: *Parser) anyerror!*ASTNode {
     return try self.createNodeAt(.{ .return_stmt = .{ .value = value } }, line, col);
 }
 
+pub fn breakStatement(self: *Parser) anyerror!*ASTNode {
+    const line = self.previous.line;
+    const col = self.previous.column;
+    var value: ?*ASTNode = null;
+    if (!self.check(.r_brace) and !self.check(.eof)) {
+        value = try self.expression();
+    }
+
+    return try self.createNodeAt(.{ .break_stmt = .{ .value = value } }, line, col);
+}
+
 pub fn throwStatement(self: *Parser) anyerror!*ASTNode {
     const line = self.previous.line;
     const col = self.previous.column;

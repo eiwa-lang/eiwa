@@ -55,6 +55,7 @@ pub fn declaration(self: *Parser) anyerror!*ASTNode {
     if (self.match(.kw_while)) return try self.whileStatement();
     if (self.match(.kw_for)) return try self.forStatement();
     if (self.match(.kw_return)) return try self.returnStatement();
+    if (self.match(.kw_break)) return try self.breakStatement();
     if (self.match(.kw_try)) return try self.tryStatement();
     if (self.match(.kw_throw)) return try self.throwStatement();
     return try self.expression();

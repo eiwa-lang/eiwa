@@ -104,6 +104,7 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, text, "if")) return .kw_if;
         if (std.mem.eql(u8, text, "else")) return .kw_else;
         if (std.mem.eql(u8, text, "return")) return .kw_return;
+        if (std.mem.eql(u8, text, "break")) return .kw_break;
         if (std.mem.eql(u8, text, "while")) return .kw_while;
         if (std.mem.eql(u8, text, "for")) return .kw_for;
         if (std.mem.eql(u8, text, "in")) return .kw_in;

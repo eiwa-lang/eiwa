@@ -1101,7 +1101,38 @@ Semântica alvo:
 ---
 ### Phase 77: analisar feature de dart para adicionar em eiwa
 ---
-### Phase 78: retorno antecipado em lambdas e loopings (break vs return ou outro termo?) analisar swift e outra linguagens
+### Phase 78: Saída antecipada com `break` / `break v` (COMPLETED)
+> **Status:** GREEN. `break` bare sai do `while`/`for` mais interno; `break v`
+> sai da lambda com valor (substituto do `return` proibido pelo ADR 53);
+> `break v` em loop-statement é checado e descartado (ponte para o `for` com
+> valor da Phase 76). Só síncrono: `break` em `task {}` = erro. Sem `continue`
+> (decisão de escopo: `if`/`else` cobre o caso).
+>
+> **Semântica:**
+> - `break` bare só em `while`/`for` (mais interno; sem labels nesta fase);
+>   fora de loop/lambda = `TypeError`.
+> - `break v` em lambda: valor compatível com o retorno inferido/esperado
+>   (checagem no fim da inferência); `break` bare em lambda exige lambda `Void`.
+> - `break` em `task {}` = `TypeError` uniforme, mesmo sem pontos de suspensão
+>   (aceitar ali quebraria ao adicionar um `sleep` depois).
+> - `return` em lambda continua proibido (ADR 53, sem mudança).
+>
+> **Implementação:**
+> - Lexer `kw_break`, AST `break_stmt{value, is_lambda_break}`, parser
+>   (`breakStatement`, mesmo padrão do `returnStatement`).
+> - Checker: flag `is_loop_boundary` no `Scope` (innermost wins em
+>   `inferBreakStmt`); `checkLambdaBreaks` no fim da lambda; desugar `for-map`
+>   ganha flag `__brk` (`{__brk = true; break}` + `&& !__brk` no bucket-walk,
+>   pois o `br` do emissor só sairia do `while` interno da cadeia).
+> - Emissor LLVM: pilha de `after_bb` por função (global, com chave no
+>   `func_val`); `break v` em lambda baixa como `ret` via helper compartilhado
+>   com `return`; transform rejeita `break` em task (`BreakInSuspendContext`) e
+>   no choke point `rewriteTaskCall` (erro uniforme com mensagem dedicada).
+
+- [x] **Task 78.1:** `break` bare em `while`/`for` (+ `it`, índice, aninhados, Map).
+- [x] **Task 78.2:** `break v` em lambda (+ trailing-expression intacto, `break v` descartado em loop).
+- [x] **Task 78.3:** Negativas: break fora de loop, break em task, `break v` incompatível, `return` em lambda (regressão ADR 53).
+- [x] **Verify:** `break_test.ei` 9/9 + suíte completa (`./bin/eiwac test samples/tests` → **ALL 457 TESTS PASSED**) e `zig build test` verdes, sem regressão.
 ---
 ### Phase 79: if com blocos retorna valor (estilo Kotlin)
 > **Status:** GREEN (2026-09-11). `val x = if (c) { v1 } else { v2 }` retorna a

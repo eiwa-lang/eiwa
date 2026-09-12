@@ -79,8 +79,59 @@ pub fn inferWhileStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         self.reportError(node.line, node.column, "TypeError: while condition must be Bool, found {}.", .{cond_type.*});
         return error.TypeError;
     }
-    _ = try self.inferNode(w.body, scope);
+    var loop_scope = Scope.init(self.allocator, scope);
+    loop_scope.is_loop_boundary = true;
+    defer loop_scope.deinit();
+    _ = try self.inferNode(w.body, &loop_scope);
     t.* = .Void;
+}
+
+pub fn inferBreakStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
+    // The innermost loop/lambda/function boundary wins (Rust-style).
+    var curr: ?*const Scope = scope;
+    var in_loop = false;
+    var in_lambda = false;
+    while (curr) |s| {
+        if (s.is_loop_boundary) {
+            in_loop = true;
+            break;
+        }
+        if (s.is_lambda_boundary) {
+            in_lambda = true;
+            break;
+        }
+        if (s.is_function_boundary) {
+            break;
+        }
+        curr = s.parent;
+    }
+    const b = node.data.break_stmt;
+    if (in_loop) {
+        // Loop target: a value is checked and discarded here (Phase 76
+        // consumes it as the `for` result); bare break is just Void.
+        if (b.value) |v| {
+            _ = try self.inferNode(v, scope);
+        }
+        t.* = .Void;
+        return;
+    }
+    if (in_lambda) {
+        // Lambda target: local exit with an optional value (the `return`
+        // forbidden by ADR 53). Compatibility with the lambda return type is
+        // checked at the end of lambda inference (only flagged nodes).
+        var nb = b;
+        nb.is_lambda_break = true;
+        node.data.break_stmt = nb;
+        if (b.value) |v| {
+            const vt = try self.inferNode(v, scope);
+            t.* = vt.*;
+            return;
+        }
+        t.* = .Void;
+        return;
+    }
+    self.reportError(node.line, node.column, "TypeError: 'break' is only allowed inside a loop or lambda.", .{});
+    return error.TypeError;
 }
 
 pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
@@ -131,8 +182,9 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
     
     var for_scope = Scope.init(self.allocator, scope);
+    for_scope.is_loop_boundary = true;
     defer for_scope.deinit();
-    
+
     if (f.index_name) |idx_name| {
         const int_type = try self.allocator.create(EiwaType);
         int_type.* = .Int;
@@ -182,6 +234,69 @@ fn mkDesugarGet(self: *TypeChecker, line: usize, col: usize, object: *ASTNode, n
     return try mkDesugarNode(self, line, col, .{ .get_expr = .{ .object = object, .name = name, .is_safe = false } });
 }
 
+/// True when a `for` body has a `break` targeting the `for` itself.
+/// Stops at nested loop/lambda/function boundaries.
+fn mapForBodyHasBreak(node: *ASTNode) bool {
+    switch (node.data) {
+        .block => |b| {
+            for (b.statements) |s| if (mapForBodyHasBreak(s)) return true;
+            return false;
+        },
+        .if_expr => |i| {
+            if (mapForBodyHasBreak(i.then_branch)) return true;
+            if (i.else_branch) |e| return mapForBodyHasBreak(e);
+            return false;
+        },
+        .try_stmt => |ts| {
+            if (mapForBodyHasBreak(ts.body)) return true;
+            for (ts.catches) |c| if (mapForBodyHasBreak(c.body)) return true;
+            return false;
+        },
+        .when_expr => |w| {
+            for (w.cases) |c| if (mapForBodyHasBreak(c.body)) return true;
+            return false;
+        },
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => return false,
+        .break_stmt => return true,
+        else => return false,
+    }
+}
+
+/// Rewrites every `for`-targeting `break` into `{ __brk = true; break }`.
+/// Without the flag, the emitter's `br` would only leave the inner
+/// chain-walk `while`, and the outer bucket-walk `while` would continue.
+fn wrapMapForBreaks(allocator: std.mem.Allocator, node: *ASTNode, brk_name: []const u8) anyerror!void {
+    switch (node.data) {
+        .block => |b| {
+            for (b.statements) |s| try wrapMapForBreaks(allocator, s, brk_name);
+        },
+        .if_expr => |i| {
+            try wrapMapForBreaks(allocator, i.then_branch, brk_name);
+            if (i.else_branch) |e| try wrapMapForBreaks(allocator, e, brk_name);
+        },
+        .try_stmt => |ts| {
+            try wrapMapForBreaks(allocator, ts.body, brk_name);
+            for (ts.catches) |c| try wrapMapForBreaks(allocator, c.body, brk_name);
+        },
+        .when_expr => |w| {
+            for (w.cases) |c| try wrapMapForBreaks(allocator, c.body, brk_name);
+        },
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
+        .break_stmt => |b| {
+            const set_flag = try allocator.create(ASTNode);
+            set_flag.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .assignment = .{ .name = brk_name, .value = try allocator.create(ASTNode) } } };
+            set_flag.data.assignment.value.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .bool_literal = true } };
+            const new_brk = try allocator.create(ASTNode);
+            new_brk.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .break_stmt = .{ .value = b.value, .is_lambda_break = b.is_lambda_break } } };
+            var stmts = try allocator.alloc(*ASTNode, 2);
+            stmts[0] = set_flag;
+            stmts[1] = new_brk;
+            node.data = .{ .block = .{ .statements = stmts } };
+        },
+        else => {},
+    }
+}
+
 /// Desugars `for (map)` / `for (map.keys())` / `for (map.values())` into a
 /// zero-allocation nested `while` walk over the hash buckets, mirroring the
 /// bucket walk in `Set.mut` (`src/std/collections.ei`)
@@ -215,6 +330,13 @@ fn desugarMapFor(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType
     if (f.index_name != null) {
         const zero_i = try mkDesugarNode(self, line, col, .{ .int_literal = 0 });
         var_i = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = i_name, .type_ref = null, .initializer = zero_i } });
+    }
+
+    // Early-exit flag so `break` also leaves the outer bucket-walk `while`.
+    var brk_name: ?[]const u8 = null;
+    if (mapForBodyHasBreak(f.body)) {
+        brk_name = try std.fmt.allocPrint(self.allocator, "__for_map_{d}_{d}_brk", .{ line, col });
+        try wrapMapForBreaks(self.allocator, f.body, brk_name.?);
     }
 
     // var __curr = __buckets[__b]
@@ -285,17 +407,28 @@ fn desugarMapFor(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType
     try outer_body_list.append(incr_b);
     const outer_body = try mkDesugarNode(self, line, col, .{ .block = .{ .statements = try outer_body_list.toOwnedSlice() } });
 
-    // while (__b < __buckets.length) { ... }
+    // while (__b < __buckets.length [&& !__brk]) { ... }
     const b_ident_cond = try mkDesugarIdent(self, line, col, b_name);
     const buckets_ident_len = try mkDesugarIdent(self, line, col, buckets_name);
     const get_len = try mkDesugarGet(self, line, col, buckets_ident_len, "length");
-    const outer_cond = try mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = b_ident_cond, .op = .less, .right = get_len } });
+    const len_cond = try mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = b_ident_cond, .op = .less, .right = get_len } });
+    var outer_cond: *ASTNode = len_cond;
+    if (brk_name) |bn| {
+        const brk_ident = try mkDesugarIdent(self, line, col, bn);
+        const not_brk = try mkDesugarNode(self, line, col, .{ .unary_expr = .{ .operator = .bang, .operand = brk_ident } });
+        outer_cond = try mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = len_cond, .op = .and_and, .right = not_brk } });
+    }
     const outer_while = try mkDesugarNode(self, line, col, .{ .while_stmt = .{ .condition = outer_cond, .body = outer_body } });
 
     var outer = ArrayList(*ASTNode).init(self.allocator);
     try outer.append(val_buckets);
     try outer.append(var_b);
     if (var_i) |vi| try outer.append(vi);
+    if (brk_name) |bn| {
+        const false_lit = try mkDesugarNode(self, line, col, .{ .bool_literal = false });
+        const var_brk = try mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = bn, .type_ref = null, .initializer = false_lit } });
+        try outer.append(var_brk);
+    }
     try outer.append(outer_while);
     const stmts = try outer.toOwnedSlice();
 
@@ -330,6 +463,50 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         return;
     }
     t.* = .Void;
+}
+
+/// Verifies lambda-targeting `break`s against the lambda return type:
+/// valued breaks must be compatible, bare breaks require a `Void` lambda.
+pub fn checkLambdaBreaks(self: *TypeChecker, stmts: []const *ASTNode, body_type: *const EiwaType) anyerror!void {
+    for (stmts) |stmt| {
+        try checkLambdaBreakNode(self, stmt, body_type);
+    }
+}
+
+fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const EiwaType) anyerror!void {
+    switch (node.data) {
+        .block => |b| {
+            for (b.statements) |s| try checkLambdaBreakNode(self, s, body_type);
+        },
+        .if_expr => |i| {
+            try checkLambdaBreakNode(self, i.then_branch, body_type);
+            if (i.else_branch) |e| try checkLambdaBreakNode(self, e, body_type);
+        },
+        .try_stmt => |ts| {
+            try checkLambdaBreakNode(self, ts.body, body_type);
+            for (ts.catches) |c| try checkLambdaBreakNode(self, c.body, body_type);
+        },
+        .when_expr => |w| {
+            for (w.cases) |c| try checkLambdaBreakNode(self, c.body, body_type);
+        },
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
+        .break_stmt => |b| {
+            if (!b.is_lambda_break) return;
+            if (b.value) |v| {
+                const vt = v.resolved_type orelse return;
+                if (!self.isCompatible(body_type, vt) and !self.isCompatible(vt, body_type)) {
+                    self.reportError(node.line, node.column, "TypeError: break value type {} is incompatible with lambda return type {}.", .{ vt.*, body_type.* });
+                    return error.TypeError;
+                }
+            } else {
+                if (body_type.* != .Void) {
+                    self.reportError(node.line, node.column, "TypeError: bare 'break' in lambda requires a Void lambda; use 'break value' to return a value.", .{});
+                    return error.TypeError;
+                }
+            }
+        },
+        else => {},
+    }
 }
 
 pub fn checkBlock(self: *TypeChecker, block: []const *ASTNode, parent_scope: *Scope) anyerror!*const EiwaType {

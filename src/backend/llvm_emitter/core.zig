@@ -2300,6 +2300,7 @@ pub const LLVMEmitter = struct {
                 try self.collectCallees(f.body, reachable, worklist);
             },
             .return_stmt => |r| if (r.value) |v| try self.collectCallees(v, reachable, worklist),
+            .break_stmt => |b| if (b.value) |v| try self.collectCallees(v, reachable, worklist),
             .throw_stmt => |t| try self.collectCallees(t.expr, reachable, worklist),
             .try_stmt => |t| {
                 try self.collectCallees(t.body, reachable, worklist);

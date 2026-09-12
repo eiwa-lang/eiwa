@@ -16,6 +16,7 @@ pub const TokenType = enum {
     kw_if,
     kw_else,
     kw_return,
+    kw_break,
     kw_while,
     kw_import,
     kw_from,
@@ -355,6 +356,10 @@ pub const ASTNodeType = union(enum) {
     },
     return_stmt: struct {
         value: ?*ASTNode,
+    },
+    break_stmt: struct {
+        value: ?*ASTNode,
+        is_lambda_break: bool = false,
     },
     ternary_expr: struct {
         condition: *ASTNode,

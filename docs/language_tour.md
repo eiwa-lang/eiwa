@@ -127,6 +127,25 @@ fun main() {
 }
 ```
 
+`break` exits the innermost `while`/`for` loop early (no `continue` in Eiwa — skipping an iteration is written with `if`/`else`):
+
+```kotlin
+fun main() {
+    var i = 0
+    var total = 0
+    while (true) {
+        if (i >= 5) {
+            break
+        }
+        if (i != 0) {
+            total = total + i
+        }
+        i = i + 1
+    }
+    assert(total == 10)
+}
+```
+
 ### 3.3 Loop Utility Functions (`repeat`, `loop`, `retry`)
 
 Eiwa's standard library (`std.system`, implicitly imported into every program) provides higher-order loop helpers:
@@ -1333,6 +1352,21 @@ val invalid = { x: Int ->
 ```
 
 To return a value from a lambda, simply use the trailing expression.
+
+For early exits, use `break` with a value — local to the lambda (`return` stays forbidden there):
+
+```kotlin
+val f: (Int) -> Int = { x ->
+    if (x < 0) {
+        break 0
+    }
+    x * 2
+}
+assert(f(5) == 10)
+assert(f(-3) == 0)
+```
+
+The `break` value must be compatible with the lambda return type. Bare `break` inside a loop exits the innermost loop; `break v` in a loop body is checked and discarded today (it becomes the loop result once `for` returns values). `break` inside `task {}` is a compile-time error (synchronous code only).
 
 ### 15.6 Extension Functions
 Eiwa allows you to extend existing types (including standard types like `String`, `Int`, `List<T>` or user-defined types) with new methods without modifying their original declaration or using inheritance.

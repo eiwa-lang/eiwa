@@ -19,6 +19,7 @@ pub const inferIndexExpr = @import("infer_member.zig").inferIndexExpr;
 pub const inferIndexSetExpr = @import("infer_member.zig").inferIndexSetExpr;
 pub const inferArrayLiteral = @import("infer_literal.zig").inferArrayLiteral;
 pub const inferMapLiteral = @import("infer_literal.zig").inferMapLiteral;
+const checkLambdaBreaks = @import("infer_stmt.zig").checkLambdaBreaks;
 
 
 fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
@@ -593,6 +594,8 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         body_type = last_t.?;
     }
     
+    try checkLambdaBreaks(self, l.body, body_type);
+
     if (expected_return) |exp_ret| {
         if (exp_ret.* != .Void and !self.isCompatible(exp_ret, body_type)) {
             self.reportError(node.line, node.column, "TypeError: Lambda return type {} is incompatible with expected return type {}.", .{ body_type.*, exp_ret.* });

@@ -251,6 +251,7 @@ fn collectCapturesLLVM(
             try collectCapturesLLVM(f.body, locals, captures, mod, structs, ctx);
         },
         .return_stmt => |r| { if (r.value) |v| try collectCapturesLLVM(v, locals, captures, mod, structs, ctx); },
+        .break_stmt => |b| { if (b.value) |v| try collectCapturesLLVM(v, locals, captures, mod, structs, ctx); },
         .throw_stmt => |t| try collectCapturesLLVM(t.expr, locals, captures, mod, structs, ctx),
         .var_decl => |v| { if (v.initializer) |init| try collectCapturesLLVM(init, locals, captures, mod, structs, ctx); },
         .ternary_expr => |t| {

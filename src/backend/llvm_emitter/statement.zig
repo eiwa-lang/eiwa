@@ -7,6 +7,112 @@ const core = @import("core.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 
+/// Exit blocks of the loops enclosing the code under emission, so `break`
+/// knows where to jump. Keyed by LLVM function: lambda bodies emit into
+/// their own function value, so a break inside a lambda never resolves an
+/// outer loop (that would be a cross-function branch = invalid IR).
+/// Single-threaded emission; push/pop always paired via `defer`.
+const LoopFrame = struct {
+    func: llvm.LLVMValueRef,
+    after_bb: llvm.LLVMBasicBlockRef,
+};
+
+const LoopStack = struct {
+    inline_frames: [8]LoopFrame = undefined,
+    inline_len: usize = 0,
+    spilled: std.ArrayListUnmanaged(LoopFrame) = .empty,
+
+    fn push(self: *LoopStack, func: llvm.LLVMValueRef, after_bb: llvm.LLVMBasicBlockRef) anyerror!void {
+        const frame = LoopFrame{ .func = func, .after_bb = after_bb };
+        if (self.inline_len < self.inline_frames.len) {
+            self.inline_frames[self.inline_len] = frame;
+            self.inline_len += 1;
+            return;
+        }
+        try self.spilled.append(std.heap.page_allocator, frame);
+    }
+
+    fn pop(self: *LoopStack) void {
+        if (self.spilled.items.len > 0) {
+            _ = self.spilled.pop();
+            return;
+        }
+        if (self.inline_len > 0) self.inline_len -= 1;
+    }
+
+    fn innermostAfter(self: *LoopStack, func: llvm.LLVMValueRef) ?llvm.LLVMBasicBlockRef {
+        var i = self.spilled.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.spilled.items[i].func == func) return self.spilled.items[i].after_bb;
+        }
+        var j = self.inline_len;
+        while (j > 0) {
+            j -= 1;
+            if (self.inline_frames[j].func == func) return self.inline_frames[j].after_bb;
+        }
+        return null;
+    }
+};
+
+var loop_stack = LoopStack{};
+
+/// Shared lowering for `return v` and lambda-local `break v`.
+fn emitReturnValue(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    val_node: *ast.ASTNode,
+    declared_ret: ?*const eiwa_types.EiwaType,
+) anyerror!void {
+    var ret_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+    const fn_type = llvm.LLVMGlobalGetValueType(func_val);
+    const expected_ret_type = llvm.LLVMGetReturnType(fn_type);
+
+    const fat_type = types_mapping.getFatPointerType(ctx);
+    if (expected_ret_type == fat_type and llvm.LLVMTypeOf(ret_val) != fat_type) {
+        // The target contract is the function's declared return
+        // type (deterministic vtable lookup); an empty name would
+        // make findVtableGlobal scan every vtable and attach a
+        // random one (e.g. `return this` in start(): Awaitable<T>
+        // picked `collections_MutableList_Int_Serializable_vtable`
+        // because the short-name derivation ended in `Int`).
+        var contract_c_name: []const u8 = "";
+        if (declared_ret) |drt| {
+            contract_c_name = switch (eiwa_types.extractBaseType(drt).*) {
+                .Custom => |n| n,
+                .GenericInstance => |gi| gi.base_name,
+                else => "",
+            };
+        }
+        if (val_node.resolved_type) |val_rt| {
+            const val_c_name = switch (eiwa_types.extractBaseType(val_rt).*) {
+                .Custom => |n| n,
+                .GenericInstance => |gi| gi.base_name,
+                else => "",
+            };
+            if (val_c_name.len > 0) {
+                ret_val = expression.coerceToContract(ctx, mod, builder, ret_val, val_c_name, contract_c_name) catch ret_val;
+            }
+        }
+    }
+    // Coerce the return value to the function's declared return
+    // type (e.g. a nullable primitive `Int?` is `ptr` while
+    // `curr!!.value` is a raw `i64`), mirroring argument coercion.
+    if (llvm.LLVMGetTypeKind(expected_ret_type) == llvm.LLVMVoidTypeKind) {
+        _ = llvm.LLVMBuildRetVoid(builder);
+    } else {
+        if (llvm.LLVMTypeOf(ret_val) != expected_ret_type) {
+            ret_val = expression.coerceArg(builder, ret_val, expected_ret_type);
+        }
+        _ = llvm.LLVMBuildRet(builder, ret_val);
+    }
+}
+
 fn checkVtableMatch(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: llvm.LLVMBuilderRef, ptr_type: llvm.LLVMTypeRef, exc_vtable: llvm.LLVMValueRef, tr_rt: eiwa_types.EiwaType) anyerror!llvm.LLVMValueRef {
     var is_m = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
     const base_rt = eiwa_types.extractBaseType(&tr_rt);
@@ -318,6 +424,8 @@ pub fn emitStatement(
 
             // Body block
             llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
+            try loop_stack.push(func_val, after_bb);
+            defer loop_stack.pop();
             try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, w.body, declared_ret);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 _ = llvm.LLVMBuildBr(builder, cond_bb);
@@ -402,6 +510,8 @@ pub fn emitStatement(
             _ = llvm.LLVMBuildStore(builder, item_val, item_alloca);
             try loop_scope.put(f.item_name, item_alloca);
 
+            try loop_stack.push(func_val, after_bb);
+            defer loop_stack.pop();
             try emitStatement(ctx, mod, builder, func_val, &loop_scope, structs, libs, f.body, declared_ret);
 
             const i_next = llvm.LLVMBuildAdd(builder, i_body, llvm.LLVMConstInt(i64_type, 1, 0), "for_i_next");
@@ -414,50 +524,25 @@ pub fn emitStatement(
         },
         .return_stmt => |ret| {
             if (ret.value) |val_node| {
-                var ret_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
-                const fn_type = llvm.LLVMGlobalGetValueType(func_val);
-                const expected_ret_type = llvm.LLVMGetReturnType(fn_type);
-
-                const fat_type = types_mapping.getFatPointerType(ctx);
-                if (expected_ret_type == fat_type and llvm.LLVMTypeOf(ret_val) != fat_type) {
-                    // The target contract is the function's declared return
-                    // type (deterministic vtable lookup); an empty name would
-                    // make findVtableGlobal scan every vtable and attach a
-                    // random one (e.g. `return this` in start(): Awaitable<T>
-                    // picked `collections_MutableList_Int_Serializable_vtable`
-                    // because the short-name derivation ended in `Int`).
-                    var contract_c_name: []const u8 = "";
-                    if (declared_ret) |drt| {
-                        contract_c_name = switch (eiwa_types.extractBaseType(drt).*) {
-                            .Custom => |n| n,
-                            .GenericInstance => |gi| gi.base_name,
-                            else => "",
-                        };
-                    }
-                    if (val_node.resolved_type) |val_rt| {
-                        const val_c_name = switch (eiwa_types.extractBaseType(val_rt).*) {
-                            .Custom => |n| n,
-                            .GenericInstance => |gi| gi.base_name,
-                            else => "",
-                        };
-                        if (val_c_name.len > 0) {
-                            ret_val = expression.coerceToContract(ctx, mod, builder, ret_val, val_c_name, contract_c_name) catch ret_val;
-                        }
-                    }
-                }
-                // Coerce the return value to the function's declared return
-                // type (e.g. a nullable primitive `Int?` is `ptr` while
-                // `curr!!.value` is a raw `i64`), mirroring argument coercion.
-                if (llvm.LLVMGetTypeKind(expected_ret_type) == llvm.LLVMVoidTypeKind) {
-                    _ = llvm.LLVMBuildRetVoid(builder);
-                } else {
-                    if (llvm.LLVMTypeOf(ret_val) != expected_ret_type) {
-                        ret_val = expression.coerceArg(builder, ret_val, expected_ret_type);
-                    }
-                    _ = llvm.LLVMBuildRet(builder, ret_val);
-                }
+                try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
             } else {
                 _ = llvm.LLVMBuildRetVoid(builder);
+            }
+        },
+        .break_stmt => |b| {
+            // Innermost loop of this function wins; a valued break with no
+            // enclosing loop is a lambda-local exit (same lowering as `return`).
+            if (loop_stack.innermostAfter(func_val)) |after_bb| {
+                if (b.value) |val_node| {
+                    // Loop target: evaluate and discard (Phase 76 consumes
+                    // it as the `for` result).
+                    _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+                }
+                _ = llvm.LLVMBuildBr(builder, after_bb);
+            } else if (b.value) |val_node| {
+                try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
+            } else {
+                return error.BreakOutsideLoop;
             }
         },
         .throw_stmt => |th| {
