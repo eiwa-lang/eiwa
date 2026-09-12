@@ -952,3 +952,24 @@ Reutiliza uma anotação já conhecida da linguagem em vez de criar um mecanismo
 
 **Razão:**
 Reusar `while` + suspend já testado minimiza o risco no compilador (nenhuma lógica nova de loop no backend) e entrega iteração O(n) zero-alloc com visão viva — o mesmo modelo de Java (`entrySet` backed), Kotlin (`Map.Entry`), Go (`range` sobre buckets) e Python (`items()` view), em contraste com coletor snapshot que alocaria por loop e divergiria sob mutação. Preservar o índice como primeiro slot mantém a convenção única do `for` Eiwa em vez de importar a desestruturação Kotlin. Cobertura: `samples/tests/for_map_test.ei` (12 testes, incl. `sleepMs` em `task`); suíte 434 PASSED + `zig build test` verdes.
+
+## ADR 64: `break` / `break v` — Saída Antecipada de Loops e Lambdas (sem `return`, sem `continue`)
+**Status:** Proposto (Phase 78, RED)
+**Data:** Setembro 2026
+
+**Contexto:**
+1. Loops (`while`, `for` estilo lambda da Phase 71) só terminam pela condição — não existe `break` na linguagem, forçando flags manuais (`var found = false`).
+2. `return` dentro de lambda/`task {}` é **erro estático** (ADR 53): o valor da lambda é a trailing expression. Reabilitar `return` seria feio e reabriria o bug de saída prematura do `resume()` sem `done = true`.
+3. O `for` comum vai retornar valor como `list.map()` do Kotlin (Phase 76) — é preciso desde já um veículo sintático para esse valor.
+4. Swift/Kotlin/Rust/Dart concordam em `break`/`continue` para loops e divergem na lambda; Ruby resolve com palavra própria (`next v`/`break v`, sem `return` no bloco).
+
+**Decisão:**
+1. **`return` fica só em `fun`.** Nada muda no ADR 53.
+2. **`break` bare só em `while`/`for`.** Fora de loop e fora de lambda = `TypeError`; sem labels nesta fase (aninhados: `break` = mais interno).
+3. **`break v` = saída local com valor.** Em lambda, sai da lambda com `v` (checado contra o retorno inferido/esperado — o substituto do `return` proibido). Em loop-statement, `v` é checado e **descartado** nesta fase (loop continua statement `Void`); a Phase 76 passa a consumi-lo como resultado do `for`.
+4. **Só síncrono:** `break` dentro de `task {}` ou função suspensa = `TypeError` explícito (salto + state machine não compõem nesta fase; cf. ADR 53–55).
+5. **Sem `continue`:** pular iteração se escreve com `if`/`else` (a Phase 79 já dá valor ao `if`) — uma keyword só, menos superfície no checker/emissor.
+6. Lowering LLVM: pilha de loop por função (`after_bb`); `break` bare = `br after_bb`; `break v` em loop avalia e descarta `v` antes do salto; `break v` em lambda baixa como `ret v` na função da lambda.
+
+**Razão:**
+`break` é o consenso entre Swift/Kotlin/Rust/Dart/Ruby para sair de loop (curva de aprendizado zero); o modelo Ruby/Rust do `break v` preserva a filosofia trailing-expression do Eiwa sem ressuscitar `return`. `continue` foi descartado por decisão de escopo — `if`/`else` cobre o caso sem custo. O `break v` em loop-statement é deliberadamente um no-op de valor hoje para que a Phase 76 não precise de sintaxe nova. Plano completo em `docs/plan_phase78_break.md`; cobertura RED em `samples/tests/break_test.ei` (9 testes).

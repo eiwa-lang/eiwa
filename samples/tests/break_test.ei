@@ -1,0 +1,122 @@
+import { assert } from "std.core"
+import { MutableMap } from "std.collections"
+
+fun sumToBreak(): Int {
+    var total = 0
+    var i = 0
+    while (i < 10) {
+        if (i == 3) {
+            break
+        }
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+test "while with break stops at limit" {
+    assert(sumToBreak() == 3)
+}
+
+test "for with break stops early" {
+    val nums = [1, 2, 3, 4, 5]
+    var total = 0
+    for (nums) { n ->
+        if (n == 4) {
+            break
+        }
+        total = total + n
+    }
+    assert(total == 6)
+}
+
+test "for with break and implicit it" {
+    val nums = [1, 2, 3, 4, 5]
+    var total = 0
+    for (nums) {
+        if (it == 4) {
+            break
+        }
+        total = total + it
+    }
+    assert(total == 6)
+}
+
+test "for with index stops via break" {
+    val nums = [10, 20, 30, 40]
+    var seen = 0
+    for (nums) { i, n ->
+        if (i == 2) {
+            break
+        }
+        seen = seen + n
+    }
+    assert(seen == 30)
+}
+
+test "break exits only the innermost loop" {
+    var count = 0
+    var i = 0
+    while (i < 3) {
+        var j = 0
+        while (j < 5) {
+            if (j == 2) {
+                break
+            }
+            count = count + 1
+            j = j + 1
+        }
+        i = i + 1
+    }
+    assert(count == 6)
+}
+
+test "lambda break v returns early value" {
+    val f: (Int) -> Int = { x ->
+        if (x < 0) {
+            break 0
+        }
+        x * 2
+    }
+    assert(f(5) == 10)
+    assert(f(-3) == 0)
+}
+
+test "lambda trailing expression still works" {
+    val g: (Int) -> Int = { x ->
+        val base = 10
+        base + x
+    }
+    assert(g(5) == 15)
+}
+
+test "break with value in loop statement exits loop" {
+    val nums = [1, 2, 3]
+    var total = 0
+    for (nums) { n ->
+        if (n == 2) {
+            break -1
+        }
+        total = total + n
+    }
+    assert(total == 1)
+}
+
+test "for over map supports break" {
+    val map = MutableMap<String, Int>()
+    map.put("a", 1)
+    map.put("b", 2)
+    var count = 0
+    var sum = 0
+    for (map) { entry ->
+        if (entry.value != 2) {
+            sum = sum + entry.value
+            count = count + 1
+            if (count == 1) {
+                break
+            }
+        }
+    }
+    assert(sum == 1)
+    assert(count == 1)
+}
