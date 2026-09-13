@@ -1,0 +1,72 @@
+type TryExprErr(val text: String) : Throwable {
+    implement fun message(): String {
+        return this.text
+    }
+}
+
+fun tryOk(): String = "ok"
+
+fun tryBoom(): String {
+    throw TryExprErr("boom")
+}
+
+fun tryOkInt(): Int = 42
+
+object PersonaGoal {
+    fun metodo(fail: Bool): String {
+        if (fail) {
+            throw TryExprErr("goal failed")
+        }
+        return "goal!"
+    }
+}
+
+test "try-expr: sucesso retorna valor" {
+    val r: String? = try { tryOk() }
+    assert(r == "ok")
+}
+
+test "try-expr: excecao retorna null" {
+    val r: String? = try { tryBoom() }
+    assert(r == null)
+}
+
+test "try-expr: caso de uso PersonaGoal.metodo()" {
+    val retorno: String? = try { PersonaGoal.metodo(true) }
+    assert(retorno == null)
+    val retorno2: String? = try { PersonaGoal.metodo(false) }
+    assert(retorno2 == "goal!")
+}
+
+test "try-expr: inferencia sem anotacao" {
+    val r = try { tryOkInt() }
+    assert(r == 42)
+    assert(r != null)
+}
+
+test "try-expr: multi-statement usa trailing expression" {
+    val r: String? = try {
+        val a = tryOk()
+        a + "!"
+    }
+    assert(r == "ok!")
+}
+
+test "try-expr: compoe com elvis" {
+    val r: String = try { tryBoom() } ?: "fallback"
+    assert(r == "fallback")
+}
+
+test "try-expr: aninhado" {
+    val r: String? = try { try { tryOk() } }
+    assert(r == "ok")
+}
+
+test "try-expr: bare try como statement continua Void (regressao)" {
+    var hit = false
+    try {
+        tryBoom()
+    }
+    hit = true
+    assert(hit == true)
+}

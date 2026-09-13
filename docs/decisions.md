@@ -1041,3 +1041,40 @@ cobertura RED em `samples/tests/for_value_test.ei` (11 testes).
 **Razão:**
 Elimina a necessidade de tabelas e funções manuais `when (str)` para parsing de enums, mantendo conformidade total com o sistema de tipos anuláveis do Eiwa e custo de compilação zero.
 
+## ADR 67: `try` como Expressão (`T?`, substituto nativo de `runCatching {}.getOrNull()`)
+**Status:** Proposto (Phase 81, RED)
+**Data:** Setembro 2026
+
+**Contexto:**
+1. Em Kotlin, `runCatching { f() }.getOrNull()` converte exceção em `null`.
+   Em Eiwa, o workaround hoje exige `var` mutável + atribuição dentro de bare
+   `try` statement (`Void`), sem composição com `?:` nem inferência em `val`.
+2. `try` hoje nem parseia em posição de valor: `val r = try { f() }` falha
+   com `Expected expression` (`declaration.zig:59` aceita `kw_try`, mas
+   `expression()` não; `inferTryStmt` em `infer_stmt.zig:756` sempre tipa
+   `Void`).
+3. Os precedentes de valor-nulável já existem: short ternary `c ? v` vale
+   `T?` (Phase 18), `if`/`when` sem `else` em `is_value` vale `T?` (ADR 65,
+   Phase 76). Falta o mesmo tratamento para o bare `try`.
+
+**Decisão:**
+1. **Só bare `try` sem `catch` vira expressão no MVP:** sucesso → trailing
+   expression do bloco; exceção → `null`. Tipo `T?` (achata `T??`).
+2. **Void Safety:** corpo `Void` em posição de valor = `TypeError` dedicado
+   (mesma regra do short ternary e do `for`-valor).
+3. **Statement intocado:** `try { ... }` como instrução continua `Void`
+   (regressão zero por construção).
+4. **`try/catch` em valor = erro explícito no MVP** (`not yet supported`);
+   unificação estilo Kotlin (`val r = try { a } catch { b }`) é follow-up.
+5. Parser cirúrgico nos slots-valor (init de `val`/`var`, `return`, RHS,
+   trailing de bloco-valor) via flag `is_value` no `try_stmt` — espelho de
+   `if_expr`/`when_expr`/`for.collect`. MVP sync: suspend dentro de
+   try-valor = `TypeError` (espelho G5/78).
+
+**Razão:**
+Uma flag e uma regra de nulidade resolvem o `getOrNull()` sem keyword nova,
+sem objeto `Result` e sem tocar o statement path — tudo na filosofia
+trailing-expression, compondo de graça com `?:` (`(try { f() }) ?: fallback`).
+Plano completo em `docs/plan_phase81_tryvalue.md`; cobertura RED em
+`samples/tests/try_expression_test.ei` (8 testes).
+

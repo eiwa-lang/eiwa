@@ -1294,6 +1294,28 @@ Semântica alvo:
 >   (`expression.zig`)
 ---
 
+### Phase 81: `try` como expressão (`T?`, estilo `runCatching {}.getOrNull()`) (RED)
+> **Status:** RED (TDD, sem implementação). Plano em
+> `docs/plan_phase81_tryvalue.md`, decisão em ADR 67, cobertura RED em
+> `samples/tests/try_expression_test.ei` (8 testes).
+>
+> **Semântica alvo:** só bare `try` sem `catch` vira expressão no MVP —
+> `val r: T? = try { f() }` (sucesso → trailing, exceção → `null`,
+> achata `T??`, corpo `Void` = `TypeError`); statement continua `Void`
+> (regressão zero); `try/catch` em valor e suspend dentro de try-valor =
+> `TypeError` explícito (follow-ups).
+>
+> - [x] **Task 81.0 (RED):** suíte `try_expression_test.ei` (sucesso/null,
+>   `PersonaGoal.metodo()`, inferência, multi-statement, elvis, aninhado,
+>   regressão statement). Falha hoje com `Expected expression`.
+> - [ ] **Task 81.1:** parser + flag `is_value` (+ `clone`).
+> - [ ] **Task 81.2:** checker + `T?`/flatten/Void-error + rejeição catch-valor.
+> - [ ] **Task 81.3:** emissor valor (slot + null no catch path).
+> - [ ] **Task 81.4:** transform (rejeição suspend) + docs `language_tour.md §6`.
+> - [ ] **Verify:** `try_expression_test.ei` 8/8 + suíte cheia + `zig build test`.
+
+---
+
 * [x] **Errors:** Semantic validations fail gracefully, emitting rich terminal errors.
 
 ---
