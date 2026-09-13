@@ -83,3 +83,23 @@ test "default_params: should resolve chained sibling defaults in top-level funct
     assert(multiSibling(4, 10, 50) == 64)
 }
 
+type OnboardingError(val code: Int = 0)
+
+fun OnboardingError.respond(errorMessage: String, target: String = "#error-message") = errorMessage + target
+
+fun OnboardingError.describe(prefix: String, code: Int = 0, suffix: String = prefix) = prefix + code.toString() + suffix
+
+test "default_params: should use default arguments in extension functions" {
+    val error = OnboardingError()
+
+    // omitted default
+    assert(error.respond("Something went wrong") == "Something went wrong#error-message")
+
+    // provided argument overrides the default
+    assert(error.respond("Something went wrong", "#banner") == "Something went wrong#banner")
+
+    // sibling/chained defaults in extension functions
+    assert(error.describe("E") == "E0E")
+    assert(error.describe("E", 42) == "E42E")
+    assert(error.describe("E", 42, "!") == "E42!")
+}

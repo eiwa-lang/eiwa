@@ -1977,6 +1977,31 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
                     }
 
+                    // Extension functions (`fun Type.method(...)`) live in the extension registry, not in type_decl.methods
+                    if (found_method == null) {
+                        if (self.extension_functions.get(g.name)) |ext_list| {
+                            for (ext_list.items) |ext_node| {
+                                const f = &ext_node.data.fun_decl;
+                                if (f.receiver_type == null) continue;
+                                const rec_t = self.resolveTypeRef(f.receiver_type.?) catch null;
+                                if (rec_t == null) continue;
+                                if (!self.isCompatible(rec_t.?, base_type) and !self.isCompatible(base_type, rec_t.?)) continue;
+                                if (c.arguments.len > f.params.len) continue;
+                                var has_defaults = true;
+                                var i = c.arguments.len;
+                                while (i < f.params.len) : (i += 1) {
+                                    if (f.params[i].initializer == null) {
+                                        has_defaults = false;
+                                        break;
+                                    }
+                                }
+                                if (!has_defaults) continue;
+                                found_method = ext_node;
+                                break;
+                            }
+                        }
+                    }
+
                     
                     if (found_method) |m| {
                         const f = &m.data.fun_decl;

@@ -79,3 +79,13 @@ test "should parse Int directly from String using toInt" {
     val negStr = "-42"
     assert(negStr.toInt() == -42)
 }
+
+test "should convert string to lowercase" {
+    val s = "Hello World"
+    assert(s.lowercase() == "hello world")
+}
+
+test "should convert string to uppercase" {
+    val s = "Hello World"
+    assert(s.uppercase() == "HELLO WORLD")
+}

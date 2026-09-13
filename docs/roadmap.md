@@ -1347,6 +1347,41 @@ Semântica alvo:
   (`Int?(0)`, `Bool?(false)`, `Double?(0.0)`). Evidência:
   `take(try { ok() })` OK, `try { 41 + 1 } == 42` OK, `try { 0 } == null`
   (deveria ser `0`). Fix na Phase 80, não aqui.
+
+### Phase 82: `this` em default initializers de extension functions (OPEN)
+> Surgiu ao escrever testes de default params em extensões
+> (`samples/tests/default_params_test.ei`, "should use default arguments in
+> extension functions").
+
+- [ ] **BUG (CONFIRMADO):** default initializer de parâmetro em **extension
+  function** não enxerga o receiver: `fun OnboardingError.describe(prefix: String, code: Int = this.code)`
+  falha com `Undeclared variable 'this'` — o checker resolve os defaults do
+  param fora do scope do receiver (`resolveCallArguments` em
+  `infer_call.zig` clona o initializer e infere no scope do **call site**,
+  onde `this` não existe ou pior: pode colidir com `this` de outro type).
+- [ ] **Risco maior — shadowing/confusão de nomes:** como o default é clonado e
+  inferido no scope do call site, identificadores no default podem se ligar a
+  **variáveis locais do chamador** ou a **propriedades/métodos de outro type**
+  em vez dos membros do receiver. Auditar `substituteParam` + o scope usado na
+  inferência dos defaults clonados (métodos de `type` passam hoje porque os
+  testes só usam sibling params; `this.field` em default de método comum
+  provavelmente tem o mesmo problema — verificar).
+- [ ] **Comportamento alvo (Kotlin-like):** defaults de métodos/extensões devem
+  ser avaliados com `this` = receiver da chamada e sibling params já resolvidos
+  — ex.: `fun E.describe(prefix: String, code: Int = this.code, suffix: String = prefix)`.
+- [ ] **Guardrail:** reativar os asserts com `this.code` no teste
+  `default_params_test.ei` (hoje simplificados para `code: Int = 0`).
+
+### Bugfixes recentes (pós-Phase 81)
+- [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
+  (Pointer) direto para `tolower(c: Int)`/`toupper(c: Int)` do `<ctype.h>`, que
+  operam em **um char** e retornam `Int` — assertion fail em qualquer string.
+  Fix em `src/std/core.ei`: aloca buffer via `gcMalloc` e converte byte a byte.
+- [x] **Default params ignorados em extension functions:** o bloco "Fill in
+  method default parameters" de `infer_call.zig` só buscava o método em
+  `type_decl.methods`; extensões vivem em `extension_functions`, então o
+  default nunca era injetado e o backend emitia a chamada com args faltantes.
+  Fix: fallback para o registro de extensões com receiver compatível.
 ---
 
 ---

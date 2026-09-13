@@ -32,7 +32,7 @@ lib Standard {
     fun exit(code: Int): Void
 }
 
-@Header("<string.h>")
+@Header("<string.h>", "<ctype.h>")
 lib NativeString {
     fun strcmp(s1: Pointer, s2: Pointer): Int
 
@@ -321,11 +321,27 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
     }
 
     fun lowercase(): String {
-        return NativeString.tolower(this.ptr)
+        val buf = Standard.gcMalloc(this.length + 1)
+        var i = 0
+        while (i < this.length) {
+            val c = NativeMemory.readByte(this.ptr, i)
+            NativeMemory.writeByte(buf, i, NativeString.tolower(c))
+            i = i + 1
+        }
+        NativeMemory.writeByte(buf, this.length, 0)
+        return String(buf, this.length)
     }
 
     fun uppercase(): String {
-        return NativeString.toupper(this.ptr)
+        val buf = Standard.gcMalloc(this.length + 1)
+        var i = 0
+        while (i < this.length) {
+            val c = NativeMemory.readByte(this.ptr, i)
+            NativeMemory.writeByte(buf, i, NativeString.toupper(c))
+            i = i + 1
+        }
+        NativeMemory.writeByte(buf, this.length, 0)
+        return String(buf, this.length)
     }
 
     implement fun hashCode(): Int {
