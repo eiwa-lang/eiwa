@@ -1,0 +1,23 @@
+import { assert } from "std.core"
+
+// Regression (Phase 83): String.split is an extension declared in
+// std/collections.ei, which is implicitly imported into user files — it must
+// be visible without an explicit import.
+
+test "string split: should split on a literal delimiter without importing std.collections" {
+    val parts = "a,b,c".split(",")
+    assert(parts.size() == 3)
+    assert(parts[0] == "a")
+    assert(parts[1] == "b")
+    assert(parts[2] == "c")
+}
+
+test "string split: should keep empty parts and handle absent delimiter" {
+    val empty = "a,,b".split(",")
+    assert(empty.size() == 3)
+    assert(empty[1] == "")
+
+    val whole = "abc".split(",")
+    assert(whole.size() == 1)
+    assert(whole[0] == "abc")
+}

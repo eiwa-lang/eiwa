@@ -1372,6 +1372,24 @@ Semântica alvo:
 - [ ] **Guardrail:** reativar os asserts com `this.code` no teste
   `default_params_test.ei` (hoje simplificados para `code: Int = 0`).
 
+### Phase 83: Visibilidade de extension functions por import (COMPLETED)
+> Hoje qualquer extensão de qualquer módulo do build ficava visível em todos os
+> call sites, mesmo sem `import` — diferente do Kotlin, onde extensões precisam
+> ser importadas (ou estar no mesmo arquivo/pacote).
+
+- **Causa:** o fallback de registry em `infer_member.zig` e em `infer_call.zig`
+  (default params) varria `registry.modules` inteiro sem verificar a lista de
+  imports do módulo chamador.
+- **Fix:** novo registro `imported_extension_names` no `TypeChecker`, populado
+  no processamento de imports (`infer_decl.zig`): imports não-destruturados
+  tornam visíveis as extensões locais do módulo; destruturados tornam visível
+  o nome importado. Implicit std imports passam pelo mesmo caminho, então
+  `std.*` continua funcionando. Os fallbacks cross-module agora só consideram
+  nomes importados; uso sem import gera erro com hint do módulo de origem.
+- **Validação:** suíte completa 516/516 verde sem ajustes; repro manual
+  (`import { User }` sem `greet`) agora falha com
+  `Extension function 'greet' exists in module '...' — add it to your imports.`
+
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
   (Pointer) direto para `tolower(c: Int)`/`toupper(c: Int)` do `<ctype.h>`, que

@@ -180,6 +180,10 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         while (object_ast_it.next()) |entry| {
             try self.objects_ast.put(entry.key_ptr.*, entry.value_ptr.*);
         }
+        var ext_it = tc.extension_functions.iterator();
+        while (ext_it.next()) |entry| {
+            try self.imported_extension_names.put(entry.key_ptr.*, {});
+        }
     } else {
         for (i.destructured) |sym| {
             var found = false;
@@ -207,6 +211,12 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                     gop.value_ptr.* = ArrayList(*ASTNode).init(self.allocator);
                 }
                 try gop.value_ptr.appendSlice(list.items);
+                found = true;
+            }
+
+            // Extension functions: importing the name makes the module's
+            if (tc.extension_functions.contains(sym)) {
+                try self.imported_extension_names.put(sym, {});
                 found = true;
             }
 

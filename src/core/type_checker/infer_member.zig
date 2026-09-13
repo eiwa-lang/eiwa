@@ -665,7 +665,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         }
     }
 
-    if (prop_type == null and self.registry != null) {
+    if (prop_type == null and self.registry != null and self.imported_extension_names.contains(g.name)) {
         var mod_it = self.registry.?.modules.iterator();
         while (mod_it.next()) |entry| {
             if (entry.value_ptr.checker.extension_functions.get(g.name)) |ext_list| {
@@ -690,6 +690,17 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
 
     if (prop_type == null) {
+        // Hint when the member exists as an extension function in another
+        // module but was not imported (Phase 83).
+        if (self.registry != null and !self.imported_extension_names.contains(g.name)) {
+            var hint_it = self.registry.?.modules.iterator();
+            while (hint_it.next()) |entry| {
+                if (entry.value_ptr.checker.extension_functions.contains(g.name)) {
+                    self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {}. Extension function '{s}' exists in module '{s}' — add it to your imports.", .{ g.name, obj_type.*, g.name, entry.key_ptr.* });
+                    return error.TypeError;
+                }
+            }
+        }
         self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {}.", .{ g.name, obj_type.* });
         return error.TypeError;
     }

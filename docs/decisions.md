@@ -1078,3 +1078,44 @@ trailing-expression, compondo de graça com `?:` (`(try { f() }) ?: fallback`).
 Plano completo em `docs/plan_phase81_tryvalue.md`; cobertura RED em
 `samples/tests/try_expression_test.ei` (8 testes).
 
+## ADR 68: Visibilidade de Extension Functions por Import
+**Status:** Aprovado (Phase 83, COMPLETED)
+**Data:** Setembro 2026
+
+**Contexto:**
+1. Extension functions (`fun Type.metodo(...)`) eram registradas apenas no
+   `extension_functions` do checker do módulo onde foram declaradas. A
+   resolução de membros (`infer_member.zig`) e a injeção de default params
+   (`infer_call.zig`) tinham um fallback que varria **todos os módulos** do
+   `registry` sem verificar os imports do módulo chamador.
+2. Resultado: qualquer extensão de qualquer módulo do build ficava visível
+   globalmente — `import { User } from "mypkg.exts"` (sem importar `greet`)
+   permitia chamar `u.greet()`. Difere do Kotlin, onde extensões precisam ser
+   importadas ou estar no mesmo arquivo/pacote, e abre espaço para colisões
+   silenciosas de nomes entre módulos.
+
+**Decisão:**
+1. **Extensão só é visível cross-module se o nome foi importado.** Novo
+   registro `imported_extension_names` no `TypeChecker`, populado no
+   processamento de imports (`infer_decl.zig`):
+   - import destruturado (`import { greet } from "mod"`) torna visível apenas
+     `greet`;
+   - import não-destruturado (`import "mod"`) torna visíveis todas as
+     extensões locais do módulo (mesma regra ADR 26 de re-exportação: só
+     símbolos em `local_symbols`).
+2. **Implicit std imports seguem o mesmo fluxo** (são `import_stmt`
+   não-destruturados injetados pelo compilador), então extensões de `std.*`
+   continuam disponíveis sem import explícito.
+3. **Extensões do próprio módulo não são afetadas** — o lookup local em
+   `self.extension_functions` continua primeiro e incondicional.
+4. **Erro com hint:** quando o membro não resolve mas existe uma extensão
+   com aquele nome em outro módulo, o erro indica o módulo de origem e pede
+   o import (`Extension function 'greet' exists in module '...' — add it to
+   your imports.`).
+
+**Razão:**
+Restringe o escopo de resolução ao grafo de imports explícito (previsível,
+estilo Kotlin) sem custo para o caso comum: std continua implícito, extensões
+locais continuam automáticas. O hint transforma o breaking change em erro
+autoexplicativo. Validação: suíte completa 516/516 sem nenhum ajuste —
+nenhum teste dependia da visibilidade global acidental.

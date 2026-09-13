@@ -2009,7 +2009,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         if (self.extension_functions.get(g.name)) |ext_list| {
                             found_method = findExtensionWithDefaults(self, self, ext_list, base_type, c.arguments.len);
                         }
-                        if (found_method == null and self.registry != null) {
+                        if (found_method == null and self.registry != null and self.imported_extension_names.contains(g.name)) {
                             var mod_it = self.registry.?.modules.iterator();
                             while (mod_it.next()) |entry| {
                                 const checker = entry.value_ptr.checker;
