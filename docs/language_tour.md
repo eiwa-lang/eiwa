@@ -3300,3 +3300,51 @@ fun main() {
 * **Stdio & SSE Transports**: Seamlessly plugs into AI developer tools (Claude Desktop, Cursor, Gemini IDE) via standard I/O or Server-Sent Events.
 
 
+## 33. Regular Expressions (`std.regex`)
+
+Eiwa provides regular expressions via `std.regex`, implemented as a **pure-Eiwa backtracking engine** (no C dependencies). The API mirrors Kotlin's `Regex`.
+
+### 33.1 The `Regex` type
+
+```kotlin
+val nameRegex = Regex("^[a-z0-9._]{3,20}$")
+if (!nameRegex.matches(name)) {
+    // invalid username
+}
+```
+
+* **`matches(input: String): Bool`**: Full-input match (the ENTIRE input must match, like Kotlin).
+* **`find(input: String): MatchResult?`**: First match anywhere in the input, or `null`.
+* **`replace(input: String, replacement: String): String`**: Replaces ALL non-overlapping matches.
+
+The pattern is compiled once per `Regex` instance (lazily, on first use) and can be reused.
+
+### 33.2 `MatchResult`
+
+```kotlin
+val m = Regex("([0-9]+)-([0-9]+)").find("id 12-34 end")
+if (m != null) {
+    print(m!!.value)       // "12-34" (whole match)
+    print(m!!.start)       // 3
+    print(m!!.end)         // 8
+    print(m!!.group(1))    // "12"
+    print(m!!.group(2))    // "34"
+    print(m!!.groupCount()) // 2
+}
+```
+
+`groups[0]` is always the whole match; unmatched groups are returned as `""`.
+
+### 33.3 `String` shortcuts
+
+```kotlin
+"hello123".matchesRegex("[a-z]+[0-9]+")   // true
+"abc123".findRegex("[0-9]+")              // MatchResult("123")
+"a1b2".replaceRegex("[0-9]", "#")         // "a#b#"
+```
+
+### 33.4 Supported syntax
+
+Literals, `.` (any char except newline), escapes (`\d \D \w \W \s \S \n \t \r` and escaped metacharacters like `\.` `\\`), character classes (`[abc]`, `[a-z]`, `[^0-9]`), anchors (`^`, `$`), greedy quantifiers (`*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}`), capturing groups `(...)` and alternation (`|`).
+
+> **Note:** the engine is a recursive backtracker — fine for typical validation/extraction patterns, but avoid pathological nested quantifiers on large inputs.

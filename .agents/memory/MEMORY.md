@@ -7,3 +7,4 @@
 - [project] Serialization design (opt-in `: Serializable`, skills `+Json`/`+Yaml`, codegen compile-time, Fase 1 só serialização) → serialization.md
 - [project] Coroutines stackless (Phase 68/ADR 48: task/await → state machines + Scheduler Eiwa-puro; neco/C backend removidos; plano em docs/tasks-coroutines-stackless.md) → task-neco-refactor.md
 
+- [project] std.regex: engine regex 100% Eiwa (backtracking, Kotlin-parity); Int?/Double? com valor 0 viram null (bug emitter IntToPtr) — usar sentinel -1 → regex.md

@@ -1,0 +1,119 @@
+import { assert } from "std.core"
+import { Regex, MatchResult } from "std.regex"
+
+test "regex: literal match" {
+    assert(Regex("abc").matches("abc"), "abc should match abc")
+    assert(!Regex("abc").matches("abcd"), "abc should not match abcd (full match)")
+    assert(!Regex("abc").matches("xbc"), "abc should not match xbc")
+}
+
+test "regex: kotlin-style username validation" {
+    val nameRegex = Regex("^[a-z0-9._]{3,20}$")
+    assert(nameRegex.matches("leo.douglas"), "valid username")
+    assert(nameRegex.matches("ab_12"), "valid short username")
+    assert(!nameRegex.matches("ab"), "too short should fail")
+    assert(!nameRegex.matches("Leo"), "uppercase should fail")
+    assert(!nameRegex.matches("leo douglas"), "space should fail")
+}
+
+test "regex: dot and quantifiers" {
+    assert(Regex("a.c").matches("abc"), "a.c matches abc")
+    assert(Regex("ab*c").matches("ac"), "ab*c matches ac")
+    assert(Regex("ab*c").matches("abbbc"), "ab*c matches abbbc")
+    assert(Regex("ab+c").matches("abc"), "ab+c matches abc")
+    assert(!Regex("ab+c").matches("ac"), "ab+c does not match ac")
+    assert(Regex("colou?r").matches("color"), "u? matches color")
+    assert(Regex("colou?r").matches("colour"), "u? matches colour")
+}
+
+test "regex: counted quantifiers" {
+    assert(Regex("a{3}").matches("aaa"), "a{3} matches aaa")
+    assert(!Regex("a{3}").matches("aa"), "a{3} does not match aa")
+    assert(Regex("a{2,}").matches("aaaa"), "a{2,} matches aaaa")
+    assert(!Regex("a{2,}").matches("a"), "a{2,} does not match a")
+    assert(Regex("a{2,4}").matches("aaa"), "a{2,4} matches aaa")
+    assert(!Regex("a{2,4}").matches("aaaaa"), "a{2,4} does not match aaaaa")
+}
+
+test "regex: character classes" {
+    assert(Regex("[abc]+").matches("cab"), "[abc]+ matches cab")
+    assert(!Regex("[abc]+").matches("cad"), "[abc]+ does not match cad")
+    assert(Regex("[a-z]+").matches("hello"), "[a-z]+ matches hello")
+    assert(!Regex("[a-z]+").matches("Hello"), "[a-z]+ does not match Hello")
+    assert(Regex("[^0-9]+").matches("abc"), "[^0-9]+ matches abc")
+    assert(!Regex("[^0-9]+").matches("abc1"), "[^0-9]+ does not match abc1")
+    assert(Regex("[\\]a]+").matches("]aa"), "escaped ] inside class")
+}
+
+test "regex: escapes" {
+    assert(Regex("\\d+").matches("12345"), "\\d+ matches digits")
+    assert(!Regex("\\d+").matches("12a"), "\\d+ does not match 12a")
+    assert(Regex("\\w+").matches("abc_09"), "\\w+ matches word chars")
+    assert(Regex("\\s").matches(" "), "\\s matches space")
+    assert(Regex("a\\.b").matches("a.b"), "escaped dot is literal")
+    assert(!Regex("a\\.b").matches("aXb"), "escaped dot does not match aXb")
+    assert(Regex("\\D+").matches("abc"), "\\D+ matches non-digits")
+    assert(Regex("a\\nb").matches("a\nb"), "\\n matches newline")
+}
+
+test "regex: anchors" {
+    assert(Regex("^abc$").matches("abc"), "^abc$ matches abc")
+    assert(!Regex("^abc$").matches("xabc"), "^abc$ does not match xabc")
+    assert(Regex("^a").find("ba") == null, "^a does not find in ba")
+    val m = Regex("c$").find("abc")
+    assert(m != null, "c$ finds in abc")
+    assert(m!!.start == 2, "c$ found at index 2")
+}
+
+test "regex: alternation" {
+    assert(Regex("cat|dog").matches("cat"), "alternation matches cat")
+    assert(Regex("cat|dog").matches("dog"), "alternation matches dog")
+    assert(!Regex("cat|dog").matches("cow"), "alternation rejects cow")
+    assert(Regex("a(b|c)d").matches("abd"), "group alternation abd")
+    assert(Regex("a(b|c)d").matches("acd"), "group alternation acd")
+}
+
+test "regex: find returns position and groups" {
+    val m = Regex("([0-9]+)-([0-9]+)").find("id 12-34 end")
+    assert(m != null, "should find 12-34")
+    val r = m!!
+    assert(r.value == "12-34", "value is full match")
+    assert(r.start == 3, "start is 3")
+    assert(r.end == 8, "end is 8")
+    assert(r.group(0) == "12-34", "group 0 is whole match")
+    assert(r.group(1) == "12", "group 1")
+    assert(r.group(2) == "34", "group 2")
+    assert(r.groupCount() == 2, "two capture groups")
+}
+
+test "regex: find returns null when absent" {
+    assert(Regex("[0-9]+").find("no digits here") == null, "no match returns null")
+}
+
+test "regex: greedy backtracking" {
+    assert(Regex("a.*b").matches("axbxb"), "greedy .* matches axbxb")
+    val m = Regex("a.*b").find("axbxb")
+    assert(m!!.value == "axbxb", "greedy takes longest")
+    assert(Regex("<.*>").matches("<a><b>"), "greedy tag match")
+}
+
+test "regex: replace all occurrences" {
+    assert(Regex("[0-9]").replace("a1b22c", "#") == "a#b##c", "replace digits with #")
+    assert(Regex("\\s+").replace("hello   world\t!", " ") == "hello world !", "collapse whitespace")
+    assert(Regex("x").replace("no match", "y") == "no match", "replace without match is identity")
+}
+
+test "regex: string shortcuts" {
+    assert("hello123".matchesRegex("[a-z]+[0-9]+"), "matchesRegex shortcut")
+    assert(!"hello".matchesRegex("[0-9]+"), "matchesRegex rejects")
+    assert("a1b2".replaceRegex("[0-9]", "#") == "a#b#", "replaceRegex shortcut")
+    val m = "abc123".findRegex("[0-9]+")
+    assert(m != null && m!!.value == "123", "findRegex shortcut")
+}
+
+test "regex: reusable compiled pattern" {
+    val re = Regex("^\\w+@\\w+\\.\\w+$")
+    assert(re.matches("user@example.com"), "email-ish matches")
+    assert(!re.matches("not an email"), "email-ish rejects")
+    assert(re.matches("a@b.cd"), "reused pattern still works")
+}

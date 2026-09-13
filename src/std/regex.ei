@@ -1,0 +1,602 @@
+// std.regex — Pure-Eiwa regular expressions (no C dependencies).
+//
+// Backtracking engine over bytes, Kotlin-style API:
+//
+//   val nameRegex = Regex("^[a-z0-9._]{3,20}$")
+//   if (!nameRegex.matches(name)) { ... }
+//   val m = Regex("([0-9]+)-([0-9]+)").find("id 12-34 end")
+//   val s = "a1b2".replaceRegex("[0-9]", "#")
+//
+// Supported syntax: literals, `.`, escapes (\d \D \w \W \s \S \n \t \r \\ etc.),
+// classes ([abc], [a-z], [^a-z]), anchors (^ $), greedy quantifiers
+// (* + ? {n} {n,} {n,m}), capturing groups (...), alternation (|).
+
+import { List, MutableList } from "std.collections"
+
+enum RegexNodeKind {
+    LITERAL,
+    ANY,
+    CLASS,
+    GROUP,
+    ANCHOR_START,
+    ANCHOR_END
+}
+
+// `ranges` encodes CLASS members as [lo, hi] byte pairs. Negative `lo`
+// values are predicates: -1 = digit, -2 = word char, -3 = whitespace.
+type RegexNode(
+    var kind: RegexNodeKind,
+    var char: Int = 0,
+    var min: Int = 1,
+    var max: Int = 1,
+    var negated: Bool = false,
+    var ranges: MutableList<Int> = MutableList<Int>(),
+    var alts: MutableList<MutableList<RegexNode>> = MutableList<MutableList<RegexNode>>(),
+    var groupIndex: Int = -1
+)
+
+type MatchResult(val start: Int, val end: Int, val value: String, val groups: List<String>) {
+    // groups[0] is the whole match; groups[i] is capture group i ("" if it did not participate).
+    fun group(index: Int): String = this.groups[index]
+
+    fun groupCount(): Int = this.groups.size() - 1
+}
+
+// ---------------------------------------------------------------------------
+// Parser: pattern String -> RegexNode tree
+// ---------------------------------------------------------------------------
+
+type RegexParser(val source: String) {
+    var pos: Int = 0
+    var groupCount: Int = 0
+
+    fun atEnd(): Bool = this.pos >= this.source.length
+
+    fun peek(): Int {
+        if (this.atEnd()) {
+            return -1
+        }
+        return NativeMemory.readByte(this.source.ptr, this.pos)
+    }
+
+    fun peekAt(offset: Int): Int {
+        if (this.pos + offset >= this.source.length) {
+            return -1
+        }
+        return NativeMemory.readByte(this.source.ptr, this.pos + offset)
+    }
+
+    fun advance(): Int {
+        val c = this.peek()
+        this.pos = this.pos + 1
+        return c
+    }
+
+    fun isDigitByte(b: Int): Bool = b >= 48 && b <= 57
+
+    fun parseNumber(): Int {
+        var n = 0
+        var saw = false
+        while (this.isDigitByte(this.peek())) {
+            n = (n * 10) + (this.advance() - 48)
+            saw = true
+        }
+        if (!saw) {
+            return -1
+        }
+        return n
+    }
+
+    fun parse(): RegexNode {
+        val alts = MutableList<MutableList<RegexNode>>()
+        alts.add(this.parseSequence())
+        while (this.peek() == 124) { // '|'
+            this.advance()
+            alts.add(this.parseSequence())
+        }
+        return RegexNode(kind = RegexNodeKind.GROUP, alts = alts, groupIndex = -1)
+    }
+
+    fun parseSequence(): MutableList<RegexNode> {
+        val nodes = MutableList<RegexNode>()
+        var parsing = true
+        while (parsing) {
+            val c = this.peek()
+            if (c == -1 || c == 124 || c == 41) { // '|' or ')'
+                parsing = false
+            } else {
+                val node = this.parsePiece()
+                if (node != null) {
+                    nodes.add(node!!)
+                }
+            }
+        }
+        return nodes
+    }
+
+    fun parseGroupBody(): MutableList<MutableList<RegexNode>> {
+        val alts = MutableList<MutableList<RegexNode>>()
+        alts.add(this.parseSequence())
+        while (this.peek() == 124) { // '|'
+            this.advance()
+            alts.add(this.parseSequence())
+        }
+        if (this.peek() == 41) { // ')'
+            this.advance()
+        }
+        return alts
+    }
+
+    fun parseEscape(): RegexNode {
+        val c = this.advance()
+        if (c == 100) { // 'd'
+            val r = MutableList<Int>()
+            r.add(-1)
+            r.add(0)
+            return RegexNode(kind = RegexNodeKind.CLASS, ranges = r)
+        }
+        if (c == 68) { // 'D'
+            val r = MutableList<Int>()
+            r.add(-1)
+            r.add(0)
+            return RegexNode(kind = RegexNodeKind.CLASS, ranges = r, negated = true)
+        }
+        if (c == 119) { // 'w'
+            val r = MutableList<Int>()
+            r.add(-2)
+            r.add(0)
+            return RegexNode(kind = RegexNodeKind.CLASS, ranges = r)
+        }
+        if (c == 87) { // 'W'
+            val r = MutableList<Int>()
+            r.add(-2)
+            r.add(0)
+            return RegexNode(kind = RegexNodeKind.CLASS, ranges = r, negated = true)
+        }
+        if (c == 115) { // 's'
+            val r = MutableList<Int>()
+            r.add(-3)
+            r.add(0)
+            return RegexNode(kind = RegexNodeKind.CLASS, ranges = r)
+        }
+        if (c == 83) { // 'S'
+            val r = MutableList<Int>()
+            r.add(-3)
+            r.add(0)
+            return RegexNode(kind = RegexNodeKind.CLASS, ranges = r, negated = true)
+        }
+        if (c == 110) { // 'n'
+            return RegexNode(kind = RegexNodeKind.LITERAL, char = 10)
+        }
+        if (c == 116) { // 't'
+            return RegexNode(kind = RegexNodeKind.LITERAL, char = 9)
+        }
+        if (c == 114) { // 'r'
+            return RegexNode(kind = RegexNodeKind.LITERAL, char = 13)
+        }
+        // Any other escaped char is a literal (covers \. \\ \* \[ \] etc.)
+        return RegexNode(kind = RegexNodeKind.LITERAL, char = c)
+    }
+
+    fun parseClassEscape(ranges: MutableList<Int>): Bool {
+        val c = this.peek()
+        if (c == 100) { // 'd'
+            this.advance()
+            ranges.add(-1)
+            ranges.add(0)
+            return true
+        }
+        if (c == 119) { // 'w'
+            this.advance()
+            ranges.add(-2)
+            ranges.add(0)
+            return true
+        }
+        if (c == 115) { // 's'
+            this.advance()
+            ranges.add(-3)
+            ranges.add(0)
+            return true
+        }
+        if (c == 110) { // 'n'
+            this.advance()
+            ranges.add(10)
+            ranges.add(10)
+            return true
+        }
+        if (c == 116) { // 't'
+            this.advance()
+            ranges.add(9)
+            ranges.add(9)
+            return true
+        }
+        if (c == 114) { // 'r'
+            this.advance()
+            ranges.add(13)
+            ranges.add(13)
+            return true
+        }
+        if (c != -1) {
+            // Escaped literal inside class (\], \\, \-, ...)
+            this.advance()
+            ranges.add(c)
+            ranges.add(c)
+            return true
+        }
+        return false
+    }
+
+    fun parseClass(): RegexNode {
+        this.advance() // consume '['
+        var negated = false
+        if (this.peek() == 94) { // '^'
+            this.advance()
+            negated = true
+        }
+        val ranges = MutableList<Int>()
+        var parsing = true
+        while (parsing) {
+            val c = this.peek()
+            if (c == -1 || c == 93) { // ']' or end
+                if (c == 93) {
+                    this.advance()
+                }
+                parsing = false
+            } else if (c == 92) { // escape
+                this.advance()
+                if (!this.parseClassEscape(ranges)) {
+                    parsing = false
+                }
+            } else {
+                val lo = this.advance()
+                if (this.peek() == 45 && this.peekAt(1) != 93 && this.peekAt(1) != -1) { // 'x-y'
+                    this.advance() // consume '-'
+                    val hi = this.advance()
+                    ranges.add(lo)
+                    ranges.add(hi)
+                } else {
+                    ranges.add(lo)
+                    ranges.add(lo)
+                }
+            }
+        }
+        return RegexNode(kind = RegexNodeKind.CLASS, negated = negated, ranges = ranges)
+    }
+
+    fun applyQuantifier(node: RegexNode): RegexNode {
+        val c = this.peek()
+        if (c == 42) { // '*'
+            this.advance()
+            node.min = 0
+            node.max = -1
+        } else if (c == 43) { // '+'
+            this.advance()
+            node.min = 1
+            node.max = -1
+        } else if (c == 63) { // '?'
+            this.advance()
+            node.min = 0
+            node.max = 1
+        } else if (c == 123) { // '{'
+            val save = this.pos
+            this.advance()
+            val n = this.parseNumber()
+            if (n >= 0 && this.peek() == 125) { // '{n}'
+                this.advance()
+                node.min = n
+                node.max = n
+            } else if (n >= 0 && this.peek() == 44) { // '{n,...}'
+                this.advance()
+                if (this.peek() == 125) { // '{n,}'
+                    this.advance()
+                    node.min = n
+                    node.max = -1
+                } else {
+                    val m = this.parseNumber()
+                    if (m >= 0 && this.peek() == 125) { // '{n,m}'
+                        this.advance()
+                        node.min = n
+                        node.max = m
+                    } else {
+                        this.pos = save // malformed: treat '{' as literal suffix
+                    }
+                }
+            } else {
+                this.pos = save
+            }
+        }
+        return node
+    }
+
+    fun parsePiece(): RegexNode? {
+        val c = this.peek()
+        if (c == -1 || c == 124 || c == 41) {
+            return null
+        }
+        var node = if (c == 40) { // '('
+            this.advance()
+            this.groupCount = this.groupCount + 1
+            val gi = this.groupCount
+            RegexNode(kind = RegexNodeKind.GROUP, alts = this.parseGroupBody(), groupIndex = gi)
+        } else if (c == 91) { // '['
+            this.parseClass()
+        } else if (c == 46) { // '.'
+            this.advance()
+            RegexNode(kind = RegexNodeKind.ANY)
+        } else if (c == 94) { // '^'
+            this.advance()
+            RegexNode(kind = RegexNodeKind.ANCHOR_START)
+        } else if (c == 36) { // '$'
+            this.advance()
+            RegexNode(kind = RegexNodeKind.ANCHOR_END)
+        } else if (c == 92) { // escape
+            this.advance()
+            this.parseEscape()
+        } else {
+            this.advance()
+            RegexNode(kind = RegexNodeKind.LITERAL, char = c)
+        }
+        return this.applyQuantifier(node)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Matcher: backtracking over input bytes. `caps` holds 2*(groupCount+1) ints:
+// start/end pairs per capture group, -1 when unset.
+// ---------------------------------------------------------------------------
+
+type RegexMatcher(val input: String, val caps: MutableList<Int>) {
+
+    fun byteAt(pos: Int): Int {
+        if (pos >= this.input.length) {
+            return -1
+        }
+        return NativeMemory.readByte(this.input.ptr, pos)
+    }
+
+    fun classPredicate(pred: Int, b: Int): Bool {
+        if (pred == -1) { // digit
+            return b >= 48 && b <= 57
+        }
+        if (pred == -2) { // word: [a-zA-Z0-9_]
+            return (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+        }
+        // whitespace: space, \t, \n, \r
+        return b == 32 || b == 9 || b == 10 || b == 13
+    }
+
+    fun classMatches(node: RegexNode, b: Int): Bool {
+        var found = false
+        var i = 0
+        while (i < node.ranges.size()) {
+            val lo = node.ranges[i]
+            val hi = node.ranges[i + 1]
+            if (lo < 0) {
+                if (this.classPredicate(lo, b)) {
+                    found = true
+                }
+            } else if (b >= lo && b <= hi) {
+                found = true
+            }
+            i = i + 2
+        }
+        return if (node.negated) !found else found
+    }
+
+    fun matchAlts(alts: MutableList<MutableList<RegexNode>>, pos: Int): Int {
+        var i = 0
+        while (i < alts.size()) {
+            val r = this.matchSeq(alts[i], 0, pos)
+            if (r >= 0) {
+                return r
+            }
+            i = i + 1
+        }
+        return -1
+    }
+
+    fun matchSeq(nodes: MutableList<RegexNode>, idx: Int, pos: Int): Int {
+        if (idx >= nodes.size()) {
+            return pos
+        }
+        return this.matchQuant(nodes, idx, pos, 0)
+    }
+
+    fun matchQuant(nodes: MutableList<RegexNode>, idx: Int, pos: Int, count: Int): Int {
+        val node = nodes[idx]
+        val unlimited = node.max < 0
+        if (count < node.max || unlimited) {
+            val e = this.matchSingle(node, pos)
+            if (e >= 0) {
+                if (e == pos) {
+                    // Zero-width match: never repeat, to avoid infinite loops.
+                    if (count + 1 >= node.min) {
+                        return this.matchSeq(nodes, idx + 1, e)
+                    }
+                    return -1
+                }
+                val r = this.matchQuant(nodes, idx, e, count + 1)
+                if (r >= 0) {
+                    return r
+                }
+            }
+        }
+        if (count >= node.min) {
+            return this.matchSeq(nodes, idx + 1, pos)
+        }
+        return -1
+    }
+
+    fun matchSingle(node: RegexNode, pos: Int): Int {
+        if (node.kind == RegexNodeKind.LITERAL) {
+            if (this.byteAt(pos) == node.char) {
+                return pos + 1
+            }
+            return -1
+        }
+        if (node.kind == RegexNodeKind.ANY) {
+            val b = this.byteAt(pos)
+            if (b >= 0 && b != 10) {
+                return pos + 1
+            }
+            return -1
+        }
+        if (node.kind == RegexNodeKind.CLASS) {
+            val b = this.byteAt(pos)
+            if (b >= 0 && this.classMatches(node, b)) {
+                return pos + 1
+            }
+            return -1
+        }
+        if (node.kind == RegexNodeKind.ANCHOR_START) {
+            return if (pos == 0) pos else -1
+        }
+        if (node.kind == RegexNodeKind.ANCHOR_END) {
+            return if (pos == this.input.length) pos else -1
+        }
+        // GROUP: try alternatives, record capture on success, restore on failure.
+        val gi = node.groupIndex
+        var oldStart = -1
+        var oldEnd = -1
+        if (gi >= 0) {
+            oldStart = this.caps[gi * 2]
+            oldEnd = this.caps[(gi * 2) + 1]
+        }
+        var i = 0
+        while (i < node.alts.size()) {
+            val r = this.matchSeq(node.alts[i], 0, pos)
+            if (r >= 0) {
+                if (gi >= 0) {
+                    this.caps.set(gi * 2, pos)
+                    this.caps.set((gi * 2) + 1, r)
+                }
+                return r
+            }
+            i = i + 1
+        }
+        if (gi >= 0) {
+            this.caps.set(gi * 2, oldStart)
+            this.caps.set((gi * 2) + 1, oldEnd)
+        }
+        return -1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+type Regex(val pattern: String) {
+    var root: RegexNode? = null
+    var groupCount: Int = 0
+
+    fun ensureCompiled(): Void {
+        if (this.root == null) {
+            val p = RegexParser(this.pattern)
+            this.root = p.parse()
+            this.groupCount = p.groupCount
+        }
+    }
+
+    fun newCaps(): MutableList<Int> {
+        val caps = MutableList<Int>()
+        var i = 0
+        while (i < (this.groupCount + 1) * 2) {
+            caps.add(-1)
+            i = i + 1
+        }
+        return caps
+    }
+
+    fun resetCaps(caps: MutableList<Int>): Void {
+        var i = 0
+        while (i < caps.size()) {
+            caps.set(i, -1)
+            i = i + 1
+        }
+    }
+
+    fun buildResult(input: String, start: Int, end: Int, caps: MutableList<Int>): MatchResult {
+        val groups = MutableList<String>()
+        groups.add(input.substring(start, end))
+        var gi = 1
+        while (gi <= this.groupCount) {
+            val gs = caps[gi * 2]
+            val ge = caps[(gi * 2) + 1]
+            if (gs >= 0 && ge >= gs) {
+                groups.add(input.substring(gs, ge))
+            } else {
+                groups.add("")
+            }
+            gi = gi + 1
+        }
+        return MatchResult(start, end, input.substring(start, end), groups.list)
+    }
+
+    // Full-input match (Kotlin semantics: the ENTIRE input must match).
+    fun matches(input: String): Bool {
+        this.ensureCompiled()
+        val matcher = RegexMatcher(input, this.newCaps())
+        val r = matcher.matchAlts(this.root!!.alts, 0)
+        return r == input.length
+    }
+
+    // First match starting at or after `from`, or null.
+    fun findFrom(input: String, fromPos: Int): MatchResult? {
+        this.ensureCompiled()
+        val caps = this.newCaps()
+        val matcher = RegexMatcher(input, caps)
+        var start = fromPos
+        while (start <= input.length) {
+            this.resetCaps(caps)
+            val r = matcher.matchAlts(this.root!!.alts, start)
+            if (r >= 0) {
+                return this.buildResult(input, start, r, caps)
+            }
+            start = start + 1
+        }
+        return null
+    }
+
+    fun find(input: String): MatchResult? = this.findFrom(input, 0)
+
+    // Replaces ALL non-overlapping matches with `replacement` (Kotlin semantics).
+    fun replace(input: String, replacement: String): String {
+        var result = ""
+        var lastEnd = 0
+        var pos = 0
+        var running = true
+        while (running) {
+            val m = this.findFrom(input, pos)
+            if (m == null) {
+                running = false
+            } else {
+                val found = m!!
+                result = result + input.substring(lastEnd, found.start) + replacement
+                if (found.end == found.start) {
+                    // Empty match: copy the current char and move forward.
+                    if (found.end < input.length) {
+                        result = result + input.substring(found.end, found.end + 1)
+                    }
+                    lastEnd = found.end + 1
+                    pos = found.end + 1
+                } else {
+                    lastEnd = found.end
+                    pos = found.end
+                }
+            }
+        }
+        result = result + input.substring(lastEnd, input.length)
+        return result
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String shortcuts (Kotlin parity)
+// ---------------------------------------------------------------------------
+
+fun String.matchesRegex(pattern: String): Bool = Regex(pattern).matches(this)
+
+fun String.findRegex(pattern: String): MatchResult? = Regex(pattern).find(this)
+
+fun String.replaceRegex(pattern: String, replacement: String): String = Regex(pattern).replace(this, replacement)
