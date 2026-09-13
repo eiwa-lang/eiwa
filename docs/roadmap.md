@@ -1155,9 +1155,12 @@ Semântica alvo:
   `break` (68.1.1 × 78), `break`/`for`-valor em lambda aninhada dentro de `task`
   (passa por desenho — sem teste), `for` sobre `MutableList` em modo-valor.
 - [ ] **G10 — `while` como valor:** fora de escopo por desenho (só `for` coleta).
-- [ ] **BUG (pré-existente, achado por probing):** elvis com default `Int`
-  (`x ?: -1`, `x: Int?`) quebra o verifier (PHI ptr vs i64) — reproduz sem nada
-  de 76/78.
+- [x] **BUG (pré-existente, achado por probing — FIXED):** elvis com default
+  escalar (`x ?: -1`, `d ?: 1.5`) quebrava o verifier (PHI misturava `ptr`
+  boxeado com literal cru). Fix: o emissor entrega a base desembrulhada do
+  checker (unbox no branch presente, `coerceArg` no fallback, tudo dentro dos
+  branches para o PHI ficar no topo). Cobertura `samples/tests/elvis_test.ei`
+  (5 testes: `Int`/`Double` presente+nulo, `String`, `?.` encadeado).
 ---
 ### Phase 77: analisar feature de dart para adicionar em eiwa
 ---

@@ -1118,6 +1118,11 @@ pub fn emitExpression(
                 else
                     llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, lhs_val, llvm.LLVMConstInt(i64_type, 0, 0), "elvis_cond");
 
+                var target_type = llvm.LLVMTypeOf(lhs_val);
+                if (node.resolved_type) |rt| {
+                    target_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.*, global_contracts_ast_ptr);
+                }
+
                 const lhs_end_bb = llvm.LLVMGetInsertBlock(builder);
                 const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "elvis_nonnull");
                 const else_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "elvis_null");
@@ -1125,19 +1130,27 @@ pub fn emitExpression(
                 _ = llvm.LLVMBuildCondBr(builder, not_null, then_bb, else_bb);
 
                 llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+                var then_in = lhs_val;
+                if (node.resolved_type) |rt| {
+                    if (lhs_kind == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(target_type) != llvm.LLVMPointerTypeKind) {
+                        then_in = unboxUnionVariant(ctx, builder, rt.*, lhs_val);
+                    }
+                }
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
 
                 llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
-                const rhs_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.right);
+                var rhs_in = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.right);
+                if (llvm.LLVMTypeOf(rhs_in) != target_type) {
+                    rhs_in = coerceArg(builder, rhs_in, target_type);
+                }
                 const rhs_end_bb = llvm.LLVMGetInsertBlock(builder);
                 if (llvm.LLVMGetBasicBlockTerminator(rhs_end_bb) == null) {
                     _ = llvm.LLVMBuildBr(builder, merge_bb);
                 }
 
                 llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
-                const phi_type = llvm.LLVMTypeOf(lhs_val);
-                const phi = llvm.LLVMBuildPhi(builder, phi_type, "elvis_val");
-                var incoming_vals = [_]llvm.LLVMValueRef{ lhs_val, rhs_val };
+                const phi = llvm.LLVMBuildPhi(builder, target_type, "elvis_val");
+                var incoming_vals = [_]llvm.LLVMValueRef{ then_in, rhs_in };
                 var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_bb, rhs_end_bb };
                 llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
 

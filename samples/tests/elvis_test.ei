@@ -1,0 +1,36 @@
+import { assert } from "std.core"
+
+fun pickInt(x: Int?): Int {
+    return x ?: -1
+}
+
+type Person(val name: String)
+type Auth(val person: Person?)
+
+test "elvis Int nullable with Int default (present)" {
+    assert(pickInt(5) == 5)
+}
+
+test "elvis Int nullable with Int default (null)" {
+    val n: Int? = null
+    assert(pickInt(n) == -1)
+}
+
+test "elvis Double nullable with Double default" {
+    val d: Double? = null
+    assert((d ?: 1.5) == 1.5)
+}
+
+test "elvis String nullable with String default" {
+    val s: String? = null
+    assert((s ?: "John") == "John")
+}
+
+test "chained safe calls with elvis fallback" {
+    val noAuth: Auth? = null
+    assert((noAuth?.person?.name ?: "John") == "John")
+    val noPerson: Auth? = Auth(null)
+    assert((noPerson?.person?.name ?: "John") == "John")
+    val auth: Auth? = Auth(Person("Leo"))
+    assert((auth?.person?.name ?: "John") == "Leo")
+}
