@@ -520,8 +520,8 @@ pub fn emitStatement(
             }
         },
         .break_stmt => |b| {
-            // Innermost loop of this function wins; a valued break with no
-            // enclosing loop is a lambda-local exit (same lowering as `return`).
+            // Innermost loop of this function wins; a lambda-local break with
+            // no enclosing loop exits the lambda (same lowering as `return`).
             if (loop_stack.innermostFor(func_val)) |frame| {
                 if (b.value) |val_node| {
                     if (frame.collect) |ci| {
@@ -537,6 +537,8 @@ pub fn emitStatement(
                 _ = llvm.LLVMBuildBr(builder, frame.after_bb);
             } else if (b.value) |val_node| {
                 try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
+            } else if (b.is_lambda_break) {
+                _ = llvm.LLVMBuildRetVoid(builder);
             } else {
                 return error.BreakOutsideLoop;
             }

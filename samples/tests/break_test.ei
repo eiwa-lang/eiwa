@@ -120,3 +120,31 @@ test "for over map supports break" {
     assert(sum == 1)
     assert(count == 1)
 }
+
+fun callLambda(f: () -> Void) {
+    f()
+}
+
+test "lambda bare break exits Void lambda early" {
+    var executed = false
+    callLambda {
+        if (true) {
+            break
+        }
+        executed = true
+        assert(true)
+    }
+    assert(executed == false)
+}
+
+test "lambda bare break not taken falls through" {
+    var executed = false
+    callLambda {
+        if (false) {
+            break
+        }
+        executed = true
+        assert(true)
+    }
+    assert(executed == true)
+}
