@@ -1844,6 +1844,191 @@ pub const LLVMEmitter = struct {
             // other units reference it as an extern declaration.
             if (define) llvm.LLVMSetInitializer(global, llvm.LLVMConstNull(ptr_type));
         }
+
+        try self.emitEnumByOrdinal(mod, name, ed.variants, define);
+        try self.emitEnumByName(mod, name, ed.variants, define);
+        try self.emitEnumList(mod, name, ed.variants, define, "list");
+        try self.emitEnumList(mod, name, ed.variants, define, "values");
+    }
+
+    fn enumHelperShouldEmit(self: *LLVMEmitter, func: llvm.LLVMValueRef, define: bool) bool {
+        const is_split = self.unit_modules != null;
+        if (is_split and llvm.LLVMCountBasicBlocks(func) == 0) llvm.LLVMSetLinkage(func, llvm.LLVMInternalLinkage);
+        if ((!define and !is_split) or llvm.LLVMCountBasicBlocks(func) > 0) return false;
+        return true;
+    }
+
+    fn emitEnumByOrdinal(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, enum_name: []const u8, variants: []const ast.EnumVariant, define: bool) !void {
+        const fn_name = try std.fmt.allocPrint(self.allocator, "{s}_byOrdinal", .{enum_name});
+        defer self.allocator.free(fn_name);
+        const fn_name_z = try self.allocator.dupeZ(u8, fn_name);
+        defer self.allocator.free(fn_name_z);
+
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
+        var param_types = [_]llvm.LLVMTypeRef{i64_type};
+        const fn_type = llvm.LLVMFunctionType(ptr_type, &param_types, 1, 0);
+
+        const func = llvm.LLVMGetNamedFunction(mod, fn_name_z.ptr) orelse llvm.LLVMAddFunction(mod, fn_name_z.ptr, fn_type);
+        if (!self.enumHelperShouldEmit(func, define)) return;
+
+        const saved_bb = llvm.LLVMGetInsertBlock(self.builder);
+        defer if (saved_bb) |bb| llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+
+        const entry_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "entry");
+        const default_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "default");
+        llvm.LLVMPositionBuilderAtEnd(self.builder, entry_bb);
+
+        const ord_param = llvm.LLVMGetParam(func, 0);
+        const switch_inst = llvm.LLVMBuildSwitch(self.builder, ord_param, default_bb, @intCast(variants.len));
+
+        for (variants, 0..) |variant, idx| {
+            const case_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "case");
+            llvm.LLVMAddCase(switch_inst, llvm.LLVMConstInt(i64_type, @intCast(idx), 0), case_bb);
+
+            llvm.LLVMPositionBuilderAtEnd(self.builder, case_bb);
+            const v_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ enum_name, variant.name });
+            defer self.allocator.free(v_name);
+            const v_name_z = try self.allocator.dupeZ(u8, v_name);
+            defer self.allocator.free(v_name_z);
+
+            const global = llvm.LLVMGetNamedGlobal(mod, v_name_z.ptr) orelse llvm.LLVMAddGlobal(mod, ptr_type, v_name_z.ptr);
+            const loaded = llvm.LLVMBuildLoad2(self.builder, ptr_type, global, "variant_val");
+            _ = llvm.LLVMBuildRet(self.builder, loaded);
+        }
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, default_bb);
+        _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstNull(ptr_type));
+    }
+
+    fn emitEnumByName(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, enum_name: []const u8, variants: []const ast.EnumVariant, define: bool) !void {
+        const fn_name = try std.fmt.allocPrint(self.allocator, "{s}_byName", .{enum_name});
+        defer self.allocator.free(fn_name);
+        const fn_name_z = try self.allocator.dupeZ(u8, fn_name);
+        defer self.allocator.free(fn_name_z);
+
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+        var param_types = [_]llvm.LLVMTypeRef{ptr_type};
+        const fn_type = llvm.LLVMFunctionType(ptr_type, &param_types, 1, 0);
+
+        const func = llvm.LLVMGetNamedFunction(mod, fn_name_z.ptr) orelse llvm.LLVMAddFunction(mod, fn_name_z.ptr, fn_type);
+        if (!self.enumHelperShouldEmit(func, define)) return;
+
+        const saved_bb = llvm.LLVMGetInsertBlock(self.builder);
+        defer if (saved_bb) |bb| llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+
+        const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals").?;
+        const seq_ft = llvm.LLVMGlobalGetValueType(seq_fn);
+
+        const entry_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "entry");
+        const not_null_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "not_null");
+        const ret_null_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "ret_null");
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, entry_bb);
+        const target_str = llvm.LLVMGetParam(func, 0);
+        const is_null = llvm.LLVMBuildIsNull(self.builder, target_str, "is_null");
+        _ = llvm.LLVMBuildCondBr(self.builder, is_null, ret_null_bb, not_null_bb);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, not_null_bb);
+
+        const s_info = self.structs.get(enum_name).?;
+        for (variants) |variant| {
+            const v_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ enum_name, variant.name });
+            defer self.allocator.free(v_name);
+            const v_name_z = try self.allocator.dupeZ(u8, v_name);
+            defer self.allocator.free(v_name_z);
+
+            const global = llvm.LLVMGetNamedGlobal(mod, v_name_z.ptr) orelse llvm.LLVMAddGlobal(mod, ptr_type, v_name_z.ptr);
+            const variant_val = llvm.LLVMBuildLoad2(self.builder, ptr_type, global, "v_val");
+
+            const name_ptr_gep = llvm.LLVMBuildStructGEP2(self.builder, s_info.struct_type, variant_val, 2, "v_name_gep");
+            const v_name_str = llvm.LLVMBuildLoad2(self.builder, ptr_type, name_ptr_gep, "v_name_str");
+
+            var seq_args = [_]llvm.LLVMValueRef{ target_str, v_name_str };
+            const is_eq = llvm.LLVMBuildCall2(self.builder, seq_ft, seq_fn, &seq_args, 2, "is_eq");
+
+            const match_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "match");
+            const next_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "next");
+
+            _ = llvm.LLVMBuildCondBr(self.builder, is_eq, match_bb, next_bb);
+
+            llvm.LLVMPositionBuilderAtEnd(self.builder, match_bb);
+            _ = llvm.LLVMBuildRet(self.builder, variant_val);
+
+            llvm.LLVMPositionBuilderAtEnd(self.builder, next_bb);
+        }
+
+        _ = llvm.LLVMBuildBr(self.builder, ret_null_bb);
+
+        llvm.LLVMPositionBuilderAtEnd(self.builder, ret_null_bb);
+        _ = llvm.LLVMBuildRet(self.builder, llvm.LLVMConstNull(ptr_type));
+    }
+
+    fn emitEnumList(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, enum_name: []const u8, variants: []const ast.EnumVariant, define: bool, fn_base_name: []const u8) !void {
+        const fn_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ enum_name, fn_base_name });
+        defer self.allocator.free(fn_name);
+        const fn_name_z = try self.allocator.dupeZ(u8, fn_name);
+        defer self.allocator.free(fn_name_z);
+
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+        const fn_type = llvm.LLVMFunctionType(ptr_type, null, 0, 0);
+
+        const func = llvm.LLVMGetNamedFunction(mod, fn_name_z.ptr) orelse llvm.LLVMAddFunction(mod, fn_name_z.ptr, fn_type);
+        if (!self.enumHelperShouldEmit(func, define)) return;
+
+        const saved_bb = llvm.LLVMGetInsertBlock(self.builder);
+        defer if (saved_bb) |bb| llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+
+        const entry_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "entry");
+        llvm.LLVMPositionBuilderAtEnd(self.builder, entry_bb);
+
+        const i64_type = llvm.LLVMInt64TypeInContext(self.context);
+        const i8_type = llvm.LLVMInt8TypeInContext(self.context);
+        const count: usize = variants.len;
+        const size_bytes: i64 = 16 + @as(i64, @intCast(count)) * 8;
+        const size_val = llvm.LLVMConstInt(i64_type, @bitCast(size_bytes), 0);
+
+        const malloc_func = getHeapAllocFn(mod);
+        const malloc_type = llvm.LLVMGlobalGetValueType(malloc_func);
+        var malloc_args = [_]llvm.LLVMValueRef{size_val};
+        const arr_ptr = llvm.LLVMBuildCall2(self.builder, malloc_type, malloc_func, &malloc_args, 1, "arr_alloc");
+
+        var idx0 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+        const size_ptr = llvm.LLVMBuildGEP2(self.builder, i64_type, arr_ptr, &idx0, 1, "size_ptr");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, @intCast(count), 0), size_ptr);
+
+        var idx1 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
+        const cap_ptr = llvm.LLVMBuildGEP2(self.builder, i64_type, arr_ptr, &idx1, 1, "cap_ptr");
+        _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i64_type, @intCast(count), 0), cap_ptr);
+
+        for (variants, 0..) |variant, idx| {
+            const v_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ enum_name, variant.name });
+            defer self.allocator.free(v_name);
+            const v_name_z = try self.allocator.dupeZ(u8, v_name);
+            defer self.allocator.free(v_name_z);
+
+            const global = llvm.LLVMGetNamedGlobal(mod, v_name_z.ptr) orelse llvm.LLVMAddGlobal(mod, ptr_type, v_name_z.ptr);
+            const variant_val = llvm.LLVMBuildLoad2(self.builder, ptr_type, global, "v_val");
+
+            const byte_offset: i64 = 16 + @as(i64, @intCast(idx)) * 8;
+            var off_val = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @bitCast(byte_offset), 0)};
+            const elem_i8_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, arr_ptr, &off_val, 1, "elem_i8");
+            _ = llvm.LLVMBuildStore(self.builder, variant_val, elem_i8_ptr);
+        }
+
+        const list_s_type = blk: {
+            if (self.structs.get("collections_List")) |si| break :blk si.struct_type;
+            if (self.structs.get("List")) |si| break :blk si.struct_type;
+            var fields = [_]llvm.LLVMTypeRef{ptr_type};
+            break :blk llvm.LLVMStructTypeInContext(self.context, &fields, 1, 0);
+        };
+
+        var list_alloc_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
+        const list_inst = llvm.LLVMBuildCall2(self.builder, malloc_type, malloc_func, &list_alloc_args, 1, "list_alloc");
+        const items_ptr = llvm.LLVMBuildStructGEP2(self.builder, list_s_type, list_inst, 0, "items");
+        _ = llvm.LLVMBuildStore(self.builder, arr_ptr, items_ptr);
+
+        _ = llvm.LLVMBuildRet(self.builder, list_inst);
     }
 
     fn emitEnumInitializers(

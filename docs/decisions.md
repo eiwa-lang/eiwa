@@ -1013,3 +1013,31 @@ resolvem três coisas de uma vez: o `for`-`map`, o `Void` calado do `if`, e o
 filtro bare — tudo na filosofia trailing-expression, sem keyword nova e sem
 tocar o statement path. Plano completo em `docs/plan_phase76_forvalue.md`;
 cobertura RED em `samples/tests/for_value_test.ei` (11 testes).
+
+## ADR 66: Introspecção e Lookup Estático de Enums (`byName`, `byOrdinal`, `list`)
+**Status:** Aprovado (Setembro 2026)
+**Data:** Setembro 2026
+
+**Contexto:**
+1. Tipos `enum` no Eiwa (introduzidos na Phase 49, ADR 33) oferecem variantes fortemente tipadas com propriedades de instância `.name: String` e `.ordinal: Int`.
+2. No entanto, a conversão inversa — de `String` ou de índice `Int` para a variante correspondente do `enum` — exigia código manual com `when (str)` ou helpers externos.
+3. Diferente de linguagens como Java/Kotlin onde `valueOf()` lança exceções de tempo de execução (`IllegalArgumentException`), o modelo idiomático do Eiwa privilegia **Null Safety estática** em vez de exceções para lookups de chave/nome.
+
+**Decisão:**
+1. **`EnumType.byName(name: String): EnumType?`:**
+   - Sintetizado estaticamente pelo compilador no namespace do enum.
+   - Retorna a variante correspondente se houver correspondência exata de nome via igualdade de string nativa, ou `null` se nenhuma variante coincidir (ou se o argumento for `null`).
+2. **`EnumType.byOrdinal(ordinal: Int): EnumType?`:**
+   - Retorna a variante associada ao ordinal se `0 <= ordinal < variants.len`.
+   - Retorna `null` caso o valor esteja fora dos limites (OOB ou negativo).
+   - Implementado no LLVM via `switch` direto O(1).
+3. **`EnumType.list(): List<EnumType>` (e alias `values()`):**
+   - Retorna uma `List<EnumType>` imutável pré-alocada contendo todas as instâncias de variantes do enum na ordem de declaração.
+   - Preserva o alias `values()` para conformidade com a documentação histórica.
+4. **Resolução de Tipos e Emissão LLVM:**
+   - O Type Checker (`infer_member.zig`) reconhece `byName`, `byOrdinal`, `list` e `values` como métodos estáticos do enum.
+   - O LLVM Emitter (`core.zig`) emite as definições `{Enum}_byName`, `{Enum}_byOrdinal`, `{Enum}_list` na unidade dona do enum, e declarações externas em unidades consumidoras (split mode).
+
+**Razão:**
+Elimina a necessidade de tabelas e funções manuais `when (str)` para parsing de enums, mantendo conformidade total com o sistema de tipos anuláveis do Eiwa e custo de compilação zero.
+

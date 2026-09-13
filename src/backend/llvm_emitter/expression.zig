@@ -5084,8 +5084,16 @@ fn customEqualsClass(node: *ast.ASTNode, mod: llvm.LLVMModuleRef) ?[]const u8 {
         const fname = std.mem.span(llvm.LLVMGetValueName(f));
         if (std.mem.endsWith(u8, fname, "_equals")) {
             const prefix = fname[0 .. fname.len - 7];
-            if (std.mem.eql(u8, prefix, cn) or (prefix.len > cn.len and prefix[prefix.len - cn.len - 1] == '_' and std.mem.endsWith(u8, prefix, cn))) {
+            if (std.mem.eql(u8, prefix, cn)) {
                 return prefix;
+            }
+            // Exact match or known module prefix only: a suffix match would
+            // route enum equality through `List<T>.equals` instantiations.
+            for (mod_prefixes) |p| {
+                if (p.len == 0) continue;
+                if (std.mem.startsWith(u8, prefix, p) and std.mem.eql(u8, prefix[p.len..], cn)) {
+                    return prefix;
+                }
             }
         }
     }

@@ -1081,7 +1081,9 @@ enum LogLevel { TRACE, DEBUG, INFO, WARN, ERROR, OFF }
 Every `enum` variant automatically provides built-in properties and contracts synthesized by the compiler:
 - `name: String`: The string identifier of the variant (e.g. `"NORTH"`).
 - `ordinal: Int`: Zero-based integer index of the variant (e.g. `0`).
-- `values(): List<EnumType>`: Returns a collection containing all enum instances.
+- `values(): List<EnumType>` (alias `list()`): Returns a collection containing all enum instances.
+- `byName(name: String): EnumType?`: Static lookup by variant identifier — returns the variant on exact match, `null` if not found (or if the argument is `null`).
+- `byOrdinal(ordinal: Int): EnumType?`: Static lookup by zero-based index — returns the variant if `0 <= ordinal < size`, `null` if out of bounds.
 - Conformance to `Stringable`, `Equatable`, and `Hashable`.
 - Exhaustive pattern matching via `when (x)`.
 
@@ -1095,6 +1097,22 @@ when (d) {
     Direction.EAST  -> println("Heading East")
     else            -> println("Other heading")
 }
+```
+
+**Static lookup & introspection (`byName`, `byOrdinal`, `list`):**
+
+```kotlin
+val n = Direction.byName("EAST")
+assert(n != null)
+assert(n?.ordinal == 1)
+
+assert(Direction.byName("UNKNOWN") == null)
+assert(Direction.byOrdinal(10) == null)
+assert(Direction.byOrdinal(-1) == null)
+
+val all = Direction.list() // alias: Direction.values()
+assert(all.size() == 4)
+assert(all[0].name == "NORTH")
 ```
 
 ---

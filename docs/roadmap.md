@@ -1248,6 +1248,51 @@ Semântica alvo:
 > `.block` só existe em posições estruturais, então não há caso "bloco trailing
 > aninhado" a tratar (tentativas de recursão checker/emissor revertidas).
 ---
+### Phase 80: Boxing de escalares anuláveis (`Int? == 0` colide com `null`) (PENDING)
+> **Status:** OPEN. Bug pré-existente encontrado durante a implementação do
+> lookup estático de enums (ADR 66): `s0?.ordinal == 0` (onde `s0?.ordinal`
+> é `Int?`) retorna `false` mesmo quando o ordinal é `0`.
+>
+> **Causa raiz (validada por probing):** escalares anuláveis usam boxing
+> direto `IntToPtr`/`PtrToInt` (`unboxUnionVariant` em
+> `src/backend/llvm_emitter/expression.zig`), de modo que o valor `0` boxeia
+> para ponteiro nulo — indistinguível de `null`. O `emitNullableScalarCompare`
+> checa `IsNull(union_val)` primeiro e toma o branch "é null" (retorna `false`
+> para `==`), então `Int?(0) == 0` é `false` e `Int?(0) == null` é `true`.
+> Valores não-zero funcionam (`Int?(1) == 1` é `true`).
+> Evidência: `val x: Int? = 0; assert(x == 0)` falha; `o: Int? = 1` passa.
+>
+> **Workaround atual:** desembrulhar com `!!` (`s0!!.ordinal == 0`) —
+> usado nos testes de `byName` em `samples/tests/enum_test.ei`.
+>
+> **Escopo do fix (fora desta fase):** representação anulável que distingue
+> zero de null (tag dedicado, offset de +1 no boxing, ou nicho de ponteiro
+> reservado), cobrindo `Int`/`Bool(false)`/`Double(0.0)`; checar também
+> `?:` e `?.` sobre o valor zero boxeado. Cobertura sugerida:
+> `nullable_scalar_zero_test.ei` (`Int?`/`Bool?`/`Double?` com valor zero
+> vs literal vs `null`, `==` e `!=`).
+>
+> **Follow-ups de hardening do backend (dívidas da ADR 66, sem impacto no verde atual):**
+> - [ ] **H1 — `emitEnumList` assume o layout de `List` na mão:** usa o struct
+>   genérico (`collections_List`/`List`) ou um struct anônimo `{ptr}` de fallback,
+>   com alloc hardcoded de 16 bytes para um struct de 1 campo — em vez do tipo
+>   monomorfizado real (`collections_List_TaskState`) via `wrapBufferAsList`.
+>   Funciona (offset do campo 0 é sempre 0, over-alloc é inofensivo no GC), mas
+>   quebra silenciosamente se `List` ganhar um campo antes de `items`. Fix:
+>   threadar o nome mangled do `List<Enum>` até o emissor. (`core.zig`)
+> - [ ] **H2 — Unwraps `.?` que viram panic do compilador:** `emitEnumByName` usa
+>   `LLVMGetNamedFunction(mod, "eiwa_string_equals").?` e
+>   `self.structs.get(enum_name).?` — uma futura reordenação das passes
+>   transforma isso em crash em vez de erro diagnosticado. Fix: `orelse return
+>   error.*` como no resto do arquivo. (`core.zig`)
+> - [ ] **H3 — `customEqualsClass` com lista fechada de prefixos:** o fix do
+>   falso-positivo (`List_TaskState` casando `TaskState`) restringiu o fallback
+>   a match exato + prefixos conhecidos (`collections_`, `serde_`, …). Um `type`
+>   de usuário em módulo customizado com `equals` próprio pode não ter o dispatch
+>   reconhecido (cai em comparação de ponteiro). Sem cobertura hoje; documentar
+>   se alguém reportar `equals` ignorado em projeto multi-arquivo.
+>   (`expression.zig`)
+---
 
 * [x] **Errors:** Semantic validations fail gracefully, emitting rich terminal errors.
 

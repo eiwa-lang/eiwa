@@ -304,19 +304,60 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             g.object.data.identifier.resolved_c_name = actual_class_name;
             const enum_node = self.enums_ast.get(actual_class_name).?;
             const ed = enum_node.data.enum_decl;
-            if (std.mem.eql(u8, g.name, "values")) {
+            if (std.mem.eql(u8, g.name, "values") or std.mem.eql(u8, g.name, "list")) {
                 const fn_type = try self.allocator.create(EiwaType);
-                const ret_type = try self.allocator.create(EiwaType);
-                const elem_type = try self.allocator.create(EiwaType);
-                elem_type.* = .{ .Custom = actual_class_name };
-                ret_type.* = .{ .GenericInstance = .{
-                    .base_name = "List",
-                    .type_args = try self.allocator.dupe(*const EiwaType, &.{elem_type}),
-                }};
+                const elem_ref = try self.allocator.create(ast.ASTTypeRef);
+                elem_ref.* = .{ .name = actual_class_name, .generic_args = &.{}, .is_array = false, .is_nullable = false };
+                const list_ref = try self.allocator.create(ast.ASTTypeRef);
+                list_ref.* = .{
+                    .name = "List",
+                    .generic_args = try self.allocator.dupe(*const ast.ASTTypeRef, &.{elem_ref}),
+                    .is_array = false,
+                    .is_nullable = false,
+                };
+                const ret_type = try self.resolveTypeRef(list_ref);
                 fn_type.* = .{ .Function = .{
                     .params = &.{},
                     .return_type = ret_type,
-                    .c_name = try std.fmt.allocPrint(self.allocator, "{s}_values", .{actual_class_name}),
+                    .c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ actual_class_name, g.name }),
+                }};
+                prop_type = fn_type;
+            } else if (std.mem.eql(u8, g.name, "byName")) {
+                const fn_type = try self.allocator.create(EiwaType);
+                const elem_type = try self.allocator.create(EiwaType);
+                elem_type.* = .{ .Custom = actual_class_name };
+                const null_type = try self.allocator.create(EiwaType);
+                null_type.* = .Null;
+                const ret_type = try self.allocator.create(EiwaType);
+                ret_type.* = .{ .Union = .{
+                    .left = elem_type,
+                    .right = null_type,
+                }};
+                const param_type = try self.allocator.create(EiwaType);
+                param_type.* = .String;
+                fn_type.* = .{ .Function = .{
+                    .params = try self.allocator.dupe(*const EiwaType, &.{param_type}),
+                    .return_type = ret_type,
+                    .c_name = try std.fmt.allocPrint(self.allocator, "{s}_byName", .{actual_class_name}),
+                }};
+                prop_type = fn_type;
+            } else if (std.mem.eql(u8, g.name, "byOrdinal")) {
+                const fn_type = try self.allocator.create(EiwaType);
+                const elem_type = try self.allocator.create(EiwaType);
+                elem_type.* = .{ .Custom = actual_class_name };
+                const null_type = try self.allocator.create(EiwaType);
+                null_type.* = .Null;
+                const ret_type = try self.allocator.create(EiwaType);
+                ret_type.* = .{ .Union = .{
+                    .left = elem_type,
+                    .right = null_type,
+                }};
+                const param_type = try self.allocator.create(EiwaType);
+                param_type.* = .Int;
+                fn_type.* = .{ .Function = .{
+                    .params = try self.allocator.dupe(*const EiwaType, &.{param_type}),
+                    .return_type = ret_type,
+                    .c_name = try std.fmt.allocPrint(self.allocator, "{s}_byOrdinal", .{actual_class_name}),
                 }};
                 prop_type = fn_type;
             } else {

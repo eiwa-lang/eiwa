@@ -46,3 +46,55 @@ test "Enum pattern matching via when" {
     }
     assert(result == 2)
 }
+
+test "Enum static lookup byName" {
+    val s0 = TaskState.byName("IDLE")
+    assert(s0 != null)
+    assert(s0?.name == "IDLE")
+    assert(s0!!.ordinal == 0)
+
+    val s1 = TaskState.byName("RUNNING")
+    assert(s1 != null)
+    assert(s1?.name == "RUNNING")
+    assert(s1!!.ordinal == 1)
+
+    val sUnknown = TaskState.byName("UNKNOWN")
+    assert(sUnknown == null)
+
+    val sEmpty = TaskState.byName("")
+    assert(sEmpty == null)
+}
+
+test "Enum static lookup byOrdinal" {
+    val s0 = TaskState.byOrdinal(0)
+    assert(s0 != null)
+    assert(s0?.name == "IDLE")
+
+    val s3 = TaskState.byOrdinal(3)
+    assert(s3 != null)
+    assert(s3?.name == "ERROR")
+
+    val sOOB = TaskState.byOrdinal(4)
+    assert(sOOB == null)
+
+    val sNeg = TaskState.byOrdinal(-1)
+    assert(sNeg == null)
+}
+
+test "Enum static list and iteration" {
+    val all = TaskState.list()
+    assert(all.size() == 4)
+    assert(all[0].name == "IDLE")
+    assert(all[1].name == "RUNNING")
+    assert(all[2].name == "SUCCESS")
+    assert(all[3].name == "ERROR")
+
+    val vals = TaskState.values()
+    assert(vals.size() == 4)
+
+    var count = 0
+    for (all) { item ->
+        count = count + 1
+    }
+    assert(count == 4)
+}
