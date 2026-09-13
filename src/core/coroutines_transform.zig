@@ -2450,107 +2450,67 @@ fn buildResumeStateMachine(
 // ---------------------------------------------------------------------------
 
 /// `val t = task { block }` -> machinery + `val t = __taskN`.
-/// Finds a `break` lexically inside a task block. Stops at nested
-/// lambda/task boundaries, whose breaks belong to those constructs.
-fn taskNodeHasBreak(node: *ASTNode) ?*ASTNode {
+/// Lexical gate for constructs a state machine cannot lower: `break`
+/// (no cross-state jump), value-`for` and value-`try` (no value plumbing
+/// for the res slot yet). Stops at nested lambda/task boundaries, whose
+/// bodies lower separately and are checked by their own rewrite.
+const TaskRejectKind = enum { @"break", collect_for, try_value };
+
+fn taskNodeHas(node: *ASTNode, kind: TaskRejectKind) ?*ASTNode {
     switch (node.data) {
-        .break_stmt => return node,
+        .break_stmt => |b| {
+            if (kind == .@"break") return node;
+            if (b.value) |val| return taskNodeHas(val, kind);
+            return null;
+        },
         // Nested lambdas/functions are separate functions (no state machine);
         // nested `task {}` calls are checked by their own rewrite.
         .lambda_expr, .fun_decl => return null,
         .call_expr => |c| {
             if (isTaskCall(node)) return null;
-            if (taskNodeHasBreak(c.callee)) |brk| return brk;
-            for (c.arguments) |a| if (taskNodeHasBreak(a)) |brk| return brk;
+            if (taskNodeHas(c.callee, kind)) |found| return found;
+            for (c.arguments) |a| if (taskNodeHas(a, kind)) |found| return found;
             return null;
         },
         .block => |b| {
-            for (b.statements) |s| if (taskNodeHasBreak(s)) |brk| return brk;
+            for (b.statements) |s| if (taskNodeHas(s, kind)) |found| return found;
             return null;
         },
         .if_expr => |i| {
-            if (taskNodeHasBreak(i.then_branch)) |brk| return brk;
-            if (i.else_branch) |e| if (taskNodeHasBreak(e)) |brk| return brk;
+            if (taskNodeHas(i.then_branch, kind)) |found| return found;
+            if (i.else_branch) |e| if (taskNodeHas(e, kind)) |found| return found;
             return null;
         },
         // A break inside a nested loop still lives inside the task: it can
         // never lower into a state machine, so it is rejected all the same.
-        .while_stmt => |w| return taskNodeHasBreak(w.body),
+        .while_stmt => |w| return taskNodeHas(w.body, kind),
         .for_stmt => |f| {
-            if (taskNodeHasBreak(f.iterable)) |brk| return brk;
-            return taskNodeHasBreak(f.body);
+            if (kind == .collect_for and f.collect) return node;
+            if (taskNodeHas(f.iterable, kind)) |found| return found;
+            return taskNodeHas(f.body, kind);
         },
         .try_stmt => |t| {
-            if (taskNodeHasBreak(t.body)) |brk| return brk;
-            for (t.catches) |c| if (taskNodeHasBreak(c.body)) |brk| return brk;
+            if (kind == .try_value and t.is_value) return node;
+            if (taskNodeHas(t.body, kind)) |found| return found;
+            for (t.catches) |c| if (taskNodeHas(c.body, kind)) |found| return found;
             return null;
         },
         .when_expr => |w| {
-            for (w.cases) |c| if (taskNodeHasBreak(c.body)) |brk| return brk;
+            for (w.cases) |c| if (taskNodeHas(c.body, kind)) |found| return found;
             return null;
         },
         // Value slots can hide loops with breaks (`val x = for ...`).
         // Anything else is a pure expression: surviving breaks there are
         // lambda-local (stopped above) or already checker errors.
         .var_decl => |v| {
-            if (v.initializer) |init| return taskNodeHasBreak(init);
+            if (v.initializer) |init| return taskNodeHas(init, kind);
             return null;
         },
         .return_stmt => |r| {
-            if (r.value) |val| return taskNodeHasBreak(val);
+            if (r.value) |val| return taskNodeHas(val, kind);
             return null;
         },
-        .assignment => |a| return taskNodeHasBreak(a.value),
-        else => return null,
-    }
-}
-
-/// Finds a value-positioned `for` lexically inside a task block (rejected
-/// like `break`). Same boundary rules as `taskNodeHasBreak`.
-fn taskNodeHasCollectFor(node: *ASTNode) ?*ASTNode {
-    switch (node.data) {
-        .for_stmt => |f| {
-            if (f.collect) return node;
-            if (taskNodeHasCollectFor(f.iterable)) |found| return found;
-            return taskNodeHasCollectFor(f.body);
-        },
-        // Nested lambdas/functions lower separately; nested `task {}` calls
-        // are checked by their own rewrite.
-        .lambda_expr, .fun_decl => return null,
-        .call_expr => |c| {
-            if (isTaskCall(node)) return null;
-            if (taskNodeHasCollectFor(c.callee)) |found| return found;
-            for (c.arguments) |a| if (taskNodeHasCollectFor(a)) |found| return found;
-            return null;
-        },
-        .block => |b| {
-            for (b.statements) |s| if (taskNodeHasCollectFor(s)) |found| return found;
-            return null;
-        },
-        .if_expr => |i| {
-            if (taskNodeHasCollectFor(i.then_branch)) |found| return found;
-            if (i.else_branch) |e| if (taskNodeHasCollectFor(e)) |found| return found;
-            return null;
-        },
-        .while_stmt => |w| return taskNodeHasCollectFor(w.body),
-        .try_stmt => |t| {
-            if (taskNodeHasCollectFor(t.body)) |found| return found;
-            for (t.catches) |c| if (taskNodeHasCollectFor(c.body)) |found| return found;
-            return null;
-        },
-        .when_expr => |w| {
-            for (w.cases) |c| if (taskNodeHasCollectFor(c.body)) |found| return found;
-            return null;
-        },
-        .var_decl => |v| {
-            if (v.initializer) |init| return taskNodeHasCollectFor(init);
-            return null;
-        },
-        .return_stmt => |r| {
-            if (r.value) |val| return taskNodeHasCollectFor(val);
-            return null;
-        },
-        .assignment => |a| return taskNodeHasCollectFor(a.value),
+        .assignment => |a| return taskNodeHas(a.value, kind),
         else => return null,
     }
 }
@@ -2576,12 +2536,16 @@ fn rewriteTaskCall(
     // (accepting it there would break the build as soon as a `sleep` lands
     // elsewhere in the same task).
     for (body) |bstmt| {
-        if (taskNodeHasBreak(bstmt)) |brk| {
+        if (taskNodeHas(bstmt, .@"break")) |brk| {
             checker.reportError(brk.line, brk.column, "TypeError: 'break' is not supported inside task blocks (synchronous code only).", .{});
             return error.TypeError;
         }
-        if (taskNodeHasCollectFor(bstmt)) |cf| {
+        if (taskNodeHas(bstmt, .collect_for)) |cf| {
             checker.reportError(cf.line, cf.column, "TypeError: for used as a value is not supported inside task blocks yet.", .{});
+            return error.TypeError;
+        }
+        if (taskNodeHas(bstmt, .try_value)) |tv| {
+            checker.reportError(tv.line, tv.column, "TypeError: try used as a value is not supported inside task blocks yet.", .{});
             return error.TypeError;
         }
     }

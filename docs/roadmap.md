@@ -1294,25 +1294,60 @@ Semântica alvo:
 >   (`expression.zig`)
 ---
 
-### Phase 81: `try` como expressão (`T?`, estilo `runCatching {}.getOrNull()`) (RED)
-> **Status:** RED (TDD, sem implementação). Plano em
-> `docs/plan_phase81_tryvalue.md`, decisão em ADR 67, cobertura RED em
-> `samples/tests/try_expression_test.ei` (8 testes).
+### Phase 81: `try` como expressão (`T?`, estilo `runCatching {}.getOrNull()`) (GREEN)
+> **Status:** GREEN. Plano em `docs/plan_phase81_tryvalue.md`, decisão em ADR 67,
+> cobertura em `samples/tests/try_expression_test.ei` (8 testes).
 >
-> **Semântica alvo:** só bare `try` sem `catch` vira expressão no MVP —
-> `val r: T? = try { f() }` (sucesso → trailing, exceção → `null`,
-> achata `T??`, corpo `Void` = `TypeError`); statement continua `Void`
-> (regressão zero); `try/catch` em valor e suspend dentro de try-valor =
-> `TypeError` explícito (follow-ups).
+> **Semântica:** só bare `try` sem `catch` vira expressão — `val r: T? = try { f() }`
+> (sucesso → trailing, exceção → `null`, achata `T??`, corpo `Void` = `TypeError`);
+> statement continua `Void` (regressão zero); `try/catch` em valor e try-valor
+> em `task {}` = `TypeError` explícito (follow-ups).
 >
-> - [x] **Task 81.0 (RED):** suíte `try_expression_test.ei` (sucesso/null,
->   `PersonaGoal.metodo()`, inferência, multi-statement, elvis, aninhado,
->   regressão statement). Falha hoje com `Expected expression`.
-> - [ ] **Task 81.1:** parser + flag `is_value` (+ `clone`).
-> - [ ] **Task 81.2:** checker + `T?`/flatten/Void-error + rejeição catch-valor.
-> - [ ] **Task 81.3:** emissor valor (slot + null no catch path).
-> - [ ] **Task 81.4:** transform (rejeição suspend) + docs `language_tour.md §6`.
-> - [ ] **Verify:** `try_expression_test.ei` 8/8 + suíte cheia + `zig build test`.
+> **Implementação (desvio do plano: expressão primária, não slots):**
+> `try` entrou como expressão primária ao lado de `if`/`when`
+> (`expression.zig`), não nos slots cirúrgicos do `for` — assim compõe em
+> parênteses/aninhamento de graça e o checker decide via `need`
+> (`is_value` ou `expected` não-`Void`, espelho do `if`). `markTrailingValue`
+> propaga para `try` e seu corpo; `clone` preserva `is_value` (`if`/`when`
+> também, de brinde) e clona `try` profundo. Emissor: moldura
+> `setjmp`/`longjmp` com slot `res` (`emitBlockOrExpr` no `try.body`,
+> `null` no caminho `catch`); `try` `Void` como trailing delega ao statement.
+> Transform rejeita try-valor em `task` uniformemente (espelho G5/78).
+> O LHS do elvis conta como slot-valor (`try { f() } ?: fallback` funciona;
+> demais operandos/binários e ramos de ternário continuam fora).
+>
+> - [x] **Task 81.1:** parser + flag `is_value` (+ `clone`).
+> - [x] **Task 81.2:** checker + `T?`/flatten/Void-error + rejeição catch-valor.
+> - [x] **Task 81.3:** emissor valor (slot + null no catch path).
+> - [x] **Task 81.4:** transform (rejeição task) + docs `language_tour.md §6.4`.
+> - [x] **Verify:** `try_expression_test.ei` 8/8 + suíte cheia
+> (**ALL 485 TESTS PASSED**) e `zig build test` verdes; 3 negativas manuais
+> (corpo `Void`, catch-valor, try-valor em `task`) + `return`/atribuição-RHS.
+> - [x] **Cleanup pós-GREEN:** frame `setjmp` compartilhado
+> (`emitTryBegin`/`emitTryPop`) + walkers de task unificados
+> (`taskNodeHas(node, kind)` — `break`/`collect_for`/`try_value`).
+
+---
+
+### Follow-ups Phase 81 & Known Gaps (OPEN)
+> Nada aqui quebra código existente; são extensões e um bug pré-existente
+> exercitado pelo feature (mesmo modelo do consolidado pós-76).
+
+- [ ] **F1 — `try/catch` como expressão com fallback:** `val r = try { a } catch { b }`
+  com unificação `T` (hoje: `TypeError` dedicado "not supported yet").
+- [ ] **F2 — try-valor em `task {}`:** plumbing do slot `res` na state machine
+  (hoje: `TypeError` uniforme, espelho G5/78).
+- [ ] **F3 — `try` como operando geral:** ramos de ternário e operandos
+  binários (exceto LHS do `?:`, que conta como slot-valor) continuam fora;
+  `obj.x = try {...}` não verificado.
+- [ ] **F4 — Cobertura `T` contract/genérico:** `val r: Drawable? = try {...}`
+  sem teste (emissão via fat pointer não exercitada).
+- [ ] **BUG (pré-existente, Phase 80 — CONFIRMADO via try):** `try { 0 }` retorna
+  `null`: escalar zero boxeia para ponteiro nulo, indistinguível de exceção
+  (`Int?(0)`, `Bool?(false)`, `Double?(0.0)`). Evidência:
+  `take(try { ok() })` OK, `try { 41 + 1 } == 42` OK, `try { 0 } == null`
+  (deveria ser `0`). Fix na Phase 80, não aqui.
+---
 
 ---
 

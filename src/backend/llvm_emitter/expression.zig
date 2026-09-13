@@ -4140,6 +4140,41 @@ pub fn emitExpression(
             }
             return val;
         },
+        .try_stmt => |ts_node| {
+            // Statement `try` in expression position (e.g. trailing of a
+            // statement block): emit as a statement with a dummy value.
+            const is_void = if (node.resolved_type) |rt| rt.* == .Void else true;
+            const cur_bb = llvm.LLVMGetInsertBlock(builder);
+            const func_val = llvm.LLVMGetBasicBlockParent(cur_bb);
+            if (is_void) {
+                try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, node, null);
+                return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+            }
+
+            const ret_type = if (node.resolved_type) |rt| types_mapping.getLLVMTypeWithContracts(ctx, rt.*, global_contracts_ast_ptr) else llvm.LLVMPointerTypeInContext(ctx, 0);
+            const res_ptr = llvm.LLVMBuildAlloca(builder, ret_type, "expr_try_res");
+            const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
+
+            const frame = try statement.emitTryBegin(ctx, mod, builder, func_val);
+            const catch_bb = frame.catch_bb;
+            const after_bb = frame.after_bb;
+
+            try emitBlockOrExpr(ctx, mod, builder, func_val, scope, structs, libs, ts_node.body, res_ptr, node.resolved_type);
+            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
+                try statement.emitTryPop(ctx, mod, builder);
+                _ = llvm.LLVMBuildBr(builder, after_bb);
+            }
+
+            llvm.LLVMPositionBuilderAtEnd(builder, catch_bb);
+            try statement.emitTryPop(ctx, mod, builder);
+            const fat_type = types_mapping.getFatPointerType(ctx);
+            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
+            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ret_type), res_ptr);
+            _ = llvm.LLVMBuildBr(builder, after_bb);
+
+            llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
+            return llvm.LLVMBuildLoad2(builder, ret_type, res_ptr, "expr_try_res_load");
+        },
         .for_stmt => |f| {
             // A collecting `for` builds a List; a statement one runs for
             // effects with a dummy value.
@@ -5604,9 +5639,21 @@ fn emitBlockOrExpr(
                 try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, s, null);
             }
             const last_stmt = stmts[stmts.len - 1];
+            // A value `try` (non-Void) flows through the expression emitter
+            // (res slot); a statement `try` (Void) stays a plain statement.
+            const last_is_value_try = last_stmt.data == .try_stmt and
+                (if (last_stmt.resolved_type) |rt| rt.* != .Void else false);
             switch (last_stmt.data) {
-                .var_decl, .return_stmt, .while_stmt, .try_stmt, .throw_stmt, .block => {
+                .var_decl, .return_stmt, .while_stmt, .throw_stmt, .block => {
                     try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, last_stmt, null);
+                },
+                .try_stmt => {
+                    if (last_is_value_try) {
+                        const val = try emitExpression(ctx, mod, builder, scope, structs, libs, last_stmt);
+                        try storeBlockOrExprResult(ctx, mod, builder, res_ptr, val, last_stmt, expected_type);
+                    } else {
+                        try statement.emitStatement(ctx, mod, builder, func_val, scope, structs, libs, last_stmt, null);
+                    }
                 },
                 else => {
                     const val = try emitExpression(ctx, mod, builder, scope, structs, libs, last_stmt);

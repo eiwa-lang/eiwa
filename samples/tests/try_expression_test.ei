@@ -55,6 +55,11 @@ test "try-expr: multi-statement usa trailing expression" {
 test "try-expr: compoe com elvis" {
     val r: String = try { tryBoom() } ?: "fallback"
     assert(r == "fallback")
+    val r2: String = try { tryOk() } ?: "fallback"
+    assert(r2 == "ok")
+    val tmp: String? = try { tryBoom() }
+    val r3: String? = tmp ?: "fallback"
+    assert(r3 == "fallback")
 }
 
 test "try-expr: aninhado" {

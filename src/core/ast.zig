@@ -382,6 +382,7 @@ pub const ASTNodeType = union(enum) {
     try_stmt: struct {
         body: *ASTNode,
         catches: []const CatchBlock,
+        is_value: bool = false,
     },
     throw_stmt: struct {
         expr: *ASTNode,

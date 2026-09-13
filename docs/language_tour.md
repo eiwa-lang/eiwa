@@ -471,6 +471,24 @@ try {
 }
 ```
 
+### 6.4 `try` as an Expression (`T?`, `runCatching {}.getOrNull()`)
+A bare `try` without `catch` can be used where a value is expected (variable
+initializer, assignment right-hand side, `return`, trailing of a value block).
+On success it yields the trailing expression of the block; on exception it
+yields `null` — the native substitute for Kotlin's
+`runCatching { f() }.getOrNull()`, with no `Result` wrapper:
+```kotlin
+val retorno: String? = try { PersonaGoal.metodo() }
+// ok -> value | throw -> null
+
+// composes with `?:` (the elvis LHS counts as a value slot)
+val greeting: String = try { fetchName() } ?: "guest"
+```
+Rules: the type is `T?` (`T??` flattens, like the short ternary); a `Void`
+body in value position is a compile-time error; `try` with `catch` in value
+position and `try`-as-value inside `task {}` are rejected (synchronous code
+only, for now). As a statement, `try` stays `Void` with zero behavior change.
+
 ---
 
 ## 7. Collections (List, Map, Set)

@@ -464,6 +464,10 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
         return try self.createNode(.{ .null_literal = {} });
     }
 
+    if (self.match(.kw_try)) {
+        return try self.tryStatement();
+    }
+
     if (self.match(.kw_if)) {
         try self.consume(.l_paren, "Expected '(' after 'if'.");
         const condition = try self.expression();

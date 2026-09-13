@@ -161,6 +161,68 @@ fn checkVtableMatch(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: 
     return is_m;
 }
 
+/// Shared `setjmp`/`longjmp` exception frame for `try` (statement and value
+/// emitters). Pushes the frame, emits the `setjmp` dispatch and leaves the
+/// builder positioned at the `try` body block.
+pub const TryFrame = struct {
+    try_bb: llvm.LLVMBasicBlockRef,
+    catch_bb: llvm.LLVMBasicBlockRef,
+    after_bb: llvm.LLVMBasicBlockRef,
+};
+
+pub fn emitTryBegin(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+) !TryFrame {
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const i32_type = llvm.LLVMInt32TypeInContext(ctx);
+    const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
+    const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
+
+    const frame_ptr = llvm.LLVMBuildAlloca(builder, frame_type, "exc_frame");
+    llvm.LLVMSetAlignment(frame_ptr, 16);
+
+    const cur_stack = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "cur_stack");
+    const next_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, frame_ptr, 1, "frame_next");
+    _ = llvm.LLVMBuildStore(builder, cur_stack, next_gep);
+    _ = llvm.LLVMBuildStore(builder, frame_ptr, stack_global);
+
+    const buf_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, frame_ptr, 0, "frame_buf");
+    const buf_ptr = llvm.LLVMBuildBitCast(builder, buf_gep, ptr_type, "fbuf");
+    const setjmp_func = (llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp")) orelse return error.ExceptionRuntimeMissing;
+    const sj_type = llvm.LLVMGlobalGetValueType(setjmp_func);
+    var sj_args = [_]llvm.LLVMValueRef{buf_ptr};
+    const sj_ret = llvm.LLVMBuildCall2(builder, sj_type, setjmp_func, &sj_args, 1, "setjmp_ret");
+    const zero_i32 = llvm.LLVMConstInt(i32_type, 0, 0);
+    const is_try = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, sj_ret, zero_i32, "is_try");
+
+    const try_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "try.body");
+    const catch_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "try.catch");
+    const after_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "try.after");
+    _ = llvm.LLVMBuildCondBr(builder, is_try, try_bb, catch_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, try_bb);
+    return .{ .try_bb = try_bb, .catch_bb = catch_bb, .after_bb = after_bb };
+}
+
+/// Pops the exception frame. Shared by the success-path fallthrough and the
+/// catch entry (both must unwind before branching on).
+pub fn emitTryPop(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+) !void {
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
+    const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
+    const stack = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "stack_pop");
+    const next_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, stack, 1, "next_pop");
+    const next_val = llvm.LLVMBuildLoad2(builder, ptr_type, next_gep, "next_val_pop");
+    _ = llvm.LLVMBuildStore(builder, next_val, stack_global);
+}
+
 pub fn emitStatement(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -553,51 +615,21 @@ pub fn emitStatement(
             llvm.LLVMPositionBuilderAtEnd(builder, dead_bb);
         },
         .try_stmt => |ts| {
-            const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
-            const i32_type = llvm.LLVMInt32TypeInContext(ctx);
-            const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
-            const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
+            const frame = try emitTryBegin(ctx, mod, builder, func_val);
+            const catch_bb = frame.catch_bb;
+            const after_bb = frame.after_bb;
             const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
 
-            const frame_ptr = llvm.LLVMBuildAlloca(builder, frame_type, "exc_frame");
-            llvm.LLVMSetAlignment(frame_ptr, 16);
-
-            const cur_stack = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "cur_stack");
-            const next_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, frame_ptr, 1, "frame_next");
-            _ = llvm.LLVMBuildStore(builder, cur_stack, next_gep);
-            _ = llvm.LLVMBuildStore(builder, frame_ptr, stack_global);
-
-            const buf_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, frame_ptr, 0, "frame_buf");
-            const buf_ptr = llvm.LLVMBuildBitCast(builder, buf_gep, ptr_type, "fbuf");
-            const setjmp_func = (llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp")) orelse return error.ExceptionRuntimeMissing;
-            const sj_type = llvm.LLVMGlobalGetValueType(setjmp_func);
-            var sj_args = [_]llvm.LLVMValueRef{buf_ptr};
-            const sj_ret = llvm.LLVMBuildCall2(builder, sj_type, setjmp_func, &sj_args, 1, "setjmp_ret");
-            const zero_i32 = llvm.LLVMConstInt(i32_type, 0, 0);
-            const is_try = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, sj_ret, zero_i32, "is_try");
-
-            const try_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "try.body");
-            const catch_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "try.catch");
-            const after_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "try.after");
-            _ = llvm.LLVMBuildCondBr(builder, is_try, try_bb, catch_bb);
-
-            llvm.LLVMPositionBuilderAtEnd(builder, try_bb);
             try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, ts.body, declared_ret);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
-                const stack2 = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "stack2");
-                const next_gep2 = llvm.LLVMBuildStructGEP2(builder, frame_type, stack2, 1, "next2");
-                const next_val2 = llvm.LLVMBuildLoad2(builder, ptr_type, next_gep2, "next_val2");
-                _ = llvm.LLVMBuildStore(builder, next_val2, stack_global);
+                try emitTryPop(ctx, mod, builder);
                 _ = llvm.LLVMBuildBr(builder, after_bb);
             }
 
             llvm.LLVMPositionBuilderAtEnd(builder, catch_bb);
-            {
-                const stack3 = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "stack3");
-                const next_gep3 = llvm.LLVMBuildStructGEP2(builder, frame_type, stack3, 1, "next3");
-                const next_val3 = llvm.LLVMBuildLoad2(builder, ptr_type, next_gep3, "next_val3");
-                _ = llvm.LLVMBuildStore(builder, next_val3, stack_global);
-            }
+            try emitTryPop(ctx, mod, builder);
+            const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+            const i32_type = llvm.LLVMInt32TypeInContext(ctx);
             const fat_type = types_mapping.getFatPointerType(ctx);
             const exc_val = llvm.LLVMBuildLoad2(builder, fat_type, active_global, "exc");
             _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
@@ -659,6 +691,7 @@ pub fn emitStatement(
                 // --- Rethrow Block ---
                 llvm.LLVMPositionBuilderAtEnd(builder, rethrow_bb);
                 _ = llvm.LLVMBuildStore(builder, exc_val, active_global);
+                const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
                 const cur_stack2 = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "cur_stack2");
                 const null_ptr2 = llvm.LLVMConstNull(ptr_type);
                 const has_handler2 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cur_stack2, null_ptr2, "has_handler2");
@@ -669,6 +702,7 @@ pub fn emitStatement(
 
                 llvm.LLVMPositionBuilderAtEnd(builder, rethrow_do_bb);
                 {
+                    const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
                     const buf_gep2 = llvm.LLVMBuildStructGEP2(builder, frame_type, cur_stack2, 0, "stack_buf2");
                     const buf_ptr2 = llvm.LLVMBuildBitCast(builder, buf_gep2, ptr_type, "sbuf2");
                     const longjmp_func2 = (llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp")) orelse return error.ExceptionRuntimeMissing;

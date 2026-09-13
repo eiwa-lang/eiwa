@@ -94,13 +94,28 @@ task { val r = try { sleepMs(1); ok() } }       // TypeError: suspend em try-val
 
 Cobertura RED: `samples/tests/try_expression_test.ei` (8 testes).
 
-## 7. Tasks (GREEN, fora deste commit)
+## 7. Tasks (GREEN)
 
-* [ ] **Task 81.1:** parser + flag `is_value` (+ `clone`).
-* [ ] **Task 81.2:** checker + `T?`/flatten/Void-error + rejeição catch-valor.
-* [ ] **Task 81.3:** emissor valor (slot + null no catch path).
-* [ ] **Task 81.4:** transform (rejeição suspend) + docs `language_tour.md §6`.
-* [ ] **Verify:** `try_expression_test.ei` 8/8 + suite cheia + `zig build test`.
-* [ ] **Follow-up (Phase 82?):** `try/catch` como expressão com fallback
-  (`val r = try { a } catch { b }` com unificação `T`); `G2/G3`-style
-  (try-valor como arg de call / `obj.x = try {...}`).
+* [x] **Task 81.1:** parser + flag `is_value` (+ `clone`).
+* [x] **Task 81.2:** checker + `T?`/flatten/Void-error + rejeição catch-valor.
+* [x] **Task 81.3:** emissor valor (slot + null no catch path).
+* [x] **Task 81.4:** transform (rejeição task) + docs `language_tour.md §6`.
+* [x] **Verify:** `try_expression_test.ei` 8/8 + suite cheia + `zig build test`.
+* [x] **Cleanup pós-GREEN:** frame `setjmp` compartilhado
+  (`emitTryBegin`/`emitTryPop` em `statement.zig`, usado pelos dois
+  emissores); walkers de task unificados (`taskNodeHas(node, kind)`).
+
+## 8. Follow-ups (OPEN, ver Roadmap "Follow-ups Phase 81")
+
+* [ ] **F1 — `try/catch` como expressão com fallback:** `val r = try { a } catch { b }`
+  com unificação `T` (hoje: `TypeError` dedicado).
+* [ ] **F2 — try-valor em `task {}`:** plumbing do slot `res` na state machine
+  (hoje: `TypeError` uniforme, espelho G5/78).
+* [ ] **F3 — `try` como operando geral:** LHS do `?:` conta como slot-valor
+  (`inferBinaryExpr` marca antes de inferir — só converte erro em valor);
+  ramos de ternário e demais operandos binários continuam fora.
+  `obj.x = try {...}` não verificado.
+* [ ] **F4 — Cobertura `T` contract/genérico:** `val r: Drawable? = try {...}`
+  sem teste (emissão via fat pointer não exercitada).
+* [ ] **F5 — Phase 80 (bug herdado, confirmado):** `try { 0 }` retorna `null`
+  — escalar zero boxeia para ponteiro nulo. Ver `try { 41 + 1 }` OK.

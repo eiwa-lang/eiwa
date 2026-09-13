@@ -150,6 +150,9 @@ pub fn inferUnaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 
 pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const b = node.data.binary_expr;
+    // The elvis LHS counts as a value (a trailing `if`/`when`/`try` yields
+    // instead of staying `Void`). Only turns prior errors into values.
+    if (b.op == .elvis) markTrailingValue(b.left, true);
     const left_type = try self.inferNode(b.left, scope);
     const right_type = try self.inferNode(b.right, scope);
 

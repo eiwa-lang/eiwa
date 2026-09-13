@@ -109,6 +109,7 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
                 .condition = try self.cloneNode(i.condition),
                 .then_branch = try self.cloneNode(i.then_branch),
                 .else_branch = el,
+                .is_value = i.is_value,
             }};
         },
         .while_stmt => |w| {
@@ -218,6 +219,7 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
             new_node.data = .{ .when_expr = .{
                 .subject = subject,
                 .cases = new_cases,
+                .is_value = w.is_value,
             }};
         },
         .lambda_expr => |l| {
@@ -237,6 +239,21 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
                 .params = new_params,
                 .body = new_body,
             } };
+        },
+        .try_stmt => |t| {
+            var new_catches = try self.allocator.alloc(ast.CatchBlock, t.catches.len);
+            for (t.catches, 0..) |c, idx| {
+                new_catches[idx] = .{
+                    .var_name = c.var_name,
+                    .types = c.types,
+                    .body = try self.cloneNode(c.body),
+                };
+            }
+            new_node.data = .{ .try_stmt = .{
+                .body = try self.cloneNode(t.body),
+                .catches = new_catches,
+                .is_value = t.is_value,
+            }};
         },
         .fun_decl => |f| {
             var new_params = try self.allocator.alloc(ast.Param, f.params.len);

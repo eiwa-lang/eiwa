@@ -1042,7 +1042,7 @@ cobertura RED em `samples/tests/for_value_test.ei` (11 testes).
 Elimina a necessidade de tabelas e funções manuais `when (str)` para parsing de enums, mantendo conformidade total com o sistema de tipos anuláveis do Eiwa e custo de compilação zero.
 
 ## ADR 67: `try` como Expressão (`T?`, substituto nativo de `runCatching {}.getOrNull()`)
-**Status:** Proposto (Phase 81, RED)
+**Status:** Aprovado (Phase 81, GREEN)
 **Data:** Setembro 2026
 
 **Contexto:**
