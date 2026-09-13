@@ -1,0 +1,5 @@
+type ImportedGreeter(val name: String)
+
+fun ImportedGreeter.greet(prefix: String = "hello", suffix: String = prefix): String {
+    return prefix + " " + this.name + suffix
+}

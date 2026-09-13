@@ -12,6 +12,34 @@ const EiwaType = core.EiwaType;
 const extractBaseType = core.extractBaseType;
 const isNullable = core.isNullable;
 
+fn findExtensionWithDefaults(
+    self: *TypeChecker,
+    resolver: *TypeChecker,
+    ext_list: ArrayList(*ASTNode),
+    base_type: *const EiwaType,
+    arg_count: usize,
+) ?*ASTNode {
+    for (ext_list.items) |ext_node| {
+        const f = &ext_node.data.fun_decl;
+        if (f.receiver_type == null) continue;
+        const rec_t = resolver.resolveTypeRef(f.receiver_type.?) catch null;
+        if (rec_t == null) continue;
+        if (!self.isCompatible(rec_t.?, base_type) and !self.isCompatible(base_type, rec_t.?)) continue;
+        if (arg_count > f.params.len) continue;
+        var has_defaults = true;
+        var i = arg_count;
+        while (i < f.params.len) : (i += 1) {
+            if (f.params[i].initializer == null) {
+                has_defaults = false;
+                break;
+            }
+        }
+        if (!has_defaults) continue;
+        return ext_node;
+    }
+    return null;
+}
+
 fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
     switch (t.*) {
         .Int, .Bool, .String, .Void, .Null => return true,
@@ -1977,27 +2005,18 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
                     }
 
-                    // Extension functions (`fun Type.method(...)`) live in the extension registry, not in type_decl.methods
                     if (found_method == null) {
                         if (self.extension_functions.get(g.name)) |ext_list| {
-                            for (ext_list.items) |ext_node| {
-                                const f = &ext_node.data.fun_decl;
-                                if (f.receiver_type == null) continue;
-                                const rec_t = self.resolveTypeRef(f.receiver_type.?) catch null;
-                                if (rec_t == null) continue;
-                                if (!self.isCompatible(rec_t.?, base_type) and !self.isCompatible(base_type, rec_t.?)) continue;
-                                if (c.arguments.len > f.params.len) continue;
-                                var has_defaults = true;
-                                var i = c.arguments.len;
-                                while (i < f.params.len) : (i += 1) {
-                                    if (f.params[i].initializer == null) {
-                                        has_defaults = false;
-                                        break;
-                                    }
+                            found_method = findExtensionWithDefaults(self, self, ext_list, base_type, c.arguments.len);
+                        }
+                        if (found_method == null and self.registry != null) {
+                            var mod_it = self.registry.?.modules.iterator();
+                            while (mod_it.next()) |entry| {
+                                const checker = entry.value_ptr.checker;
+                                if (checker.extension_functions.get(g.name)) |ext_list| {
+                                    found_method = findExtensionWithDefaults(self, checker, ext_list, base_type, c.arguments.len);
+                                    if (found_method != null) break;
                                 }
-                                if (!has_defaults) continue;
-                                found_method = ext_node;
-                                break;
                             }
                         }
                     }

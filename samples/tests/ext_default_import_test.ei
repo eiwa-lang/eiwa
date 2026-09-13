@@ -1,0 +1,13 @@
+import { assert } from "std.core"
+import { ImportedGreeter, greet } from ".samples.ext_default_lib"
+
+test "default_params: should use default arguments in imported extension functions" {
+    val g = ImportedGreeter("Ana")
+
+    // omitted default
+    assert(g.greet() == "hello Anahello")
+
+    // provided override
+    assert(g.greet("oi") == "oi Anaoi")
+    assert(g.greet("oi", "!") == "oi Ana!")
+}
