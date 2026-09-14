@@ -1209,6 +1209,10 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         .receiver = if (receiver_type) |rec_t| rec_t else (if (scope.lookupVariable("this")) |this_t| this_t else null),
     } };
 
+    const old_fn_return = self.current_fn_return;
+    self.current_fn_return = return_type;
+    defer self.current_fn_return = old_fn_return;
+
     if (node.resolved_type) |rt| {
         @constCast(rt).* = fn_type.*;
     } else {
@@ -1231,6 +1235,15 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     if (f.is_expr_body) {
         if (!self.isCompatible(return_type, f.body.resolved_type.?)) {
             self.reportError(node.line, node.column, "TypeError: Expected {} but found {} in expression body.", .{ return_type.*, f.body.resolved_type.?.* });
+            return error.TypeError;
+        }
+    } else if (return_type.* != .Void) {
+        // Block bodies require explicit `return` on every path; otherwise the
+        // backend emits a zero/null placeholder that surfaces as a
+        // NullPointerException (or a silent wrong value) far from the bug.
+        // Unknown/GenericParam declarations stay lenient via isCompatible.
+        if (!infer_stmt_mod.bodyGuaranteesReturn(f.body)) {
+            self.reportError(node.line, node.column, "TypeError: Missing return in function '{s}' with return type {}. All code paths must return a value.", .{ f.name, return_type.* });
             return error.TypeError;
         }
     }
@@ -2753,4 +2766,105 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
         }
         try self.monomorphized_nodes.append(obj_node);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Missing/incompatible `return` regression guard (wiring): `inferFunDecl`
+// must reject block-bodied functions whose declared non-Void return type is
+// not satisfied on every path. Primitive return types resolve without the
+// stdlib, so these tests stay hermetic (arena-backed, no disk access).
+// ---------------------------------------------------------------------------
+
+fn inferTestFun(ret_name: ?[]const u8, body_stmts: []const *ASTNode) !void {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var checker = TypeChecker.init(arena.allocator(), "fun f(): T {\n  return 1\n}\n", "return_check_test");
+    var ref_storage: ast.ASTTypeRef = undefined;
+    var type_ref: ?*const ast.ASTTypeRef = null;
+    if (ret_name) |rn| {
+        ref_storage = .{ .name = rn, .generic_args = &[_]*const ast.ASTTypeRef{}, .is_array = false, .is_nullable = false };
+        type_ref = &ref_storage;
+    }
+    var body: ASTNode = undefined;
+    body = .{ .line = 1, .column = 1, .data = .{ .block = .{ .statements = body_stmts } } };
+    var node: ASTNode = undefined;
+    node = .{ .line = 1, .column = 1, .data = .{ .fun_decl = .{
+        .annotations = &[_]ast.Annotation{},
+        .modifiers = &[_]ast.TokenType{},
+        .name = "f",
+        .generic_params = &[_][]const u8{},
+        .params = &[_]ast.Param{},
+        .type_ref = type_ref,
+        .body = &body,
+        .is_expr_body = false,
+        .resolved_c_name = null,
+    } } };
+    var out: EiwaType = undefined;
+    try inferFunDecl(&checker, &node, &checker.global_scope, &out);
+}
+
+test "return check: empty body with declared return is rejected" {
+    try std.testing.expectError(error.TypeError, inferTestFun("Int", &[_]*ASTNode{}));
+}
+
+test "return check: matching return type is accepted" {
+    var lit_slot: ASTNode = undefined;
+    var ret_slot: ASTNode = undefined;
+    const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, infer_stmt_mod.mkIntLit(&lit_slot))};
+    try inferTestFun("Int", &stmts);
+}
+
+test "return check: incompatible return type is rejected" {
+    var lit_slot: ASTNode = undefined;
+    var ret_slot: ASTNode = undefined;
+    const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, infer_stmt_mod.mkIntLit(&lit_slot))};
+    try std.testing.expectError(error.TypeError, inferTestFun("String", &stmts));
+}
+
+test "return check: bare return with declared return is rejected" {
+    var ret_slot: ASTNode = undefined;
+    const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, null)};
+    try std.testing.expectError(error.TypeError, inferTestFun("Int", &stmts));
+}
+
+test "return check: if without else is rejected" {
+    var cond_slot: ASTNode = .{ .line = 1, .column = 1, .data = .{ .bool_literal = true } };
+    var lit_slot: ASTNode = undefined;
+    const lit = infer_stmt_mod.mkIntLit(&lit_slot);
+    var ret_slot: ASTNode = undefined;
+    const ret_stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, lit)};
+    var then_slot: ASTNode = undefined;
+    const then_blk = infer_stmt_mod.mkBlock(&then_slot, &ret_stmts);
+    var if_slot: ASTNode = .{ .line = 1, .column = 1, .data = .{ .if_expr = .{ .condition = &cond_slot, .then_branch = then_blk, .else_branch = null } } };
+    const stmts = [_]*ASTNode{&if_slot};
+    try std.testing.expectError(error.TypeError, inferTestFun("Int", &stmts));
+}
+
+test "return check: if-else with both sides returning is accepted" {
+    var cond_slot: ASTNode = .{ .line = 1, .column = 1, .data = .{ .bool_literal = true } };
+    var lit_slot: ASTNode = undefined;
+    const lit = infer_stmt_mod.mkIntLit(&lit_slot);
+    var then_ret_slot: ASTNode = undefined;
+    const then_ret_stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&then_ret_slot, lit)};
+    var then_slot: ASTNode = undefined;
+    const then_blk = infer_stmt_mod.mkBlock(&then_slot, &then_ret_stmts);
+    var else_ret_slot: ASTNode = undefined;
+    const else_ret_stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&else_ret_slot, lit)};
+    var else_slot: ASTNode = undefined;
+    const else_blk = infer_stmt_mod.mkBlock(&else_slot, &else_ret_stmts);
+    var if_slot: ASTNode = .{ .line = 1, .column = 1, .data = .{ .if_expr = .{ .condition = &cond_slot, .then_branch = then_blk, .else_branch = else_blk } } };
+    const stmts = [_]*ASTNode{&if_slot};
+    try inferTestFun("Int", &stmts);
+}
+
+test "return check: Void functions keep legacy behavior" {
+    // Empty Void body is fine, and a value-return in a Void body is still
+    // discarded (e.g. synthetic `funPointer` trampolines wrap the lambda's
+    // trailing value in a `return`).
+    try inferTestFun(null, &[_]*ASTNode{});
+    var lit_slot: ASTNode = undefined;
+    var ret_slot: ASTNode = undefined;
+    const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, infer_stmt_mod.mkIntLit(&lit_slot))};
+    try inferTestFun(null, &stmts);
 }

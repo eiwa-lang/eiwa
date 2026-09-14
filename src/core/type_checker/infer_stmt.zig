@@ -619,9 +619,24 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         markTrailingValue(v, true);
         const ret_type = try self.inferNode(v, scope);
         t.* = ret_type.*;
+        // A value returned from a non-Void function must match the declared
+        // return type (Void declarations keep legacy behavior: the value is
+        // discarded by the backend, e.g. synthetic `funPointer` trampolines).
+        if (self.current_fn_return) |decl| {
+            if (decl.* != .Void and !self.isCompatible(decl, ret_type)) {
+                self.reportError(node.line, node.column, "TypeError: Expected {} but found {} in return statement.", .{ decl.*, ret_type.* });
+                return error.TypeError;
+            }
+        }
         return;
     }
     t.* = .Void;
+    if (self.current_fn_return) |decl| {
+        if (decl.* != .Void) {
+            self.reportError(node.line, node.column, "TypeError: Missing return value in function with return type {}.", .{decl.*});
+            return error.TypeError;
+        }
+    }
 }
 
 /// Verifies lambda-targeting `break`s against the lambda return type:
@@ -698,6 +713,48 @@ pub fn checkBlock(self: *TypeChecker, block: []const *ASTNode, parent_scope: *Sc
     const t = try self.allocator.create(EiwaType);
     t.* = .Void;
     return t;
+}
+
+/// Definite-return analysis for block-bodied functions with a declared return type
+pub fn bodyGuaranteesReturn(node: *ASTNode) bool {
+    if (node.data != .block) return stmtGuaranteesReturn(node);
+    const stmts = node.data.block.statements;
+    if (stmts.len == 0) return false;
+    return stmtGuaranteesReturn(stmts[stmts.len - 1]);
+}
+
+fn stmtGuaranteesReturn(node: *ASTNode) bool {
+    switch (node.data) {
+        .return_stmt => return true,
+        .throw_stmt => return true,
+        .block => |b| {
+            if (b.statements.len == 0) return false;
+            return stmtGuaranteesReturn(b.statements[b.statements.len - 1]);
+        },
+        .if_expr => |i| {
+            const e = i.else_branch orelse return false;
+            return stmtGuaranteesReturn(i.then_branch) and stmtGuaranteesReturn(e);
+        },
+        .when_expr => |w| {
+            var has_else = false;
+            for (w.cases) |c| {
+                if (c.is_else) has_else = true;
+                if (!stmtGuaranteesReturn(c.body)) return false;
+            }
+            return has_else;
+        },
+        .try_stmt => |t| {
+            // Normal completion follows the body; exceptional completion
+            // follows a catch (or propagates when uncaught, which also never
+            // falls through). Zero catches is vacuously covered.
+            if (!stmtGuaranteesReturn(t.body)) return false;
+            for (t.catches) |c| {
+                if (!stmtGuaranteesReturn(c.body)) return false;
+            }
+            return true;
+        },
+        else => return false,
+    }
 }
 
 pub fn inferBranchAsExpression(self: *TypeChecker, branch: *ASTNode, scope: *Scope) anyerror!?*const EiwaType {
@@ -836,5 +893,206 @@ pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         }
     }
     t.* = wrapped;
+}
+
+// ---------------------------------------------------------------------------
+// Definite-return analysis (`bodyGuaranteesReturn`) regression guard.
+//
+// A block-bodied function with a declared non-Void return type must execute
+// `return`/`throw` on every path — otherwise the backend emits a zero/null
+// placeholder that surfaces as a NullPointerException (or a silent wrong
+// value) far from the bug. Pure AST tests, no stdlib required.
+// ---------------------------------------------------------------------------
+
+/// Minimal AST constructors shared with `infer_decl` regression tests.
+pub fn mkBlock(slot: *ASTNode, stmts: []const *ASTNode) *ASTNode {
+    slot.* = .{ .line = 1, .column = 1, .data = .{ .block = .{ .statements = stmts } } };
+    return slot;
+}
+
+pub fn mkRet(slot: *ASTNode, value: ?*ASTNode) *ASTNode {
+    slot.* = .{ .line = 1, .column = 1, .data = .{ .return_stmt = .{ .value = value } } };
+    return slot;
+}
+
+pub fn mkIntLit(slot: *ASTNode) *ASTNode {
+    slot.* = .{ .line = 1, .column = 1, .data = .{ .int_literal = 1 } };
+    return slot;
+}
+
+test "guarantee: empty body and trailing values never return" {
+    const testing = std.testing;
+    var empty_slot: ASTNode = undefined;
+    try testing.expect(!bodyGuaranteesReturn(mkBlock(&empty_slot, &[_]*ASTNode{})));
+
+    // A trailing expression is NOT an implicit return (Kotlin-style: block
+    // bodies require explicit `return`).
+    var lit_slot: ASTNode = undefined;
+    const lit = mkIntLit(&lit_slot);
+    var trail_slot: ASTNode = undefined;
+    const trail_stmts = [_]*ASTNode{lit};
+    try testing.expect(!bodyGuaranteesReturn(mkBlock(&trail_slot, &trail_stmts)));
+}
+
+test "guarantee: return and throw terminate" {
+    const testing = std.testing;
+    var lit_slot: ASTNode = undefined;
+    const lit = mkIntLit(&lit_slot);
+
+    var ret_slot: ASTNode = undefined;
+    const ret_stmts = [_]*ASTNode{mkRet(&ret_slot, lit)};
+    var ret_blk_slot: ASTNode = undefined;
+    try testing.expect(bodyGuaranteesReturn(mkBlock(&ret_blk_slot, &ret_stmts)));
+
+    var bare_slot: ASTNode = undefined;
+    const bare_stmts = [_]*ASTNode{mkRet(&bare_slot, null)};
+    var bare_blk_slot: ASTNode = undefined;
+    // Terminates control flow (missing-value arity is checked elsewhere).
+    try testing.expect(bodyGuaranteesReturn(mkBlock(&bare_blk_slot, &bare_stmts)));
+
+    var thr_slot: ASTNode = undefined;
+    thr_slot = .{ .line = 1, .column = 1, .data = .{ .throw_stmt = .{ .expr = lit } } };
+    const thr_stmts = [_]*ASTNode{&thr_slot};
+    var thr_blk_slot: ASTNode = undefined;
+    try testing.expect(bodyGuaranteesReturn(mkBlock(&thr_blk_slot, &thr_stmts)));
+}
+
+test "guarantee: if needs else with both sides returning" {
+    const testing = std.testing;
+    var cond_slot: ASTNode = undefined;
+    cond_slot = .{ .line = 1, .column = 1, .data = .{ .bool_literal = true } };
+    var lit_slot: ASTNode = undefined;
+    const lit = mkIntLit(&lit_slot);
+
+    var then_ret_slot: ASTNode = undefined;
+    const then_ret_stmts = [_]*ASTNode{mkRet(&then_ret_slot, lit)};
+    var then_slot: ASTNode = undefined;
+    const then_blk = mkBlock(&then_slot, &then_ret_stmts);
+    var else_ret_slot: ASTNode = undefined;
+    const else_ret_stmts = [_]*ASTNode{mkRet(&else_ret_slot, lit)};
+    var else_slot: ASTNode = undefined;
+    const else_blk = mkBlock(&else_slot, &else_ret_stmts);
+
+    var both_slot: ASTNode = undefined;
+    both_slot = .{ .line = 1, .column = 1, .data = .{ .if_expr = .{ .condition = &cond_slot, .then_branch = then_blk, .else_branch = else_blk } } };
+    try testing.expect(stmtGuaranteesReturn(&both_slot));
+
+    var no_else_slot: ASTNode = undefined;
+    no_else_slot = .{ .line = 1, .column = 1, .data = .{ .if_expr = .{ .condition = &cond_slot, .then_branch = then_blk, .else_branch = null } } };
+    try testing.expect(!stmtGuaranteesReturn(&no_else_slot));
+
+    var else_expr_slot: ASTNode = undefined;
+    else_expr_slot = .{ .line = 1, .column = 1, .data = .{ .if_expr = .{ .condition = &cond_slot, .then_branch = then_blk, .else_branch = lit } } };
+    try testing.expect(!stmtGuaranteesReturn(&else_expr_slot));
+}
+
+test "guarantee: when needs else with every case returning" {
+    const testing = std.testing;
+    var lit_slot: ASTNode = undefined;
+    const lit = mkIntLit(&lit_slot);
+    var ret_slot: ASTNode = undefined;
+    const ret_stmts = [_]*ASTNode{mkRet(&ret_slot, lit)};
+    var body_slot: ASTNode = undefined;
+    const body_blk = mkBlock(&body_slot, &ret_stmts);
+
+    const full_cases = [_]ast.WhenCase{
+        .{ .conds = &[_]*ASTNode{}, .body = body_blk, .is_else = false },
+        .{ .conds = &[_]*ASTNode{}, .body = body_blk, .is_else = true },
+    };
+    var full_slot: ASTNode = undefined;
+    full_slot = .{ .line = 1, .column = 1, .data = .{ .when_expr = .{ .subject = null, .cases = &full_cases } } };
+    try testing.expect(stmtGuaranteesReturn(&full_slot));
+
+    const no_else_cases = [_]ast.WhenCase{
+        .{ .conds = &[_]*ASTNode{}, .body = body_blk, .is_else = false },
+    };
+    var no_else_slot: ASTNode = undefined;
+    no_else_slot = .{ .line = 1, .column = 1, .data = .{ .when_expr = .{ .subject = null, .cases = &no_else_cases } } };
+    try testing.expect(!stmtGuaranteesReturn(&no_else_slot));
+
+    const hole_cases = [_]ast.WhenCase{
+        .{ .conds = &[_]*ASTNode{}, .body = lit, .is_else = false },
+        .{ .conds = &[_]*ASTNode{}, .body = body_blk, .is_else = true },
+    };
+    var hole_slot: ASTNode = undefined;
+    hole_slot = .{ .line = 1, .column = 1, .data = .{ .when_expr = .{ .subject = null, .cases = &hole_cases } } };
+    try testing.expect(!stmtGuaranteesReturn(&hole_slot));
+}
+
+test "guarantee: try needs body and every catch returning" {
+    const testing = std.testing;
+    var lit_slot: ASTNode = undefined;
+    const lit = mkIntLit(&lit_slot);
+    var ret_slot: ASTNode = undefined;
+    const ret_stmts = [_]*ASTNode{mkRet(&ret_slot, lit)};
+    var body_slot: ASTNode = undefined;
+    const body_blk = mkBlock(&body_slot, &ret_stmts);
+    var catch_ret_slot: ASTNode = undefined;
+    const catch_ret_stmts = [_]*ASTNode{mkRet(&catch_ret_slot, lit)};
+    var catch_body_slot: ASTNode = undefined;
+    const catch_blk = mkBlock(&catch_body_slot, &catch_ret_stmts);
+
+    const catches = [_]ast.CatchBlock{
+        .{ .var_name = null, .types = &[_]*const ast.ASTTypeRef{}, .body = catch_blk },
+    };
+    var full_slot: ASTNode = undefined;
+    full_slot = .{ .line = 1, .column = 1, .data = .{ .try_stmt = .{ .body = body_blk, .catches = &catches } } };
+    try testing.expect(stmtGuaranteesReturn(&full_slot));
+
+    // Bare `try` whose body returns: normal completion is the body's
+    // (return), exceptional completion propagates — never falls through.
+    var bare_slot: ASTNode = undefined;
+    bare_slot = .{ .line = 1, .column = 1, .data = .{ .try_stmt = .{ .body = body_blk, .catches = &[_]ast.CatchBlock{} } } };
+    try testing.expect(stmtGuaranteesReturn(&bare_slot));
+
+    var expr_body_slot: ASTNode = undefined;
+    const expr_stmts = [_]*ASTNode{lit};
+    const expr_blk = mkBlock(&expr_body_slot, &expr_stmts);
+    var expr_slot: ASTNode = undefined;
+    expr_slot = .{ .line = 1, .column = 1, .data = .{ .try_stmt = .{ .body = expr_blk, .catches = &catches } } };
+    try testing.expect(!stmtGuaranteesReturn(&expr_slot));
+}
+
+test "guarantee: loops, lambdas and nested functions never guarantee" {
+    const testing = std.testing;
+    var lit_slot: ASTNode = undefined;
+    const lit = mkIntLit(&lit_slot);
+    var ret_slot: ASTNode = undefined;
+    const ret_stmts = [_]*ASTNode{mkRet(&ret_slot, lit)};
+    var blk_slot: ASTNode = undefined;
+    const blk = mkBlock(&blk_slot, &ret_stmts);
+    var cond_slot: ASTNode = undefined;
+    cond_slot = .{ .line = 1, .column = 1, .data = .{ .bool_literal = true } };
+
+    // A `return` only inside a loop body does not guarantee (may not run).
+    var while_slot: ASTNode = undefined;
+    while_slot = .{ .line = 1, .column = 1, .data = .{ .while_stmt = .{ .condition = &cond_slot, .body = blk } } };
+    try testing.expect(!stmtGuaranteesReturn(&while_slot));
+
+    var for_slot: ASTNode = undefined;
+    for_slot = .{ .line = 1, .column = 1, .data = .{ .for_stmt = .{ .item_name = "x", .iterable = lit, .body = blk } } };
+    try testing.expect(!stmtGuaranteesReturn(&for_slot));
+
+    // Lambda bodies are boundaries: their trailing value is the lambda's,
+    // not the enclosing function's.
+    var lam_ret_slot: ASTNode = undefined;
+    const lam_stmts = [_]*ASTNode{mkRet(&lam_ret_slot, lit)};
+    var lam_slot: ASTNode = undefined;
+    lam_slot = .{ .line = 1, .column = 1, .data = .{ .lambda_expr = .{ .params = &[_]ast.Param{}, .body = &lam_stmts } } };
+    try testing.expect(!stmtGuaranteesReturn(&lam_slot));
+
+    var nested_slot: ASTNode = undefined;
+    nested_slot = .{ .line = 1, .column = 1, .data = .{ .fun_decl = .{
+        .annotations = &[_]ast.Annotation{},
+        .modifiers = &[_]ast.TokenType{},
+        .name = "inner",
+        .generic_params = &[_][]const u8{},
+        .params = &[_]ast.Param{},
+        .type_ref = null,
+        .body = blk,
+        .is_expr_body = false,
+        .resolved_c_name = null,
+    } } };
+    try testing.expect(!stmtGuaranteesReturn(&nested_slot));
 }
 

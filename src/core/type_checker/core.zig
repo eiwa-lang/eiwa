@@ -80,6 +80,7 @@ pub const TypeChecker = struct {
     current_class_name: ?[]const u8 = null,
     current_class_methods: ?[]const *ASTNode = null,
     current_type_c_name: ?[]const u8 = null,
+    current_fn_return: ?*const EiwaType = null,
     registry: ?*ModuleRegistry = null,
     target_info: ?TargetInfo = null,
     pass: enum { declaration, validation } = .validation,

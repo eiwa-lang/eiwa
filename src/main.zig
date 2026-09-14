@@ -1193,5 +1193,7 @@ test "imports" {
     _ = @import("core/ast.zig");
     _ = @import("frontend/lexer.zig");
     _ = @import("frontend/parser/core.zig");
+    _ = @import("core/type_checker/infer_stmt.zig");
+    _ = @import("core/type_checker/infer_decl.zig");
 }
 
