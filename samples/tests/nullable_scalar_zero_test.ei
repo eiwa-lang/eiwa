@@ -1,0 +1,108 @@
+import { assert } from "std.core"
+
+fun zeroOrNull(flag: Bool): Int? {
+    return if (flag) 0 else null
+}
+
+fun doubleOrNull(flag: Bool): Double? {
+    return if (flag) 0.0 else null
+}
+
+fun takeOpt(x: Int?): Int? {
+    return x
+}
+
+fun echoOpt(x: Int?): String {
+    if (x == null) {
+        return "null"
+    }
+    return "val"
+}
+
+fun asZero(): Double? {
+    return 0.0
+}
+
+test "nullable scalar: Int? holds zero distinct from null" {
+    val a: Int? = 0
+    assert(a != null, "Int?(0) must not be null")
+    assert(a == 0, "Int?(0) == 0")
+    val b: Int? = 1
+    assert(b != null, "Int?(1) must not be null")
+    assert(b == 1, "Int?(1) == 1")
+    val c: Int? = null
+    assert(c == null, "null is null")
+    assert(c != 0, "null != 0")
+}
+
+test "nullable scalar: Bool? false distinct from null" {
+    val f: Bool? = false
+    assert(f != null, "Bool?(false) must not be null")
+    val t: Bool? = true
+    assert(t != null, "Bool?(true) must not be null")
+    val n: Bool? = null
+    assert(n == null, "null Bool? is null")
+}
+
+test "nullable scalar: Double? zero distinct from null" {
+    val d: Double? = 0.0
+    assert(d != null, "Double?(0.0) must not be null")
+    assert(d == 0.0, "Double?(0.0) == 0.0")
+    val e: Double? = 1.5
+    assert(e == 1.5, "Double?(1.5) == 1.5")
+    val n: Double? = null
+    assert(n == null, "null Double? is null")
+}
+
+test "nullable scalar: return position" {
+    val z = zeroOrNull(true)
+    assert(z != null, "returned Int?(0) must not be null")
+    assert(z == 0, "returned zero equals 0")
+    val n = zeroOrNull(false)
+    assert(n == null, "returned null is null")
+    val dz = doubleOrNull(true)
+    assert(dz != null && dz == 0.0, "returned Double?(0.0)")
+}
+
+test "nullable scalar: parameter passing" {
+    val r = takeOpt(0)
+    assert(r != null, "param Int?(0) must not be null")
+    assert(r == 0, "param zero equals 0")
+    assert(echoOpt(0) == "val", "echoOpt(0) is val")
+    assert(echoOpt(null) == "null", "echoOpt(null) is null")
+}
+
+test "nullable scalar: elvis and safe call" {
+    val a: Int? = 0
+    val v = a ?: 99
+    assert(v == 0, "elvis over zero yields 0, not default")
+    val n: Int? = null
+    val w = n ?: 99
+    assert(w == 99, "elvis over null yields default")
+}
+
+test "nullable scalar: force unwrap arithmetic" {
+    val a: Int? = 0
+    assert(a!! + 1 == 1, "0!! + 1 == 1")
+    val b: Int? = 41
+    assert(b!! + 1 == 42, "41!! + 1 == 42")
+}
+
+test "nullable scalar: non-zero regression" {
+    val a: Int? = 7
+    assert(a != null)
+    assert(a == 7)
+    assert(a!! * 2 == 14)
+}
+
+test "nullable scalar: safe-call numeric conversion over zero" {
+    val n = asZero()?.toInt()
+    assert(n != null, "0.0?.toInt() must not be null")
+    assert(n == 0, "0.0?.toInt() == 0")
+}
+
+test "nullable scalar: try expression over zero" {
+    val t = try { 0 }
+    assert(t != null, "try { 0 } must not be null")
+    assert(t == 0, "try { 0 } == 0")
+}

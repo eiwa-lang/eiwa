@@ -20,6 +20,8 @@ Decisões (2026-09-13, branch `feature/std-regex`):
   `^ $`, `* + ? {n} {n,} {n,m}` (greedy), grupos `(...)`, alternância `|`.
 - Testes: `samples/tests/regex_test.ei` (14 testes). Docs: language_tour.md §33.
 
-## TODO conhecido
-- Corrigir boxing de nullable scalar no LLVM emitter (heap-box via GC_malloc em vez de
-  IntToPtr) — afeta qualquer `Int?`/`Double?`/`Bool?` com valor zero.
+## Status do bug (atualizado 2026-09-13)
+- CORRIGIDO na Phase 80 (branch `fix/nullable-scalar-zero`): representação
+  **zero-sentinel** — box de escalar 0 vira `(ptr)0x8` (não-null), resto segue
+  value-in-ptr; unbox faz o inverso. `== null`/`?.`/`?:`/`toString`/`==`
+  funcionam sem mudanças nos null checks. Suite: 542 verdes.

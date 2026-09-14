@@ -1248,29 +1248,42 @@ Semântica alvo:
 > `.block` só existe em posições estruturais, então não há caso "bloco trailing
 > aninhado" a tratar (tentativas de recursão checker/emissor revertidas).
 ---
-### Phase 80: Boxing de escalares anuláveis (`Int? == 0` colide com `null`) (PENDING)
-> **Status:** OPEN. Bug pré-existente encontrado durante a implementação do
-> lookup estático de enums (ADR 66): `s0?.ordinal == 0` (onde `s0?.ordinal`
-> é `Int?`) retorna `false` mesmo quando o ordinal é `0`.
+### Phase 80: Boxing de escalares anuláveis (`Int? == 0` colide com `null`) (COMPLETED)
+> **Status:** GREEN (2026-09-13, branch `fix/nullable-scalar-zero`). Representação
+> **zero-sentinel**: boxear escalar `0`/`false`/`0.0` via `IntToPtr(0)` colidia com
+> `null`. Agora produtores com alvo nullable-scalar emitem
+> `select(val == 0, (ptr)0x8, inttoptr val)` — a sentinela `0x8` é um endereço
+> pequeno nunca-dereferenciado e nunca-alocado (estável entre módulos, sem
+> globals), então `== null`, `?.`, `?:` e `if (x)` a tratam como presente sem
+> nenhuma mudança nos null checks. Consumidores fazem o inverso
+> (`== sentinela ? 0 : ptrtoint`); todo o resto (value-in-pointer para não-zero)
+> continua idêntico — `toString`/`hashCode`/`equals`/aritmética não foram tocados.
 >
-> **Causa raiz (validada por probing):** escalares anuláveis usam boxing
-> direto `IntToPtr`/`PtrToInt` (`unboxUnionVariant` em
-> `src/backend/llvm_emitter/expression.zig`), de modo que o valor `0` boxeia
-> para ponteiro nulo — indistinguível de `null`. O `emitNullableScalarCompare`
-> checa `IsNull(union_val)` primeiro e toma o branch "é null" (retorna `false`
-> para `==`), então `Int?(0) == 0` é `false` e `Int?(0) == null` é `true`.
-> Valores não-zero funcionam (`Int?(1) == 1` é `true`).
-> Evidência: `val x: Int? = 0; assert(x == 0)` falha; `o: Int? = 1` passa.
+> **Pontos instrumentados:** `boxNullableScalar`/`unboxNullableScalar`/
+> `scalarBitsToVariant`/`nullableScalarVariant`/`coerceToNullableScalar`
+> (`expression.zig`); unbox roteado por tipo-fonte em `unboxUnionVariant`,
+> `!!`, elvis, `emitUnionBuiltin` (resultado `toInt` usa variante `Int`),
+> `emitNullableScalarCompare`; produtores em `var_decl`, `return`,
+> `storeBlockOrExprResult` (ramos if/when), call args (via `expected_type` do
+> checker + wrapper no `emitExpression`), `set_expr` (flag
+> `box_nullable_scalar` marcada no `inferSetExpr`). Cobertura:
+> `samples/tests/nullable_scalar_zero_test.ei` (10 testes: zero vs literal vs
+> `null` para `Int?`/`Bool?`/`Double?`, `==`/`!=`, `!!`, `?:`, `?.`, params,
+> returns, `?.toInt()` sobre zero, `try { 0 }`).
 >
-> **Workaround atual:** desembrulhar com `!!` (`s0!!.ordinal == 0`) —
-> usado nos testes de `byName` em `samples/tests/enum_test.ei`.
+> **Bônus:** `try { 0 }` (Phase 81) agora retorna `0` em vez de `null`.
 >
-> **Escopo do fix (fora desta fase):** representação anulável que distingue
-> zero de null (tag dedicado, offset de +1 no boxing, ou nicho de ponteiro
-> reservado), cobrindo `Int`/`Bool(false)`/`Double(0.0)`; checar também
-> `?:` e `?.` sobre o valor zero boxeado. Cobertura sugerida:
-> `nullable_scalar_zero_test.ei` (`Int?`/`Bool?`/`Double?` com valor zero
-> vs literal vs `null`, `==` e `!=`).
+> **Limites conhecidos:** `print(x)`/`"${x}"` de `Int?(0)` via dispatch de
+> `Stringable` com vtable de `Int` formata a sentinela como inteiro (não
+> crasha, mas não imprime "0" — `x.toString()` direto funciona via
+> `emitUnionBuiltin`); `Int?(0x8)` teórico colidiria com a sentinela. Ambos
+> documentados como follow-ups, sem impacto na suite (542 testes verdes).
+>
+> **Bug original (histórico):** escalares anuláveis usavam boxing direto
+> `IntToPtr`/`PtrToInt`, de modo que o valor `0` boxeava para ponteiro nulo.
+> `emitNullableScalarCompare` checava `IsNull` primeiro, então `Int?(0) == 0`
+> era `false` e `Int?(0) == null` era `true`. Workaround antigo (`!!`) removido
+> dos testes de `byName`? — não (mantido, inofensivo).
 >
 > **Follow-ups de hardening do backend (dívidas da ADR 66, sem impacto no verde atual):**
 > - [ ] **H1 — `emitEnumList` assume o layout de `List` na mão:** usa o struct
@@ -1342,11 +1355,10 @@ Semântica alvo:
   `obj.x = try {...}` não verificado.
 - [ ] **F4 — Cobertura `T` contract/genérico:** `val r: Drawable? = try {...}`
   sem teste (emissão via fat pointer não exercitada).
-- [ ] **BUG (pré-existente, Phase 80 — CONFIRMADO via try):** `try { 0 }` retorna
-  `null`: escalar zero boxeia para ponteiro nulo, indistinguível de exceção
-  (`Int?(0)`, `Bool?(false)`, `Double?(0.0)`). Evidência:
-  `take(try { ok() })` OK, `try { 41 + 1 } == 42` OK, `try { 0 } == null`
-  (deveria ser `0`). Fix na Phase 80, não aqui.
+- [x] **BUG (pré-existente, Phase 80 — CONFIRMADO via try, FIXADO na Phase 80):** `try { 0 }` retornava
+  `null`: escalar zero boxeava para ponteiro nulo, indistinguível de exceção
+  (`Int?(0)`, `Bool?(false)`, `Double?(0.0)`). Com o zero-sentinel da Phase 80,
+  `try { 0 } == 0` passa (cobertura em `nullable_scalar_zero_test.ei`).
 
 ### Phase 82: `this` em default initializers de extension functions (OPEN)
 > Surgiu ao escrever testes de default params em extensões

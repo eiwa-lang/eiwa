@@ -120,6 +120,9 @@ fn emitReturnValue(
     if (llvm.LLVMGetTypeKind(expected_ret_type) == llvm.LLVMVoidTypeKind) {
         _ = llvm.LLVMBuildRetVoid(builder);
     } else {
+        if (declared_ret) |drt| {
+            ret_val = expression.coerceToNullableScalar(ctx, mod, builder, ret_val, drt);
+        }
         if (llvm.LLVMTypeOf(ret_val) != expected_ret_type) {
             ret_val = expression.coerceArg(builder, ret_val, expected_ret_type);
         }
@@ -287,6 +290,7 @@ pub fn emitStatement(
 
                 if (v.initializer) |init_node| {
                     var init_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, init_node);
+                    init_val = expression.coerceToNullableScalar(ctx, mod, builder, init_val, res_type);
                     init_val = expression.coerceArg(builder, init_val, llvm_type);
                     if (expression.storeValue(init_val, llvm_type)) |sv| {
                         _ = llvm.LLVMBuildStore(builder, sv, box_ptr);
@@ -326,6 +330,7 @@ pub fn emitStatement(
                             }
                         }
                     }
+                    val = expression.coerceToNullableScalar(ctx, mod, builder, val, res_type);
                     val = expression.coerceArg(builder, val, llvm_type);
                     if (expression.storeValue(val, llvm_type)) |sv| {
                         _ = llvm.LLVMBuildStore(builder, sv, alloca_ptr);

@@ -319,6 +319,26 @@ pub fn isNullable(t: *const EiwaType) bool {
     };
 }
 
+/// True for `Int?` / `Bool?` / `Double?` — a union whose only non-null
+/// variant is a primitive scalar (Phase 80: these are heap-boxed so zero
+/// stays distinct from null).
+pub fn isNullableScalar(t: *const EiwaType) bool {
+    if (!isNullable(t)) return false;
+    const base = extractBaseType(t);
+    return switch (base.*) {
+        .Int, .Bool, .Double => true,
+        else => false,
+    };
+}
+
+/// True for the raw (non-nullable) primitive scalars.
+pub fn isRawScalar(t: *const EiwaType) bool {
+    return switch (t.*) {
+        .Int, .Bool, .Double => true,
+        else => false,
+    };
+}
+
 pub fn extractBaseType(t: *const EiwaType) *const EiwaType {
     return switch (t.*) {
         .Union => |u| if (u.right.* == .Null) extractBaseType(u.left) else t,
