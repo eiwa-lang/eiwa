@@ -234,7 +234,7 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
         while (i < this.entries.size()) {
             var curr = this.entries.items[i]
             while (curr != null) {
-                fields.add(SerdeField(curr!!.key.toString(), SerdeString(curr!!.value.toString())))
+                fields.add(SerdeField(curr!!.key.toString(), SerdeString(curr!!.value?.toString() ?: "null")))
                 curr = curr!!.next
             }
             i = i + 1

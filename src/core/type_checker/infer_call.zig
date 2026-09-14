@@ -1403,10 +1403,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                         prefix_len = idx + name.len + 1;
                                     }
                                     if (prefix_len != null and prefix_len.? < c_name.len) {
-                                        var inner = c_name[prefix_len.?..];
-                                        if (std.mem.endsWith(u8, inner, "Opt")) {
-                                            inner = inner[0 .. inner.len - 3];
-                                        }
+                                        const inner = c_name[prefix_len.?..];
                                         if (type_decl.generic_params.len == 1) {
                                             if (std.mem.indexOf(u8, inner, "_or_")) |or_idx| {
                                                 var raw_p1 = inner[0..or_idx];

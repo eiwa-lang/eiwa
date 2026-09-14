@@ -1423,13 +1423,18 @@ Semântica alvo:
 > ausente. Fix sugerido (só-stdlib, sem compilador): `contains` deve caminhar
 > os buckets comparando chaves em vez de testar o valor.
 >
-> **Wart de diagnóstico (não-fatal):** compilar esse teste imprime dois
-> `error:` do checker (chamada sem `?.`/`!!` em receiver `Int?` no `put`
-> monomorfizado; `null` onde se esperava `Node`) que **não abortam o build**
-> (`eiwac build` sai 0 e o programa roda). Um `error:` que não falha o build
-> confunde — considerar tornar fatal ou rebaixar para warning.
-> Verificado idêntico na main limpa: pré-existente, sem relação com Phase 80
-> (`MutableList<Int?>` funciona totalmente).
+> **Mensagens fantasmas ELIMINADAS (2026-09-14):** compilar esse teste imprimia
+> dois `error:` que não abortavam o build. Causas, ambas corrigidas:
+> 1. `serdeFields` chamava `.toString()` direto em valor genérico `V`
+>    (`collections.ei:237`) — fix de 1 linha: `curr!!.value?.toString() ?: "null"`.
+> 2. Inferência de type-args de construtor genérico a partir do nome mangled
+>    (`infer_call.zig`): strip manual do sufixo `"Opt"` destruía a nulabilidade
+>    (`String_IntOpt` → `String_Int`), gerando "Expected Node.. but found Null"
+>    no `push(null)` dos buckets. Removido — `resolveTypeName` já trata `"Opt"`
+>    com precedência para tipos reais (`ThreadOpt`). Posições bogus
+>    (linhas da stdlib atribuídas ao entry) sumiram junto.
+> Verificado idêntico na main limpa antes do fix: pré-existente, sem relação
+> com Phase 80 (`MutableList<Int?>` funciona totalmente).
 
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
