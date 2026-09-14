@@ -1783,18 +1783,34 @@ fn emitExpressionRaw(
                     try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, stmt, null);
                 }
                 const last = lam.body[last_idx];
-                if (last.data == .return_stmt) {
-                    // Already a return — emit normally, terminator will be set
-                    try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, last, null);
-                } else {
-                    // Implicit return: evaluate the expression and return its value
-                    const ret_val = try emitExpression(ctx, mod, builder, &lam_scope, structs, libs, last);
-                    const r_kind = llvm.LLVMGetTypeKind(ret_type);
-                    if (r_kind == llvm.LLVMVoidTypeKind) {
-                        _ = llvm.LLVMBuildRetVoid(builder);
-                    } else {
-                        _ = llvm.LLVMBuildRet(builder, coerceArg(builder, ret_val, ret_type));
-                    }
+                switch (last.data) {
+                    .var_decl, .return_stmt, .while_stmt, .throw_stmt, .break_stmt, .block => {
+                        try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, last, null);
+                    },
+                    .try_stmt => {
+                        const last_is_value_try = if (last.resolved_type) |rt| rt.* != .Void else false;
+                        if (last_is_value_try) {
+                            const ret_val = try emitExpression(ctx, mod, builder, &lam_scope, structs, libs, last);
+                            const r_kind = llvm.LLVMGetTypeKind(ret_type);
+                            if (r_kind == llvm.LLVMVoidTypeKind) {
+                                _ = llvm.LLVMBuildRetVoid(builder);
+                            } else {
+                                _ = llvm.LLVMBuildRet(builder, coerceArg(builder, ret_val, ret_type));
+                            }
+                        } else {
+                            try statement.emitStatement(ctx, mod, builder, func_val, &lam_scope, structs, libs, last, null);
+                        }
+                    },
+                    else => {
+                        // Implicit return: evaluate the expression and return its value
+                        const ret_val = try emitExpression(ctx, mod, builder, &lam_scope, structs, libs, last);
+                        const r_kind = llvm.LLVMGetTypeKind(ret_type);
+                        if (r_kind == llvm.LLVMVoidTypeKind) {
+                            _ = llvm.LLVMBuildRetVoid(builder);
+                        } else {
+                            _ = llvm.LLVMBuildRet(builder, coerceArg(builder, ret_val, ret_type));
+                        }
+                    },
                 }
             } else {
                 for (lam.body) |stmt| {

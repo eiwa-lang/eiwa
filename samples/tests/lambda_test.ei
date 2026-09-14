@@ -2,10 +2,23 @@ fun makeAdder(x: Int): (Int) -> Int {
     return { y: Int -> x + y }
 }
 
+fun testBlock(block: () -> Void) {
+    block()
+}
+
 object LambdaRunner {
     fun twice(block: (Int) -> Int): Int {
         return block(21) * 2
     }
+}
+
+test "lambdas: simple void lambda" {
+    var executed = false
+    testBlock {
+        executed = true
+        val storyAvatars = ["nyMfwv7LBPw", "Lf9JpqXS--0", "f4OmS_SluJc"]
+    }
+    assert(executed == true)
 }
 
 test "lambdas: implicit 'it' as direct argument to an object method call" {
