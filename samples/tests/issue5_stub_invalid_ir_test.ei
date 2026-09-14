@@ -1,0 +1,78 @@
+import { print } from "std.core"
+import { assert } from "std.exceptions"
+
+// TDD (RED) para https://github.com/eiwa-lang/eiwa/issues/5
+// [LLVM][0.0.59] Release build succeeds after invalid IR is replaced with stubs.
+//
+// Cada teste abaixo exercita um caminho que na 0.0.59 gerava IR invalido
+// e era silenciosamente substituido por stub (retornando 0/null):
+//   - String.equals: `icmp eq i32 %ffitmp, i64 0` (strcmp retorna i32, literal 0 e i64)
+//   - Int.toDouble: `sitofp ptr %this_val to double`
+//   - Double.toInt / Double.hashCode: `fptosi ptr %this_val to i64`
+// Se qualquer um desses voltar a ser stubbed, o teste falha em runtime
+// (stub retorna default) em vez de passar silenciosamente.
+
+test "issue5: String == operator (fast path)" {
+    val a = "hello"
+    val b = "hello"
+    val c = "world"
+    assert(a == b, "equal strings should be ==")
+    assert(a != c, "different strings should be !=")
+}
+
+test "issue5: String.equals method (core_String_equals)" {
+    assert("hello".equals("hello"), "String.equals should be true")
+    assert(!"hello".equals("world"), "String.equals should be false")
+}
+
+test "issue5: String startsWith/endsWith (strncmp i32 vs i64)" {
+    val s = "hello world"
+    assert(s.startsWith("hello"), "startsWith should be true")
+    assert(s.endsWith("world"), "endsWith should be true")
+    assert(!s.startsWith("world"), "startsWith should be false")
+    assert(!s.endsWith("hello"), "endsWith should be false")
+}
+
+test "issue5: Int.toDouble (sitofp)" {
+    val i = 100
+    val d = i.toDouble()
+    assert(d == 100.0, "100.toDouble() should be 100.0")
+}
+
+test "issue5: Double.toInt (fptosi)" {
+    val d = 42.8
+    val i = d.toInt()
+    assert(i == 42, "42.8.toInt() should be 42")
+}
+
+test "issue5: Double.hashCode (fptosi/bitcast)" {
+    val d = 42.8
+    val h = d.hashCode()
+    assert(h != 0, "Double.hashCode() should not be stubbed to 0")
+    assert(d.toInt().hashCode() == 42, "hashCode of 42 should be 42")
+}
+
+test "issue5: Int.hashCode is identity" {
+    val i = 7
+    assert(i.hashCode() == 7, "Int.hashCode() should return this")
+}
+
+test "issue5: String.toInt via toDouble (chained conversion)" {
+    val s = "42"
+    val i = s.toInt()
+    assert(i == 42, "\"42\".toInt() should be 42")
+}
+
+test "issue5: nullable Int?.toDouble (boxed ptr sitofp)" {
+    val i: Int? = 100
+    val d = i?.toDouble()
+    assert(d != null, "nullable 100.toDouble() must not be null")
+    assert(d == 100.0, "nullable 100.toDouble() should be 100.0")
+}
+
+test "issue5: nullable Double?.toInt (boxed ptr fptosi)" {
+    val d: Double? = 42.8
+    val i = d?.toInt()
+    assert(i != null, "nullable 42.8.toInt() must not be null")
+    assert(i == 42, "nullable 42.8.toInt() should be 42")
+}
