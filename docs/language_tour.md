@@ -720,6 +720,54 @@ fun main() {
 
 ---
 
+### 7.6 Concatenating Lists — `add`, `addAll` and `+`
+
+`MutableList<T>` accepts a whole list where Kotlin uses `addAll`, via an overload of `add`. Both `List<T>` and `MutableList<T>` also support the `+` sugar, which always returns a **new** immutable `List<T>` (the operands are never mutated):
+
+```kotlin
+import { List, MutableList } from "std.collections"
+
+fun main() {
+    // In-place append of another list (Kotlin: addAll)
+    val allPosts = [1, 2].mut()
+    val posts: List<Int> = [3, 4]
+    allPosts.add(posts)      // overload: add(elements: List<T>)
+    allPosts.addAll([5, 6])  // alias with the Kotlin name
+
+    assert(allPosts.size() == 6)
+    assert(allPosts.get(5) == 6)
+
+    // Sugar: list + list and list + element return a NEW List
+    val a: List<Int> = [1, 2]
+    val b: List<Int> = [3, 4]
+    val c = a + b            // [1, 2, 3, 4]
+    val d = a + 99           // [1, 2, 99]
+
+    assert(c.size() == 4)
+    assert(a.size() == 2)    // operands are unchanged
+
+    // Works on MutableList receivers too (still returns List)
+    val m = [10, 20].mut()
+    val combined = m + b     // [10, 20, 3, 4]
+    assert(combined.size() == 4)
+}
+```
+
+Correspondence with Kotlin:
+
+| Kotlin | Eiwa |
+|---|---|
+| `allPosts.addAll(posts)` | `allPosts.add(posts)` or `allPosts.addAll(posts)` |
+| `listA + listB` | `listA + listB` (new `List<T>`) |
+| `list + element` | `list + element` (new `List<T>`) |
+
+Rules:
+- `add`/`addAll` take an immutable `List<T>`. To append a `MutableList<T>`, freeze it first: `allPosts.add(other.freeze())`.
+- Overload resolution distinguishes the element from the list by type: `single.add(2)` appends one element, `single.add([2])` appends the contents of `[2]`.
+- The only ambiguity is intentional: on a `MutableList<List<Int>>`, passing a `List<Int>` matches the *element* overload (it becomes one nested element), exactly as Kotlin would treat `add` vs `addAll` distinctly.
+
+---
+
 ## 8. Ternary Operators
 
 Eiwa provides standard ternary conditional expressions and a unique short ternary operator to simplify conditional value assignments.

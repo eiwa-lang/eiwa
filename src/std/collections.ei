@@ -9,6 +9,44 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
         this.list.items.push(element)
     }
 
+    fun add(elements: List<T>): Void {
+        var i = 0
+        while (i < elements.size()) {
+            this.list.items.push(elements.get(i))
+            i = i + 1
+        }
+    }
+
+    fun addAll(elements: List<T>): Void {
+        this.add(elements)
+    }
+
+    operator fun plus(element: T): List<T> {
+        val result = MutableList<T>()
+        var i = 0
+        while (i < this.size()) {
+            result.add(this.get(i))
+            i = i + 1
+        }
+        result.add(element)
+        return result.freeze()
+    }
+
+    operator fun plus(other: List<T>): List<T> {
+        val result = MutableList<T>()
+        var i = 0
+        while (i < this.size()) {
+            result.add(this.get(i))
+            i = i + 1
+        }
+        var j = 0
+        while (j < other.size()) {
+            result.add(other.get(j))
+            j = j + 1
+        }
+        return result.freeze()
+    }
+
     operator fun get(index: Int): T {
         return this.list.items[index]
     }
@@ -50,6 +88,32 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
 type List<T>(val items: NativeArray<T> = []) : Equatable, Serializable + Json {
     operator fun get(index: Int): T {
         return this.items[index]
+    }
+
+    operator fun plus(element: T): List<T> {
+        val result = MutableList<T>()
+        var i = 0
+        while (i < this.size()) {
+            result.add(this.get(i))
+            i = i + 1
+        }
+        result.add(element)
+        return result.freeze()
+    }
+
+    operator fun plus(other: List<T>): List<T> {
+        val result = MutableList<T>()
+        var i = 0
+        while (i < this.size()) {
+            result.add(this.get(i))
+            i = i + 1
+        }
+        var j = 0
+        while (j < other.size()) {
+            result.add(other.get(j))
+            j = j + 1
+        }
+        return result.freeze()
     }
 
     fun size(): Int {
