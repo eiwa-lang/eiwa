@@ -1,0 +1,57 @@
+import { assert } from "std.core"
+import { List, MutableList } from "std.collections"
+
+// Scalars coerced into contract fat pointers must dispatch the scalar's own
+// vtable (regression: `as` casts hit an LLVM verification ICE, contract
+// annotated `val`s dispatched garbage, Doubles segfaulted).
+
+fun takeStringable(s: Stringable): String {
+    return s.toString()
+}
+
+fun makeStringable(v: Int): Stringable {
+    return v
+}
+
+test "scalar as contract: call argument dispatches scalar vtable" {
+    assert(takeStringable(1) == "1", "Int arg dispatches Int.toString")
+    assert(takeStringable(1.5) == "1.5", "Double arg dispatches Double.toString")
+    assert(takeStringable(true) == "true", "Bool arg dispatches Bool.toString")
+    assert(takeStringable("hi") == "hi", "String arg still works")
+}
+
+test "scalar as contract: as-cast dispatches scalar vtable" {
+    val i: Int = 41
+    assert((i as Stringable).toString() == "41", "Int as-cast dispatches")
+    val d: Double = 1.5
+    assert((d as Stringable).toString() == "1.5", "Double as-cast dispatches")
+    val b: Bool = false
+    assert((b as Stringable).toString() == "false", "Bool as-cast dispatches")
+}
+
+test "scalar as contract: annotated val dispatches scalar vtable" {
+    val s: Stringable = 42
+    assert(s.toString() == "42", "Int val dispatches")
+    val t: Stringable = 2.5
+    assert(t.toString() == "2.5", "Double val dispatches")
+}
+
+test "scalar as contract: declared return coerces scalar" {
+    assert(makeStringable(7).toString() == "7", "returned Int coerces")
+}
+
+test "scalar as contract: stored in generic collection dispatches" {
+    val l = MutableList<Stringable>()
+    l.add(1)
+    l.add("x")
+    assert(l[0].toString() == "1", "stored Int dispatches")
+    assert(l[1].toString() == "x", "stored String dispatches")
+    val m: List<Stringable> = [2.5]
+    assert(m[0].toString() == "2.5", "literal Double dispatches")
+}
+
+test "scalar as contract: is-check still classifies scalars" {
+    val x: Int = 1
+    assert(x is Stringable, "Int is Stringable")
+    assert(x is Equatable, "Int is Equatable")
+}

@@ -996,15 +996,10 @@ fn emitExpressionRaw(
                 var elem_val = try emitExpression(ctx, mod, builder, scope, structs, libs, elem_node);
                 if (elem_contract.len > 0) {
                     if (elem_node.resolved_type) |ert| {
-                        const conc_c_name = switch (ert.*) {
-                            .Custom => |n| n,
-                            .GenericInstance => |gi| gi.base_name,
-                            else => "",
-                        };
-                        if (conc_c_name.len > 0) {
-                            elem_val = coerceToContract(ctx, mod, builder, elem_val, conc_c_name, elem_contract) catch elem_val;
-                        }
+                    if (concreteCNameForVtable(ert)) |conc_c_name| {
+                        elem_val = coerceToContract(ctx, mod, builder, elem_val, conc_c_name, elem_contract) catch elem_val;
                     }
+                }
                 }
                 const idx_val = llvm.LLVMConstInt(i64_type, @intCast(idx), 0);
                 const elem_ptr_name = try std.heap.page_allocator.dupeZ(u8, "elem_ptr");
@@ -2116,16 +2111,7 @@ fn emitExpressionRaw(
                                 // Target parameter is a Fat Pointer { ptr data, ptr vtable }
                                 if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind) {
                                     if (arg_node.resolved_type) |arg_rt| {
-                                        const arg_c_name = switch (ts.extractBaseType(arg_rt).*) {
-                                            .Custom => |n| n,
-                                            .GenericInstance => |gi| gi.base_name,
-                                            .Int => "core_Int",
-                                            .Double => "core_Double",
-                                            .Bool => "core_Bool",
-                                            .String => "core_String",
-                                            .Pointer => "core_Pointer",
-                                            else => "",
-                                        };
+                                        const arg_c_name: []const u8 = if (concreteCNameForVtable(arg_rt)) |n| n else "";
                                         // Target contract name (from callee AST parameter if available)
                                         var contract_c_name: []const u8 = "";
                                         if (arg_node.expected_type) |et| {
@@ -3385,17 +3371,9 @@ fn emitExpressionRaw(
                                 }
                             }
                             if (arg_node.resolved_type) |art| {
-                                const abase = ts.extractBaseType(art);
-                                arg_c_name = switch (abase.*) {
-                                    .Custom => |n| n,
-                                    .GenericInstance => |gi| gi.base_name,
-                                    .Int => "core_Int",
-                                    .Double => "core_Double",
-                                    .Bool => "core_Bool",
-                                    .String => "core_String",
-                                    .Pointer => "core_Pointer",
-                                    else => "",
-                                };
+                                if (concreteCNameForVtable(art)) |n| {
+                                    arg_c_name = n;
+                                }
                             }
                             arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch coerceArg(builder, arg_val, expected_type);
                             if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind) {
@@ -4200,18 +4178,15 @@ fn emitExpressionRaw(
             if (as_e.value.resolved_type) |v_rt| {
                 if (target_rt_opt) |target_rt| {
                     if (types_mapping.isContractType(target_rt.*, global_contracts_ast_ptr)) {
-                        const concrete_c = switch (v_rt.*) {
-                            .Custom => |n| n,
-                            .GenericInstance => |gi| gi.base_name,
-                            else => "",
-                        };
                         const target_c = switch (target_rt.*) {
                             .Custom => |n| n,
                             .GenericInstance => |gi| gi.base_name,
                             else => "",
                         };
-                        if (concrete_c.len > 0 and target_c.len > 0) {
-                            return coerceToContract(ctx, mod, builder, val, concrete_c, target_c) catch val;
+                        if (concreteCNameForVtable(v_rt)) |concrete_c| {
+                            if (target_c.len > 0) {
+                                return coerceToContract(ctx, mod, builder, val, concrete_c, target_c) catch val;
+                            }
                         }
                     }
                 }
@@ -5169,6 +5144,27 @@ pub fn findVtableGlobal(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, concr
     return null;
 }
 
+/// Maps a resolved value type to the concrete C name used for vtable lookup
+/// when coercing into a contract fat pointer, or null when the type has no
+/// vtable identity (Void/Null/Unknown/...). Primitives never appear as
+/// `.Custom`, so every call site must map them explicitly (`core_*`); the
+/// previous inline copies of this switch missed arms in four places, which
+/// skipped the coercion and miscompiled (an unboxed scalar dispatched as a
+/// fat pointer) — the former scalar `as`-cast ICE and wrong-value
+/// contract-typed `val` initializers.
+pub fn concreteCNameForVtable(rt: *const ts.EiwaType) ?[]const u8 {
+    return switch (ts.extractBaseType(rt).*) {
+        .Custom => |n| n,
+        .GenericInstance => |gi| gi.base_name,
+        .Int => "core_Int",
+        .Double => "core_Double",
+        .Bool => "core_Bool",
+        .String => "core_String",
+        .Pointer => "core_Pointer",
+        else => null,
+    };
+}
+
 pub fn coerceToContract(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -5822,13 +5818,7 @@ fn storeBlockOrExprResult(
                         }
                     }
                     if (val_node.resolved_type) |vrt| {
-                        const vb = ts.extractBaseType(vrt);
-                        const val_c_name = switch (vb.*) {
-                            .Custom => |n| n,
-                            .GenericInstance => |gi| gi.base_name,
-                            else => "",
-                        };
-                        if (val_c_name.len > 0) {
+                        if (concreteCNameForVtable(vrt)) |val_c_name| {
                             val = coerceToContract(ctx, mod, builder, val, val_c_name, contract_c_name) catch val;
                         }
                     }

@@ -104,12 +104,7 @@ fn emitReturnValue(
             };
         }
         if (val_node.resolved_type) |val_rt| {
-            const val_c_name = switch (eiwa_types.extractBaseType(val_rt).*) {
-                .Custom => |n| n,
-                .GenericInstance => |gi| gi.base_name,
-                else => "",
-            };
-            if (val_c_name.len > 0) {
+            if (expression.concreteCNameForVtable(val_rt)) |val_c_name| {
                 ret_val = expression.coerceToContract(ctx, mod, builder, ret_val, val_c_name, contract_c_name) catch ret_val;
             }
         }
@@ -318,13 +313,10 @@ pub fn emitStatement(
                             else => "",
                         };
                         if (init_node.resolved_type) |init_rt| {
-                            const init_c_name = switch (init_rt.*) {
-                                .Custom => |n| n,
-                                .GenericInstance => |gi| gi.base_name,
-                                else => "",
-                            };
-                            if (init_c_name.len > 0 and contract_name.len > 0) {
-                                val = try expression.coerceToContract(ctx, mod, builder, val, init_c_name, contract_name);
+                            if (expression.concreteCNameForVtable(init_rt)) |init_c_name| {
+                                if (contract_name.len > 0) {
+                                    val = try expression.coerceToContract(ctx, mod, builder, val, init_c_name, contract_name);
+                                }
                             }
                         }
                     }
