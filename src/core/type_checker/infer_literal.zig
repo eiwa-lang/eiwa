@@ -199,6 +199,18 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     try self.monomorphizeClass(node_base, type_args, node_mangled);
     try self.monomorphizeClass(mmap_base, type_args, mmap_mangled);
     try self.monomorphizeClass(map_base, type_args, mangled_name);
-    
+
+    if (node.expected_type) |exp| {
+        const exp_base = type_system.extractBaseType(exp);
+        if (exp_base.* == .Custom) {
+            const exp_tail = if (std.mem.indexOf(u8, exp_base.Custom, "Map_")) |idx| exp_base.Custom[idx + 4 ..] else exp_base.Custom;
+            const inf_tail = if (std.mem.indexOf(u8, mangled_name, "Map_")) |idx| mangled_name[idx + 4 ..] else mangled_name;
+            if (!std.mem.eql(u8, exp_tail, inf_tail)) {
+                self.reportError(node.line, node.column, "TypeError: Incompatible types in map literal.", .{});
+                return error.TypeError;
+            }
+        }
+    }
+
     t.* = .{ .Custom = self.alias_map.get(mangled_name) orelse mangled_name };
 }
