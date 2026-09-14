@@ -2441,10 +2441,248 @@ fn makeObjMethodCall(self: *TypeChecker, line: usize, col: usize, obj: *ASTNode,
     return call_node;
 }
 
+fn isNativeArrayBackedList(c: anytype, self: *TypeChecker) bool {
+    if (c.primary_constructor.len != 1) return false;
+    const items_name = c.primary_constructor[0].type_ref.name;
+    const base = self.alias_map.get(items_name) orelse items_name;
+    return std.mem.indexOf(u8, base, "NativeArray") != null;
+}
+
+fn isMonomorphizedClass(self: *TypeChecker, type_name: []const u8) bool {
+    const actual = self.alias_map.get(type_name) orelse type_name;
+    const n = self.classes_ast.get(actual) orelse return false;
+    if (n.data != .type_decl) return false;
+    return n.data.type_decl.is_monomorphized;
+}
+
+fn emitDeserializeCompanion(self: *TypeChecker, node: *ASTNode, c: anytype, actual_c_name: []const u8, deserialize_fn: *ASTNode) anyerror!void {
+    if (self.objects_ast.get(actual_c_name)) |existing_obj| {
+        for (existing_obj.data.object_decl.members) |m| {
+            if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "deserialize")) return;
+        }
+        var new_members = try self.allocator.alloc(*ASTNode, existing_obj.data.object_decl.members.len + 1);
+        for (existing_obj.data.object_decl.members, 0..) |m, i| {
+            new_members[i] = m;
+        }
+        new_members[existing_obj.data.object_decl.members.len] = deserialize_fn;
+        existing_obj.data.object_decl.members = new_members;
+        if (existing_obj.resolved_type != null) {
+            var obj_scope = Scope.init(self.allocator, &self.global_scope);
+            defer obj_scope.deinit();
+            const old_class_name = self.current_class_name;
+            const old_class_methods = self.current_class_methods;
+            self.current_class_name = c.name;
+            self.current_class_methods = existing_obj.data.object_decl.members;
+            defer {
+                self.current_class_name = old_class_name;
+                self.current_class_methods = old_class_methods;
+            }
+            _ = try self.inferNode(deserialize_fn, &obj_scope);
+        }
+    } else {
+        const members_slice = try self.allocator.alloc(*ASTNode, 1);
+        members_slice[0] = deserialize_fn;
+        const obj_node = try self.allocator.create(ASTNode);
+        obj_node.* = .{
+            .line = node.line,
+            .column = node.column,
+            .resolved_type = null,
+            .expected_type = null,
+            .data = .{
+                .object_decl = .{
+                    .annotations = &.{},
+                    .name = c.name,
+                    .members = members_slice,
+                    .resolved_c_name = actual_c_name,
+                    .contracts = &.{},
+                    .skills = &.{},
+                    .platform_targets = c.platform_targets,
+                },
+            },
+        };
+        try self.objects_ast.put(actual_c_name, obj_node);
+        if (!std.mem.eql(u8, c.name, actual_c_name)) {
+            try self.objects_ast.put(c.name, obj_node);
+        }
+        try self.monomorphized_nodes.append(obj_node);
+    }
+}
+
+fn generateSerdeListDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype, actual_c_name: []const u8) anyerror!void {
+    if (!isNativeArrayBackedList(c, self)) return;
+
+    const items_tr = c.primary_constructor[0].type_ref;
+    if (items_tr.generic_args.len != 1) return;
+    const elem_tr = items_tr.generic_args[0];
+    if (elem_tr.is_nullable) return;
+    // Nested generic containers (List<List<..>>, List<MutableList<..>>,
+    // List<Map<..>>, ...) need recursive resolution; skip conservatively.
+    // Any monomorphized elem is skipped; plain types (User) and
+    // primitives (Int/String/...) are allowed.
+    if (elem_tr.generic_args.len != 0) return;
+    if (isMonomorphizedClass(self, elem_tr.name)) return;
+    const elem_name = elem_tr.name;
+
+    const is_int = std.mem.eql(u8, elem_name, "Int") or std.mem.endsWith(u8, elem_name, "_Int");
+    const is_double = std.mem.eql(u8, elem_name, "Double") or std.mem.endsWith(u8, elem_name, "_Double");
+    const is_bool = std.mem.eql(u8, elem_name, "Bool") or std.mem.endsWith(u8, elem_name, "_Bool");
+    const is_string = std.mem.eql(u8, elem_name, "String") or std.mem.endsWith(u8, elem_name, "_String");
+    const is_serializable = self.implementsContract(elem_name, "Serializable");
+    if (!is_int and !is_double and !is_bool and !is_string and !is_serializable) return;
+
+    const val_type_ref = try self.allocator.create(ast.ASTTypeRef);
+    val_type_ref.* = .{
+        .name = "SerdeValue",
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+    const params_slice = try self.allocator.alloc(ast.Param, 1);
+    params_slice[0] = .{
+        .name = "value",
+        .type_ref = val_type_ref,
+        .initializer = null,
+        .is_varargs = false,
+    };
+
+    const ret_type_ref = try self.allocator.create(ast.ASTTypeRef);
+    ret_type_ref.* = .{
+        .name = c.name,
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+
+    const value_ident = try makeIdent(self, node.line, node.column, "value");
+    const raw_args = try self.allocator.alloc(*ASTNode, 1);
+    raw_args[0] = value_ident;
+    const raw_list_call = try makeCall(self, node.line, node.column, "asSerdeList", raw_args, &.{});
+
+    const param_type_ref = try self.allocator.create(ast.ASTTypeRef);
+    param_type_ref.* = .{
+        .name = "SerdeValue",
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+    const lambda_params = try self.allocator.alloc(ast.Param, 1);
+    lambda_params[0] = .{
+        .name = "v",
+        .type_ref = param_type_ref,
+        .initializer = null,
+    };
+
+    const v_ident = try makeIdent(self, node.line, node.column, "v");
+    var map_expr: ?*ASTNode = null;
+    if (is_string) {
+        const as_args = try self.allocator.alloc(*ASTNode, 1);
+        as_args[0] = v_ident;
+        map_expr = try makeCall(self, node.line, node.column, "asString", as_args, &.{});
+    } else if (is_int) {
+        const as_args = try self.allocator.alloc(*ASTNode, 1);
+        as_args[0] = v_ident;
+        map_expr = try makeCall(self, node.line, node.column, "asInt", as_args, &.{});
+    } else if (is_double) {
+        const as_args = try self.allocator.alloc(*ASTNode, 1);
+        as_args[0] = v_ident;
+        map_expr = try makeCall(self, node.line, node.column, "asDouble", as_args, &.{});
+    } else if (is_bool) {
+        const as_args = try self.allocator.alloc(*ASTNode, 1);
+        as_args[0] = v_ident;
+        map_expr = try makeCall(self, node.line, node.column, "asBool", as_args, &.{});
+    } else if (is_serializable) {
+        const elem_ident = try makeIdent(self, node.line, node.column, elem_name);
+        const des_item_args = try self.allocator.alloc(*ASTNode, 1);
+        des_item_args[0] = v_ident;
+        map_expr = try makeObjMethodCall(self, node.line, node.column, elem_ident, "deserialize", des_item_args);
+    }
+
+    const me = map_expr orelse return;
+    const lambda_body = try self.allocator.alloc(*ASTNode, 1);
+    lambda_body[0] = me;
+    const lambda_node = try self.allocator.create(ASTNode);
+    lambda_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .lambda_expr = .{
+                .params = lambda_params,
+                .body = lambda_body,
+            },
+        },
+    };
+
+    const des_list_args = try self.allocator.alloc(*ASTNode, 2);
+    des_list_args[0] = raw_list_call;
+    des_list_args[1] = lambda_node;
+    const t_args = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
+    t_args[0] = elem_tr;
+    const call_val = try makeCall(self, node.line, node.column, "deserializeList", des_list_args, t_args);
+
+    const ret_stmt = try self.allocator.create(ASTNode);
+    ret_stmt.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .return_stmt = .{
+                .value = call_val,
+            },
+        },
+    };
+    const block_stmts = try self.allocator.alloc(*ASTNode, 1);
+    block_stmts[0] = ret_stmt;
+    const block_node = try self.allocator.create(ASTNode);
+    block_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .block = .{
+                .statements = block_stmts,
+            },
+        },
+    };
+
+    const des_c_name = try std.fmt.allocPrint(self.allocator, "{s}_deserialize", .{actual_c_name});
+    const deserialize_fn = try self.allocator.create(ASTNode);
+    deserialize_fn.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .fun_decl = .{
+                .annotations = &.{},
+                .modifiers = &.{},
+                .name = "deserialize",
+                .generic_params = &.{},
+                .params = params_slice,
+                .type_ref = ret_type_ref,
+                .body = block_node,
+                .is_expr_body = false,
+                .resolved_c_name = des_c_name,
+            },
+        },
+    };
+
+    try emitDeserializeCompanion(self, node, c, actual_c_name, deserialize_fn);
+}
+
 fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
     if (!self.implementsContract(c.name, "Serializable")) return;
     if (c.generic_params.len > 0) return;
-    if (c.is_monomorphized) return;
+    const actual_c_name_early = self.alias_map.get(c.name) orelse c.name;
+    if (c.is_monomorphized) {
+        if (isNativeArrayBackedList(c, self)) {
+            try generateSerdeListDeserialize(self, node, c, actual_c_name_early);
+        }
+        return;
+    }
     for (c.annotations) |ann| {
         if (std.mem.eql(u8, ann.name, "Primitive")) return;
     }
@@ -2719,53 +2957,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
         },
     };
 
-    if (self.objects_ast.get(actual_c_name)) |existing_obj| {
-        var new_members = try self.allocator.alloc(*ASTNode, existing_obj.data.object_decl.members.len + 1);
-        for (existing_obj.data.object_decl.members, 0..) |m, i| {
-            new_members[i] = m;
-        }
-        new_members[existing_obj.data.object_decl.members.len] = deserialize_fn;
-        existing_obj.data.object_decl.members = new_members;
-        if (existing_obj.resolved_type != null) {
-            var obj_scope = Scope.init(self.allocator, &self.global_scope);
-            defer obj_scope.deinit();
-            const old_class_name = self.current_class_name;
-            const old_class_methods = self.current_class_methods;
-            self.current_class_name = c.name;
-            self.current_class_methods = existing_obj.data.object_decl.members;
-            defer {
-                self.current_class_name = old_class_name;
-                self.current_class_methods = old_class_methods;
-            }
-            _ = try self.inferNode(deserialize_fn, &obj_scope);
-        }
-    } else {
-        const members_slice = try self.allocator.alloc(*ASTNode, 1);
-        members_slice[0] = deserialize_fn;
-        const obj_node = try self.allocator.create(ASTNode);
-        obj_node.* = .{
-            .line = node.line,
-            .column = node.column,
-            .resolved_type = null,
-            .expected_type = null,
-            .data = .{
-                .object_decl = .{
-                    .annotations = &.{},
-                    .name = c.name,
-                    .members = members_slice,
-                    .resolved_c_name = actual_c_name,
-                    .contracts = &.{},
-                    .skills = &.{},
-                    .platform_targets = c.platform_targets,
-                },
-            },
-        };
-        try self.objects_ast.put(actual_c_name, obj_node);
-        if (!std.mem.eql(u8, c.name, actual_c_name)) {
-            try self.objects_ast.put(c.name, obj_node);
-        }
-        try self.monomorphized_nodes.append(obj_node);
-    }
+    try emitDeserializeCompanion(self, node, c, actual_c_name, deserialize_fn);
 }
 
 // ---------------------------------------------------------------------------
