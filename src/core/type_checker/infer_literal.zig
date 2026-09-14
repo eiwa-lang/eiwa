@@ -40,16 +40,16 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
             const name = exp_base.Custom;
             if (std.mem.startsWith(u8, name, "NativeArray<") and std.mem.endsWith(u8, name, ">")) {
                 const inner = name[12 .. name.len - 1];
-                expected_elem_t = (self.resolveTypeName(inner, false) catch null) orelse (
-                    if (std.mem.startsWith(u8, inner, "std_core_")) self.resolveTypeName(inner[9..], false) catch null
-                    else if (std.mem.startsWith(u8, inner, "core_")) self.resolveTypeName(inner[5..], false) catch null
+                expected_elem_t = self.resolveHintTypeName(inner, false) orelse (
+                    if (std.mem.startsWith(u8, inner, "std_core_")) self.resolveHintTypeName(inner[9..], false)
+                    else if (std.mem.startsWith(u8, inner, "core_")) self.resolveHintTypeName(inner[5..], false)
                     else null
                 );
             } else if (std.mem.indexOf(u8, name, "List_")) |idx| {
                 const inner = name[idx + 5 ..];
-                expected_elem_t = (self.resolveTypeName(inner, false) catch null) orelse (
-                    if (std.mem.startsWith(u8, inner, "std_core_")) self.resolveTypeName(inner[9..], false) catch null
-                    else if (std.mem.startsWith(u8, inner, "core_")) self.resolveTypeName(inner[5..], false) catch null
+                expected_elem_t = self.resolveHintTypeName(inner, false) orelse (
+                    if (std.mem.startsWith(u8, inner, "std_core_")) self.resolveHintTypeName(inner[9..], false)
+                    else if (std.mem.startsWith(u8, inner, "core_")) self.resolveHintTypeName(inner[5..], false)
                     else null
                 );
             } else {

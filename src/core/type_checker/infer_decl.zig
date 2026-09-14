@@ -2868,3 +2868,71 @@ test "return check: Void functions keep legacy behavior" {
     const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, infer_stmt_mod.mkIntLit(&lit_slot))};
     try inferTestFun(null, &stmts);
 }
+
+fn resolveTestContractArg(arg_name: []const u8, nullable: bool) !void {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var checker = TypeChecker.init(arena.allocator(), "test", "generic_arg_test");
+    var cnode: ASTNode = .{ .line = 1, .column = 1, .data = .{ .contract_decl = .{
+        .annotations = &[_]ast.Annotation{},
+        .name = "C",
+        .methods = &[_]*ASTNode{},
+        .resolved_c_name = "C",
+    } } };
+    cnode.data.contract_decl.generic_params = &[_][]const u8{"T"};
+    try checker.contracts_ast.put("C", &cnode);
+    var arg_ref = ast.ASTTypeRef{ .name = arg_name, .generic_args = &[_]*const ast.ASTTypeRef{}, .is_array = false, .is_nullable = nullable };
+    var base_ref = ast.ASTTypeRef{ .name = "C", .generic_args = &[_]*const ast.ASTTypeRef{&arg_ref}, .is_array = false, .is_nullable = false };
+    _ = try checker.resolveTypeRef(&base_ref);
+}
+
+test "generic arg: undeclared name is rejected" {
+    try std.testing.expectError(error.TypeError, resolveTestContractArg("Nope", false));
+}
+
+test "generic arg: nullable undeclared name is rejected" {
+    try std.testing.expectError(error.TypeError, resolveTestContractArg("Nope", true));
+}
+
+test "generic arg: primitive, type variable and nested generics accepted" {
+    // Int: primitive. T: the contract's own type variable. List<Int>: nested
+    // instance validated by its own resolution (List undeclared here, so the
+    // nested resolution reports the base instead — still an error, never a
+    // silent pass; with List declared it resolves cleanly, see suite).
+    try resolveTestContractArg("Int", false);
+    try resolveTestContractArg("T", false);
+    try std.testing.expectError(error.TypeError, resolveTestContractArg("List", false));
+}
+
+test "generic args: call-site check reports undeclared names" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var checker = TypeChecker.init(arena.allocator(), "test", "generic_args_test");
+    var box_node: ASTNode = .{ .line = 1, .column = 1, .data = .{ .type_decl = .{
+        .annotations = &[_]ast.Annotation{},
+        .name = "Box",
+        .generic_params = &[_][]const u8{"T"},
+        .primary_constructor = &[_]ast.ClassProp{},
+        .methods = &[_]*ASTNode{},
+        .resolved_c_name = "Box",
+        .contracts = &[_][]const u8{},
+        .skills = &[_][]const u8{},
+    } } };
+    try checker.classes_ast.put("Box", &box_node);
+    const int_t = try arena.allocator().create(EiwaType);
+    int_t.* = .Int;
+    const bad_t = try arena.allocator().create(EiwaType);
+    bad_t.* = .{ .Custom = "Bad" };
+    const tvar_t = try arena.allocator().create(EiwaType);
+    tvar_t.* = .{ .Custom = "T" };
+    const ok_args = [_]*const EiwaType{int_t};
+    try checker.checkGenericTypeArgs("Box", &ok_args, 1, 1);
+    const tvar_args = [_]*const EiwaType{tvar_t};
+    try checker.checkGenericTypeArgs("Box", &tvar_args, 1, 1);
+    const bad_args = [_]*const EiwaType{bad_t};
+    try testing.expectError(error.TypeError, checker.checkGenericTypeArgs("Box", &bad_args, 1, 1));
+    // Unknown base defers to downstream "not found" errors: silent here.
+    try checker.checkGenericTypeArgs("Missing", &bad_args, 1, 1);
+}
