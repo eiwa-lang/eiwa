@@ -560,6 +560,28 @@ type Regex(val pattern: String) {
 
     fun find(input: String): MatchResult? = this.findFrom(input, 0)
 
+    // All non-overlapping matches in order (Kotlin's `findAll`, as a List).
+    fun findAll(input: String): List<MatchResult> {
+        val results = MutableList<MatchResult>()
+        var pos = 0
+        var running = true
+        while (running) {
+            val m = this.findFrom(input, pos)
+            if (m == null) {
+                running = false
+            } else {
+                val found = m!!
+                results.add(found)
+                if (found.end == found.start) {
+                    pos = found.end + 1
+                } else {
+                    pos = found.end
+                }
+            }
+        }
+        return results.list
+    }
+
     // Replaces ALL non-overlapping matches with `replacement` (Kotlin semantics).
     fun replace(input: String, replacement: String): String {
         var result = ""
@@ -598,5 +620,7 @@ type Regex(val pattern: String) {
 fun String.matchesRegex(pattern: String): Bool = Regex(pattern).matches(this)
 
 fun String.findRegex(pattern: String): MatchResult? = Regex(pattern).find(this)
+
+fun String.findAllRegex(pattern: String): List<MatchResult> = Regex(pattern).findAll(this)
 
 fun String.replaceRegex(pattern: String, replacement: String): String = Regex(pattern).replace(this, replacement)

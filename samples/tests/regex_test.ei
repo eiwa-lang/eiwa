@@ -117,3 +117,36 @@ test "regex: reusable compiled pattern" {
     assert(!re.matches("not an email"), "email-ish rejects")
     assert(re.matches("a@b.cd"), "reused pattern still works")
 }
+
+test "regex: findAll returns all matches" {
+    val ms = Regex("[0-9]+").findAll("a12b3c456")
+    assert(ms.size() == 3, "three number runs")
+    assert(ms[0].value == "12", "first match value")
+    assert(ms[0].start == 1, "first match start")
+    assert(ms[1].value == "3", "second match value")
+    assert(ms[2].value == "456", "third match value")
+    assert(ms[2].start == 6, "third match start")
+    assert(ms[2].group(0) == "456", "group 0 is whole match")
+}
+
+test "regex: findAll with no match returns empty list" {
+    val ms = Regex("[0-9]+").findAll("abc")
+    assert(ms.size() == 0, "empty list on no match")
+}
+
+test "regex: findAllRegex string shortcut" {
+    val all = "a1b2".findAllRegex("[0-9]")
+    assert(all.size() == 2, "two digits")
+    assert(all[0].value == "1", "first digit")
+    assert(all[1].value == "2", "second digit")
+    assert(all[1].start == 3, "second digit start")
+}
+
+test "regex: findAll with groups" {
+    val ms = Regex("([a-z]+)=([0-9]+)").findAll("x=1 y=22")
+    assert(ms.size() == 2, "two pairs")
+    assert(ms[0].group(1) == "x", "first key")
+    assert(ms[0].group(2) == "1", "first value")
+    assert(ms[1].group(1) == "y", "second key")
+    assert(ms[1].group(2) == "22", "second value")
+}

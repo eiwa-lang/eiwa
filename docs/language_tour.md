@@ -3315,6 +3315,7 @@ if (!nameRegex.matches(name)) {
 
 * **`matches(input: String): Bool`**: Full-input match (the ENTIRE input must match, like Kotlin).
 * **`find(input: String): MatchResult?`**: First match anywhere in the input, or `null`.
+* **`findAll(input: String): List<MatchResult>`**: All non-overlapping matches in order (Kotlin's `findAll`, as a `List`).
 * **`replace(input: String, replacement: String): String`**: Replaces ALL non-overlapping matches.
 
 The pattern is compiled once per `Regex` instance (lazily, on first use) and can be reused.
@@ -3334,12 +3335,26 @@ if (m != null) {
 ```
 
 `groups[0]` is always the whole match; unmatched groups are returned as `""`.
+The same layout applies to every element returned by `findAll`.
+
+`start`/`end` replace Kotlin's `match.range`: there is no `Range` type in
+Eiwa — `start` is `range.first` and `end` is already exclusive
+(`range.last + 1`), so both feed `substring` directly:
+
+```kotlin
+var lastIndex = 0
+for (Regex("[0-9]+").findAll(text)) { m ->
+    val before = text.substring(lastIndex, m.start)
+    lastIndex = m.end
+}
+```
 
 ### 33.3 `String` shortcuts
 
 ```kotlin
 "hello123".matchesRegex("[a-z]+[0-9]+")   // true
 "abc123".findRegex("[0-9]+")              // MatchResult("123")
+"a12b3".findAllRegex("[0-9]+")            // [MatchResult("12"), MatchResult("3")]
 "a1b2".replaceRegex("[0-9]", "#")         // "a#b#"
 ```
 

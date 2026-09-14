@@ -262,11 +262,13 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
         return NativeString.strncmp(this.ptr + offset, suffix.ptr, suffix.length) == 0
     }
 
-    fun substring(start: Int, end: Int): String {
-        if (start < 0 || end > this.length || start > end) {
+    fun substring(start: Int, end: Int = -1): String {
+        val endPos = if (end == -1) this.length else end
+        
+        if (start < 0 || endPos > this.length || start > endPos) {
             return ""
         }
-        val len = end - start
+        val len = endPos - start
         val buf = Standard.gcMalloc(len + 1)
         NativeString.strncpy(buf, this.ptr + start, len)
         NativeMemory.writeByte(buf, len, 0)
@@ -318,6 +320,21 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
 
     fun isNotEmpty(): Bool {
         return !this.isEmpty()
+    }
+
+    fun isBlank(): Bool {
+        var i = 0
+        while (i < this.length) {
+            if (NativeMemory.readByte(this.ptr, i) > 32) {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
+    fun isNotBlank(): Bool {
+        return !this.isBlank()
     }
 
     fun lowercase(): String {
@@ -412,6 +429,14 @@ contract Awaitable<T> {
     @Suspend
     fun await(): T
     fun isDone(): Bool
+}
+
+fun isNullOrEmpty(s: String?): Bool {
+    return s == null || s!!.isEmpty()
+}
+
+fun isNullOrBlank(s: String?): Bool {
+    return s == null || s!!.isBlank()
 }
 
 @Primitive("bool")
