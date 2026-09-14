@@ -20,8 +20,10 @@ Decisões (2026-09-13, branch `feature/std-regex`):
   `^ $`, `* + ? {n} {n,} {n,m}` (greedy), grupos `(...)`, alternância `|`.
 - Testes: `samples/tests/regex_test.ei` (14 testes). Docs: language_tour.md §33.
 
-## Status do bug (atualizado 2026-09-13)
-- CORRIGIDO na Phase 80 (branch `fix/nullable-scalar-zero`): representação
-  **zero-sentinel** — box de escalar 0 vira `(ptr)0x8` (não-null), resto segue
-  value-in-ptr; unbox faz o inverso. `== null`/`?.`/`?:`/`toString`/`==`
-  funcionam sem mudanças nos null checks. Suite: 542 verdes.
+## Status do bug (atualizado 2026-09-14)
+- CORRIGIDO na Phase 80 (branch `fix/nullable-scalar-zero`): heap-box estilo
+  JVM — todo escalar com alvo `Int?`/`Bool?`/`Double?` vai para célula GC de
+  8 bytes; `null` continua nulo. `!!` é null-safe (null vira zero, nunca falta).
+  Tentativa com sentinela `(ptr)0x8` descartada (colidia com literal 8).
+  Suite: 548 verdes. Limite conhecido: `print` direto de nullable mostra o
+  endereço do box (receivers de método em contratos).

@@ -1249,41 +1249,49 @@ Semântica alvo:
 > aninhado" a tratar (tentativas de recursão checker/emissor revertidas).
 ---
 ### Phase 80: Boxing de escalares anuláveis (`Int? == 0` colide com `null`) (COMPLETED)
-> **Status:** GREEN (2026-09-13, branch `fix/nullable-scalar-zero`). Representação
-> **zero-sentinel**: boxear escalar `0`/`false`/`0.0` via `IntToPtr(0)` colidia com
-> `null`. Agora produtores com alvo nullable-scalar emitem
-> `select(val == 0, (ptr)0x8, inttoptr val)` — a sentinela `0x8` é um endereço
-> pequeno nunca-dereferenciado e nunca-alocado (estável entre módulos, sem
-> globals), então `== null`, `?.`, `?:` e `if (x)` a tratam como presente sem
-> nenhuma mudança nos null checks. Consumidores fazem o inverso
-> (`== sentinela ? 0 : ptrtoint`); todo o resto (value-in-pointer para não-zero)
-> continua idêntico — `toString`/`hashCode`/`equals`/aritmética não foram tocados.
+> **Status:** GREEN (2026-09-13/14, branch `fix/nullable-scalar-zero`). Representação
+> **heap-box estilo JVM**: todo escalar com alvo `Int?`/`Bool?`/`Double?` é boxeado
+> numa célula de 8 bytes via GC_malloc (bits do valor); `null` continua ponteiro
+> nulo. Sem colisões para nenhum valor (uma tentativa intermediária com sentinela
+> `(ptr)0x8` foi descartada: colidia com o literal `8` — verificado por teste RED).
+>
+> **Semântica de `!!`:** null-safe — `null!!` produz o valor zero em vez de falhar
+> (desvio documentado do Kotlin, que lançaria NPE; o emitter não tem trap de NPE
+> e o fluxo silencioso é exigido pelo machinery de `task.result!!` em tasks sem
+> retorno). Unbox de null nunca falta; unbox só acontece após null-check ou via
+> `!!`/comparações que tratam null primeiro.
 >
 > **Pontos instrumentados:** `boxNullableScalar`/`unboxNullableScalar`/
-> `scalarBitsToVariant`/`nullableScalarVariant`/`coerceToNullableScalar`
+> `unboxNullableScalarOrZero`/`scalarBitsToVariant`/`nullableScalarVariant`/
+> `coerceToNullableScalar`/`isNullableSource`/`unboxScalarOperand`
 > (`expression.zig`); unbox roteado por tipo-fonte em `unboxUnionVariant`,
-> `!!`, elvis, `emitUnionBuiltin` (resultado `toInt` usa variante `Int`),
-> `emitNullableScalarCompare`; produtores em `var_decl`, `return`,
-> `storeBlockOrExprResult` (ramos if/when), call args (via `expected_type` do
-> checker + wrapper no `emitExpression`), `set_expr` (flag
-> `box_nullable_scalar` marcada no `inferSetExpr`). Cobertura:
-> `samples/tests/nullable_scalar_zero_test.ei` (10 testes: zero vs literal vs
-> `null` para `Int?`/`Bool?`/`Double?`, `==`/`!=`, `!!`, `?:`, `?.`, params,
-> returns, `?.toInt()` sobre zero, `try { 0 }`).
+> elvis, `emitUnionBuiltin` (resultado `toInt` usa variante `Int`),
+> `emitNullableScalarCompare`, normalização de binops, `as`-casts,
+> value-cases de `when` (semântica null-first via `emitNullableScalarCompare`);
+> produtores em `var_decl`, `return`, `storeBlockOrExprResult` (ramos if/when),
+> short-ternary sem `else` (ramo ausente vira null real), for-collect,
+> array literals (flag nos elementos em `infer_literal.zig`),
+> call args (via `expected_type` do checker + wrapper no `emitExpression`),
+> `set_expr` (flag `box_nullable_scalar` marcada no `inferSetExpr`).
+> Cobertura: `samples/tests/nullable_scalar_zero_test.ei` (17 testes: zero vs
+> literal vs `null` para `Int?`/`Bool?`/`Double?`, `==`/`!=`, `!!`, `?:`, `?.`,
+> params, returns, `?.toInt()`, `try { 0 }`, valores 8/negativos/grandes,
+> receivers de método, `when`, `as`, containers, array literals).
 >
 > **Bônus:** `try { 0 }` (Phase 81) agora retorna `0` em vez de `null`.
 >
-> **Limites conhecidos:** `print(x)`/`"${x}"` de `Int?(0)` via dispatch de
-> `Stringable` com vtable de `Int` formata a sentinela como inteiro (não
-> crasha, mas não imprime "0" — `x.toString()` direto funciona via
-> `emitUnionBuiltin`); `Int?(0x8)` teórico colidiria com a sentinela. Ambos
-> documentados como follow-ups, sem impacto na suite (542 testes verdes).
+> **Limites conhecidos (follow-ups, sem impacto na suite — 549 verdes):**
+> `print(x)`/`"${x}"` de escalar nullable via dispatch de contrato passa o box
+> como `this` (imprime endereço em vez do valor — corrigir exige unbox nos
+> receivers de método/fat-ptr de contratos); `Map<K, Int?>` com valores zero
+> já era rejeitado pelo checker na main (pré-existente, fora do escopo);
+> uniões gerais (`String | Int`) mantêm value-in-pointer legado de propósito.
 >
 > **Bug original (histórico):** escalares anuláveis usavam boxing direto
 > `IntToPtr`/`PtrToInt`, de modo que o valor `0` boxeava para ponteiro nulo.
 > `emitNullableScalarCompare` checava `IsNull` primeiro, então `Int?(0) == 0`
-> era `false` e `Int?(0) == null` era `true`. Workaround antigo (`!!`) removido
-> dos testes de `byName`? — não (mantido, inofensivo).
+> era `false` e `Int?(0) == null` era `true`. Workaround antigo (`!!`) nos
+> testes de `byName` mantido (inofensivo).
 >
 > **Follow-ups de hardening do backend (dívidas da ADR 66, sem impacto no verde atual):**
 > - [ ] **H1 — `emitEnumList` assume o layout de `List` na mão:** usa o struct
@@ -1401,6 +1409,27 @@ Semântica alvo:
 - **Validação:** suíte completa 516/516 verde sem ajustes; repro manual
   (`import { User }` sem `greet`) agora falha com
   `Extension function 'greet' exists in module '...' — add it to your imports.`
+
+### Phase 84: `Map` com valor nullable — `contains` confunde `null` com chave ausente (OPEN / RED)
+> **Status:** RED. Cobertura em `samples/tests/map_nullable_xfail_test.ei`
+> (1 PASS + 1 FAIL; harness conta como `[XFAIL]`, sem quebrar o gate verde).
+> Suporte `*_xfail_test.ei` adicionado ao harness em `src/main.zig`.
+>
+> **O bug (preciso):** `MutableMap<String, Int?>` compila, `put`/`get` funcionam
+> (inclusive `get("a") == 0` graças ao heap-box da Phase 80), mas
+> `put("b", null)` seguido de `contains("b")` retorna `false` —
+> `contains(key)` é implementado como `get(key) != null`
+> (`src/std/collections.ei:150`), então valor `null` é indistinguível de chave
+> ausente. Fix sugerido (só-stdlib, sem compilador): `contains` deve caminhar
+> os buckets comparando chaves em vez de testar o valor.
+>
+> **Wart de diagnóstico (não-fatal):** compilar esse teste imprime dois
+> `error:` do checker (chamada sem `?.`/`!!` em receiver `Int?` no `put`
+> monomorfizado; `null` onde se esperava `Node`) que **não abortam o build**
+> (`eiwac build` sai 0 e o programa roda). Um `error:` que não falha o build
+> confunde — considerar tornar fatal ou rebaixar para warning.
+> Verificado idêntico na main limpa: pré-existente, sem relação com Phase 80
+> (`MutableList<Int?>` funciona totalmente).
 
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`

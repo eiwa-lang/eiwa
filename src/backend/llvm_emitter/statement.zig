@@ -114,9 +114,7 @@ fn emitReturnValue(
             }
         }
     }
-    // Coerce the return value to the function's declared return
-    // type (e.g. a nullable primitive `Int?` is `ptr` while
-    // `curr!!.value` is a raw `i64`), mirroring argument coercion.
+    // Coerce the return value to the function's declared return type.
     if (llvm.LLVMGetTypeKind(expected_ret_type) == llvm.LLVMVoidTypeKind) {
         _ = llvm.LLVMBuildRetVoid(builder);
     } else {
@@ -893,6 +891,9 @@ fn emitForIterValue(
     ci: ForCollect,
 ) anyerror!void {
     var val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, ci.trailing);
+    if (ci.trailing.resolved_type) |trt| {
+        val = expression.coerceToNullableScalar(ctx, mod, builder, val, trt);
+    }
     val = expression.coerceArg(builder, val, ci.elem_type);
     if (ci.nullable and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) == llvm.LLVMPointerTypeKind) {
         const is_null = llvm.LLVMBuildIsNull(builder, val, "for_val_is_null");

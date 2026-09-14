@@ -82,6 +82,11 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
                 self.reportError(node.line, node.column, "TypeError: Incompatible types in array literal. Expected {} but found {}.", .{ first_type.*, elem_type.* });
                 return error.TypeError;
             }
+            // Phase 80: raw scalars bound to a nullable element type must be
+            // heap-boxed by the emitter.
+            if (type_system.isNullableScalar(ee_t) and type_system.isRawScalar(elem_type)) {
+                elem.box_nullable_scalar = true;
+            }
         }
     } else {
         first_type = try self.inferNode(a.elements[0], scope);

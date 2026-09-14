@@ -829,9 +829,8 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                             self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
                             return error.TypeError;
                         }
-                        // Phase 80: raw scalar flowing into a nullable-scalar
-                        // field must be heap-boxed by the emitter.
-                        if (type_system.isNullableScalar(pt) and type_system.isRawScalar(extractBaseType(assigned_type))) {
+                        // sentinel-box scalars bound to nullable fields.
+                        if (type_system.isNullableScalar(pt) and type_system.isRawScalar(assigned_type)) {
                             s.value.box_nullable_scalar = true;
                         }
                     }
@@ -852,7 +851,8 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                                 self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
                                 return error.TypeError;
                             }
-                            if (type_system.isNullableScalar(pt) and type_system.isRawScalar(extractBaseType(assigned_type))) {
+                            // sentinel-box scalars bound to nullable fields.
+                            if (type_system.isNullableScalar(pt) and type_system.isRawScalar(assigned_type)) {
                                 s.value.box_nullable_scalar = true;
                             }
                         }

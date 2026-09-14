@@ -320,8 +320,7 @@ pub fn isNullable(t: *const EiwaType) bool {
 }
 
 /// True for `Int?` / `Bool?` / `Double?` — a union whose only non-null
-/// variant is a primitive scalar (Phase 80: these are heap-boxed so zero
-/// stays distinct from null).
+/// variant is a primitive scalar: these are heap-boxed so zero stays distinct from null).
 pub fn isNullableScalar(t: *const EiwaType) bool {
     if (!isNullable(t)) return false;
     const base = extractBaseType(t);

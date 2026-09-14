@@ -315,9 +315,7 @@ pub fn currentLambdaCounter() usize {
     return lambda_counter_val;
 }
 
-/// Emits `node` and, when the type checker flagged it with
-/// `box_nullable_scalar` (Phase 80: raw scalar flowing into a nullable-scalar
-/// slot), heap-boxes the result so zero stays distinct from null.
+/// sentinel-boxes raw scalars flowing into nullable-scalar slots.
 pub fn emitExpression(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -328,21 +326,16 @@ pub fn emitExpression(
     node: *ast.ASTNode,
 ) anyerror!llvm.LLVMValueRef {
     const val = try emitExpressionRaw(ctx, mod, builder, scope, structs, libs, node);
-    // Phase 80: box raw scalars flowing into nullable-scalar slots. The
-    // checker signals this via `box_nullable_scalar` or via `expected_type`.
     const wants_box = node.box_nullable_scalar or
         (if (node.expected_type) |et| ts.isNullableScalar(et) else false);
     if (wants_box) {
         if (node.resolved_type) |rt| {
-            const variant: ts.EiwaType = switch (ts.extractBaseType(rt).*) {
-                .Int => .Int,
-                .Bool => .Bool,
-                .Double => .Double,
-                else => return val,
-            };
-            const kind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val));
-            if (kind == llvm.LLVMIntegerTypeKind or kind == llvm.LLVMDoubleTypeKind) {
-                return boxNullableScalar(ctx, mod, builder, val, variant);
+            const base = ts.extractBaseType(rt).*; // raw Int/Bool/Double here
+            if (base == .Int or base == .Bool or base == .Double) {
+                const kind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val));
+                if (kind == llvm.LLVMIntegerTypeKind or kind == llvm.LLVMDoubleTypeKind) {
+                    return boxNullableScalar(ctx, mod, builder, val, base);
+                }
             }
         }
     }
@@ -1128,12 +1121,11 @@ fn emitExpressionRaw(
                     if (val_kind == llvm.LLVMStructTypeKind) {
                         return operand_val;
                     }
-                    // Nullable scalar (`Int?`/`Bool?`/`Double?`): the box is a
-                    // heap cell (Phase 80) — unwrap by loading the value.
+                    // unwrap nullable-scalar boxes (null-safe).
                     if (un.operand.resolved_type) |ort| {
                         if (nullableScalarVariant(ort)) |variant| {
                             if (val_kind == llvm.LLVMPointerTypeKind) {
-                                return unboxNullableScalar(ctx, mod, builder, variant, operand_val);
+                                return unboxNullableScalarOrZero(ctx, builder, variant, operand_val);
                             }
                         }
                     }
@@ -1176,7 +1168,7 @@ fn emitExpressionRaw(
                 var then_in = lhs_val;
                 if (node.resolved_type) |rt| {
                     if (lhs_kind == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(target_type) != llvm.LLVMPointerTypeKind) {
-                        then_in = unboxUnionVariant(ctx, mod, builder, rt.*, lhs_val, bin.left.resolved_type);
+                        then_in = unboxUnionVariant(ctx, builder, rt.*, lhs_val, bin.left.resolved_type);
                     }
                 }
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
@@ -1261,7 +1253,7 @@ fn emitExpressionRaw(
             // `Bool? == true`): null-check the union before comparing, so `null`
             // never equals a zero scalar. Runs before the ptr→int coercions below.
             if (bin.op == .eq_eq or bin.op == .bang_eq) {
-                const nullable_res = try emitNullableScalarCompare(ctx, mod, builder, left_val, right_val, bin.left.resolved_type, bin.right.resolved_type, bin.op == .eq_eq);
+                const nullable_res = try emitNullableScalarCompare(ctx, builder, left_val, right_val, bin.left.resolved_type, bin.right.resolved_type, bin.op == .eq_eq);
                 if (nullable_res) |nr| return nr;
             }
 
@@ -1448,9 +1440,9 @@ fn emitExpressionRaw(
                     };
                 }
                 if (llvm.LLVMGetTypeKind(l_type) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(r_type) == llvm.LLVMIntegerTypeKind) {
-                    left_val = llvm.LLVMBuildPtrToInt(builder, left_val, r_type, "l_ptr2int");
+                    left_val = unboxScalarOperand(ctx, builder, left_val, bin.left.resolved_type, r_type);
                 } else if (llvm.LLVMGetTypeKind(l_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(r_type) == llvm.LLVMPointerTypeKind) {
-                    right_val = llvm.LLVMBuildPtrToInt(builder, right_val, l_type, "r_ptr2int");
+                    right_val = unboxScalarOperand(ctx, builder, right_val, bin.right.resolved_type, l_type);
                 }
             }
 
@@ -1521,9 +1513,9 @@ fn emitExpressionRaw(
                         r_val = llvm.LLVMBuildExtractValue(builder, r_val, 0, "r_data");
                     }
                     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMIntegerTypeKind) {
-                        l_val = llvm.LLVMBuildPtrToInt(builder, l_val, llvm.LLVMTypeOf(r_val), "l_int");
+                        l_val = unboxScalarOperand(ctx, builder, l_val, bin.left.resolved_type, llvm.LLVMTypeOf(r_val));
                     } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
-                        r_val = llvm.LLVMBuildPtrToInt(builder, r_val, llvm.LLVMTypeOf(l_val), "r_int");
+                        r_val = unboxScalarOperand(ctx, builder, r_val, bin.right.resolved_type, llvm.LLVMTypeOf(l_val));
                     }
                     {
                         var eq_class: ?[]const u8 = null;
@@ -1574,9 +1566,9 @@ fn emitExpressionRaw(
                         r_val = llvm.LLVMBuildExtractValue(builder, r_val, 0, "r_data");
                     }
                     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMIntegerTypeKind) {
-                        l_val = llvm.LLVMBuildPtrToInt(builder, l_val, llvm.LLVMTypeOf(r_val), "l_int");
+                        l_val = unboxScalarOperand(ctx, builder, l_val, bin.left.resolved_type, llvm.LLVMTypeOf(r_val));
                     } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
-                        r_val = llvm.LLVMBuildPtrToInt(builder, r_val, llvm.LLVMTypeOf(l_val), "r_int");
+                        r_val = unboxScalarOperand(ctx, builder, r_val, bin.right.resolved_type, llvm.LLVMTypeOf(l_val));
                     }
                     {
                         var eq_class: ?[]const u8 = null;
@@ -2174,13 +2166,6 @@ fn emitExpressionRaw(
                                     arg_val = coerceArg(builder, arg_val, expected_type);
                                 }
                             } else {
-                                // Nullable scalar param (Phase 80): heap-box raw
-                                // scalars so zero stays distinct from null.
-                                if (call.callee.resolved_type) |crt| {
-                                    if (crt.* == .Function and p_idx < crt.Function.params.len) {
-                                        arg_val = coerceToNullableScalar(ctx, mod, builder, arg_val, crt.Function.params[p_idx]);
-                                    }
-                                }
                                 arg_val = coerceArg(builder, arg_val, expected_type);
                             }
                         }
@@ -3414,19 +3399,9 @@ fn emitExpressionRaw(
                             }
                             arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch coerceArg(builder, arg_val, expected_type);
                             if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind) {
-                                if (call.callee.resolved_type) |crt| {
-                                    if (crt.* == .Function and idx < crt.Function.params.len) {
-                                        arg_val = coerceToNullableScalar(ctx, mod, builder, arg_val, crt.Function.params[idx]);
-                                    }
-                                }
                                 arg_val = coerceArg(builder, arg_val, expected_type);
                             }
                         } else {
-                            if (call.callee.resolved_type) |crt| {
-                                if (crt.* == .Function and idx < crt.Function.params.len) {
-                                    arg_val = coerceToNullableScalar(ctx, mod, builder, arg_val, crt.Function.params[idx]);
-                                }
-                            }
                             arg_val = coerceArg(builder, arg_val, expected_type);
                         }
                     }
@@ -3727,6 +3702,19 @@ fn emitExpressionRaw(
                             var cond_val = try emitExpression(ctx, mod, builder, scope, structs, libs, cond);
                             if (subj_ptr != null) {
                                 var subj_load = llvm.LLVMBuildLoad2(builder, llvm.LLVMTypeOf(subj_ptr.?), subj_ptr.?, "when_subj_load");
+                                // nullable-scalar subjects compare with null-first semantics (null never equals a value case), like `==`.
+                                var subj_handled = false;
+                                if (w.subject) |subj| {
+                                    if (subj.resolved_type) |srt| {
+                                        if (nullableScalarVariant(srt) != null and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(subj_load)) == llvm.LLVMPointerTypeKind) {
+                                            if (try emitNullableScalarCompare(ctx, builder, subj_load, cond_val, srt, cond.resolved_type, true)) |cmp| {
+                                                cond_val = cmp;
+                                                subj_handled = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!subj_handled) {
                                 const s_type = llvm.LLVMTypeOf(subj_load);
                                 const c_type = llvm.LLVMTypeOf(cond_val);
                                 var already_eq = false;
@@ -3748,6 +3736,7 @@ fn emitExpressionRaw(
                                 }
                                 if (!already_eq) {
                                     cond_val = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_load, cond_val, "when_val_eq");
+                                }
                                 }
                             }
                             if (cond_vals_count < 16) {
@@ -3811,6 +3800,22 @@ fn emitExpressionRaw(
             // Emit then branch
             llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
             const then_val = try emitExpression(ctx, mod, builder, scope, structs, libs, t.then_branch);
+            // a short ternary (`cond ? v`) over scalars with a
+            // nullable result must box the value branch — legacy i64 0
+            // cannot mean null once consumers heap-unbox.
+            var then_boxed = then_val;
+            var short_nullable = false;
+            if (t.else_branch == null) {
+                if (node.resolved_type) |rt| {
+                    if (nullableScalarVariant(rt)) |variant| {
+                        const tk = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(then_val));
+                        if (tk == llvm.LLVMIntegerTypeKind or tk == llvm.LLVMDoubleTypeKind) {
+                            then_boxed = boxNullableScalar(ctx, mod, builder, then_val, variant);
+                            short_nullable = true;
+                        }
+                    }
+                }
+            }
             const then_end_bb = llvm.LLVMGetInsertBlock(builder);
             if (llvm.LLVMGetBasicBlockTerminator(then_end_bb) == null) {
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
@@ -3822,7 +3827,10 @@ fn emitExpressionRaw(
 
             // Emit else branch
             llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
-            const ret_type = llvm.LLVMTypeOf(then_val);
+            const ret_type = if (short_nullable)
+                llvm.LLVMPointerTypeInContext(ctx, 0)
+            else
+                llvm.LLVMTypeOf(then_val);
             const else_val: llvm.LLVMValueRef = if (t.else_branch) |eb|
                 try emitExpression(ctx, mod, builder, scope, structs, libs, eb)
             else blk: {
@@ -3845,9 +3853,9 @@ fn emitExpressionRaw(
 
             // Coerce types if needed (e.g. one branch returned i64 vs ptr) or use phi
             llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
-            const phi_type = llvm.LLVMTypeOf(then_val);
+            const phi_type = llvm.LLVMTypeOf(then_boxed);
             const phi = llvm.LLVMBuildPhi(builder, phi_type, "ternary_val");
-            var incoming_vals = [_]llvm.LLVMValueRef{ then_val, else_val };
+            var incoming_vals = [_]llvm.LLVMValueRef{ then_boxed, else_val };
             var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };
             llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
 
@@ -4114,7 +4122,20 @@ fn emitExpressionRaw(
             return coerceArg(builder, val, ret_t);
         },
         .as_expr => |as_e| {
-            const val = try emitExpression(ctx, mod, builder, scope, structs, libs, as_e.value);
+            var val = try emitExpression(ctx, mod, builder, scope, structs, libs, as_e.value);
+            // unbox nullable-scalar sources cast to a raw scalar.
+            if (as_e.value.resolved_type) |v_rt| {
+                if (nullableScalarVariant(v_rt)) |variant| {
+                    if (node.resolved_type) |nrt| {
+                        if (!ts.isNullable(nrt)) {
+                            const n_base = ts.extractBaseType(nrt).*;
+                            if (n_base == .Int or n_base == .Double or n_base == .Bool) {
+                                val = unboxNullableScalarOrZero(ctx, builder, variant, val);
+                            }
+                        }
+                    }
+                }
+            }
             // `Pointer as Type` is a memory view. The LLVM value model lays out
             // type structs WITHOUT the leading `_desc` header (the C backend
             // includes it), so a memory view must skip the 8-byte header: the
@@ -4524,10 +4545,7 @@ fn unionPrimaryVariant(rt: *const ts.EiwaType) ?ts.EiwaType {
     return base.*;
 }
 
-/// If `rt` is a nullable scalar (`Int?`, `Bool?`, `Double?` — a union whose
-/// only non-null variant is a primitive scalar), returns that variant.
-/// Nullable scalars are heap-boxed (Phase 80) so that 0/false/0.0 stay
-/// distinct from null.
+/// Returns the scalar variant when `rt` is `Int?`/`Bool?`/`Double?`.
 pub fn nullableScalarVariant(rt: *const ts.EiwaType) ?ts.EiwaType {
     if (!ts.isNullable(rt)) return null;
     const v = unionPrimaryVariant(rt) orelse return null;
@@ -4537,48 +4555,93 @@ pub fn nullableScalarVariant(rt: *const ts.EiwaType) ?ts.EiwaType {
     };
 }
 
-/// Sentinel address used as the box for scalar value zero (Phase 80).
-/// Boxing 0 via `IntToPtr(0)` collides with null; the sentinel is a small
-/// never-dereferenced, never-allocated address, so `== null`, `?.` and `?:`
-/// treat zero as a present value with no changes to null checks. It is a
-/// pure constant, hence stable across compilation units (no globals).
-/// Value zero maps to the zero sentinel (non-null); every other value keeps
-/// the legacy value-in-pointer box, so scalar method receivers (`toString`,
-/// `hashCode`, `equals`) work unchanged.
+/// True when the union source is a nullable scalar.
+fn isNullableSource(source_rt: ?*const ts.EiwaType) bool {
+    if (source_rt) |srt| return nullableScalarVariant(srt) != null;
+    return false;
+}
+
+/// Boxes a raw scalar into a GC-managed 8-byte cell holding its i64 bits
+/// (JVM-style boxing: null stays null, every value is a real address).
 pub fn boxNullableScalar(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, variant: ts.EiwaType) llvm.LLVMValueRef {
-    _ = mod;
     const i64_t = llvm.LLVMInt64TypeInContext(ctx);
-    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
     var i64_val = coerceArg(builder, val, i64_t);
     if (variant == .Double) {
         const dbl_t = llvm.LLVMDoubleTypeInContext(ctx);
         i64_val = llvm.LLVMBuildBitCast(builder, coerceArg(builder, val, dbl_t), i64_t, "ns_dbl_bits");
     }
-    const is_zero = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, i64_val, llvm.LLVMConstInt(i64_t, 0, 0), "ns_is_zero");
-    const sentinel = llvm.LLVMBuildIntToPtr(builder, llvm.LLVMConstInt(i64_t, 8, 0), ptr_t, "ns_sentinel");
-    const raw_box = llvm.LLVMBuildIntToPtr(builder, i64_val, ptr_t, "ns_raw_box");
-    return llvm.LLVMBuildSelect(builder, is_zero, sentinel, raw_box, "ns_box");
+    const alloc_fn = core.getHeapAllocFn(mod);
+    const alloc_ty = llvm.LLVMGlobalGetValueType(alloc_fn);
+    var sargs = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 8, 0)};
+    const cell = llvm.LLVMBuildCall2(builder, alloc_ty, alloc_fn, &sargs, 1, "ns_box");
+    _ = llvm.LLVMBuildStore(builder, i64_val, cell);
+    return cell;
 }
 
-/// Unboxes a scalar box (inverse of `boxNullableScalar`): the zero sentinel
-/// maps back to 0, anything else is the legacy value-in-pointer box.
-/// Raw scalar values (e.g. legacy i64 producers) pass through with conversion.
-pub fn unboxNullableScalar(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: llvm.LLVMBuilderRef, variant: ts.EiwaType, boxed: llvm.LLVMValueRef) llvm.LLVMValueRef {
-    _ = mod; // sentinel is a pure constant; kept for API symmetry with boxNullableScalar.
+/// Unboxes a box left over by `!!`: a ptr-kind value whose static type is a
+/// raw or nullable scalar can only be a Phase-80 heap cell — load it.
+/// Anything else (genuine pointers, legacy union boxes) keeps PtrToInt.
+fn unboxScalarOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, node_rt: ?*const ts.EiwaType, target_t: llvm.LLVMTypeRef) llvm.LLVMValueRef {
+    if (node_rt) |rt| {
+        if (ts.isRawScalar(rt)) {
+            return unboxNullableScalar(ctx, builder, rt.*, val);
+        }
+        if (nullableScalarVariant(rt)) |variant| {
+            return unboxNullableScalar(ctx, builder, variant, val);
+        }
+    }
+    return llvm.LLVMBuildPtrToInt(builder, val, target_t, "ptr2int");
+}
+
+/// Inverse of `boxNullableScalar`: loads the cell. Only call with a proven
+/// non-null box (callers null-check first); raw scalars pass through.
+pub fn unboxNullableScalar(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, variant: ts.EiwaType, boxed: llvm.LLVMValueRef) llvm.LLVMValueRef {
     const i64_t = llvm.LLVMInt64TypeInContext(ctx);
     const kind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(boxed));
     if (kind == llvm.LLVMIntegerTypeKind or kind == llvm.LLVMDoubleTypeKind) {
         return scalarBitsToVariant(ctx, builder, boxed, variant);
     }
-    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
-    const sentinel = llvm.LLVMBuildIntToPtr(builder, llvm.LLVMConstInt(i64_t, 8, 0), ptr_t, "ns_sentinel_cmp");
-    const is_sentinel = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, boxed, sentinel, "ns_is_sentinel");
-    const raw_int = llvm.LLVMBuildPtrToInt(builder, boxed, i64_t, "ns_raw_int");
-    const i64_val = llvm.LLVMBuildSelect(builder, is_sentinel, llvm.LLVMConstInt(i64_t, 0, 0), raw_int, "ns_int");
+    const i64_val = llvm.LLVMBuildLoad2(builder, i64_t, boxed, "ns_load");
     return scalarBitsToVariant(ctx, builder, i64_val, variant);
 }
 
-/// Normalizes a scalar to i64 bits, then converts to the scalar `variant`.
+/// Null-safe unboxing for `!!`: null yields the zero value instead of
+/// faulting. Emits its own branch triple, so it must only be called where
+/// the caller owns the current block tail (never inside another construct's
+/// branch — those null-check first and use `unboxNullableScalar`).
+fn unboxNullableScalarOrZero(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, variant: ts.EiwaType, boxed: llvm.LLVMValueRef) llvm.LLVMValueRef {
+    const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+    const out_t = switch (variant) {
+        .Bool => llvm.LLVMInt1TypeInContext(ctx),
+        .Double => llvm.LLVMDoubleTypeInContext(ctx),
+        else => i64_t,
+    };
+    const zero = if (variant == .Double)
+        llvm.LLVMConstReal(out_t, 0.0)
+    else
+        llvm.LLVMConstInt(out_t, 0, 0);
+    const func_val = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "ns_unbox_then");
+    const else_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "ns_unbox_else");
+    const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "ns_unbox_merge");
+    const is_null = llvm.LLVMBuildIsNull(builder, boxed, "ns_unbox_is_null");
+    _ = llvm.LLVMBuildCondBr(builder, is_null, else_bb, then_bb);
+    llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+    const converted = unboxNullableScalar(ctx, builder, variant, boxed);
+    const then_end_bb = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+    llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+    const else_end_bb = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+    llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+    const phi = llvm.LLVMBuildPhi(builder, out_t, "ns_unbox");
+    var incoming_vals = [_]llvm.LLVMValueRef{ converted, zero };
+    var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };
+    llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+    return phi;
+}
+
+/// Converts a scalar to the `variant` representation via i64 bits.
 fn scalarBitsToVariant(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, variant: ts.EiwaType) llvm.LLVMValueRef {
     const i64_t = llvm.LLVMInt64TypeInContext(ctx);
     const kind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val));
@@ -4593,8 +4656,7 @@ fn scalarBitsToVariant(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, v
     };
 }
 
-/// Boxes `val` when `target_rt` is a nullable scalar and `val` is a raw
-/// scalar (Int/Double/Bool). Otherwise returns `val` unchanged.
+/// Boxes `val` when `target_rt` is a nullable scalar, else returns it as-is.
 pub fn coerceToNullableScalar(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, target_rt: *const ts.EiwaType) llvm.LLVMValueRef {
     if (nullableScalarVariant(target_rt)) |variant| {
         const kind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val));
@@ -4605,15 +4667,12 @@ pub fn coerceToNullableScalar(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef,
     return val;
 }
 
-/// Unboxes a union/boxed pointer value back to the raw scalar of `variant`
-/// (Int → i64, Double → double, Bool → i1). String / Pointer / Custom variants
-/// are already pointers and returned unchanged.
-/// When `source_rt` is a nullable scalar (`T?`), the box is a heap cell and
-/// the value is loaded; general unions keep the legacy value-in-pointer box.
-fn unboxUnionVariant(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: llvm.LLVMBuilderRef, variant: ts.EiwaType, boxed: llvm.LLVMValueRef, source_rt: ?*const ts.EiwaType) llvm.LLVMValueRef {
+/// Unboxes a union box to the raw scalar of `variant`. Nullable-scalar
+/// sources use zero-sentinel unboxing; other variants keep legacy paths.
+fn unboxUnionVariant(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, variant: ts.EiwaType, boxed: llvm.LLVMValueRef, source_rt: ?*const ts.EiwaType) llvm.LLVMValueRef {
     if (source_rt) |srt| {
         if (nullableScalarVariant(srt) != null) {
-            return unboxNullableScalar(ctx, mod, builder, variant, boxed);
+            return unboxNullableScalar(ctx, builder, variant, boxed);
         }
     }
     const i64_t = llvm.LLVMInt64TypeInContext(ctx);
@@ -4668,39 +4727,33 @@ fn emitUnionBuiltin(
                         else => false,
                     };
                     if (is_str) return c_boxed;
-                    const unboxed = unboxUnionVariant(c_ctx, c_mod, c_builder, c_variant, c_boxed, c_source_rt);
+                    const unboxed = unboxUnionVariant(c_ctx, c_builder, c_variant, c_boxed, c_source_rt);
                     return try emitValueToString(c_ctx, c_mod, c_builder, unboxed, &c_variant);
                 },
                 .to_int => {
                     const i64_t = llvm.LLVMInt64TypeInContext(c_ctx);
-                    const unboxed = unboxUnionVariant(c_ctx, c_mod, c_builder, c_variant, c_boxed, c_source_rt);
+                    const unboxed = unboxUnionVariant(c_ctx, c_builder, c_variant, c_boxed, c_source_rt);
                     const i64_val = switch (c_variant) {
                         .Double => llvm.LLVMBuildFPToSI(c_builder, unboxed, i64_t, "union_dbl_to_int"),
                         .Int => unboxed,
                         else => unboxed,
                     };
-                    // Box back into the nullable representation (zero sentinel
-                    // for 0 — Phase 80; legacy value-in-ptr otherwise). The
-                    // result of toInt is Int regardless of the source variant.
-                    if (c_source_rt) |srt| {
-                        if (nullableScalarVariant(srt) != null) {
-                            return boxNullableScalar(c_ctx, c_mod, c_builder, i64_val, .Int);
-                        }
+                    // toInt always yields Int; re-box for nullable sources.
+                    if (isNullableSource(c_source_rt)) {
+                        return boxNullableScalar(c_ctx, c_mod, c_builder, i64_val, .Int);
                     }
                     return llvm.LLVMBuildIntToPtr(c_builder, i64_val, llvm.LLVMPointerTypeInContext(c_ctx, 0), "union_int_box");
                 },
                 .to_double => {
                     const dbl_t = llvm.LLVMDoubleTypeInContext(c_ctx);
-                    const unboxed = unboxUnionVariant(c_ctx, c_mod, c_builder, c_variant, c_boxed, c_source_rt);
+                    const unboxed = unboxUnionVariant(c_ctx, c_builder, c_variant, c_boxed, c_source_rt);
                     const dbl_val = switch (c_variant) {
                         .Int => llvm.LLVMBuildSIToFP(c_builder, unboxed, dbl_t, "union_int_to_dbl"),
                         .Double => unboxed,
                         else => unboxed,
                     };
-                    if (c_source_rt) |srt| {
-                        if (nullableScalarVariant(srt) != null) {
-                            return boxNullableScalar(c_ctx, c_mod, c_builder, dbl_val, .Double);
-                        }
+                    if (isNullableSource(c_source_rt)) {
+                        return boxNullableScalar(c_ctx, c_mod, c_builder, dbl_val, .Double);
                     }
                     const i64_t = llvm.LLVMInt64TypeInContext(c_ctx);
                     const bits = llvm.LLVMBuildBitCast(c_builder, dbl_val, i64_t, "union_dbl_bits");
@@ -4712,11 +4765,10 @@ fn emitUnionBuiltin(
 
     if (!is_safe) {
         const raw = try emit_result(ctx, mod, builder, variant, obj_val, method, obj_rt);
-        // For nullable scalars the result of toInt/toDouble is heap-boxed;
-        // a non-safe (`!!`) receiver expects the raw scalar back.
+        // Non-safe (`!!`) receivers expect the raw scalar back.
         if (method != .to_string and nullableScalarVariant(obj_rt) != null) {
             const out_variant: ts.EiwaType = if (method == .to_int) .Int else .Double;
-            return unboxNullableScalar(ctx, mod, builder, out_variant, raw);
+            return unboxNullableScalar(ctx, builder, out_variant, raw);
         }
         return raw;
     }
@@ -4753,7 +4805,6 @@ fn emitUnionBuiltin(
 /// operand pair is not a (nullable union, scalar) combination.
 fn emitNullableScalarCompare(
     ctx: llvm.LLVMContextRef,
-    mod: llvm.LLVMModuleRef,
     builder: llvm.LLVMBuilderRef,
     left_val: llvm.LLVMValueRef,
     right_val: llvm.LLVMValueRef,
@@ -4800,7 +4851,7 @@ fn emitNullableScalarCompare(
     _ = llvm.LLVMBuildCondBr(builder, is_null, else_bb, then_bb);
 
     llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
-    const unboxed = unboxUnionVariant(ctx, mod, builder, variant, union_val, union_rt);
+    const unboxed = unboxUnionVariant(ctx, builder, variant, union_val, union_rt);
     const l_cmp = if (is_union_left) unboxed else scalar_val;
     const r_cmp = if (is_union_left) scalar_val else unboxed;
     const cmp_then = if (variant == .Double)
@@ -5753,8 +5804,7 @@ fn storeBlockOrExprResult(
         if (@intFromPtr(rp) == 0) return;
         if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(raw_val)) != llvm.LLVMVoidTypeKind) {
             var val = raw_val;
-            // Nullable scalar target (Phase 80): heap-box raw scalars so that
-            // zero/false/0.0 stay distinct from null.
+            // sentinel-box scalars bound to nullable targets.
             if (expected_type) |et| {
                 val = coerceToNullableScalar(ctx, mod, builder, val, et);
             }

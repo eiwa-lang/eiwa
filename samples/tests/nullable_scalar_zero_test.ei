@@ -1,4 +1,5 @@
 import { assert } from "std.core"
+import { List, MutableList } from "std.collections"
 
 fun zeroOrNull(flag: Bool): Int? {
     return if (flag) 0 else null
@@ -105,4 +106,81 @@ test "nullable scalar: try expression over zero" {
     val t = try { 0 }
     assert(t != null, "try { 0 } must not be null")
     assert(t == 0, "try { 0 } == 0")
+}
+
+fun identityOpt(x: Int?): Int? {
+    return x
+}
+
+test "nullable scalar: sentinel-hole values round-trip" {
+    val eight: Int? = 8
+    assert(eight != null, "Int?(8) must not be null")
+    assert(eight == 8, "Int?(8) == 8")
+    assert(eight!! == 8, "Int?(8)!! == 8")
+    val neg: Int? = -1
+    assert(neg == -1, "Int?(-1) == -1")
+    assert(neg!! + 1 == 0, "Int?(-1)!! + 1 == 0")
+    val big: Int? = 1000000
+    assert(big == 1000000, "Int?(1000000) == 1000000")
+    val negBig: Int? = 0 - 1000000
+    assert(negBig == 0 - 1000000, "negative big round-trips")
+}
+
+test "nullable scalar: pass-through of hole values" {
+    assert(identityOpt(8) == 8, "param Int?(8) round-trips")
+    assert(identityOpt(-5) == -5, "param Int?(-5) round-trips")
+    assert(identityOpt(null) == null, "param null stays null")
+}
+
+test "nullable scalar: method receivers on zero" {
+    val z: Int? = 0
+    assert(z!!.toString() == "0", "0!!.toString() == 0")
+    assert(z!!.hashCode() == 0, "0!!.hashCode() == 0")
+    val e: Int? = 8
+    assert(e!!.toString() == "8", "8!!.toString() == 8")
+}
+
+fun describeOpt(x: Int?): String {
+    return when (x) {
+        0 -> "zero"
+        8 -> "eight"
+        else -> "other"
+    }
+}
+
+test "nullable scalar: when-subject value matching" {
+    val z: Int? = 0
+    assert(describeOpt(z) == "zero", "when matches zero")
+    val e: Int? = 8
+    assert(describeOpt(e) == "eight", "when matches eight")
+    val n: Int? = null
+    assert(describeOpt(n) == "other", "when null falls to else")
+    assert(describeOpt(42) == "other", "when other falls to else")
+}
+
+test "nullable scalar: as-cast unboxing" {
+    val z: Int? = 0
+    val c = z as Int
+    assert(c == 0, "0 as Int == 0")
+    val e: Int? = 8
+    assert(e as Int == 8, "8 as Int == 8")
+}
+
+test "nullable scalar: container round-trip" {
+    val m = MutableList<Int?>()
+    val z: Int? = 0
+    m.add(z)
+    m.add(null)
+    m.add(8)
+    assert(m[0] == 0, "stored zero reads back")
+    assert(m[1] == null, "stored null reads back")
+    assert(m[2] == 8, "stored eight reads back")
+    assert(m[0]!! + m[2]!! == 8, "unboxed arithmetic on elements")
+}
+
+test "nullable scalar: array literal with nullable element type" {
+    val l: List<Int?> = [0, 8]
+    assert(l[0] == 0, "literal zero reads back")
+    assert(l[0] != null, "literal zero is not null")
+    assert(l[1] == 8, "literal eight reads back")
 }
