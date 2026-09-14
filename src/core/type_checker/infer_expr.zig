@@ -599,7 +599,30 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         for (l.body) |stmt| {
             last_t = try self.inferNode(stmt, &lambda_scope);
         }
-        body_type = last_t.?;
+        // A trailing `var`/`val` declaration is a statement, not a value:
+        // `inferNode` returns the declared variable type via resolved_type,
+        // but the declaration itself yields Void (mirrors Kotlin: `val x = 5`
+        // as last line is not an implicit return).
+        const last_stmt = l.body[l.body.len - 1];
+        if (last_stmt.data == .var_decl) {
+            const void_t = try self.allocator.create(EiwaType);
+            void_t.* = .Void;
+            body_type = void_t;
+        } else {
+            body_type = last_t.?;
+        }
+        // A lambda targeting `Void` (`() -> Void`) always returns Void,
+        // regardless of the trailing expression value (Kotlin `Unit`
+        // coercion). Without this, a trailing `val x = [...]` infers a
+        // non-Void return and the backend treats the lambda as
+        // value-returning, crashing on the declaration.
+        if (expected_return) |exp_ret| {
+            if (exp_ret.* == .Void) {
+                const void_t = try self.allocator.create(EiwaType);
+                void_t.* = .Void;
+                body_type = void_t;
+            }
+        }
     }
     
     try checkLambdaBreaks(self, l.body, body_type);

@@ -151,6 +151,10 @@ pub const ASTNode = struct {
     column: usize,
     resolved_type: ?*const type_system.EiwaType = null,
     expected_type: ?*const type_system.EiwaType = null,
+    /// the type checker marks scalar expressions (Int/Bool/Double)
+    /// that flow into a nullable-scalar slot (`Int?`/`Bool?`/`Double?`).
+    /// The LLVM emitter heap-boxes these so zero stays distinct from null.
+    box_nullable_scalar: bool = false,
     data: ASTNodeType,
 };
 

@@ -175,6 +175,13 @@ fun asBool(v: SerdeValue): Bool {
     return false
 }
 
+fun asSerdeList(v: SerdeValue): SerdeList? {
+    if (v is SerdeListValue) {
+        return (v as SerdeListValue).list
+    }
+    return null
+}
+
 fun deserializeList<T>(serdeList: SerdeList?, mapper: (SerdeValue) -> T): List<T> {
     if (serdeList == null) {
         return List<T>()

@@ -1209,6 +1209,10 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         .receiver = if (receiver_type) |rec_t| rec_t else (if (scope.lookupVariable("this")) |this_t| this_t else null),
     } };
 
+    const old_fn_return = self.current_fn_return;
+    self.current_fn_return = return_type;
+    defer self.current_fn_return = old_fn_return;
+
     if (node.resolved_type) |rt| {
         @constCast(rt).* = fn_type.*;
     } else {
@@ -1231,6 +1235,15 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     if (f.is_expr_body) {
         if (!self.isCompatible(return_type, f.body.resolved_type.?)) {
             self.reportError(node.line, node.column, "TypeError: Expected {} but found {} in expression body.", .{ return_type.*, f.body.resolved_type.?.* });
+            return error.TypeError;
+        }
+    } else if (return_type.* != .Void) {
+        // Block bodies require explicit `return` on every path; otherwise the
+        // backend emits a zero/null placeholder that surfaces as a
+        // NullPointerException (or a silent wrong value) far from the bug.
+        // Unknown/GenericParam declarations stay lenient via isCompatible.
+        if (!infer_stmt_mod.bodyGuaranteesReturn(f.body)) {
+            self.reportError(node.line, node.column, "TypeError: Missing return in function '{s}' with return type {}. All code paths must return a value.", .{ f.name, return_type.* });
             return error.TypeError;
         }
     }
@@ -2428,10 +2441,248 @@ fn makeObjMethodCall(self: *TypeChecker, line: usize, col: usize, obj: *ASTNode,
     return call_node;
 }
 
+fn isNativeArrayBackedList(c: anytype, self: *TypeChecker) bool {
+    if (c.primary_constructor.len != 1) return false;
+    const items_name = c.primary_constructor[0].type_ref.name;
+    const base = self.alias_map.get(items_name) orelse items_name;
+    return std.mem.indexOf(u8, base, "NativeArray") != null;
+}
+
+fn isMonomorphizedClass(self: *TypeChecker, type_name: []const u8) bool {
+    const actual = self.alias_map.get(type_name) orelse type_name;
+    const n = self.classes_ast.get(actual) orelse return false;
+    if (n.data != .type_decl) return false;
+    return n.data.type_decl.is_monomorphized;
+}
+
+fn emitDeserializeCompanion(self: *TypeChecker, node: *ASTNode, c: anytype, actual_c_name: []const u8, deserialize_fn: *ASTNode) anyerror!void {
+    if (self.objects_ast.get(actual_c_name)) |existing_obj| {
+        for (existing_obj.data.object_decl.members) |m| {
+            if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "deserialize")) return;
+        }
+        var new_members = try self.allocator.alloc(*ASTNode, existing_obj.data.object_decl.members.len + 1);
+        for (existing_obj.data.object_decl.members, 0..) |m, i| {
+            new_members[i] = m;
+        }
+        new_members[existing_obj.data.object_decl.members.len] = deserialize_fn;
+        existing_obj.data.object_decl.members = new_members;
+        if (existing_obj.resolved_type != null) {
+            var obj_scope = Scope.init(self.allocator, &self.global_scope);
+            defer obj_scope.deinit();
+            const old_class_name = self.current_class_name;
+            const old_class_methods = self.current_class_methods;
+            self.current_class_name = c.name;
+            self.current_class_methods = existing_obj.data.object_decl.members;
+            defer {
+                self.current_class_name = old_class_name;
+                self.current_class_methods = old_class_methods;
+            }
+            _ = try self.inferNode(deserialize_fn, &obj_scope);
+        }
+    } else {
+        const members_slice = try self.allocator.alloc(*ASTNode, 1);
+        members_slice[0] = deserialize_fn;
+        const obj_node = try self.allocator.create(ASTNode);
+        obj_node.* = .{
+            .line = node.line,
+            .column = node.column,
+            .resolved_type = null,
+            .expected_type = null,
+            .data = .{
+                .object_decl = .{
+                    .annotations = &.{},
+                    .name = c.name,
+                    .members = members_slice,
+                    .resolved_c_name = actual_c_name,
+                    .contracts = &.{},
+                    .skills = &.{},
+                    .platform_targets = c.platform_targets,
+                },
+            },
+        };
+        try self.objects_ast.put(actual_c_name, obj_node);
+        if (!std.mem.eql(u8, c.name, actual_c_name)) {
+            try self.objects_ast.put(c.name, obj_node);
+        }
+        try self.monomorphized_nodes.append(obj_node);
+    }
+}
+
+fn generateSerdeListDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype, actual_c_name: []const u8) anyerror!void {
+    if (!isNativeArrayBackedList(c, self)) return;
+
+    const items_tr = c.primary_constructor[0].type_ref;
+    if (items_tr.generic_args.len != 1) return;
+    const elem_tr = items_tr.generic_args[0];
+    if (elem_tr.is_nullable) return;
+    // Nested generic containers (List<List<..>>, List<MutableList<..>>,
+    // List<Map<..>>, ...) need recursive resolution; skip conservatively.
+    // Any monomorphized elem is skipped; plain types (User) and
+    // primitives (Int/String/...) are allowed.
+    if (elem_tr.generic_args.len != 0) return;
+    if (isMonomorphizedClass(self, elem_tr.name)) return;
+    const elem_name = elem_tr.name;
+
+    const is_int = std.mem.eql(u8, elem_name, "Int") or std.mem.endsWith(u8, elem_name, "_Int");
+    const is_double = std.mem.eql(u8, elem_name, "Double") or std.mem.endsWith(u8, elem_name, "_Double");
+    const is_bool = std.mem.eql(u8, elem_name, "Bool") or std.mem.endsWith(u8, elem_name, "_Bool");
+    const is_string = std.mem.eql(u8, elem_name, "String") or std.mem.endsWith(u8, elem_name, "_String");
+    const is_serializable = self.implementsContract(elem_name, "Serializable");
+    if (!is_int and !is_double and !is_bool and !is_string and !is_serializable) return;
+
+    const val_type_ref = try self.allocator.create(ast.ASTTypeRef);
+    val_type_ref.* = .{
+        .name = "SerdeValue",
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+    const params_slice = try self.allocator.alloc(ast.Param, 1);
+    params_slice[0] = .{
+        .name = "value",
+        .type_ref = val_type_ref,
+        .initializer = null,
+        .is_varargs = false,
+    };
+
+    const ret_type_ref = try self.allocator.create(ast.ASTTypeRef);
+    ret_type_ref.* = .{
+        .name = c.name,
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+
+    const value_ident = try makeIdent(self, node.line, node.column, "value");
+    const raw_args = try self.allocator.alloc(*ASTNode, 1);
+    raw_args[0] = value_ident;
+    const raw_list_call = try makeCall(self, node.line, node.column, "asSerdeList", raw_args, &.{});
+
+    const param_type_ref = try self.allocator.create(ast.ASTTypeRef);
+    param_type_ref.* = .{
+        .name = "SerdeValue",
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+    const lambda_params = try self.allocator.alloc(ast.Param, 1);
+    lambda_params[0] = .{
+        .name = "v",
+        .type_ref = param_type_ref,
+        .initializer = null,
+    };
+
+    const v_ident = try makeIdent(self, node.line, node.column, "v");
+    var map_expr: ?*ASTNode = null;
+    if (is_string) {
+        const as_args = try self.allocator.alloc(*ASTNode, 1);
+        as_args[0] = v_ident;
+        map_expr = try makeCall(self, node.line, node.column, "asString", as_args, &.{});
+    } else if (is_int) {
+        const as_args = try self.allocator.alloc(*ASTNode, 1);
+        as_args[0] = v_ident;
+        map_expr = try makeCall(self, node.line, node.column, "asInt", as_args, &.{});
+    } else if (is_double) {
+        const as_args = try self.allocator.alloc(*ASTNode, 1);
+        as_args[0] = v_ident;
+        map_expr = try makeCall(self, node.line, node.column, "asDouble", as_args, &.{});
+    } else if (is_bool) {
+        const as_args = try self.allocator.alloc(*ASTNode, 1);
+        as_args[0] = v_ident;
+        map_expr = try makeCall(self, node.line, node.column, "asBool", as_args, &.{});
+    } else if (is_serializable) {
+        const elem_ident = try makeIdent(self, node.line, node.column, elem_name);
+        const des_item_args = try self.allocator.alloc(*ASTNode, 1);
+        des_item_args[0] = v_ident;
+        map_expr = try makeObjMethodCall(self, node.line, node.column, elem_ident, "deserialize", des_item_args);
+    }
+
+    const me = map_expr orelse return;
+    const lambda_body = try self.allocator.alloc(*ASTNode, 1);
+    lambda_body[0] = me;
+    const lambda_node = try self.allocator.create(ASTNode);
+    lambda_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .lambda_expr = .{
+                .params = lambda_params,
+                .body = lambda_body,
+            },
+        },
+    };
+
+    const des_list_args = try self.allocator.alloc(*ASTNode, 2);
+    des_list_args[0] = raw_list_call;
+    des_list_args[1] = lambda_node;
+    const t_args = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
+    t_args[0] = elem_tr;
+    const call_val = try makeCall(self, node.line, node.column, "deserializeList", des_list_args, t_args);
+
+    const ret_stmt = try self.allocator.create(ASTNode);
+    ret_stmt.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .return_stmt = .{
+                .value = call_val,
+            },
+        },
+    };
+    const block_stmts = try self.allocator.alloc(*ASTNode, 1);
+    block_stmts[0] = ret_stmt;
+    const block_node = try self.allocator.create(ASTNode);
+    block_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .block = .{
+                .statements = block_stmts,
+            },
+        },
+    };
+
+    const des_c_name = try std.fmt.allocPrint(self.allocator, "{s}_deserialize", .{actual_c_name});
+    const deserialize_fn = try self.allocator.create(ASTNode);
+    deserialize_fn.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .fun_decl = .{
+                .annotations = &.{},
+                .modifiers = &.{},
+                .name = "deserialize",
+                .generic_params = &.{},
+                .params = params_slice,
+                .type_ref = ret_type_ref,
+                .body = block_node,
+                .is_expr_body = false,
+                .resolved_c_name = des_c_name,
+            },
+        },
+    };
+
+    try emitDeserializeCompanion(self, node, c, actual_c_name, deserialize_fn);
+}
+
 fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
     if (!self.implementsContract(c.name, "Serializable")) return;
     if (c.generic_params.len > 0) return;
-    if (c.is_monomorphized) return;
+    const actual_c_name_early = self.alias_map.get(c.name) orelse c.name;
+    if (c.is_monomorphized) {
+        if (isNativeArrayBackedList(c, self)) {
+            try generateSerdeListDeserialize(self, node, c, actual_c_name_early);
+        }
+        return;
+    }
     for (c.annotations) |ann| {
         if (std.mem.eql(u8, ann.name, "Primitive")) return;
     }
@@ -2706,51 +2957,174 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
         },
     };
 
-    if (self.objects_ast.get(actual_c_name)) |existing_obj| {
-        var new_members = try self.allocator.alloc(*ASTNode, existing_obj.data.object_decl.members.len + 1);
-        for (existing_obj.data.object_decl.members, 0..) |m, i| {
-            new_members[i] = m;
-        }
-        new_members[existing_obj.data.object_decl.members.len] = deserialize_fn;
-        existing_obj.data.object_decl.members = new_members;
-        if (existing_obj.resolved_type != null) {
-            var obj_scope = Scope.init(self.allocator, &self.global_scope);
-            defer obj_scope.deinit();
-            const old_class_name = self.current_class_name;
-            const old_class_methods = self.current_class_methods;
-            self.current_class_name = c.name;
-            self.current_class_methods = existing_obj.data.object_decl.members;
-            defer {
-                self.current_class_name = old_class_name;
-                self.current_class_methods = old_class_methods;
-            }
-            _ = try self.inferNode(deserialize_fn, &obj_scope);
-        }
-    } else {
-        const members_slice = try self.allocator.alloc(*ASTNode, 1);
-        members_slice[0] = deserialize_fn;
-        const obj_node = try self.allocator.create(ASTNode);
-        obj_node.* = .{
-            .line = node.line,
-            .column = node.column,
-            .resolved_type = null,
-            .expected_type = null,
-            .data = .{
-                .object_decl = .{
-                    .annotations = &.{},
-                    .name = c.name,
-                    .members = members_slice,
-                    .resolved_c_name = actual_c_name,
-                    .contracts = &.{},
-                    .skills = &.{},
-                    .platform_targets = c.platform_targets,
-                },
-            },
-        };
-        try self.objects_ast.put(actual_c_name, obj_node);
-        if (!std.mem.eql(u8, c.name, actual_c_name)) {
-            try self.objects_ast.put(c.name, obj_node);
-        }
-        try self.monomorphized_nodes.append(obj_node);
+    try emitDeserializeCompanion(self, node, c, actual_c_name, deserialize_fn);
+}
+
+// ---------------------------------------------------------------------------
+// Missing/incompatible `return` regression guard (wiring): `inferFunDecl`
+// must reject block-bodied functions whose declared non-Void return type is
+// not satisfied on every path. Primitive return types resolve without the
+// stdlib, so these tests stay hermetic (arena-backed, no disk access).
+// ---------------------------------------------------------------------------
+
+fn inferTestFun(ret_name: ?[]const u8, body_stmts: []const *ASTNode) !void {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var checker = TypeChecker.init(arena.allocator(), "fun f(): T {\n  return 1\n}\n", "return_check_test");
+    var ref_storage: ast.ASTTypeRef = undefined;
+    var type_ref: ?*const ast.ASTTypeRef = null;
+    if (ret_name) |rn| {
+        ref_storage = .{ .name = rn, .generic_args = &[_]*const ast.ASTTypeRef{}, .is_array = false, .is_nullable = false };
+        type_ref = &ref_storage;
     }
+    var body: ASTNode = undefined;
+    body = .{ .line = 1, .column = 1, .data = .{ .block = .{ .statements = body_stmts } } };
+    var node: ASTNode = undefined;
+    node = .{ .line = 1, .column = 1, .data = .{ .fun_decl = .{
+        .annotations = &[_]ast.Annotation{},
+        .modifiers = &[_]ast.TokenType{},
+        .name = "f",
+        .generic_params = &[_][]const u8{},
+        .params = &[_]ast.Param{},
+        .type_ref = type_ref,
+        .body = &body,
+        .is_expr_body = false,
+        .resolved_c_name = null,
+    } } };
+    var out: EiwaType = undefined;
+    try inferFunDecl(&checker, &node, &checker.global_scope, &out);
+}
+
+test "return check: empty body with declared return is rejected" {
+    try std.testing.expectError(error.TypeError, inferTestFun("Int", &[_]*ASTNode{}));
+}
+
+test "return check: matching return type is accepted" {
+    var lit_slot: ASTNode = undefined;
+    var ret_slot: ASTNode = undefined;
+    const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, infer_stmt_mod.mkIntLit(&lit_slot))};
+    try inferTestFun("Int", &stmts);
+}
+
+test "return check: incompatible return type is rejected" {
+    var lit_slot: ASTNode = undefined;
+    var ret_slot: ASTNode = undefined;
+    const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, infer_stmt_mod.mkIntLit(&lit_slot))};
+    try std.testing.expectError(error.TypeError, inferTestFun("String", &stmts));
+}
+
+test "return check: bare return with declared return is rejected" {
+    var ret_slot: ASTNode = undefined;
+    const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, null)};
+    try std.testing.expectError(error.TypeError, inferTestFun("Int", &stmts));
+}
+
+test "return check: if without else is rejected" {
+    var cond_slot: ASTNode = .{ .line = 1, .column = 1, .data = .{ .bool_literal = true } };
+    var lit_slot: ASTNode = undefined;
+    const lit = infer_stmt_mod.mkIntLit(&lit_slot);
+    var ret_slot: ASTNode = undefined;
+    const ret_stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, lit)};
+    var then_slot: ASTNode = undefined;
+    const then_blk = infer_stmt_mod.mkBlock(&then_slot, &ret_stmts);
+    var if_slot: ASTNode = .{ .line = 1, .column = 1, .data = .{ .if_expr = .{ .condition = &cond_slot, .then_branch = then_blk, .else_branch = null } } };
+    const stmts = [_]*ASTNode{&if_slot};
+    try std.testing.expectError(error.TypeError, inferTestFun("Int", &stmts));
+}
+
+test "return check: if-else with both sides returning is accepted" {
+    var cond_slot: ASTNode = .{ .line = 1, .column = 1, .data = .{ .bool_literal = true } };
+    var lit_slot: ASTNode = undefined;
+    const lit = infer_stmt_mod.mkIntLit(&lit_slot);
+    var then_ret_slot: ASTNode = undefined;
+    const then_ret_stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&then_ret_slot, lit)};
+    var then_slot: ASTNode = undefined;
+    const then_blk = infer_stmt_mod.mkBlock(&then_slot, &then_ret_stmts);
+    var else_ret_slot: ASTNode = undefined;
+    const else_ret_stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&else_ret_slot, lit)};
+    var else_slot: ASTNode = undefined;
+    const else_blk = infer_stmt_mod.mkBlock(&else_slot, &else_ret_stmts);
+    var if_slot: ASTNode = .{ .line = 1, .column = 1, .data = .{ .if_expr = .{ .condition = &cond_slot, .then_branch = then_blk, .else_branch = else_blk } } };
+    const stmts = [_]*ASTNode{&if_slot};
+    try inferTestFun("Int", &stmts);
+}
+
+test "return check: Void functions keep legacy behavior" {
+    // Empty Void body is fine, and a value-return in a Void body is still
+    // discarded (e.g. synthetic `funPointer` trampolines wrap the lambda's
+    // trailing value in a `return`).
+    try inferTestFun(null, &[_]*ASTNode{});
+    var lit_slot: ASTNode = undefined;
+    var ret_slot: ASTNode = undefined;
+    const stmts = [_]*ASTNode{infer_stmt_mod.mkRet(&ret_slot, infer_stmt_mod.mkIntLit(&lit_slot))};
+    try inferTestFun(null, &stmts);
+}
+
+fn resolveTestContractArg(arg_name: []const u8, nullable: bool) !void {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var checker = TypeChecker.init(arena.allocator(), "test", "generic_arg_test");
+    var cnode: ASTNode = .{ .line = 1, .column = 1, .data = .{ .contract_decl = .{
+        .annotations = &[_]ast.Annotation{},
+        .name = "C",
+        .methods = &[_]*ASTNode{},
+        .resolved_c_name = "C",
+    } } };
+    cnode.data.contract_decl.generic_params = &[_][]const u8{"T"};
+    try checker.contracts_ast.put("C", &cnode);
+    var arg_ref = ast.ASTTypeRef{ .name = arg_name, .generic_args = &[_]*const ast.ASTTypeRef{}, .is_array = false, .is_nullable = nullable };
+    var base_ref = ast.ASTTypeRef{ .name = "C", .generic_args = &[_]*const ast.ASTTypeRef{&arg_ref}, .is_array = false, .is_nullable = false };
+    _ = try checker.resolveTypeRef(&base_ref);
+}
+
+test "generic arg: undeclared name is rejected" {
+    try std.testing.expectError(error.TypeError, resolveTestContractArg("Nope", false));
+}
+
+test "generic arg: nullable undeclared name is rejected" {
+    try std.testing.expectError(error.TypeError, resolveTestContractArg("Nope", true));
+}
+
+test "generic arg: primitive, type variable and nested generics accepted" {
+    // Int: primitive. T: the contract's own type variable. List<Int>: nested
+    // instance validated by its own resolution (List undeclared here, so the
+    // nested resolution reports the base instead — still an error, never a
+    // silent pass; with List declared it resolves cleanly, see suite).
+    try resolveTestContractArg("Int", false);
+    try resolveTestContractArg("T", false);
+    try std.testing.expectError(error.TypeError, resolveTestContractArg("List", false));
+}
+
+test "generic args: call-site check reports undeclared names" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var checker = TypeChecker.init(arena.allocator(), "test", "generic_args_test");
+    var box_node: ASTNode = .{ .line = 1, .column = 1, .data = .{ .type_decl = .{
+        .annotations = &[_]ast.Annotation{},
+        .name = "Box",
+        .generic_params = &[_][]const u8{"T"},
+        .primary_constructor = &[_]ast.ClassProp{},
+        .methods = &[_]*ASTNode{},
+        .resolved_c_name = "Box",
+        .contracts = &[_][]const u8{},
+        .skills = &[_][]const u8{},
+    } } };
+    try checker.classes_ast.put("Box", &box_node);
+    const int_t = try arena.allocator().create(EiwaType);
+    int_t.* = .Int;
+    const bad_t = try arena.allocator().create(EiwaType);
+    bad_t.* = .{ .Custom = "Bad" };
+    const tvar_t = try arena.allocator().create(EiwaType);
+    tvar_t.* = .{ .Custom = "T" };
+    const ok_args = [_]*const EiwaType{int_t};
+    try checker.checkGenericTypeArgs("Box", &ok_args, 1, 1);
+    const tvar_args = [_]*const EiwaType{tvar_t};
+    try checker.checkGenericTypeArgs("Box", &tvar_args, 1, 1);
+    const bad_args = [_]*const EiwaType{bad_t};
+    try testing.expectError(error.TypeError, checker.checkGenericTypeArgs("Box", &bad_args, 1, 1));
+    // Unknown base defers to downstream "not found" errors: silent here.
+    try checker.checkGenericTypeArgs("Missing", &bad_args, 1, 1);
 }

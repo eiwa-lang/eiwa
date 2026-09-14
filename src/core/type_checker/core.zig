@@ -80,6 +80,14 @@ pub const TypeChecker = struct {
     current_class_name: ?[]const u8 = null,
     current_class_methods: ?[]const *ASTNode = null,
     current_type_c_name: ?[]const u8 = null,
+    current_fn_return: ?*const EiwaType = null,
+    /// Nesting depth of speculative type resolutions (expected-type hints,
+    /// overload probing). While > 0, undeclared-argument diagnostics stay
+    /// silent (the error still propagates for `catch null` to observe):
+    /// hint refs routinely mention enclosing templates' type variables
+    /// (e.g. `MutableSet<T>`'s `MutableMap<T, Bool>` prop), which are only
+    /// meaningful in their declaration context, never at the hint site.
+    speculative_depth: usize = 0,
     registry: ?*ModuleRegistry = null,
     target_info: ?TargetInfo = null,
     pass: enum { declaration, validation } = .validation,
@@ -100,6 +108,10 @@ pub const TypeChecker = struct {
     pub const declareSignatures = core_declareSignatures;
     pub const resolveImports = core_resolveImports;
     pub const checkBlock = infer_stmt_mod.checkBlock;
+    pub const findUndeclaredTypeArg = core_findUndeclaredTypeArg;
+    pub const checkGenericTypeArgs = core_checkGenericTypeArgs;
+    pub const resolveHintTypeRef = core_resolveHintTypeRef;
+    pub const resolveHintTypeName = core_resolveHintTypeName;
     pub const inferBlockAsExpression = infer_stmt_mod.inferBlockAsExpression;
     pub const inferBranchAsExpression = infer_stmt_mod.inferBranchAsExpression;
     pub const isCompatible = core_isCompatible;
@@ -378,6 +390,15 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         if (ref.generic_args.len != 1) return error.TypeError;
         const inner_type = try self.resolveTypeRef(ref.generic_args[0]);
 
+        if (self.pass == .validation and self.classes_ast.contains(self.alias_map.get("List") orelse "List")) {
+            if (self.findUndeclaredTypeArg(inner_type, &.{})) |bad| {
+                if (self.speculative_depth == 0) {
+                    self.reportError(0, 0, "TypeError: Type '{s}' not found.", .{bad});
+                }
+                return error.TypeError;
+            }
+        }
+
         const list_base = "List";
         const type_args = try self.allocator.alloc(*const EiwaType, 1);
         type_args[0] = inner_type;
@@ -470,6 +491,9 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
                 // Keep the GenericInstance so member lookup can substitute
                 // the contract's generic params with the concrete type args.
                 const is_contract = self.contracts_ast.contains(actual_base);
+                if (self.pass == .validation) {
+                    try self.checkGenericTypeArgs(actual_base, type_args, 0, 0);
+                }
                 if (is_contract) {
                     base_type = .{ .GenericInstance = .{ .base_name = actual_base, .type_args = type_args } };
                 } else {
@@ -489,8 +513,8 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
             const sep_idx = std.mem.indexOf(u8, alias, sep).?;
             var raw_p1 = alias[0..sep_idx];
             var raw_p2 = alias[sep_idx + sep.len ..];
-            const t1 = (self.resolveTypeName(raw_p1, false) catch null) orelse (if (std.mem.startsWith(u8, raw_p1, "core_")) self.resolveTypeName(raw_p1[5..], false) catch null else null);
-            const t2 = (self.resolveTypeName(raw_p2, false) catch null) orelse (if (std.mem.startsWith(u8, raw_p2, "core_")) self.resolveTypeName(raw_p2[5..], false) catch null else null);
+            const t1 = self.resolveHintTypeName(raw_p1, false) orelse (if (std.mem.startsWith(u8, raw_p1, "core_")) self.resolveHintTypeName(raw_p1[5..], false) else null);
+            const t2 = self.resolveHintTypeName(raw_p2, false) orelse (if (std.mem.startsWith(u8, raw_p2, "core_")) self.resolveHintTypeName(raw_p2[5..], false) else null);
             if (t1 != null and t2 != null) {
                 const union_t = try self.allocator.create(EiwaType);
                 union_t.* = .{ .Union = .{ .left = t1.?, .right = t2.? } };
@@ -527,6 +551,80 @@ fn core_resolveTypeName(self: *TypeChecker, name: []const u8, is_nullable: bool)
         @constCast(ref).is_nullable = true;
     }
     return try self.resolveTypeRef(ref);
+}
+
+fn core_resolveHintTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) ?*const EiwaType {
+    self.speculative_depth += 1;
+    defer self.speculative_depth -= 1;
+    return self.resolveTypeRef(ref) catch null;
+}
+
+fn core_resolveHintTypeName(self: *TypeChecker, name: []const u8, is_nullable: bool) ?*const EiwaType {
+    self.speculative_depth += 1;
+    defer self.speculative_depth -= 1;
+    return self.resolveTypeName(name, is_nullable) catch null;
+}
+
+fn core_checkGenericTypeArgs(self: *TypeChecker, base_actual: []const u8, type_args: []const *const EiwaType, line: usize, column: usize) anyerror!void {
+    var base_params: []const []const u8 = &.{};
+    var base_known = false;
+    if (self.classes_ast.get(base_actual)) |base_node| {
+        if (base_node.data == .type_decl) {
+            base_known = true;
+            base_params = base_node.data.type_decl.generic_params;
+        }
+    } else if (self.contracts_ast.get(base_actual)) |contract_node| {
+        if (contract_node.data == .contract_decl) {
+            base_known = true;
+            base_params = contract_node.data.contract_decl.generic_params;
+        }
+    }
+    if (!base_known) return;
+    for (type_args) |t_arg| {
+        if (self.findUndeclaredTypeArg(t_arg, base_params)) |bad| {
+            // Silent inside speculative hint resolutions (see
+            // speculative_depth): only authoritative positions diagnose.
+            if (self.speculative_depth == 0) {
+                self.reportError(line, column, "TypeError: Type '{s}' not found.", .{bad});
+            }
+            return error.TypeError;
+        }
+    }
+}
+
+fn core_findUndeclaredTypeArg(self: *TypeChecker, t: *const EiwaType, base_params: []const []const u8) ?[]const u8 {    switch (t.*) {
+        .Custom => |name| {
+            for (base_params) |gp| {
+                if (std.mem.eql(u8, name, gp)) return null;
+            }
+            const actual = self.alias_map.get(name) orelse name;
+            if (self.classes_ast.contains(actual)) return null;
+            if (self.enums_ast.contains(actual)) return null;
+            if (self.contracts_ast.contains(actual)) return null;
+            if (self.skills_ast.contains(actual)) return null;
+            if (self.objects_ast.contains(actual)) return null;
+            return name;
+        },
+        .GenericParam, .Unknown => return null,
+        .Union => |u| {
+            if (self.findUndeclaredTypeArg(u.left, base_params)) |bad| return bad;
+            return self.findUndeclaredTypeArg(u.right, base_params);
+        },
+        .Array => |elem| return self.findUndeclaredTypeArg(elem, base_params),
+        .Pointer => |inner| return self.findUndeclaredTypeArg(inner, base_params),
+        .Function => |f| {
+            for (f.params) |p| {
+                if (self.findUndeclaredTypeArg(p, base_params)) |bad| return bad;
+            }
+            if (self.findUndeclaredTypeArg(f.return_type, base_params)) |bad| return bad;
+            if (f.receiver) |rec| {
+                if (self.findUndeclaredTypeArg(rec, base_params)) |bad| return bad;
+            }
+            return null;
+        },
+        // Nested instances were validated by their own resolution.
+        else => return null,
+    }
 }
 
 fn core_injectImplicitImports(self: *TypeChecker, node: *ASTNode) anyerror!void {

@@ -40,16 +40,16 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
             const name = exp_base.Custom;
             if (std.mem.startsWith(u8, name, "NativeArray<") and std.mem.endsWith(u8, name, ">")) {
                 const inner = name[12 .. name.len - 1];
-                expected_elem_t = (self.resolveTypeName(inner, false) catch null) orelse (
-                    if (std.mem.startsWith(u8, inner, "std_core_")) self.resolveTypeName(inner[9..], false) catch null
-                    else if (std.mem.startsWith(u8, inner, "core_")) self.resolveTypeName(inner[5..], false) catch null
+                expected_elem_t = self.resolveHintTypeName(inner, false) orelse (
+                    if (std.mem.startsWith(u8, inner, "std_core_")) self.resolveHintTypeName(inner[9..], false)
+                    else if (std.mem.startsWith(u8, inner, "core_")) self.resolveHintTypeName(inner[5..], false)
                     else null
                 );
             } else if (std.mem.indexOf(u8, name, "List_")) |idx| {
                 const inner = name[idx + 5 ..];
-                expected_elem_t = (self.resolveTypeName(inner, false) catch null) orelse (
-                    if (std.mem.startsWith(u8, inner, "std_core_")) self.resolveTypeName(inner[9..], false) catch null
-                    else if (std.mem.startsWith(u8, inner, "core_")) self.resolveTypeName(inner[5..], false) catch null
+                expected_elem_t = self.resolveHintTypeName(inner, false) orelse (
+                    if (std.mem.startsWith(u8, inner, "std_core_")) self.resolveHintTypeName(inner[9..], false)
+                    else if (std.mem.startsWith(u8, inner, "core_")) self.resolveHintTypeName(inner[5..], false)
                     else null
                 );
             } else {
@@ -81,6 +81,11 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
             if (!self.isCompatible(first_type, elem_type)) {
                 self.reportError(node.line, node.column, "TypeError: Incompatible types in array literal. Expected {} but found {}.", .{ first_type.*, elem_type.* });
                 return error.TypeError;
+            }
+            // Phase 80: raw scalars bound to a nullable element type must be
+            // heap-boxed by the emitter.
+            if (type_system.isNullableScalar(ee_t) and type_system.isRawScalar(elem_type)) {
+                elem.box_nullable_scalar = true;
             }
         }
     } else {
@@ -194,6 +199,18 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     try self.monomorphizeClass(node_base, type_args, node_mangled);
     try self.monomorphizeClass(mmap_base, type_args, mmap_mangled);
     try self.monomorphizeClass(map_base, type_args, mangled_name);
-    
+
+    if (node.expected_type) |exp| {
+        const exp_base = type_system.extractBaseType(exp);
+        if (exp_base.* == .Custom) {
+            const exp_tail = if (std.mem.indexOf(u8, exp_base.Custom, "Map_")) |idx| exp_base.Custom[idx + 4 ..] else exp_base.Custom;
+            const inf_tail = if (std.mem.indexOf(u8, mangled_name, "Map_")) |idx| mangled_name[idx + 4 ..] else mangled_name;
+            if (!std.mem.eql(u8, exp_tail, inf_tail)) {
+                self.reportError(node.line, node.column, "TypeError: Incompatible types in map literal.", .{});
+                return error.TypeError;
+            }
+        }
+    }
+
     t.* = .{ .Custom = self.alias_map.get(mangled_name) orelse mangled_name };
 }

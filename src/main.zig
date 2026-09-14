@@ -585,11 +585,19 @@ fn run(init: std.process.Init) !void {
 
             var test_files = ArrayList([]const u8).init(allocator);
             defer test_files.deinit();
+            // Expected-failure tests (`*_xfail_test.ei`): run like normal
+            // tests but reported as XFAIL instead of breaking the suite.
+            var xfail_files = ArrayList([]const u8).init(allocator);
+            defer xfail_files.deinit();
 
             while (try walker.next(io)) |entry| {
                 if (entry.kind == .file and std.mem.endsWith(u8, entry.basename, "_test.ei")) {
                     const full_path = try std.fs.path.join(allocator, &[_][]const u8{ search_path, entry.path });
-                    try test_files.append(full_path);
+                    if (std.mem.endsWith(u8, entry.basename, "_xfail_test.ei")) {
+                        try xfail_files.append(full_path);
+                    } else {
+                        try test_files.append(full_path);
+                    }
                 }
             }
 
@@ -703,6 +711,48 @@ fn run(init: std.process.Init) !void {
             _ = c_clock.clock_gettime(0, &end_ts);
             const elapsed_sec = @as(f64, @floatFromInt(end_ts.tv_sec - start_ts.tv_sec)) +
                 @as(f64, @floatFromInt(end_ts.tv_nsec - start_ts.tv_nsec)) / 1_000_000_000.0;
+
+            // Expected-failure files: run through the same child machinery.
+            // Failures (compile errors, crashes, failed blocks) are reported
+            // as XFAIL and never break the suite. A fully-passing xfail file
+            // (XPASS) fails the build to force marker removal.
+            var xfail_idx: usize = 0;
+            var xfail_running: std.ArrayList(TestProc) = .empty;
+            defer {
+                for (xfail_running.items) |*p| p.child.kill(io);
+                xfail_running.deinit(allocator);
+            }
+            while (xfail_running.items.len < window and xfail_idx < xfail_files.items.len) : (xfail_idx += 1) {
+                try xfail_running.append(allocator, try spawnTestChild(allocator, io, args, xfail_files.items[xfail_idx], is_release, module_paths.items, test_module_root));
+            }
+            while (xfail_running.items.len > 0) {
+                var xp = xfail_running.orderedRemove(0);
+                const xdeadline = std.Io.Clock.Timestamp.fromNow(io, .{
+                    .raw = timeout_duration,
+                    .clock = .real,
+                });
+                const xres = try collectChild(allocator, io, &xp.child, xdeadline);
+                defer allocator.free(xres.output);
+                const xbasename = std.fs.path.basename(xp.tfile);
+                std.debug.print("--- {s} ---\n", .{xbasename});
+                std.debug.print("{s}", .{xres.output});
+                if (parseSummary(xres.output)) |xsum| {
+                    if (xsum.failed > 0) {
+                        std.debug.print("[XFAIL] {s} ({d} block(s) failed as expected)\n", .{ xbasename, xsum.failed });
+                    } else {
+                        std.debug.print("[XPASS] {s} unexpectedly passing — remove the _xfail marker\n", .{xbasename});
+                        total_failed += 1;
+                        files_failed += 1;
+                    }
+                    total_passed += xsum.passed;
+                } else {
+                    std.debug.print("[XFAIL] {s} (failed to compile/run as expected)\n", .{xbasename});
+                }
+                if (xfail_idx < xfail_files.items.len) {
+                    try xfail_running.append(allocator, try spawnTestChild(allocator, io, args, xfail_files.items[xfail_idx], is_release, module_paths.items, test_module_root));
+                    xfail_idx += 1;
+                }
+            }
 
             if (total_failed > 0) {
                 std.debug.print("\nLLVM Test Suite: {d} PASSED, {d} FAILED in {d:.2}s ({d} file(s) with failures)\n", .{ total_passed, total_failed, elapsed_sec, files_failed });
@@ -1143,5 +1193,7 @@ test "imports" {
     _ = @import("core/ast.zig");
     _ = @import("frontend/lexer.zig");
     _ = @import("frontend/parser/core.zig");
+    _ = @import("core/type_checker/infer_stmt.zig");
+    _ = @import("core/type_checker/infer_decl.zig");
 }
 

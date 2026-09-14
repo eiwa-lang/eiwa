@@ -22,7 +22,7 @@ fn findExtensionWithDefaults(
     for (ext_list.items) |ext_node| {
         const f = &ext_node.data.fun_decl;
         if (f.receiver_type == null) continue;
-        const rec_t = resolver.resolveTypeRef(f.receiver_type.?) catch null;
+        const rec_t = resolver.resolveHintTypeRef(f.receiver_type.?);
         if (rec_t == null) continue;
         if (!self.isCompatible(rec_t.?, base_type) and !self.isCompatible(base_type, rec_t.?)) continue;
         if (arg_count > f.params.len) continue;
@@ -96,12 +96,12 @@ fn lookupDeclaredField(self: *TypeChecker, base_type: *const EiwaType, member_na
     const c = class_node_opt.?.data.type_decl;
     for (c.primary_constructor) |prop| {
         if (std.mem.eql(u8, prop.name, member_name)) {
-            return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+            return prop.resolved_type orelse self.resolveHintTypeRef(prop.type_ref);
         }
     }
     for (c.body_fields) |prop| {
         if (std.mem.eql(u8, prop.name, member_name)) {
-            return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+            return prop.resolved_type orelse self.resolveHintTypeRef(prop.type_ref);
         }
     }
     return null;
@@ -344,7 +344,7 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
                 // `params: List<String> = []` infers (mirrors every other
                 // default-fill site).
                 if (p.type_ref) |tr| {
-                    cloned.expected_type = self.resolveTypeRef(tr) catch null;
+                    cloned.expected_type = self.resolveHintTypeRef(tr);
                 }
                 _ = try self.inferNode(cloned, scope);
                 new_args[pi] = cloned;
@@ -461,7 +461,7 @@ pub fn resolveConstructorArguments(self: *TypeChecker, node: *ASTNode, props: []
                         try self.substituteParam(cloned, prev_p.name, prev_arg);
                     }
                 }
-                cloned.expected_type = p.resolved_type orelse (self.resolveTypeRef(p.type_ref) catch null);
+                cloned.expected_type = p.resolved_type orelse self.resolveHintTypeRef(p.type_ref);
                 _ = try self.inferNode(cloned, scope);
                 new_args[pi] = cloned;
             } else {
@@ -493,7 +493,7 @@ fn propagateParamTypes(self: *TypeChecker, arguments: []const *ASTNode, params: 
         }
         if (target_arg) |arg| {
             if (arg.expected_type == null and p.type_ref != null) {
-                if (self.resolveTypeRef(p.type_ref.?) catch null) |pt| {
+                if (self.resolveHintTypeRef(p.type_ref.?)) |pt| {
                     arg.expected_type = pt;
                     if (arg.data == .named_arg) {
                         arg.data.named_arg.value.expected_type = pt;
@@ -514,7 +514,7 @@ pub fn prePropagateExpectedTypes(self: *TypeChecker, node: *ASTNode, scope: *Sco
             for (type_decl.primary_constructor, 0..) |prop, prop_i| {
                 if (getArgForProp(c.arguments, type_decl.primary_constructor, prop_i)) |arg| {
                     if (arg.expected_type == null) {
-                        const pt = prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
+                        const pt = prop.resolved_type orelse self.resolveHintTypeRef(prop.type_ref);
                         if (pt) |resolved| {
                             arg.expected_type = resolved;
                             if (arg.data == .named_arg) {
@@ -591,7 +591,7 @@ fn varargsElemType(self: *TypeChecker, fun_decl: anytype) ?*EiwaType {
     if (fun_decl.params.len == 0 or !fun_decl.params[fun_decl.params.len - 1].is_varargs) return null;
     const p = fun_decl.params[fun_decl.params.len - 1];
     if (p.type_ref) |tr| {
-        return self.resolveTypeRef(tr) catch null;
+        if (self.resolveHintTypeRef(tr)) |t| return @constCast(t);
     }
     return null;
 }
@@ -813,7 +813,7 @@ fn inferExplicitGenericMethodCall(self: *TypeChecker, node: *ASTNode, scope: *Sc
 
                         for (c.arguments, 0..) |arg, arg_i| {
                             if (arg_i < func_decl.params.len) {
-                                const param_type = if (func_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
+                    const param_type = if (func_decl.params[arg_i].type_ref) |tr| self.resolveHintTypeRef(tr) else null;
                                 if (param_type) |pt| {
                                     arg.expected_type = pt;
                                     if (arg.resolved_type == null) {
@@ -895,7 +895,7 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
 
             for (c.arguments, 0..) |arg, arg_i| {
                 if (arg_i < fun_decl.params.len) {
-                    const param_type = if (fun_decl.params[arg_i].type_ref) |tr| self.resolveTypeRef(tr) catch null else null;
+                    const param_type = if (fun_decl.params[arg_i].type_ref) |tr| self.resolveHintTypeRef(tr) else null;
                     if (param_type) |pt| {
                         arg.expected_type = pt;
                         if (arg.resolved_type == null) {
@@ -927,6 +927,8 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
     for (c.type_args, 0..) |type_ref, i| {
         type_args[i] = try self.resolveTypeRef(type_ref);
     }
+
+    try self.checkGenericTypeArgs(class_name, type_args, node.line, node.column);
 
     const base_name = type_decl.resolved_c_name orelse class_name;
     var mangled = ArrayList(u8).init(self.allocator);
@@ -1403,10 +1405,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                         prefix_len = idx + name.len + 1;
                                     }
                                     if (prefix_len != null and prefix_len.? < c_name.len) {
-                                        var inner = c_name[prefix_len.?..];
-                                        if (std.mem.endsWith(u8, inner, "Opt")) {
-                                            inner = inner[0 .. inner.len - 3];
-                                        }
+                                        const inner = c_name[prefix_len.?..];
                                         if (type_decl.generic_params.len == 1) {
                                             if (std.mem.indexOf(u8, inner, "_or_")) |or_idx| {
                                                 var raw_p1 = inner[0..or_idx];

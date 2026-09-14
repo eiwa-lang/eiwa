@@ -829,6 +829,10 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                             self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
                             return error.TypeError;
                         }
+                        // sentinel-box scalars bound to nullable fields.
+                        if (type_system.isNullableScalar(pt) and type_system.isRawScalar(assigned_type)) {
+                            s.value.box_nullable_scalar = true;
+                        }
                     }
                     break;
                 }
@@ -846,6 +850,10 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                             if (!self.isCompatible(pt, assigned_type)) {
                                 self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
                                 return error.TypeError;
+                            }
+                            // sentinel-box scalars bound to nullable fields.
+                            if (type_system.isNullableScalar(pt) and type_system.isRawScalar(assigned_type)) {
+                                s.value.box_nullable_scalar = true;
                             }
                         }
                         break;

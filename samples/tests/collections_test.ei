@@ -253,3 +253,20 @@ test "explicit toString on generic Node survives monomorphization" {
     assert(chained.next!!.toString() == "Node(key=b, value=2)")
 }
 
+test "List toString prints elements" {
+    assert([1, 2, 3].toString() == "[1, 2, 3]")
+    assert(List<Int>().toString() == "[]")
+    assert(["a", "b"].toString() == "[a, b]")
+    assert([1.5, 2.5].toString() == "[1.5, 2.5]")
+    assert([true, false].toString() == "[true, false]")
+    assert([[1]].toString() == "[[1]]")
+}
+
+test "MutableList toString delegates to List" {
+    val m = MutableList<Int>()
+    assert(m.toString() == "[]")
+    m.add(1)
+    m.add(2)
+    assert(m.toString() == "[1, 2]")
+}
+

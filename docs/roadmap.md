@@ -1248,29 +1248,50 @@ Semântica alvo:
 > `.block` só existe em posições estruturais, então não há caso "bloco trailing
 > aninhado" a tratar (tentativas de recursão checker/emissor revertidas).
 ---
-### Phase 80: Boxing de escalares anuláveis (`Int? == 0` colide com `null`) (PENDING)
-> **Status:** OPEN. Bug pré-existente encontrado durante a implementação do
-> lookup estático de enums (ADR 66): `s0?.ordinal == 0` (onde `s0?.ordinal`
-> é `Int?`) retorna `false` mesmo quando o ordinal é `0`.
+### Phase 80: Boxing de escalares anuláveis (`Int? == 0` colide com `null`) (COMPLETED)
+> **Status:** GREEN (2026-09-13/14, branch `fix/nullable-scalar-zero`). Representação
+> **heap-box estilo JVM**: todo escalar com alvo `Int?`/`Bool?`/`Double?` é boxeado
+> numa célula de 8 bytes via GC_malloc (bits do valor); `null` continua ponteiro
+> nulo. Sem colisões para nenhum valor (uma tentativa intermediária com sentinela
+> `(ptr)0x8` foi descartada: colidia com o literal `8` — verificado por teste RED).
 >
-> **Causa raiz (validada por probing):** escalares anuláveis usam boxing
-> direto `IntToPtr`/`PtrToInt` (`unboxUnionVariant` em
-> `src/backend/llvm_emitter/expression.zig`), de modo que o valor `0` boxeia
-> para ponteiro nulo — indistinguível de `null`. O `emitNullableScalarCompare`
-> checa `IsNull(union_val)` primeiro e toma o branch "é null" (retorna `false`
-> para `==`), então `Int?(0) == 0` é `false` e `Int?(0) == null` é `true`.
-> Valores não-zero funcionam (`Int?(1) == 1` é `true`).
-> Evidência: `val x: Int? = 0; assert(x == 0)` falha; `o: Int? = 1` passa.
+> **Semântica de `!!`:** null-safe — `null!!` produz o valor zero em vez de falhar
+> (desvio documentado do Kotlin, que lançaria NPE; o emitter não tem trap de NPE
+> e o fluxo silencioso é exigido pelo machinery de `task.result!!` em tasks sem
+> retorno). Unbox de null nunca falta; unbox só acontece após null-check ou via
+> `!!`/comparações que tratam null primeiro.
 >
-> **Workaround atual:** desembrulhar com `!!` (`s0!!.ordinal == 0`) —
-> usado nos testes de `byName` em `samples/tests/enum_test.ei`.
+> **Pontos instrumentados:** `boxNullableScalar`/`unboxNullableScalar`/
+> `unboxNullableScalarOrZero`/`scalarBitsToVariant`/`nullableScalarVariant`/
+> `coerceToNullableScalar`/`isNullableSource`/`unboxScalarOperand`
+> (`expression.zig`); unbox roteado por tipo-fonte em `unboxUnionVariant`,
+> elvis, `emitUnionBuiltin` (resultado `toInt` usa variante `Int`),
+> `emitNullableScalarCompare`, normalização de binops, `as`-casts,
+> value-cases de `when` (semântica null-first via `emitNullableScalarCompare`);
+> produtores em `var_decl`, `return`, `storeBlockOrExprResult` (ramos if/when),
+> short-ternary sem `else` (ramo ausente vira null real), for-collect,
+> array literals (flag nos elementos em `infer_literal.zig`),
+> call args (via `expected_type` do checker + wrapper no `emitExpression`),
+> `set_expr` (flag `box_nullable_scalar` marcada no `inferSetExpr`).
+> Cobertura: `samples/tests/nullable_scalar_zero_test.ei` (17 testes: zero vs
+> literal vs `null` para `Int?`/`Bool?`/`Double?`, `==`/`!=`, `!!`, `?:`, `?.`,
+> params, returns, `?.toInt()`, `try { 0 }`, valores 8/negativos/grandes,
+> receivers de método, `when`, `as`, containers, array literals).
 >
-> **Escopo do fix (fora desta fase):** representação anulável que distingue
-> zero de null (tag dedicado, offset de +1 no boxing, ou nicho de ponteiro
-> reservado), cobrindo `Int`/`Bool(false)`/`Double(0.0)`; checar também
-> `?:` e `?.` sobre o valor zero boxeado. Cobertura sugerida:
-> `nullable_scalar_zero_test.ei` (`Int?`/`Bool?`/`Double?` com valor zero
-> vs literal vs `null`, `==` e `!=`).
+> **Bônus:** `try { 0 }` (Phase 81) agora retorna `0` em vez de `null`.
+>
+> **Limites conhecidos (follow-ups, sem impacto na suite — 549 verdes):**
+> `print(x)`/`"${x}"` de escalar nullable via dispatch de contrato passa o box
+> como `this` (imprime endereço em vez do valor — corrigir exige unbox nos
+> receivers de método/fat-ptr de contratos); `Map<K, Int?>` com valores zero
+> já era rejeitado pelo checker na main (pré-existente, fora do escopo);
+> uniões gerais (`String | Int`) mantêm value-in-pointer legado de propósito.
+>
+> **Bug original (histórico):** escalares anuláveis usavam boxing direto
+> `IntToPtr`/`PtrToInt`, de modo que o valor `0` boxeava para ponteiro nulo.
+> `emitNullableScalarCompare` checava `IsNull` primeiro, então `Int?(0) == 0`
+> era `false` e `Int?(0) == null` era `true`. Workaround antigo (`!!`) nos
+> testes de `byName` mantido (inofensivo).
 >
 > **Follow-ups de hardening do backend (dívidas da ADR 66, sem impacto no verde atual):**
 > - [ ] **H1 — `emitEnumList` assume o layout de `List` na mão:** usa o struct
@@ -1342,11 +1363,10 @@ Semântica alvo:
   `obj.x = try {...}` não verificado.
 - [ ] **F4 — Cobertura `T` contract/genérico:** `val r: Drawable? = try {...}`
   sem teste (emissão via fat pointer não exercitada).
-- [ ] **BUG (pré-existente, Phase 80 — CONFIRMADO via try):** `try { 0 }` retorna
-  `null`: escalar zero boxeia para ponteiro nulo, indistinguível de exceção
-  (`Int?(0)`, `Bool?(false)`, `Double?(0.0)`). Evidência:
-  `take(try { ok() })` OK, `try { 41 + 1 } == 42` OK, `try { 0 } == null`
-  (deveria ser `0`). Fix na Phase 80, não aqui.
+- [x] **BUG (pré-existente, Phase 80 — CONFIRMADO via try, FIXADO na Phase 80):** `try { 0 }` retornava
+  `null`: escalar zero boxeava para ponteiro nulo, indistinguível de exceção
+  (`Int?(0)`, `Bool?(false)`, `Double?(0.0)`). Com o zero-sentinel da Phase 80,
+  `try { 0 } == 0` passa (cobertura em `nullable_scalar_zero_test.ei`).
 
 ### Phase 82: `this` em default initializers de extension functions (OPEN)
 > Surgiu ao escrever testes de default params em extensões
@@ -1389,6 +1409,32 @@ Semântica alvo:
 - **Validação:** suíte completa 516/516 verde sem ajustes; repro manual
   (`import { User }` sem `greet`) agora falha com
   `Extension function 'greet' exists in module '...' — add it to your imports.`
+
+### Phase 84: `Map` com valor nullable — `contains` confunde `null` com chave ausente (OPEN / RED)
+> **Status:** RED. Cobertura em `samples/tests/map_nullable_xfail_test.ei`
+> (1 PASS + 1 FAIL; harness conta como `[XFAIL]`, sem quebrar o gate verde).
+> Suporte `*_xfail_test.ei` adicionado ao harness em `src/main.zig`.
+>
+> **O bug (preciso):** `MutableMap<String, Int?>` compila, `put`/`get` funcionam
+> (inclusive `get("a") == 0` graças ao heap-box da Phase 80), mas
+> `put("b", null)` seguido de `contains("b")` retorna `false` —
+> `contains(key)` é implementado como `get(key) != null`
+> (`src/std/collections.ei:150`), então valor `null` é indistinguível de chave
+> ausente. Fix sugerido (só-stdlib, sem compilador): `contains` deve caminhar
+> os buckets comparando chaves em vez de testar o valor.
+>
+> **Mensagens fantasmas ELIMINADAS (2026-09-14):** compilar esse teste imprimia
+> dois `error:` que não abortavam o build. Causas, ambas corrigidas:
+> 1. `serdeFields` chamava `.toString()` direto em valor genérico `V`
+>    (`collections.ei:237`) — fix de 1 linha: `curr!!.value?.toString() ?: "null"`.
+> 2. Inferência de type-args de construtor genérico a partir do nome mangled
+>    (`infer_call.zig`): strip manual do sufixo `"Opt"` destruía a nulabilidade
+>    (`String_IntOpt` → `String_Int`), gerando "Expected Node.. but found Null"
+>    no `push(null)` dos buckets. Removido — `resolveTypeName` já trata `"Opt"`
+>    com precedência para tipos reais (`ThreadOpt`). Posições bogus
+>    (linhas da stdlib atribuídas ao entry) sumiram junto.
+> Verificado idêntico na main limpa antes do fix: pré-existente, sem relação
+> com Phase 80 (`MutableList<Int?>` funciona totalmente).
 
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`

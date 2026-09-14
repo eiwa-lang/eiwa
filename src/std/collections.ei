@@ -42,6 +42,8 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
         return this.list.contains(element)
     }
 
+    implement fun toString(): String = this.list.toString()
+
     implement fun serialize(): SerdeValue = this.list.serialize()
 }
 
@@ -89,6 +91,21 @@ type List<T>(val items: NativeArray<T> = []) : Equatable, Serializable + Json {
 
     fun mut(): MutableList<T> {
         return MutableList(this)
+    }
+
+    implement fun toString(): String {
+        var result = "["
+        var i = 0
+        while (i < this.items.length) {
+            val e: T = this.items[i]
+            result = result + (e?.toString() ?: "null")
+            if (i < this.items.length - 1) {
+                result = result + ", "
+            }
+            i = i + 1
+        }
+        result = result + "]"
+        return result
     }
 }
 
@@ -234,7 +251,7 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
         while (i < this.entries.size()) {
             var curr = this.entries.items[i]
             while (curr != null) {
-                fields.add(SerdeField(curr!!.key.toString(), SerdeString(curr!!.value.toString())))
+                fields.add(SerdeField(curr!!.key.toString(), SerdeString(curr!!.value?.toString() ?: "null")))
                 curr = curr!!.next
             }
             i = i + 1
