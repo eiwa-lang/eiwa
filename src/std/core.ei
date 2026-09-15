@@ -85,6 +85,19 @@ contract Closeable {
     fun close()
 }
 
+contract Slicable<T> {
+    fun slice(start: Int, end: Int): List<T>
+    fun skip(n: Int): List<T>
+    fun take(n: Int): List<T>
+    fun skipLast(n: Int): List<T>
+    fun takeLast(n: Int): List<T>
+}
+
+contract Indexed<T> {
+    fun size(): Int
+    fun get(index: Int): T
+}
+
 skill Scope<T> {
 
     fun let<R>(block: (T) -> R): R {

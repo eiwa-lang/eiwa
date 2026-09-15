@@ -4,7 +4,35 @@
 import { Json } from "std.json"
 import { Serializable, SerdeField, SerdeList, SerdeObjectList, SerdeValue, SerdeString, SerdeObject } from "std.serde"
 
-type MutableList<T>(val list: List<T> = []) : Serializable + Json {
+skill Slicing : Indexed<T> {
+    implement fun slice(start: Int, end: Int): List<T> {
+        var startPos = start
+        if (startPos < 0) {
+            startPos = 0
+        }
+        var endPos = end
+        if (endPos > this.size()) {
+            endPos = this.size()
+        }
+        val out = MutableList<T>()
+        var i = startPos
+        while (i < endPos) {
+            out.add(this.get(i))
+            i = i + 1
+        }
+        return out.freeze()
+    }
+
+    implement fun skip(n: Int): List<T> = this.slice(n, this.size())
+
+    implement fun take(n: Int): List<T> = this.slice(0, n)
+
+    implement fun skipLast(n: Int): List<T> = this.slice(0, this.size() - n)
+
+    implement fun takeLast(n: Int): List<T> = this.slice(this.size() - n, this.size())
+}
+
+type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Serializable + Slicing + Json {
     fun add(element: T): Void {
         this.list.items.push(element)
     }
@@ -47,7 +75,7 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
         return result.freeze()
     }
 
-    operator fun get(index: Int): T {
+    implement operator fun get(index: Int): T {
         return this.list.items[index]
     }
 
@@ -64,7 +92,7 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
         }
     }
 
-    fun size(): Int {
+    implement fun size(): Int {
         return this.list.items.length
     }
 
@@ -85,8 +113,9 @@ type MutableList<T>(val list: List<T> = []) : Serializable + Json {
     implement fun serialize(): SerdeValue = this.list.serialize()
 }
 
-type List<T>(val items: NativeArray<T> = []) : Equatable, Serializable + Json {
-    operator fun get(index: Int): T {
+type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>, Serializable + Slicing + Json {
+
+    implement operator fun get(index: Int): T {
         return this.items[index]
     }
 
@@ -116,7 +145,7 @@ type List<T>(val items: NativeArray<T> = []) : Equatable, Serializable + Json {
         return result.freeze()
     }
 
-    fun size(): Int {
+    implement fun size(): Int {
         return this.items.length
     }
 
@@ -178,6 +207,7 @@ type Node<K, V>(val key: K, var value: V, var next: Node<K, V>?) {
 }
 
 type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
+
     operator fun put(key: K, value: V): Void {
         var capacity = this.entries.size()
         if (capacity == 0) {

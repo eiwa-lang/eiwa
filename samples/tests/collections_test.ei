@@ -270,3 +270,36 @@ test "MutableList toString delegates to List" {
     assert(m.toString() == "[1, 2]")
 }
 
+test "List slice is the primitive" {
+    val l = [1, 2, 3, 4, 5]
+    assert(l.slice(1, 3).toString() == "[2, 3]")
+    assert(l.slice(0, 0).toString() == "[]")
+    assert(l.slice(3, 3).toString() == "[]")
+    assert(l.slice(-5, 99).toString() == "[1, 2, 3, 4, 5]")
+    assert(l.slice(99, 100).toString() == "[]")
+}
+
+test "List skip/take delegate to slice" {
+    val l = [1, 2, 3, 4, 5]
+    assert(l.skip(1).take(2).toString() == "[2, 3]")
+    assert(l.skip(0).toString() == "[1, 2, 3, 4, 5]")
+    assert(l.skip(99).toString() == "[]")
+    assert(l.take(0).toString() == "[]")
+    assert(l.take(99).toString() == "[1, 2, 3, 4, 5]")
+    assert(l.skipLast(1).toString() == "[1, 2, 3, 4]")
+    assert(l.takeLast(2).toString() == "[4, 5]")
+    assert(l.takeLast(99).toString() == "[1, 2, 3, 4, 5]")
+    assert(l.skipLast(99).toString() == "[]")
+    assert(l.size() == 5)
+}
+
+test "MutableList skip/take/slice do not mutate" {
+    val m = MutableList([1, 2, 3, 4, 5])
+    assert(m.slice(1, 3).toString() == "[2, 3]")
+    assert(m.skip(1).take(2).toString() == "[2, 3]")
+    assert(m.skipLast(2).toString() == "[1, 2, 3]")
+    assert(m.takeLast(2).toString() == "[4, 5]")
+    assert(m.size() == 5)
+    assert(m.get(0) == 1)
+}
+
