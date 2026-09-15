@@ -2262,6 +2262,18 @@ fn emitExpressionRaw(
                                     }
                                     if (idx < param_count) {
                                         arg_val = coerceArg(builder, arg_val, func_param_types[idx]);
+                                    } else {
+                                        // C-variadic tail (e.g. sprintf's `...`): LLVM only
+                                        // knows the fixed prefix, so coerce via the
+                                        // Eiwa-declared signature — a boxed scalar
+                                        // (`this: Double` arriving as ptr) must be
+                                        // unboxed or vararg FP regs read garbage.
+                                        if (call.callee.resolved_type) |crt| {
+                                            if (crt.* == .Function and idx < crt.Function.params.len) {
+                                                const want_t = types_mapping.getLLVMTypeWithContracts(ctx, crt.Function.params[idx].*, global_contracts_ast_ptr);
+                                                arg_val = coerceArg(builder, arg_val, want_t);
+                                            }
+                                        }
                                     }
                                     arg_vals[idx] = arg_val;
                                 }
