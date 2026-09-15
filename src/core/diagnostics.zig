@@ -103,6 +103,7 @@ pub fn printDiagnostic(
     source: ?[]const u8,
     hint: ?[]const u8,
 ) void {
+    if (builtin.is_test) return;
     const colors = useColors();
     const rst = if (colors) Color.reset else "";
     const bold_w = if (colors) Color.bold else "";
