@@ -181,6 +181,21 @@ pub const LibDeclEntry = struct {
     module_path: ?[]const u8,
 };
 
+pub const StubInfo = struct {
+    node: *ast.ASTNode,
+    /// The emission error, or null when the body emitted but the
+    /// per-function verifier rejected it (invalid IR).
+    err: ?anyerror,
+    /// Failed member lookup, when known: reported at its own position.
+    lookup: ?expression.FailedLookup,
+};
+
+/// Where a stubbed function came from.
+pub const StubOrigin = struct {
+    file: []const u8,
+    source: ?[]const u8,
+};
+
 pub const LLVMEmitter = struct {
     allocator: std.mem.Allocator,
     context: llvm.LLVMContextRef,
@@ -233,6 +248,9 @@ pub const LLVMEmitter = struct {
     /// set instead of the entire functions map. Rebuilt if `functions` grows.
     fn_token_index: ?std.StringHashMap(ArrayList([]const u8)) = null,
     fn_token_index_count: usize = 0,
+    /// Bodies that failed emission/verification and were replaced with stubs.
+    /// Any entry fails the build at the end of Pass 2.
+    stubbed_functions: std.StringHashMap(StubInfo),
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         llvm.LLVMLinkInMCJIT();
@@ -271,6 +289,7 @@ pub const LLVMEmitter = struct {
             .c_includes = std.StringHashMap(void).init(allocator),
             .c_defines = std.StringHashMap(void).init(allocator),
             .link_libraries = std.StringHashMap(void).init(allocator),
+            .stubbed_functions = std.StringHashMap(StubInfo).init(allocator),
             .target_info = null,
         };
     }
@@ -294,6 +313,11 @@ pub const LLVMEmitter = struct {
         self.c_includes.deinit();
         self.c_defines.deinit();
         self.link_libraries.deinit();
+        {
+            var it = self.stubbed_functions.keyIterator();
+            while (it.next()) |k| self.allocator.free(k.*);
+            self.stubbed_functions.deinit();
+        }
         llvm.LLVMDisposeBuilder(self.builder);
         if (self.module) |m| {
             llvm.LLVMDisposeModule(m);
@@ -1138,7 +1162,7 @@ pub const LLVMEmitter = struct {
                     // shadowing the test runner. Skip it in test mode.
                     if (self.is_test_mode and std.mem.eql(u8, fname, "main")) continue;
                     if (m != ast_root) {
-                        self.emitFunctionBodyOrStub(mod, stmt, fname, false);
+                        try self.emitFunctionBodyOrStub(mod, stmt, fname, false);
                     } else {
                         try self.emitFunctionBody(mod, stmt, false);
                     }
@@ -1168,9 +1192,12 @@ pub const LLVMEmitter = struct {
                         } else if (!reachable.contains(fname)) continue;
                         // Emit the method body, with graceful stub fallback for synthetic
                         // or unmaterialized stdlib derivations that are marked reachable.
-                        self.emitFunctionBodyOrStub(mod, m_node, fname, true);
+                        try self.emitFunctionBodyOrStub(mod, m_node, fname, true);
                     }
                 } else if (stmt.data == .object_decl) {
+                    // Members of platform-mismatched objects have no declaration
+                    // (see Pass 1c); attempting a body would fail lookup and stub.
+                    if (!self.matchesTarget(stmt.data.object_decl.platform_targets)) continue;
                     for (stmt.data.object_decl.members) |member| {
                         if (member.data != .fun_decl) continue;
                         if (member.data.fun_decl.generic_params.len > 0) continue;
@@ -1181,7 +1208,7 @@ pub const LLVMEmitter = struct {
                                 continue;
                             }
                         } else if (!reachable.contains(fname)) continue;
-                        self.emitFunctionBodyOrStub(mod, member, fname, true);
+                        try self.emitFunctionBodyOrStub(mod, member, fname, true);
                     }
                 }
                 // Split mode: only the entry unit synthesizes `main` from
@@ -1217,11 +1244,17 @@ pub const LLVMEmitter = struct {
                                 // dupe: fname is freed at iteration end.
                                 try owned_names.put(try self.allocator.dupe(u8, fname), {});
                             } else if (!reachable.contains(fname) and !reachable.contains(m_node.data.fun_decl.name)) continue;
-                            self.emitFunctionBodyOrStub(mod, m_node, fname, true);
+                            try self.emitFunctionBodyOrStub(mod, m_node, fname, true);
                         }
                     }
                 }
             }
+        }
+
+        // Stubbed bodies fail the build; report each one for the user.
+        if (self.stubbed_functions.count() > 0) {
+            try self.reportStubbedFunctions(modules.items);
+            return error.LLVMCodegenFailed;
         }
 
         // Pass 3: Handle Hybrid Main (top-level statements inside main())
@@ -3147,7 +3180,14 @@ pub const LLVMEmitter = struct {
         };
         const strcmp_ft = llvm.LLVMGlobalGetValueType(strcmp_fn);
         var args = [_]llvm.LLVMValueRef{ a_data, b_data };
-        const cmp = llvm.LLVMBuildCall2(self.builder, strcmp_ft, strcmp_fn, &args, 2, "seq_cmp");
+        const cmp_raw = llvm.LLVMBuildCall2(self.builder, strcmp_ft, strcmp_fn, &args, 2, "seq_cmp");
+        // The shared `strcmp` symbol may be declared i64 (stdlib FFI);
+        // truncate to the true C int width (low 32 bits carry the result).
+        const cmp = if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(cmp_raw)) == llvm.LLVMIntegerTypeKind and
+            llvm.LLVMGetIntTypeWidth(llvm.LLVMTypeOf(cmp_raw)) != 32)
+            llvm.LLVMBuildTrunc(self.builder, cmp_raw, i32_type, "seq_cmp32")
+        else
+            cmp_raw;
         const zero = llvm.LLVMConstInt(i32_type, 0, 0);
         const is_eq = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, cmp, zero, "seq_eq");
         _ = llvm.LLVMBuildCondBr(self.builder, is_eq, ret_true, ret_false);
@@ -4507,7 +4547,8 @@ if (define_body) {
     /// contract dispatch that leaves an unterminated block, an icmp on a
     /// struct, or a return-type mismatch without raising an error). The stub
     /// keeps the module verifiable for the JIT/linker.
-    fn emitFunctionBodyOrStub(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, fname: []const u8, is_object_method: bool) void {
+    /// Every stub is recorded in `stubbed_functions` and fails the build.
+    fn emitFunctionBodyOrStub(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, fname: []const u8, is_object_method: bool) !void {
         if (self.isLibFunction(fname)) return;
         // Record the lambda counter so lambdas emitted while building this
         // body can be cleaned up if the emission fails: the partial body is
@@ -4516,9 +4557,12 @@ if (define_body) {
         // (prepareDwarfEH) instead of producing a stubbed binary.
         const lam_counter_before = expression.currentLambdaCounter();
         var emitted_ok = true;
+        var fail_err: ?anyerror = null;
+        expression.last_failed_lookup = null;
         self.emitFunctionBody(mod, func_node, is_object_method) catch |err| {
             if (verbose) std.debug.print("LLVM Emitter Error in {s}: {}\n", .{ fname, err });
             emitted_ok = false;
+            fail_err = err;
         };
         if (emitted_ok) {
             const func_val_opt = self.functions.get(fname) orelse blk: {
@@ -4527,11 +4571,20 @@ if (define_body) {
                 break :blk llvm.LLVMGetNamedFunction(mod, fname_z.ptr);
             };
             if (func_val_opt) |func_val| {
-                if (functionIsWellFormed(func_val)) return;
+                if (functionIsWellFormed(func_val)) {
+                    expression.last_failed_lookup = null;
+                    return;
+                }
                 if (verbose) std.debug.print("LLVM Emitter: {s} produced invalid IR; stubbed.\n", .{fname});
             }
         }
         self.emitFunctionStub(mod, fname) catch {};
+        // Record the stub (dupe: pool call sites free `fname` after emission).
+        const owned = try self.allocator.dupe(u8, fname);
+        errdefer self.allocator.free(owned);
+        const lookup = expression.last_failed_lookup;
+        expression.last_failed_lookup = null;
+        try self.stubbed_functions.put(owned, .{ .node = func_node, .err = fail_err, .lookup = lookup });
         // Delete lambdas orphaned by the failed/invalid body emission. Stub
         // emission already removed the parent's partial blocks, so the
         // lambdas have no remaining uses. Forward order (outermost first):
@@ -4546,6 +4599,140 @@ if (define_body) {
                 llvm.LLVMDeleteFunction(lam_f);
             }
         }
+    }
+
+    /// Reports every stubbed function, then fails with `LLVMCodegenFailed`.
+    fn reportStubbedFunctions(self: *LLVMEmitter, modules: []*ast.ASTNode) !void {
+        var names = ArrayList([]const u8).init(self.allocator);
+        defer names.deinit();
+        var kit = self.stubbed_functions.keyIterator();
+        while (kit.next()) |k| try names.append(k.*);
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+        for (names.items) |name| {
+            const info = self.stubbed_functions.get(name).?;
+            const origin = self.stubOrigin(modules, info.node);
+            const display = try self.stubDisplayName(info.node, origin.source);
+            defer self.allocator.free(display);
+            if (info.lookup) |lk| {
+                const hint = try std.fmt.allocPrint(self.allocator, "in '{s}': check for typos, missing imports, or a method used without parentheses", .{display});
+                defer self.allocator.free(hint);
+                diagnostics.printDiagnostic(origin.file, lk.line, lk.column, .err, "could not resolve '{s}'", .{lk.name}, origin.source, hint);
+            } else {
+                const line = if (info.node.line == 0) 1 else info.node.line;
+                const severity: diagnostics.Severity = if (info.err == null) .ice else .err;
+                diagnostics.printDiagnostic(origin.file, line, info.node.column, severity, "could not compile '{s}'", .{display}, origin.source, stubReason(info.err));
+            }
+        }
+    }
+
+    /// Eiwa-level name, never a mangled symbol. Prefers the `fun` line.
+    fn stubDisplayName(self: *LLVMEmitter, node: *ast.ASTNode, source: ?[]const u8) ![]const u8 {
+        if (source) |src| {
+            const ln = if (node.line == 0) 1 else node.line;
+            if (diagnostics.sourceLine(src, ln)) |src_line| {
+                const clean = if (src_line.len > 0 and src_line[src_line.len - 1] == '\r') src_line[0 .. src_line.len - 1] else src_line;
+                var rest = std.mem.trimStart(u8, clean, " \t");
+                if (std.mem.startsWith(u8, rest, "implement ")) rest = std.mem.trimStart(u8, rest["implement ".len..], " \t");
+                if (std.mem.startsWith(u8, rest, "fun ")) {
+                    rest = rest["fun ".len..];
+                    if (std.mem.indexOfScalar(u8, rest, '(')) |paren| {
+                        const decl = std.mem.trimEnd(u8, rest[0..paren], " \t");
+                        if (decl.len > 0) return try std.fmt.allocPrint(self.allocator, "{s}()", .{decl});
+                    }
+                }
+            }
+        }
+        if (node.data != .fun_decl) return try self.allocator.dupe(u8, "function");
+        const fname = node.data.fun_decl.name;
+        if (node.resolved_type) |rt| {
+            if (rt.* == .Function) {
+                if (rt.Function.receiver) |recv| {
+                    if (try self.stubReceiverName(recv)) |rname| {
+                        defer self.allocator.free(rname);
+                        return try std.fmt.allocPrint(self.allocator, "{s}.{s}()", .{ rname, fname });
+                    }
+                }
+            }
+        }
+        return try std.fmt.allocPrint(self.allocator, "{s}()", .{fname});
+    }
+
+    fn stubReceiverName(self: *LLVMEmitter, rt: *const ts.EiwaType) !?[]const u8 {
+        switch (ts.extractBaseType(rt).*) {
+            .Int => return try self.allocator.dupe(u8, "Int"),
+            .Bool => return try self.allocator.dupe(u8, "Bool"),
+            .Double => return try self.allocator.dupe(u8, "Double"),
+            .String => return try self.allocator.dupe(u8, "String"),
+            .Pointer => return try self.allocator.dupe(u8, "Pointer"),
+            .Custom => |n| {
+                if (stripCorePrefixes(self.allocator, n)) |stripped| return stripped;
+                return try self.allocator.dupe(u8, n);
+            },
+            else => return null,
+        }
+    }
+
+    /// Owning module file plus its text (entry file without text on fallback).
+    fn stubOrigin(self: *LLVMEmitter, modules: []*ast.ASTNode, target: *ast.ASTNode) StubOrigin {
+        var owner: ?*ast.ASTNode = null;
+        for (modules) |m| {
+            if (m == target) {
+                owner = m;
+                break;
+            }
+            if (m.data != .program) continue;
+            for (m.data.program.statements) |stmt| {
+                if (stmt == target) {
+                    owner = m;
+                    break;
+                }
+                switch (stmt.data) {
+                    .type_decl => |t| {
+                        for (t.methods) |mm| {
+                            if (mm == target) {
+                                owner = m;
+                                break;
+                            }
+                        }
+                        if (owner != null) break;
+                    },
+                    .object_decl => |o| {
+                        for (o.members) |mm| {
+                            if (mm == target) {
+                                owner = m;
+                                break;
+                            }
+                        }
+                        if (owner != null) break;
+                    },
+                    else => {},
+                }
+            }
+            if (owner != null) break;
+        }
+        if (owner) |mod| {
+            if (self.registry) |reg| {
+                var rit = reg.modules.iterator();
+                while (rit.next()) |entry| {
+                    if (entry.value_ptr.ast_root == mod) {
+                        return .{ .file = entry.value_ptr.filename, .source = entry.value_ptr.source };
+                    }
+                }
+            }
+        }
+        return .{ .file = self.source_file, .source = null };
+    }
+
+    /// End-user reason; null error (invalid IR) is always a compiler bug.
+    fn stubReason(err: ?anyerror) []const u8 {
+        const e = err orelse return "the compiler produced invalid low-level code — please report it with a minimal reproducer (re-run with EIWA_LLVM_VERBOSE=1 and attach the output)";
+        if (e == error.PropertyNotFound) return "uses a property or method that could not be resolved — check for typos, missing imports, or a method used without parentheses";
+        if (e == error.FunctionNotFound) return "calls a function with no declaration for this target — check platform (`posix`/`windows`) blocks, `lib` declarations and imports";
+        return "internal code-generation failure — please report it with a minimal reproducer";
     }
 
     /// Removes any partially-emitted basic blocks from a function whose body

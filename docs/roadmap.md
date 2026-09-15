@@ -1436,6 +1436,79 @@ Semântica alvo:
 > Verificado idêntico na main limpa antes do fix: pré-existente, sem relação
 > com Phase 80 (`MutableList<Int?>` funciona totalmente).
 
+### Phase 85: Build falha em stub — IR inválido substituído silenciosamente (issue #5) (EM ANDAMENTO)
+> **Status:** EM ANDAMENTO. Branch `fix/issue-5-stub-invalid-ir` (working tree,
+> não commitado; só o teste RED está commitado — `d008b62`). Cobertura TDD em
+> `samples/tests/issue5_stub_invalid_ir_test.ei` (10 testes).
+>
+> **O problema (eiwa-lang/eiwa#5):** o release build emitia erros de verificação
+> LLVM para funções da stdlib, dizia explicitamente que elas viraram stub, e
+> ainda assim reportava build com sucesso — binário "válido" com implementações
+> de mentira (ex: `"hello".equals("hello")` retornava `false`).
+>
+> **Causas-raiz corrigidas:**
+> 1. `String.equals` (`icmp eq i32 %ffitmp, i64 0`): o `==` não coagia larguras
+>    de int (FFI `strcmp` retorna C `int`/i32, literal Eiwa é i64). Novo
+>    `coerceIntWidths` (`expression.zig`): i1→zext, demais→sext; no-op em
+>    larguras iguais (zero instruções extras no caminho comum).
+> 2. `Int.toDouble`/`Double.toInt`/`Double.hashCode` (`sitofp`/`fptosi ptr`):
+>    receivers `this` são declarados `ptr`; casts `as` e fast paths não
+>    recuperavam o valor. Novo dispatcher único `scalarOperandToRaw`
+>    (`expression.zig`): cells nuláveis via unbox null-safe (null→zero),
+>    resto via PtrToInt; helpers compartilhados `emitIntToDouble`,
+>    `emitDoubleToInt`, `lowerScalarHashCode` (unificam `as` + fast paths de
+>    get/call, eliminando 6 arms duplicados de hashCode).
+> 3. `strcmp` declarado 2× com tipos diferentes (helper i32 × FFI i64 do std;
+>    vencia quem declarasse primeiro): trunc order-safe no helper.
+> 4. `PropertyNotFound` em `*_toString`/`*_hashCode` (`IntVar`, `RawMutex`,
+>    `Thread`, `Atomic*`, `CString`, `StackTask`, ...): `type Pointer` não
+>    declarava os métodos (regra: toda API user-space em `src/std/`) —
+>    declarados `toString`/`hashCode` em `src/std/core.ei`; gerador pula props
+>    sem dispatch no emissor (`Void?`, unions multi-variante) via
+>    `propSkippedInGeneratedBody` (`infer_decl.zig`).
+> 5. `FunctionNotFound` (`pthreadCreate`, `getCores`, `entrySize`, `resolve`):
+>    emissão Pass 2 de `object` não tinha o guarda `matchesTarget` que a
+>    declaração (Pass 1c) tem — membros de plataforma errada tentavam corpo sem
+>    declaração. Guarda espelhada.
+> 6. Comparações `Bool?` (`icmp eq i1 vs ptr`, stubs de `__TaskBlock`):
+>    `emitNullableScalarCompare` não reduzia o lado escalar `Bool` a i1.
+> 7. Diagnóstico amigável (pedido do usuário, não da issue): o erro inicial
+>    listava símbolos mangled sem posição (`html_BodyBuilder_renderCollageGrid`).
+>    Cada stub agora guarda nó AST + erro + lookup que falhou
+>    (`last_failed_lookup` nos 4 sites de `PropertyNotFound`); o relatório usa
+>    o **mesmo template do checker** (`diagnostics.printDiagnostic`, mesmas
+>    cores/caret/`help:`) — `could not resolve 'size'` no ponto de uso com
+>    snippet, ou `could not compile 'X'` por função (severidade `.ice` em bug
+>    do compilador). `diagnostics.sourceLine` extraído como helper
+>    compartilhado (antes duplicado no emissor).
+>
+> **Mudança de comportamento (o pedido central da issue):** stub de função
+> alcançável agora **falha o build** — `stubbed_functions` (`core.zig`)
+> registra todo fallback e o fim do Pass 2 retorna `error.LLVMCodegenFailed`
+> (exit 1, nomes listados; `main.zig` trata como erro com diagnóstico próprio).
+>
+> **Verificação:** suíte completa 551/551 com fail-loud ativo (= zero stubs) +
+> `zig build test` exit 0 + release build com valores corretos
+> (`equals=true`, `toInt=42`, hash real). Performance intacta: micro-benchmark
+> release 0.03s antes/depois; loop do usuário gera IR idêntico (instruções
+> novas só nos corpos que antes eram inválidos).
+>
+> **Dívidas restantes (follow-ups, não bloqueiam):**
+> - Wrapper C `eiwa_strcmp` retornando `int64_t` + `@Alias` no std, eliminando
+>   o conflito de declaração na raiz (o trunc atual é workaround correto, mas
+>   workaround).
+> - Dispatch de union multi-variante/`Void` para `toString`/`hashCode` no
+>   emissor (o gerador hoje omite esses campos; chamada explícita do usuário
+>   continua falhando alto).
+> - Tensão `unboxScalarOperand` (raw→LOAD) vs PtrToInt — caminho morto,
+>   documentado no código; não mexer sem caso reprodutível.
+> - Extrair helper compartilhado para os aliases escalares (`types.zig` ×
+>   `expression.zig`).
+> - Tipos renderizados como dump de debug nas mensagens (`Union{Custom{...},
+>   Null}` em vez de `Post?`): o repo tem pretty-printer (`EiwaType.format`),
+>   mas os diagnósticos imprimem o formato interno — sistêmico e pré-existente
+>   (ex: `Expected .{ .String = void }`).
+
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
   (Pointer) direto para `tolower(c: Int)`/`toupper(c: Int)` do `<ctype.h>`, que

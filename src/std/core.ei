@@ -148,6 +148,18 @@ type Pointer {
     fun writeByte(index: Int, value: Int): Void {
         NativeMemory.writeByte(this, index, value)
     }
+
+    // Lets synthesized default toString/hashCode for types with Pointer
+    // fields resolve to real bodies.
+    fun toString(): String {
+        val buf = Standard.gcMalloc(32)
+        Standard.sprintfInt(buf, "%p".ptr, this as Int)
+        return String(buf, NativeString.strlen(buf))
+    }
+
+    fun hashCode(): Int {
+        return this as Int
+    }
 }
 
 /// Typed view of an 8-byte GC slot, mirroring Kotlin/Native `LongVar`/`IntVar`:

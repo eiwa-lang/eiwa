@@ -18,6 +18,11 @@ const core = @import("core.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 
+/// Failed member lookup for the stub reporter (points at user code).
+/// Single-threaded use only. Name borrows from the AST.
+pub const FailedLookup = struct { name: []const u8, line: usize, column: usize };
+pub var last_failed_lookup: ?FailedLookup = null;
+
 fn isCoreAutoContract(name: []const u8) bool {
     var short_name = name;
     if (std.mem.lastIndexOfScalar(u8, name, '_')) |idx| {
@@ -426,6 +431,7 @@ fn emitExpressionRaw(
                     const field_t = if (s_info.field_types[selected_f_idx] != null) s_info.field_types[selected_f_idx] else llvm.LLVMPointerTypeInContext(ctx, 0);
                     return llvm.LLVMBuildLoad2(builder, field_t, field_ptr, "prop_val");
                 }
+                last_failed_lookup = .{ .name = ident.name, .line = node.line, .column = node.column };
                 return error.PropertyNotFound;
             }
             if (scope.get(name)) |var_val| {
@@ -549,7 +555,8 @@ fn emitExpressionRaw(
                         } else if (obj_base == .Bool) {
                             const true_str = llvm.LLVMBuildGlobalStringPtr(builder, "true", "bool_str_true");
                             const false_str = llvm.LLVMBuildGlobalStringPtr(builder, "false", "bool_str_false");
-                            const sel = llvm.LLVMBuildSelect(builder, obj_val, true_str, false_str, "bool_tostr");
+                            const cond = if (scalarOperandToRaw(ctx, builder, obj_val, obj_rt, .Bool)) |r| r else obj_val;
+                            const sel = llvm.LLVMBuildSelect(builder, cond, true_str, false_str, "bool_tostr");
                             return try wrapStringWithHeader(ctx, mod, builder, sel, "bool_str");
                         } else if (obj_base == .Double) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
@@ -589,7 +596,7 @@ fn emitExpressionRaw(
                         return try emitUnionBuiltin(ctx, mod, builder, scope, structs, libs, get.object, .to_int, get.is_safe);
                     } else if (obj_rt.* == .Double) {
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
-                        return llvm.LLVMBuildFPToSI(builder, obj_val, llvm.LLVMInt64TypeInContext(ctx), "double_to_int");
+                        return emitDoubleToInt(ctx, builder, obj_val, obj_rt);
                     } else if (obj_rt.* == .Int) {
                         return try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                     }
@@ -601,7 +608,7 @@ fn emitExpressionRaw(
                         return try emitUnionBuiltin(ctx, mod, builder, scope, structs, libs, get.object, .to_double, get.is_safe);
                     } else if (obj_rt.* == .Int) {
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
-                        return llvm.LLVMBuildSIToFP(builder, obj_val, llvm.LLVMDoubleTypeInContext(ctx), "int_to_double");
+                        return emitIntToDouble(ctx, builder, obj_val, obj_rt);
                     } else if (obj_rt.* == .Double) {
                         return try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                     }
@@ -613,14 +620,14 @@ fn emitExpressionRaw(
             if (std.mem.eql(u8, get.name, "hashCode")) {
                 if (get.object.resolved_type) |obj_rt| {
                     const obj_base = obj_rt.*;
-                    if (obj_base == .Int) {
-                        return try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
-                    } else if (obj_base == .Bool) {
-                        const b_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
-                        return llvm.LLVMBuildZExt(builder, b_val, llvm.LLVMInt64TypeInContext(ctx), "bool_hash");
-                    } else if (obj_base == .Double) {
+                    if (obj_base == .Int or obj_base == .Bool or obj_base == .Double) {
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
-                        return llvm.LLVMBuildBitCast(builder, obj_val, llvm.LLVMInt64TypeInContext(ctx), "hash_double");
+                        const variant: ts.EiwaType = switch (obj_base) {
+                            .Bool => .Bool,
+                            .Double => .Double,
+                            else => .Int,
+                        };
+                        return lowerScalarHashCode(ctx, builder, obj_val, obj_rt, variant);
                     }
                 }
             }
@@ -867,6 +874,7 @@ fn emitExpressionRaw(
                 }
             }
             if (core.verbose) std.debug.print("LLVM Debug: PropertyNotFound get.name={s} line={d} col={d} obj.resolved_type={any}\n", .{ get.name, node.line, node.column, if (get.object.resolved_type) |rt| rt.* else null });
+            last_failed_lookup = .{ .name = get.name, .line = node.line, .column = node.column };
             return error.PropertyNotFound;
         },
         .set_expr => |set| {
@@ -959,6 +967,7 @@ fn emitExpressionRaw(
                     }
                 }
             }
+            last_failed_lookup = .{ .name = set.name, .line = node.line, .column = node.column };
             return error.PropertyNotFound;
         },
         .array_literal => |arr| {
@@ -1439,6 +1448,9 @@ fn emitExpressionRaw(
                 } else if (llvm.LLVMGetTypeKind(l_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(r_type) == llvm.LLVMPointerTypeKind) {
                     right_val = unboxScalarOperand(ctx, builder, right_val, bin.right.resolved_type, l_type);
                 }
+                const coerced = coerceIntWidths(builder, left_val, right_val);
+                left_val = coerced.l;
+                right_val = coerced.r;
             }
 
             switch (bin.op) {
@@ -1513,6 +1525,11 @@ fn emitExpressionRaw(
                         r_val = unboxScalarOperand(ctx, builder, r_val, bin.right.resolved_type, llvm.LLVMTypeOf(l_val));
                     }
                     {
+                        const coerced_eq = coerceIntWidths(builder, l_val, r_val);
+                        l_val = coerced_eq.l;
+                        r_val = coerced_eq.r;
+                    }
+                    {
                         var eq_class: ?[]const u8 = null;
                         if (customEqualsClass(bin.left, mod)) |cn| {
                             eq_class = cn;
@@ -1564,6 +1581,11 @@ fn emitExpressionRaw(
                         l_val = unboxScalarOperand(ctx, builder, l_val, bin.left.resolved_type, llvm.LLVMTypeOf(r_val));
                     } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
                         r_val = unboxScalarOperand(ctx, builder, r_val, bin.right.resolved_type, llvm.LLVMTypeOf(l_val));
+                    }
+                    {
+                        const coerced_ne = coerceIntWidths(builder, l_val, r_val);
+                        l_val = coerced_ne.l;
+                        r_val = coerced_ne.r;
                     }
                     {
                         var eq_class: ?[]const u8 = null;
@@ -2571,14 +2593,14 @@ fn emitExpressionRaw(
                 if (std.mem.eql(u8, g.name, "hashCode") and call.arguments.len == 0) {
                     if (obj_rt_opt) |obj_rt| {
                         const base_obj = ts.extractBaseType(obj_rt).*;
-                        if (base_obj == .Int) {
-                            return try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
-                        } else if (base_obj == .Bool) {
-                            const b_val = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
-                            return llvm.LLVMBuildZExt(builder, b_val, llvm.LLVMInt64TypeInContext(ctx), "bool_hash");
-                        } else if (base_obj == .Double) {
-                            const d_val = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
-                            return llvm.LLVMBuildBitCast(builder, d_val, llvm.LLVMInt64TypeInContext(ctx), "double_hash");
+                        if (base_obj == .Int or base_obj == .Bool or base_obj == .Double) {
+                            const h_val = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            const variant: ts.EiwaType = switch (base_obj) {
+                                .Bool => .Bool,
+                                .Double => .Double,
+                                else => .Int,
+                            };
+                            return lowerScalarHashCode(ctx, builder, h_val, obj_rt, variant);
                         }
                     }
                 }
@@ -4173,12 +4195,10 @@ fn emitExpressionRaw(
                         }
                     }.f;
                     if (is_int_type(v_base) and is_double_type(n_base)) {
-                        const dbl_t = llvm.LLVMDoubleTypeInContext(ctx);
-                        return llvm.LLVMBuildSIToFP(builder, val, dbl_t, "itod");
+                        return emitIntToDouble(ctx, builder, val, as_e.value.resolved_type);
                     }
                     if (is_double_type(v_base) and is_int_type(n_base)) {
-                        const i64_t = llvm.LLVMInt64TypeInContext(ctx);
-                        return llvm.LLVMBuildFPToSI(builder, val, i64_t, "dtoi");
+                        return emitDoubleToInt(ctx, builder, val, as_e.value.resolved_type);
                     }
                     if (is_int_type(v_base) and n_base == .Pointer) {
                         const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
@@ -4572,6 +4592,9 @@ pub fn boxNullableScalar(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, buil
 /// Unboxes a box left over by `!!`: a ptr-kind value whose static type is a
 /// raw or nullable scalar can only be a Phase-80 heap cell — load it.
 /// Anything else (genuine pointers, legacy union boxes) keeps PtrToInt.
+/// NOTE: casts/comparisons recover value-as-pointer via PtrToInt instead
+/// (`scalarOperandToRaw`); do not extend this branch without checking
+/// provenance first.
 fn unboxScalarOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, node_rt: ?*const ts.EiwaType, target_t: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     if (node_rt) |rt| {
         if (ts.isRawScalar(rt)) {
@@ -4645,6 +4668,64 @@ fn scalarBitsToVariant(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, v
         .Double => llvm.LLVMBuildBitCast(builder, i64_val, llvm.LLVMDoubleTypeInContext(ctx), "ns_dbl"),
         else => i64_val,
     };
+}
+
+/// PtrToInt recovery for value-as-pointer scalars (ptr-declared receivers,
+/// IntToPtr-tagged contract data). Never a heap cell: those carry
+/// nullable/union static types.
+fn ptrScalarToVariant(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, variant: ts.EiwaType) llvm.LLVMValueRef {
+    const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+    const bits = llvm.LLVMBuildPtrToInt(builder, val, i64_t, "ptrsc_bits");
+    return scalarBitsToVariant(ctx, builder, bits, variant);
+}
+
+/// True for raw scalars and the `core_`/`std_core_` aliases.
+fn isScalarLikeType(t: ts.EiwaType) bool {
+    return switch (t) {
+        .Int, .Bool, .Double => true,
+        .Custom => |n| std.mem.eql(u8, n, "Int") or std.mem.eql(u8, n, "core_Int") or std.mem.eql(u8, n, "std_core_Int") or
+            std.mem.eql(u8, n, "Bool") or std.mem.eql(u8, n, "core_Bool") or std.mem.eql(u8, n, "std_core_Bool") or
+            std.mem.eql(u8, n, "Double") or std.mem.eql(u8, n, "core_Double") or std.mem.eql(u8, n, "std_core_Double"),
+        else => false,
+    };
+}
+
+/// Resolves a ptr-kind scalar operand to its raw `variant` representation:
+/// nullable cells load null-safely (null yields zero), non-nullable scalars
+/// recover via PtrToInt. Returns null when `val` is not ptr-kind or the
+/// static type is unsupported.
+fn scalarOperandToRaw(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, source_rt: ?*const ts.EiwaType, variant: ts.EiwaType) ?llvm.LLVMValueRef {
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) != llvm.LLVMPointerTypeKind) return null;
+    const srt = source_rt orelse return null;
+    if (nullableScalarVariant(srt)) |v| {
+        return unboxNullableScalarOrZero(ctx, builder, v, val);
+    }
+    if (ts.isNullable(srt)) return null;
+    if (!isScalarLikeType(ts.extractBaseType(srt).*) ) return null;
+    return ptrScalarToVariant(ctx, builder, val, variant);
+}
+
+/// Lowers `.hashCode()` on a scalar receiver to i64. Shared fast-path helper.
+fn lowerScalarHashCode(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, obj_rt: *const ts.EiwaType, variant: ts.EiwaType) llvm.LLVMValueRef {
+    const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+    const raw = if (scalarOperandToRaw(ctx, builder, val, obj_rt, variant)) |r| r else val;
+    return switch (variant) {
+        .Bool => llvm.LLVMBuildZExt(builder, raw, i64_t, "bool_hash"),
+        .Double => llvm.LLVMBuildBitCast(builder, raw, i64_t, "hash_double"),
+        else => coerceArg(builder, raw, i64_t),
+    };
+}
+
+/// `Int` -> `Double` conversion. Shared by the `as` cast and `.toDouble()`.
+fn emitIntToDouble(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, src_rt: ?*const ts.EiwaType) llvm.LLVMValueRef {
+    const ival = if (scalarOperandToRaw(ctx, builder, val, src_rt, .Int)) |r| r else val;
+    return llvm.LLVMBuildSIToFP(builder, ival, llvm.LLVMDoubleTypeInContext(ctx), "itod");
+}
+
+/// `Double` -> `Int` conversion. Shared by the `as` cast and `.toInt()`.
+fn emitDoubleToInt(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, src_rt: ?*const ts.EiwaType) llvm.LLVMValueRef {
+    const dval = if (scalarOperandToRaw(ctx, builder, val, src_rt, .Double)) |r| r else val;
+    return llvm.LLVMBuildFPToSI(builder, dval, llvm.LLVMInt64TypeInContext(ctx), "dtoi");
 }
 
 /// Boxes `val` when `target_rt` is a nullable scalar, else returns it as-is.
@@ -4832,6 +4913,16 @@ fn emitNullableScalarCompare(
     const i64_t = llvm.LLVMInt64TypeInContext(ctx);
     if (variant == .Double) scalar_val = coerceArg(builder, scalar_val, dbl_t);
     if (variant == .Int) scalar_val = coerceArg(builder, scalar_val, i64_t);
+    if (variant == .Bool) {
+        if (scalarOperandToRaw(ctx, builder, scalar_val, srt, .Bool)) |r| {
+            scalar_val = r;
+        } else {
+            const sk = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(scalar_val));
+            if (sk == llvm.LLVMIntegerTypeKind and llvm.LLVMGetIntTypeWidth(llvm.LLVMTypeOf(scalar_val)) != 1) {
+                scalar_val = llvm.LLVMBuildTrunc(builder, scalar_val, i1_t, "nbool_tr");
+            }
+        }
+    }
 
     const parent_func = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
     const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "nullable_cmp_then");
@@ -5057,6 +5148,38 @@ pub fn coerceArg(
         return llvm.LLVMBuildPtrToInt(builder, arg_val, param_type, "unbox_arg");
     }
     return arg_val;
+}
+
+/// Widens the narrower of two integer operands to the wider width (i1
+/// zero-extends, wider signed ints sign-extend). No-op on other type mixes.
+pub fn coerceIntWidths(
+    builder: llvm.LLVMBuilderRef,
+    l_val: llvm.LLVMValueRef,
+    r_val: llvm.LLVMValueRef,
+) struct { l: llvm.LLVMValueRef, r: llvm.LLVMValueRef } {
+    const l_type = llvm.LLVMTypeOf(l_val);
+    const r_type = llvm.LLVMTypeOf(r_val);
+    if (llvm.LLVMGetTypeKind(l_type) != llvm.LLVMIntegerTypeKind or
+        llvm.LLVMGetTypeKind(r_type) != llvm.LLVMIntegerTypeKind)
+    {
+        return .{ .l = l_val, .r = r_val };
+    }
+    const lw = llvm.LLVMGetIntTypeWidth(l_type);
+    const rw = llvm.LLVMGetIntTypeWidth(r_type);
+    if (lw == rw) return .{ .l = l_val, .r = r_val };
+    if (lw < rw) {
+        const ext = if (lw == 1)
+            llvm.LLVMBuildZExt(builder, l_val, r_type, "widen_z")
+        else
+            llvm.LLVMBuildSExt(builder, l_val, r_type, "widen_s");
+        return .{ .l = ext, .r = r_val };
+    } else {
+        const ext = if (rw == 1)
+            llvm.LLVMBuildZExt(builder, r_val, l_type, "widen_z")
+        else
+            llvm.LLVMBuildSExt(builder, r_val, l_type, "widen_s");
+        return .{ .l = l_val, .r = ext };
+    }
 }
 
 /// Returns a value safe to `store` into `dest_type`. A void-typed value (the

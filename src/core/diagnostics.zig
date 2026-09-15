@@ -183,3 +183,20 @@ fn printSpaces(count: usize) void {
         std.debug.print(" ", .{});
     }
 }
+
+/// Extracts 1-indexed `line_no` from `source` (without the newline), or null
+/// when out of range. Shared line-lookup for diagnostic snippets.
+pub fn sourceLine(source: []const u8, line_no: usize) ?[]const u8 {
+    if (line_no == 0) return null;
+    var n: usize = 1;
+    var start: usize = 0;
+    for (source, 0..) |c, i| {
+        if (c == '\n') {
+            if (n == line_no) return source[start..i];
+            n += 1;
+            start = i + 1;
+        }
+    }
+    if (n == line_no and start < source.len) return source[start..];
+    return null;
+}

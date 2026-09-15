@@ -504,8 +504,16 @@ fn propagateParamTypes(self: *TypeChecker, arguments: []const *ASTNode, params: 
     }
 }
 
-pub fn prePropagateExpectedTypes(self: *TypeChecker, node: *ASTNode, scope: *Scope) void {
-    var c = &node.data.call_expr;
+/// Best-effort inference for speculative probes (receiver/argument warm-up,
+/// overload viability). Prints nothing: the authoritative pass re-infers and
+/// reports. Errors still propagate as codes for `catch` to observe.
+fn probeInfer(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!void {
+    self.speculative_depth += 1;
+    defer self.speculative_depth -= 1;
+    _ = try self.inferNode(node, scope);
+}
+
+pub fn prePropagateExpectedTypes(self: *TypeChecker, node: *ASTNode, scope: *Scope) void {    var c = &node.data.call_expr;
     if (c.callee.data == .identifier) {
         const name = c.callee.data.identifier.name;
         const class_name = self.alias_map.get(name) orelse name;
@@ -562,7 +570,7 @@ pub fn prePropagateExpectedTypes(self: *TypeChecker, node: *ASTNode, scope: *Sco
                 }
             }
             if (!is_skill_receiver) {
-                _ = self.inferNode(g.object, scope) catch null;
+                _ = probeInfer(self, g.object, scope) catch null;
             }
         }
         if (g.object.resolved_type) |obj_t| {
@@ -623,7 +631,7 @@ pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anyt
             if (match_idx) |pi| {
                 provided.items[pi] = true;
                 if (val_node.resolved_type == null) {
-                    _ = self.inferNode(val_node, scope) catch return false;
+                    _ = probeInfer(self, val_node, scope) catch return false;
                 }
                 if (val_node.resolved_type) |vt| {
                     if (!self.isCompatible(f.params[pi], vt)) return false;
@@ -651,7 +659,7 @@ pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anyt
                 // Varargs overflow: the extra arg is collected into the last param's List<T>.
                 if (!has_varargs) return false;
                 if (arg.resolved_type == null) {
-                    _ = self.inferNode(arg, scope) catch return false;
+                    _ = probeInfer(self, arg, scope) catch return false;
                 }
                 if (arg.resolved_type) |at| {
                     const elem_t = varargsElemType(self, fun_decl) orelse return false;
@@ -661,7 +669,7 @@ pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anyt
             }
             provided.items[pos_i] = true;
             if (arg.resolved_type == null) {
-                _ = self.inferNode(arg, scope) catch return false;
+                _ = probeInfer(self, arg, scope) catch return false;
             }
             if (arg.resolved_type) |at| {
                 // A positional arg for the variadic parameter is checked against its
@@ -1462,7 +1470,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                                 if (std.mem.eql(u8, ret_ref.name, g_param)) {
                                                     const actual_arg = if (arg_node.data == .named_arg) arg_node.data.named_arg.value else arg_node;
                                                     if (actual_arg.resolved_type == null and actual_arg.data == .lambda_expr) {
-                                                        _ = self.inferNode(actual_arg, scope) catch null;
+                                                        _ = probeInfer(self, actual_arg, scope) catch null;
                                                     }
                                                     if (actual_arg.resolved_type) |arg_t| {
                                                         const base_arg = extractBaseType(arg_t);

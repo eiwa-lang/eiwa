@@ -1775,6 +1775,28 @@ fn makeMemberCall(self: *TypeChecker, line: usize, col: usize, obj_name: []const
     return node;
 }
 
+/// Skips properties the emitter cannot dispatch a method on (multi-variant
+/// unions, nullable Void/Function/Array/unions) in synthesized default
+/// toString/hashCode bodies. Nullable scalars, strings, pointers and custom
+/// types are NOT skipped.
+fn propSkippedInGeneratedBody(prop: anytype) bool {
+    if (prop.type_ref.is_array or prop.type_ref.is_function) return true;
+    const resolved: ?*const EiwaType = prop.type_ref.resolved_type orelse prop.resolved_type;
+    if (resolved) |rrt| {
+        if (rrt.* == .Function or rrt.* == .Array) return true;
+        if (rrt.* == .Union) {
+            if (core.isNullable(rrt)) {
+                switch (core.extractBaseType(rrt).*) {
+                    .Void, .Null, .Function, .Array, .Union => return true,
+                    else => {},
+                }
+            } else return true;
+        }
+    }
+    if (std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun") or std.mem.eql(u8, prop.type_ref.name, "NativeArray")) return true;
+    return false;
+}
+
 fn makeMemberCallOrNullFallback(self: *TypeChecker, line: usize, col: usize, obj_name: []const u8, prop: anytype, method_name: []const u8, null_fallback: *ASTNode) !*ASTNode {
     const prop_rt = prop.resolved_type orelse try self.resolveTypeRef(prop.type_ref);
     const is_ptr_type = prop.type_ref.is_nullable or core.isNullable(prop_rt);
@@ -1848,7 +1870,7 @@ fn generateDefaultToString(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
         var is_first = true;
         for (c.primary_constructor) |prop| {
             if (!prop.is_property) continue;
-            if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and (prop.type_ref.resolved_type.?.* == .Function or prop.type_ref.resolved_type.?.* == .Array)) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun") or std.mem.eql(u8, prop.type_ref.name, "NativeArray")) continue;
+            if (propSkippedInGeneratedBody(prop)) continue;
 
             const label_str = try std.fmt.allocPrint(self.allocator, "{s}{s}=", .{ if (is_first) "" else ", ", prop.name });
             is_first = false;
@@ -1925,7 +1947,7 @@ fn generateDefaultHashCode(self: *TypeChecker, node: *ASTNode, c: anytype) anyer
         var curr_expr: ?*ASTNode = null;
         for (c.primary_constructor) |prop| {
             if (!prop.is_property) continue;
-            if (prop.type_ref.is_array or prop.type_ref.is_function or (prop.type_ref.resolved_type != null and (prop.type_ref.resolved_type.?.* == .Function or prop.type_ref.resolved_type.?.* == .Array)) or std.mem.indexOf(u8, prop.type_ref.name, "->") != null or std.mem.startsWith(u8, prop.type_ref.name, "fun") or std.mem.eql(u8, prop.type_ref.name, "NativeArray")) continue;
+            if (propSkippedInGeneratedBody(prop)) continue;
 
             const zero_int = try makeIntLiteral(self, node.line, node.column, 0);
             const hc_call = try makeMemberCallOrNullFallback(self, node.line, node.column, "this", prop, "hashCode", zero_int);

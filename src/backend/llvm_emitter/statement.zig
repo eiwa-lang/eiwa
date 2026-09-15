@@ -412,6 +412,7 @@ pub fn emitStatement(
                     }
                     return;
                 }
+                expression.last_failed_lookup = .{ .name = assign.name, .line = node.line, .column = node.column };
                 return error.PropertyNotFound;
             }
 

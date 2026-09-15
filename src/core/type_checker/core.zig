@@ -336,6 +336,7 @@ fn core_makeListType(self: *TypeChecker, elem: *const EiwaType, line: usize, col
 }
 
 fn core_reportError(self: *TypeChecker, line: usize, column: usize, comptime message: []const u8, args: anytype) void {
+    if (self.speculative_depth > 0) return;
     const cleaned_message = comptime blk: {
         if (std.mem.startsWith(u8, message, "TypeError: ")) {
             break :blk message["TypeError: ".len..];

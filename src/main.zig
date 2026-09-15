@@ -278,7 +278,7 @@ pub fn main(init: std.process.Init) !void {
     // dumps `error: <name>` + a native stack trace). Eiwa diagnostics are
     // reported inline before the error propagates; here we just exit cleanly.
     run(init) catch |err| {
-        if (err != error.ParseError and err != error.TypeError and err != error.LLVMVerificationFailed) {
+        if (err != error.ParseError and err != error.TypeError and err != error.LLVMVerificationFailed and err != error.LLVMCodegenFailed) {
             std.debug.print("Error: compilation failed ({s}).\n", .{@errorName(err)});
         }
         std.process.exit(1);
