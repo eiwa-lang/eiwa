@@ -130,6 +130,7 @@ fn collectDeclaredLocalsLLVM(node: *ast.ASTNode, locals: *std.StringHashMap(void
         },
         .while_stmt => |w| try collectDeclaredLocalsLLVM(w.body, locals),
         .for_stmt => |f| {
+            if (f.index_name) |idx| try locals.put(idx, {});
             try locals.put(f.item_name, {});
             try collectDeclaredLocalsLLVM(f.body, locals);
         },
@@ -280,6 +281,12 @@ fn collectCapturesLLVM(
         },
         .string_template => |st| {
             for (st.parts) |p| try collectCapturesLLVM(p, locals, captures, mod, structs, ctx);
+        },
+        .array_literal => |arr| {
+            for (arr.elements) |e| try collectCapturesLLVM(e, locals, captures, mod, structs, ctx);
+        },
+        .map_literal => |m| {
+            for (m.elements) |e| try collectCapturesLLVM(e, locals, captures, mod, structs, ctx);
         },
         // Nested lambda: build inner_locals (outer locals + inner params + inner decls)
         // so the inner lambda's own variables are not treated as captures.

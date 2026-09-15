@@ -32,3 +32,23 @@ test "closure: write-only captured var should be visible after closure runs" {
     compute()
     assert(result == 42)
 }
+
+type CaptureGroup(val id: String)
+
+test "closure: should capture outer field access inside map literal" {
+    val group = CaptureGroup(id = "abc123")
+    val get = {
+        val attrs = ["hx-get" of "/ui/carousel/${group.id}", "hx-target" of "body"]
+        attrs["hx-get"] ?: ""
+    }
+    assert(get() == "/ui/carousel/abc123")
+}
+
+test "closure: should capture outer field access inside array literal" {
+    val group = CaptureGroup(id = "g99")
+    val get = {
+        val arr = ["/ui/carousel/${group.id}"]
+        arr[0] ?: ""
+    }
+    assert(get() == "/ui/carousel/g99")
+}
