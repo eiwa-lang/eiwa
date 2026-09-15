@@ -5,6 +5,7 @@ import { Json } from "std.json"
 import { Serializable, SerdeField, SerdeList, SerdeObjectList, SerdeValue, SerdeString, SerdeObject } from "std.serde"
 
 skill Slicing : Indexed<T> {
+
     implement fun slice(start: Int, end: Int): List<T> {
         var startPos = start
         if (startPos < 0) {
@@ -32,22 +33,7 @@ skill Slicing : Indexed<T> {
     implement fun takeLast(n: Int): List<T> = this.slice(this.size() - n, this.size())
 }
 
-type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Serializable + Slicing + Json {
-    fun add(element: T): Void {
-        this.list.items.push(element)
-    }
-
-    fun add(elements: List<T>): Void {
-        var i = 0
-        while (i < elements.size()) {
-            this.list.items.push(elements.get(i))
-            i = i + 1
-        }
-    }
-
-    fun addAll(elements: List<T>): Void {
-        this.add(elements)
-    }
+skill Appending : Indexed<T> {
 
     operator fun plus(element: T): List<T> {
         val result = MutableList<T>()
@@ -73,6 +59,57 @@ type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Serializab
             j = j + 1
         }
         return result.freeze()
+    }
+}
+
+skill Searching : Indexed<T> {
+
+    implement fun isEmpty(): Bool = this.size() == 0
+
+    implement fun isNotEmpty(): Bool = this.size() > 0
+
+    implement fun contains(element: T): Bool {
+        var i = 0
+        while (i < this.size()) {
+            if (this.get(i) == element) {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    implement fun indexOf(element: T): Int {
+        var i = 0
+        while (i < this.size()) {
+            if (this.get(i) == element) {
+                return i
+            }
+            i = i + 1
+        }
+        return -1
+    }
+
+    implement fun first(): T = this.get(0)
+
+    implement fun last(): T = this.get(this.size() - 1)
+}
+
+type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching {
+    fun add(element: T): Void {
+        this.list.items.push(element)
+    }
+
+    fun add(elements: List<T>): Void {
+        var i = 0
+        while (i < elements.size()) {
+            this.list.items.push(elements.get(i))
+            i = i + 1
+        }
+    }
+
+    fun addAll(elements: List<T>): Void {
+        this.add(elements)
     }
 
     implement operator fun get(index: Int): T {
@@ -96,16 +133,8 @@ type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Serializab
         return this.list.items.length
     }
 
-    fun isEmpty(): Bool = this.size() == 0
-
-    fun isNotEmpty(): Bool = this.size() > 0
-
     fun freeze(): List<T> {
         return this.list
-    }
-
-    fun contains(element: T): Bool {
-        return this.list.contains(element)
     }
 
     implement fun toString(): String = this.list.toString()
@@ -113,45 +142,15 @@ type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Serializab
     implement fun serialize(): SerdeValue = this.list.serialize()
 }
 
-type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>, Serializable + Slicing + Json {
+type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching {
 
     implement operator fun get(index: Int): T {
         return this.items[index]
     }
 
-    operator fun plus(element: T): List<T> {
-        val result = MutableList<T>()
-        var i = 0
-        while (i < this.size()) {
-            result.add(this.get(i))
-            i = i + 1
-        }
-        result.add(element)
-        return result.freeze()
-    }
-
-    operator fun plus(other: List<T>): List<T> {
-        val result = MutableList<T>()
-        var i = 0
-        while (i < this.size()) {
-            result.add(this.get(i))
-            i = i + 1
-        }
-        var j = 0
-        while (j < other.size()) {
-            result.add(other.get(j))
-            j = j + 1
-        }
-        return result.freeze()
-    }
-
     implement fun size(): Int {
         return this.items.length
     }
-
-    fun isEmpty(): Bool = this.size() == 0
-
-    fun isNotEmpty(): Bool = this.size() > 0
 
     implement operator fun equals(other: Equatable): Bool {
         if (other is List<T>) {
@@ -171,20 +170,7 @@ type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>
         return false
     }
 
-    fun contains(element: T): Bool {
-        var i = 0
-        while (i < this.items.length) {
-            if (this.items[i] == element) {
-                return true
-            }
-            i = i + 1
-        }
-        return false
-    }
-
-    fun mut(): MutableList<T> {
-        return MutableList(this)
-    }
+    fun mut(): MutableList<T> = MutableList(this)
 
     implement fun toString(): String {
         var result = "["
@@ -291,6 +277,7 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json
 }
 
 type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
+
     operator fun get(key: K): V? {
         val capacity = this.entries.size()
         if (capacity == 0) {
@@ -360,6 +347,7 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
 // A view holds the same `entries` list (no copy, live view): `for` over a
 // view walks the buckets directly, and `size()` counts by walking.
 type MapKeys<K, V>(val entries: List<Node<K, V>?> = []) {
+
     fun size(): Int {
         var count = 0
         var i = 0
@@ -380,6 +368,7 @@ type MapKeys<K, V>(val entries: List<Node<K, V>?> = []) {
 }
 
 type MapValues<K, V>(val entries: List<Node<K, V>?> = []) {
+
     fun size(): Int {
         var count = 0
         var i = 0

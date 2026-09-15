@@ -303,3 +303,42 @@ test "MutableList skip/take/slice do not mutate" {
     assert(m.get(0) == 1)
 }
 
+test "List plus creates new lists" {
+    val l = [1, 2, 3]
+    assert((l + 4).toString() == "[1, 2, 3, 4]")
+    assert((l + [4, 5]).toString() == "[1, 2, 3, 4, 5]")
+    assert(l.size() == 3)
+}
+
+test "MutableList plus creates new lists without mutating" {
+    val m = MutableList([1, 2, 3])
+    assert((m + 4).toString() == "[1, 2, 3, 4]")
+    assert((m + [4, 5]).toString() == "[1, 2, 3, 4, 5]")
+    assert(m.size() == 3)
+    assert(m.get(0) == 1)
+}
+
+test "List and MutableList searching" {
+    val l = [10, 20, 30]
+    assert(l.contains(20) == true)
+    assert(l.contains(99) == false)
+    assert(l.indexOf(30) == 2)
+    assert(l.indexOf(99) == -1)
+    assert(l.first() == 10)
+    assert(l.last() == 30)
+    assert(l.isEmpty() == false)
+    assert(l.isNotEmpty() == true)
+    assert(List<Int>().isEmpty() == true)
+
+    val m = MutableList([10, 20, 30])
+    assert(m.contains(20) == true)
+    assert(m.contains(99) == false)
+    assert(m.indexOf(10) == 0)
+    assert(m.indexOf(99) == -1)
+    assert(m.first() == 10)
+    assert(m.last() == 30)
+    assert(m.isEmpty() == false)
+    assert(m.isNotEmpty() == true)
+    assert(m.size() == 3)
+}
+

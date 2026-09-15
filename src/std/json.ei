@@ -11,7 +11,9 @@ enum JsonKind {
 }
 
 type JsonSerdeList(val arr: List<JsonValue>) : SerdeList {
+
     implement fun size(): Int = this.arr.size()
+
     implement fun getAt(index: Int): SerdeValue {
         val elem = this.arr.get(index)
         return elem.toSerde()

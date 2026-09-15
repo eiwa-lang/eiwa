@@ -98,6 +98,15 @@ contract Indexed<T> {
     fun get(index: Int): T
 }
 
+contract Searchable<T> {
+    fun isEmpty(): Bool
+    fun isNotEmpty(): Bool
+    fun contains(element: T): Bool
+    fun indexOf(element: T): Int
+    fun first(): T
+    fun last(): T
+}
+
 skill Scope<T> {
 
     fun let<R>(block: (T) -> R): R {
