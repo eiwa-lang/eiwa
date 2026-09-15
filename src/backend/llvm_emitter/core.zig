@@ -2134,7 +2134,7 @@ pub const LLVMEmitter = struct {
         }
     }
 
-    fn tryGetConstLLVMValue(node: *ast.ASTNode, llvm_type: llvm.LLVMTypeRef) ?llvm.LLVMValueRef {
+    fn tryGetConstLLVMValue(node: *ast.ASTNode, llvm_type: llvm.LLVMTypeRef) llvm.LLVMValueRef {
         return switch (node.data) {
             .int_literal => |val| llvm.LLVMConstInt(llvm_type, @bitCast(val), 1),
             .bool_literal => |val| llvm.LLVMConstInt(llvm_type, if (val) 1 else 0, 0),
@@ -2186,7 +2186,7 @@ pub const LLVMEmitter = struct {
             }
         }
 
-        var roots_table: ?llvm.LLVMValueRef = null;
+        var roots_table: llvm.LLVMValueRef = null;
         if (total_vars > 0) {
             const table_size = llvm.LLVMConstInt(i64_type, @intCast(total_vars * 16), 0);
             var alloc_args = [_]llvm.LLVMValueRef{table_size};

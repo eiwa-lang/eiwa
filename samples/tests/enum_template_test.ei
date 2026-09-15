@@ -1,0 +1,38 @@
+import { assert } from "std.exceptions"
+import { HttpStatus, httpStatusFromCode } from "std.http"
+
+enum TemplateDir {
+    NORTH,
+    EAST
+}
+
+test "enum.template: enum value interpolates as variant name" {
+    val d = TemplateDir.NORTH
+    assert("d: $d" == "d: NORTH")
+    assert("${TemplateDir.EAST}" == "EAST")
+}
+
+test "enum.template: enum toString matches template" {
+    val d = TemplateDir.NORTH
+    assert("$d" == d.toString())
+    assert("$d" == d.name)
+}
+
+test "enum.template: nullable enum null interpolates as null" {
+    val missing = TemplateDir.byName("SOUTH")
+    assert(missing == null)
+    assert("v: $missing" == "v: null")
+}
+
+test "enum.template: nullable enum with value interpolates name" {
+    val found = TemplateDir.byName("EAST")
+    assert("v: $found" == "v: EAST")
+}
+
+test "enum.template: HttpStatus interpolates and unknown code is null" {
+    assert("${HttpStatus.NOT_FOUND}" == "NOT_FOUND")
+    val s = httpStatusFromCode(404)
+    assert("status: $s" == "status: NOT_FOUND")
+    val unknown = httpStatusFromCode(999)
+    assert("status: $unknown" == "status: null")
+}

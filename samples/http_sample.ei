@@ -1,4 +1,4 @@
-import { Client, Server } from "std.http"
+import { Client, HttpStatus, Server } from "std.http"
 import { TCPServer } from "std.net"
 
 fun main() {
@@ -25,7 +25,7 @@ fun main() {
                 val req = conn!!.readRequest()
                 print("Received request: ${req.method} ${req.path}")
                 
-                conn!!.writeResponse(200, "text/plain", "Hello from Eiwa HTTP Server!")
+                conn!!.writeResponse(HttpStatus.OK, "text/plain", "Hello from Eiwa HTTP Server!")
                 conn!!.close()
                 
                 // Finaliza o demo após a primeira requisição para evitar loops infinitos nos testes/samples

@@ -1,0 +1,35 @@
+import { assert } from "std.exceptions"
+import { HttpStatus, Response, httpStatusCode, httpStatusFromCode, httpStatusReason } from "std.http"
+
+test "http.status: HttpStatus maps to numeric codes" {
+    assert(httpStatusCode(HttpStatus.OK) == 200)
+    assert(httpStatusCode(HttpStatus.CREATED) == 201)
+    assert(httpStatusCode(HttpStatus.NO_CONTENT) == 204)
+    assert(httpStatusCode(HttpStatus.MOVED_PERMANENTLY) == 301)
+    assert(httpStatusCode(HttpStatus.NOT_FOUND) == 404)
+    assert(httpStatusCode(HttpStatus.INTERNAL_SERVER_ERROR) == 500)
+}
+
+test "http.status: HttpStatus maps to reason phrases" {
+    assert(httpStatusReason(HttpStatus.OK) == "OK")
+    assert(httpStatusReason(HttpStatus.NOT_FOUND) == "Not Found")
+    assert(httpStatusReason(HttpStatus.INTERNAL_SERVER_ERROR) == "Internal Server Error")
+}
+
+test "http.status: fromCode round-trips known codes" {
+    assert(httpStatusFromCode(200) == HttpStatus.OK)
+    assert(httpStatusFromCode(404) == HttpStatus.NOT_FOUND)
+    assert(httpStatusFromCode(500) == HttpStatus.INTERNAL_SERVER_ERROR)
+}
+
+test "http.status: fromCode returns null for unknown codes" {
+    assert(httpStatusFromCode(999) == null)
+    assert(httpStatusFromCode(0) == null)
+}
+
+test "http.status: Response.kind reflects known and unknown codes" {
+    val ok = Response(200, "hi")
+    assert(ok.kind() == HttpStatus.OK)
+    val weird = Response(999, "hi")
+    assert(weird.kind() == null)
+}

@@ -117,6 +117,21 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     resolved_type = curr_res;
                 } else if (self.isCompatible(bt, curr_res)) {
                     resolved_type = bt;
+                } else if (curr_res.* == .Null or bt.* == .Null) {
+                    const non_null = if (curr_res.* == .Null) bt else curr_res;
+                    if (non_null.* == .Null) {
+                        resolved_type = curr_res;
+                    } else if (core.isNullable(non_null)) {
+                        resolved_type = non_null;
+                    } else {
+                        const left_t = try self.allocator.create(EiwaType);
+                        left_t.* = non_null.*;
+                        const right_t = try self.allocator.create(EiwaType);
+                        right_t.* = .Null;
+                        const union_t = try self.allocator.create(EiwaType);
+                        union_t.* = .{ .Union = .{ .left = left_t, .right = right_t } };
+                        resolved_type = union_t;
+                    }
                 } else {
                     self.reportError(case.body.line, case.body.column, "TypeError: when branches have incompatible types: {} and {}.", .{ curr_res.*, bt.* });
                     return error.TypeError;

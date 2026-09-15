@@ -67,7 +67,7 @@ fn emitContractVirtualCall(
     c_decl: anytype,
     method_name: []const u8,
     ret_type: llvm.LLVMTypeRef,
-) !?llvm.LLVMValueRef {
+) !llvm.LLVMValueRef {
     var m_idx: ?usize = null;
     var fun_idx: usize = 0;
     for (c_decl.methods) |cm| {
@@ -648,7 +648,7 @@ fn emitExpressionRaw(
                 // global and emits a load with a null operand (invalid IR).
                 const obj_is_class_prop = get.object.data.identifier.is_class_property;
                 if (!obj_is_class_prop and scope.get(id_name) == null and scope.get(obj_c_name) == null) {
-                    var g: ?llvm.LLVMValueRef = null;
+                    var g: llvm.LLVMValueRef = null;
                     const global_name = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}\x00", .{ obj_c_name, get.name });
                     defer std.heap.page_allocator.free(global_name);
                     g = llvm.LLVMGetNamedGlobal(mod, global_name.ptr);
@@ -1390,7 +1390,7 @@ fn emitExpressionRaw(
                     };
                     if (m_name) |mn| {
                         var func_it = llvm.LLVMGetFirstFunction(mod);
-                        var target_op_fn: ?llvm.LLVMValueRef = null;
+                        var target_op_fn: llvm.LLVMValueRef = null;
                         const op_suffix = try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{mn});
                         defer std.heap.page_allocator.free(op_suffix);
                         while (func_it != null) : (func_it = llvm.LLVMGetNextFunction(func_it.?)) {
@@ -1675,7 +1675,7 @@ fn emitExpressionRaw(
             // Handle implicit `it` param. `it` exists only when the expected
             // Function type has exactly one parameter; a `() -> Void` lambda has
             // no user params at all (no fat-pointer fallback).
-            var it_param_type: ?llvm.LLVMTypeRef = null;
+            var it_param_type: llvm.LLVMTypeRef = null;
             if (recv_type == null and lam.params.len == 0) {
                 if (node.resolved_type) |rt| {
                     if (rt.* == .Function and rt.Function.params.len == 1) {
@@ -1684,7 +1684,7 @@ fn emitExpressionRaw(
                 }
             }
             // Receiver lambda: leading param carries the receiver object pointer
-            const recv_param_type: ?llvm.LLVMTypeRef = if (recv_type) |rt|
+            const recv_param_type: llvm.LLVMTypeRef = if (recv_type) |rt|
                 types_mapping.getLLVMTypeWithContracts(ctx, rt.*, global_contracts_ast_ptr)
             else
                 null;
@@ -2978,7 +2978,7 @@ fn emitExpressionRaw(
                             const method_z = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}\x00", .{ type_name, g.name });
                             defer std.heap.page_allocator.free(method_z);
 
-                            var target_func: ?llvm.LLVMValueRef = null;
+                            var target_func: llvm.LLVMValueRef = null;
                             if (call.callee.resolved_type) |crt| {
                                 if (crt.* == .Function and crt.Function.c_name.len > 0) {
                                     const c_name_z = try std.heap.page_allocator.dupeZ(u8, crt.Function.c_name);
@@ -3277,7 +3277,7 @@ fn emitExpressionRaw(
                     ret_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.Function.return_type.*, global_contracts_ast_ptr);
                     // Receiver lambdas (`T.() -> R`) bind the receiver as the
                     // leading argument, supplied by the caller as args[0].
-                    const recv_param: ?llvm.LLVMTypeRef = if (rt.Function.receiver) |rec|
+                    const recv_param: llvm.LLVMTypeRef = if (rt.Function.receiver) |rec|
                         types_mapping.getLLVMTypeWithContracts(ctx, rec.*, global_contracts_ast_ptr)
                     else
                         null;
@@ -3549,7 +3549,7 @@ fn emitExpressionRaw(
             const cur_bb = llvm.LLVMGetInsertBlock(builder);
             const func_val = llvm.LLVMGetBasicBlockParent(cur_bb);
 
-            var subj_ptr: ?llvm.LLVMValueRef = null;
+            var subj_ptr: llvm.LLVMValueRef = null;
             if (w.subject) |subj| {
                 var subj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, subj);
                 if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(subj_val)) == llvm.LLVMStructTypeKind) {
@@ -3563,7 +3563,7 @@ fn emitExpressionRaw(
                 _ = llvm.LLVMBuildStore(builder, subj_val, subj_ptr.?);
             }
 
-            const res_ptr: ?llvm.LLVMValueRef = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "when_res") else null;
+            const res_ptr: llvm.LLVMValueRef = if (!is_void) llvm.LLVMBuildAlloca(builder, ret_type, "when_res") else null;
 
             const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "when.merge");
 
@@ -3634,7 +3634,7 @@ fn emitExpressionRaw(
                             // the vtable slot plays that role here). Extract the data
                             // pointer + vtable so we never PtrToInt() the struct.
                             var subj_data = subj_load;
-                            var subj_vtable: ?llvm.LLVMValueRef = null;
+                            var subj_vtable: llvm.LLVMValueRef = null;
                             if (subj_is_fat) {
                                 subj_data = llvm.LLVMBuildExtractValue(builder, subj_load, 0, "when_subj_data");
                                 subj_vtable = llvm.LLVMBuildExtractValue(builder, subj_load, 1, "when_subj_vtable");
@@ -3708,7 +3708,7 @@ fn emitExpressionRaw(
                                     const svt_ptr = llvm.LLVMBuildBitCast(builder, svt, ptr_type, "when_vt_subj");
                                     var vt_match_or = llvm.LLVMConstInt(i1_type, 0, 0);
 
-                                    var target_vt_opt: ?llvm.LLVMValueRef = null;
+                                    var target_vt_opt: llvm.LLVMValueRef = null;
                                     if (subj_contract.len > 0) {
                                         target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, subj_contract);
                                     }
@@ -3975,7 +3975,7 @@ fn emitExpressionRaw(
                         else => "",
                     } else "";
 
-                    var target_vt_opt: ?llvm.LLVMValueRef = null;
+                    var target_vt_opt: llvm.LLVMValueRef = null;
                     if (val_contract_name.len > 0) {
                         target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, val_contract_name);
                     }
@@ -4411,6 +4411,73 @@ pub fn emitStringLiteral(
     return inst_ptr;
 }
 
+fn enumNameForTemplate(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    structs: *std.StringHashMap(core.StructInfo),
+    val: llvm.LLVMValueRef,
+    resolved_type: ?*const ts.EiwaType,
+) anyerror!llvm.LLVMValueRef {
+    const rt = resolved_type orelse return null;
+    const base_rt = ts.extractBaseType(rt);
+    const type_name: []const u8 = switch (base_rt.*) {
+        .Custom => |n| n,
+        .GenericInstance => |gi| gi.base_name,
+        else => return null,
+    };
+    var s_info_opt = structs.get(type_name);
+    if (s_info_opt == null and type_name.len > 0) {
+        const suffix = try std.fmt.allocPrint(std.heap.page_allocator, "_{s}", .{type_name});
+        defer std.heap.page_allocator.free(suffix);
+        var it = structs.iterator();
+        while (it.next()) |entry| {
+            const k = entry.key_ptr.*;
+            if (std.mem.endsWith(u8, k, suffix) or std.mem.eql(u8, k, type_name)) {
+                s_info_opt = entry.value_ptr.*;
+                break;
+            }
+        }
+    }
+    const s_info = s_info_opt orelse return null;
+    if (s_info.field_names.len != 3 or !std.mem.eql(u8, s_info.field_names[1], "ordinal") or !std.mem.eql(u8, s_info.field_names[2], "name")) return null;
+
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const real_obj = if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) == llvm.LLVMStructTypeKind)
+        llvm.LLVMBuildExtractValue(builder, val, 0, "enum_obj_ptr")
+    else
+        val;
+    if (!ts.isNullable(rt)) {
+        const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, real_obj, 2, "enum_name_ptr");
+        return llvm.LLVMBuildLoad2(builder, s_info.field_types[2], field_ptr, "enum_name_val");
+    }
+
+    const null_str = try emitStringLiteral(ctx, mod, builder, "null");
+    const parent_func = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "enum_str_then");
+    const else_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "enum_str_else");
+    const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, parent_func, "enum_str_merge");
+    const is_null = llvm.LLVMBuildIsNull(builder, real_obj, "enum_is_null");
+    _ = llvm.LLVMBuildCondBr(builder, is_null, else_bb, then_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+    const then_field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, real_obj, 2, "enum_name_ptr");
+    const val_then = llvm.LLVMBuildLoad2(builder, s_info.field_types[2], then_field_ptr, "enum_name_val");
+    const then_end_bb = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+    const else_end_bb = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+    const phi = llvm.LLVMBuildPhi(builder, ptr_t, "enum_str_val");
+    var incoming_vals = [_]llvm.LLVMValueRef{ val_then, null_str };
+    var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };
+    llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+    return phi;
+}
+
 pub fn emitStringTemplate(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -4458,7 +4525,11 @@ pub fn emitStringTemplate(
 
         var part_val = try emitExpression(ctx, mod, builder, scope, structs, libs, part);
         if (!isStringOperand(part)) {
-            part_val = try emitValueToString(ctx, mod, builder, part_val, part.resolved_type);
+            if (try enumNameForTemplate(ctx, mod, builder, structs, part_val, part.resolved_type)) |enum_str| {
+                part_val = enum_str;
+            } else {
+                part_val = try emitValueToString(ctx, mod, builder, part_val, part.resolved_type);
+            }
         } else {
             part_val = coerceArg(builder, part_val, ptr_t);
         }
@@ -4715,7 +4786,7 @@ fn isScalarLikeType(t: ts.EiwaType) bool {
 /// nullable cells load null-safely (null yields zero), non-nullable scalars
 /// recover via PtrToInt. Returns null when `val` is not ptr-kind or the
 /// static type is unsupported.
-fn scalarOperandToRaw(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, source_rt: ?*const ts.EiwaType, variant: ts.EiwaType) ?llvm.LLVMValueRef {
+fn scalarOperandToRaw(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, source_rt: ?*const ts.EiwaType, variant: ts.EiwaType) llvm.LLVMValueRef {
     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) != llvm.LLVMPointerTypeKind) return null;
     const srt = source_rt orelse return null;
     if (nullableScalarVariant(srt)) |v| {
@@ -4904,7 +4975,7 @@ fn emitNullableScalarCompare(
     left_rt: ?*const ts.EiwaType,
     right_rt: ?*const ts.EiwaType,
     is_eq: bool,
-) !?llvm.LLVMValueRef {
+) !llvm.LLVMValueRef {
     var is_union_left = false;
     const union_rt: ?*const ts.EiwaType = if (left_rt != null and left_rt.?.* == .Union) blk: {
         is_union_left = true;
@@ -5059,7 +5130,8 @@ pub fn emitValueToString(
                 }
 
                 var buf_name: [128]u8 = undefined;
-                var to_str_fn: ?llvm.LLVMValueRef = null;
+                // `?llvm.LLVMValueRef` nests to `??*T` and segfaults on null lookups.
+                var to_str_fn: llvm.LLVMValueRef = null;
                 const to_str_mangled = std.fmt.bufPrint(&buf_name, "{s}_toString\x00", .{name}) catch "";
                 if (to_str_mangled.len > 0) {
                     to_str_fn = llvm.LLVMGetNamedFunction(mod, to_str_mangled.ptr);
@@ -5181,7 +5253,7 @@ fn mutableListView(
     arg_val: llvm.LLVMValueRef,
     arg_name: []const u8,
     param_name: []const u8,
-) ?llvm.LLVMValueRef {
+) llvm.LLVMValueRef {
     if (std.mem.indexOf(u8, arg_name, "MutableList") == null) return null;
     if (std.mem.indexOf(u8, param_name, "MutableList") != null) return null;
     if (std.mem.indexOf(u8, param_name, "List") == null) return null;
@@ -5273,7 +5345,7 @@ pub fn coerceIntWidths(
 /// where T=Void) can only ever hold null, so a null constant of the
 /// destination type is stored instead. Returns null when the store must be
 /// skipped entirely (destination type is also void).
-pub fn storeValue(val: llvm.LLVMValueRef, dest_type: llvm.LLVMTypeRef) ?llvm.LLVMValueRef {
+pub fn storeValue(val: llvm.LLVMValueRef, dest_type: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) != llvm.LLVMVoidTypeKind) return val;
     if (llvm.LLVMGetTypeKind(dest_type) == llvm.LLVMVoidTypeKind) return null;
     return llvm.LLVMConstNull(dest_type);
@@ -5298,14 +5370,14 @@ fn isRealVtable(g: llvm.LLVMValueRef) bool {
     return true;
 }
 
-fn lookupNamedVtable(mod: llvm.LLVMModuleRef, name_z: [:0]const u8) ?llvm.LLVMValueRef {
+fn lookupNamedVtable(mod: llvm.LLVMModuleRef, name_z: [:0]const u8) llvm.LLVMValueRef {
     if (llvm.LLVMGetNamedGlobal(mod, name_z.ptr)) |g| {
         if (isRealVtable(g)) return g;
     }
     return null;
 }
 
-pub fn findVtableGlobal(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, concrete_c_name: []const u8, contract_c_name: []const u8) anyerror!?llvm.LLVMValueRef {
+pub fn findVtableGlobal(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, concrete_c_name: []const u8, contract_c_name: []const u8) anyerror!llvm.LLVMValueRef {
     _ = ctx;
     var buf: [256]u8 = undefined;
 
@@ -6013,13 +6085,12 @@ fn storeBlockOrExprResult(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
     builder: llvm.LLVMBuilderRef,
-    res_ptr: ?llvm.LLVMValueRef,
+    res_ptr: llvm.LLVMValueRef,
     raw_val: llvm.LLVMValueRef,
     val_node: *ast.ASTNode,
     expected_type: ?*const ts.EiwaType,
 ) !void {
     if (res_ptr) |rp| {
-        if (@intFromPtr(rp) == 0) return;
         if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(raw_val)) != llvm.LLVMVoidTypeKind) {
             var val = raw_val;
             // sentinel-box scalars bound to nullable targets.
@@ -6063,7 +6134,7 @@ fn emitBlockOrExpr(
     structs: *std.StringHashMap(core.StructInfo),
     libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
     node: *ast.ASTNode,
-    res_ptr: ?llvm.LLVMValueRef,
+    res_ptr: llvm.LLVMValueRef,
     expected_type: ?*const ts.EiwaType,
 ) !void {
     if (node.data == .block) {

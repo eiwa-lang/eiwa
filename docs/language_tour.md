@@ -1151,11 +1151,11 @@ Inside `type` methods and receiver lambdas (`T.() -> Void`), the `this.` prefix 
 
 ```kotlin
 type ApplicationCall(val conn: ServerConnection, val request: Request) {
-    fun respond(status: Int, contentType: String, body: String) {
+    fun respond(status: HttpStatus, contentType: String, body: String) {
         conn.writeResponse(status, contentType, body) // No 'this.' needed!
     }
-    
-    fun respondText(body: String, status: Int = 200) {
+
+    fun respondText(body: String, status: HttpStatus = HttpStatus.OK) {
         respond(status, "text/plain", body) // Calling sibling method without 'this.'
     }
 }

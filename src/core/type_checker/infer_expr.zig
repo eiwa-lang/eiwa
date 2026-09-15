@@ -436,6 +436,22 @@ pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *E
             t.* = then_type.*;
         } else if (self.isCompatible(else_type, then_type)) {
             t.* = else_type.*;
+        } else if (then_type.* == .Null or else_type.* == .Null) {
+            const non_null = if (then_type.* == .Null) else_type else then_type;
+            if (non_null.* == .Null) {
+                t.* = then_type.*;
+            } else if (core.isNullable(non_null)) {
+                t.* = non_null.*;
+            } else {
+                const left_t = try self.allocator.create(EiwaType);
+                left_t.* = non_null.*;
+                const right_t = try self.allocator.create(EiwaType);
+                right_t.* = .Null;
+                t.* = .{ .Union = .{
+                    .left = left_t,
+                    .right = right_t,
+                } };
+            }
         } else {
             self.reportError(node.line, node.column, "TypeError: Ternary branches have incompatible types: {} and {}.", .{ then_type.*, else_type.* });
             return error.TypeError;
