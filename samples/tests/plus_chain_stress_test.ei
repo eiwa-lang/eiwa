@@ -1,0 +1,40 @@
+import { assert } from "std.core"
+
+// Regression test: long chained `+` on String used to hang the backend
+// reachability walk (collectCallees visited desugared receivers twice,
+// going exponential past ~25 segments). Must complete in milliseconds.
+test "string plus chain x30" {
+    val s =
+    "seg00\n" +
+    "seg01\n" +
+    "seg02\n" +
+    "seg03\n" +
+    "seg04\n" +
+    "seg05\n" +
+    "seg06\n" +
+    "seg07\n" +
+    "seg08\n" +
+    "seg09\n" +
+    "seg10\n" +
+    "seg11\n" +
+    "seg12\n" +
+    "seg13\n" +
+    "seg14\n" +
+    "seg15\n" +
+    "seg16\n" +
+    "seg17\n" +
+    "seg18\n" +
+    "seg19\n" +
+    "seg20\n" +
+    "seg21\n" +
+    "seg22\n" +
+    "seg23\n" +
+    "seg24\n" +
+    "seg25\n" +
+    "seg26\n" +
+    "seg27\n" +
+    "seg28\n" +
+    "seg29\n"
+    assert(s.length == 180)
+    assert(s.indexOf("seg29") == 174)
+}

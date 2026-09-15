@@ -2701,7 +2701,10 @@ pub const LLVMEmitter = struct {
                                 try self.markReachable(method_c_name, reachable, worklist);
                             }
                         }
-                        try self.collectCallees(g.object, reachable, worklist);
+                        // NOTE: do NOT walk g.object here. Line below walks
+                        // c.callee (this same get_expr), whose case walks
+                        // g.object — walking both doubles every desugared
+                        // `a.plus(b)` receiver visit (2^n on + chains).
                     }
                 }
                 try self.collectCallees(c.callee, reachable, worklist);
