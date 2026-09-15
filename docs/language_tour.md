@@ -768,6 +768,44 @@ Rules:
 
 ---
 
+### 7.7 Slicing Lists — `slice`, `skip`, `take`, `skipLast`, `takeLast`
+
+Both `List<T>` and `MutableList<T>` implement the `Slicable<T>` contract (`src/std/core.ei`), backed by the `Slicing` skill (`src/std/collections.ei`). `slice` is the single primitive — every other method delegates to it:
+
+```kotlin
+fun main() {
+    val posts = ["a", "b", "c", "d", "e"]
+
+    assert(posts.slice(1, 3).toString() == "[b, c]")
+    assert(posts.skip(1).take(2).toString() == "[b, c]")
+    assert(posts.skip(2).toString() == "[c, d, e]")
+    assert(posts.take(2).toString() == "[a, b]")
+    assert(posts.skipLast(1).toString() == "[a, b, c, d]")
+    assert(posts.takeLast(2).toString() == "[d, e]")
+
+    // Works on MutableList receivers too (still returns List)
+    val m = posts.mut()
+    assert(m.skip(1).take(2).toString() == "[b, c]")
+}
+```
+
+Correspondence with Kotlin (`skip` is Eiwa's name for Kotlin's `drop`):
+
+| Kotlin | Eiwa |
+|---|---|
+| `list.drop(n)` | `list.skip(n)` |
+| `list.take(n)` | `list.take(n)` |
+| `list.dropLast(n)` | `list.skipLast(n)` |
+| `list.takeLast(n)` | `list.takeLast(n)` |
+| `list.subList(from, to)` | `list.slice(from, to)` |
+
+Rules:
+- `slice(from, to)` takes `from` inclusive and `to` exclusive, clamped to `[0, size]` — out-of-range bounds yield `[]` instead of throwing.
+- Every method returns a **new** immutable `List<T>`; the receiver is never mutated (check `.size()` afterwards — it is unchanged).
+- Custom `type`s with `size()` and `get(index)` can reuse the same behavior by implementing `Indexed<T>` and composing `+ Slicing`.
+
+---
+
 ## 8. Ternary Operators
 
 Eiwa provides standard ternary conditional expressions and a unique short ternary operator to simplify conditional value assignments.
