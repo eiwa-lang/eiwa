@@ -1,0 +1,51 @@
+import { assert } from "std.exceptions"
+import { List, MutableList } from "std.collections"
+
+// `MutableList` wraps a `List` in its `list` field while `List` stores the
+// buffer directly: passing the pointer raw across the boundary misreads the
+// layout. The emitter converts to a live view (shared backing, Kotlin-style).
+
+fun sumAll(items: List<Int>): Int {
+    var total = 0
+    var i = 0
+    while (i < items.size()) {
+        total = total + items[i]
+        i = i + 1
+    }
+    return total
+}
+
+test "mutable view: call argument" {
+    val m: MutableList<Int> = MutableList()
+    m.add(40)
+    m.add(2)
+    assert(sumAll(m) == 42, "MutableList converts to List view in calls")
+}
+
+test "mutable view: variable assignment" {
+    val m: MutableList<Int> = MutableList()
+    m.add(41)
+    val l: List<Int> = m
+    assert(l.size() == 1, "size via view")
+    assert(l[0] == 41, "element via view")
+}
+
+test "mutable view: shares backing" {
+    val m: MutableList<Int> = MutableList()
+    m.add(1)
+    val l: List<Int> = m
+    m.add(2)
+    assert(l.size() == 2, "view observes later mutations")
+    assert(sumAll(m) == 3, "sums through the view")
+}
+
+fun makeList(): List<Int> {
+    val m: MutableList<Int> = MutableList()
+    m.add(7)
+    return m
+}
+
+test "mutable view: return position" {
+    assert(makeList().size() == 1, "size through returned view")
+    assert(makeList()[0] == 7, "element through returned view")
+}

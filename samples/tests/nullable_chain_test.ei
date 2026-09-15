@@ -1,0 +1,35 @@
+import { assert } from "std.exceptions"
+import { List, MutableList } from "std.collections"
+
+// Guardrail (XFAIL while the for-lambda capture bug is open): chained
+// safe-call + elvis on a nullable for-loop parameter segfaults at runtime
+// (was: invalid-IR stub / crash). Real-world shape from
+// `BodyBuilder.renderCollageGrid`: `p?.mediaUrl?.optimizeMedia(600) ?: ""`.
+
+type Post(val mediaUrl: String?)
+
+fun String.optimizeMedia(w: Int): String {
+    return this
+}
+
+fun render(mediaPosts: List<Post?>): String {
+    var out = ""
+    for (mediaPosts) { p ->
+        val src = p?.mediaUrl?.optimizeMedia(600) ?: ""
+        out = out + src
+    }
+    return out
+}
+
+test "nullable chain: skips null element" {
+    val posts: MutableList<Post?> = MutableList()
+    posts.add(Post("a.png"))
+    posts.add(null)
+    assert(render(posts) == "a.png", "null element falls back to empty")
+}
+
+test "nullable chain: all null" {
+    val posts: MutableList<Post?> = MutableList()
+    posts.add(null)
+    assert(render(posts) == "", "all-null renders empty")
+}

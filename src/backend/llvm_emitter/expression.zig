@@ -2145,6 +2145,7 @@ fn emitExpressionRaw(
                         const p_idx = idx + arg_offset;
                         if (p_idx < param_count) {
                             const expected_type = func_param_types[p_idx];
+                            arg_val = coerceCollectionArg(builder, structs, arg_val, arg_node.resolved_type, callParamType(call, arg_node, idx));
                             if (llvm.LLVMGetTypeKind(expected_type) == llvm.LLVMStructTypeKind) {
                                 // Target parameter is a Fat Pointer { ptr data, ptr vtable }
                                 if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind) {
@@ -2361,6 +2362,7 @@ fn emitExpressionRaw(
                                     var arg_val = try emitExpression(ctx, mod, builder, scope, structs, libs, arg_node);
                                     if (idx + arg_base < param_count) {
                                         const ptype = func_param_types[idx + arg_base];
+                                        arg_val = coerceCollectionArg(builder, structs, arg_val, arg_node.resolved_type, callParamType(call, arg_node, idx));
                                         // Contract parameter: build the fat pointer
                                         // `{ data, vtable }` for primitive/pointer args
                                         // (e.g. `show(40.0 + 2.0)` inside a receiver
@@ -5148,6 +5150,68 @@ pub fn coerceArg(
         return llvm.LLVMBuildPtrToInt(builder, arg_val, param_type, "unbox_arg");
     }
     return arg_val;
+}
+
+/// Converts a `MutableList` argument to the `List` view its parameter
+/// expects (`MutableList` wraps a `List` in field `list`; layouts differ,
+/// so passing the pointer raw misreads memory). Returns null when no
+/// conversion applies; nullable values pass through untouched.
+fn mutableListView(
+    builder: llvm.LLVMBuilderRef,
+    structs: *std.StringHashMap(core.StructInfo),
+    arg_val: llvm.LLVMValueRef,
+    arg_name: []const u8,
+    param_name: []const u8,
+) ?llvm.LLVMValueRef {
+    if (std.mem.indexOf(u8, arg_name, "MutableList") == null) return null;
+    if (std.mem.indexOf(u8, param_name, "MutableList") != null) return null;
+    if (std.mem.indexOf(u8, param_name, "List") == null) return null;
+    const sinfo = structs.get(arg_name) orelse return null;
+    const field_idx = for (sinfo.field_names, 0..) |fname, i| {
+        if (std.mem.eql(u8, fname, "list")) break i;
+    } else return null;
+    const fptr = llvm.LLVMBuildStructGEP2(builder, sinfo.struct_type, arg_val, @intCast(field_idx), "ml_view_gep");
+    return llvm.LLVMBuildLoad2(builder, sinfo.field_types[field_idx], fptr, "ml_view");
+}
+
+/// Nominal type name for collection-view matching (`Custom` or the base of a
+/// `GenericInstance`), or null for other types.
+fn nominalName(rt: *const ts.EiwaType) ?[]const u8 {
+    return switch (rt.*) {
+        .Custom => |n| n,
+        .GenericInstance => |gi| gi.base_name,
+        else => null,
+    };
+}
+
+/// Applies the `MutableList` -> `List` view conversion to a call argument
+/// when the static types require it. Returns the (possibly converted) value.
+pub fn coerceCollectionArg(
+    builder: llvm.LLVMBuilderRef,
+    structs: *std.StringHashMap(core.StructInfo),
+    arg_val: llvm.LLVMValueRef,
+    arg_rt: ?*const ts.EiwaType,
+    param_rt: ?*const ts.EiwaType,
+) llvm.LLVMValueRef {
+    const art = arg_rt orelse return arg_val;
+    const prt = param_rt orelse return arg_val;
+    const arg_name = nominalName(art) orelse return arg_val;
+    const param_name = nominalName(prt) orelse return arg_val;
+    return mutableListView(builder, structs, arg_val, arg_name, param_name) orelse arg_val;
+}
+
+/// Declared parameter type for a call argument: the checker's recorded
+/// expectation first, then the callee signature. Mirrors the lookup order
+/// used for contract coercion at call sites.
+fn callParamType(call: anytype, arg_node: anytype, idx: usize) ?*const ts.EiwaType {
+    if (arg_node.expected_type) |et| return et;
+    if (call.callee.resolved_type) |crt| {
+        const base_crt = ts.extractBaseType(crt);
+        if (base_crt.* == .Function and idx < base_crt.Function.params.len) {
+            return base_crt.Function.params[idx];
+        }
+    }
+    return null;
 }
 
 /// Widens the narrower of two integer operands to the wider width (i1

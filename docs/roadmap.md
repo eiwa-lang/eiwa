@@ -1509,6 +1509,39 @@ Semântica alvo:
 >   mas os diagnósticos imprimem o formato interno — sistêmico e pré-existente
 >   (ex: `Expected .{ .String = void }`).
 
+### Phase 86: View `MutableList` → `List` na borda de chamadas (segfault em projeto real) (COMPLETED)
+> **Status:** COMPLETED (working tree, branch `fix/issue-5-stub-invalid-ir`).
+> Cobertura: `samples/tests/nullable_chain_test.ei` (2 testes, era xfail com
+> segfault) + `samples/tests/mutable_list_view_test.ei` (4 testes).
+>
+> **Sintoma:** segfault no JIT (endereço constante com bytes de string) ao
+> passar `MutableList<Post?>` onde se espera `List<Post?>` — forma real:
+> `p?.mediaUrl?.optimizeMedia(600) ?: ""` com `p` de for-lambda sobre a lista.
+> Em AOT o mesmo shape deu ICE de verificação; sem elvis/`+` passava.
+> Pré-existente na main limpa (não regressão).
+>
+> **Causa-raiz:** layouts diferentes (`MutableList{list: List}` vs
+> `List{items: NativeArray}`) com ponteiro passado cru — o callee lia o campo
+> errado (lixo/crash). O checker aceita porque `isCompatible` compara pares
+> `GenericInstance` só pela tag, sem `base_name`/args.
+>
+> **Fix:** conversão para view no emissor — passa o campo `list` (índice por
+> nome, verificado no mapa de structs; sem isso, comportamento antigo). View
+> viva com backing compartilhado (estilo Kotlin). Ligado em: args de chamada
+> (caminhos direto + método), inicialização de `val` e `return`
+> (`coerceCollectionArg`, `mutableListView`, `callParamType` em
+> `expression.zig`). Nuláveis passam intocados (exigem branch).
+>
+> **Verificação:** 557/557 + `zig build test` exit 0; release nativo correto.
+>
+> **Dívidas restantes:**
+> - Apertar `isCompatible` para `GenericInstance` (exigir `base_name` + args;
+>   hoje `List<Int>` × `Map<String>` passa!) — sem isso, pares incompatíveis
+>   continuam aceitos e a view pode mascarar.
+> - `MutableList?` → `List?` (nulável exige branch null-safe).
+> - Mensagem `Undeclared function 'f'` para mismatch de argumento (existe a
+>   função; o argumento não conforma) — enganosa, pré-existente.
+
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
   (Pointer) direto para `tolower(c: Int)`/`toupper(c: Int)` do `<ctype.h>`, que

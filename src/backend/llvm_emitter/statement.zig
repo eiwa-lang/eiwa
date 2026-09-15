@@ -115,6 +115,7 @@ fn emitReturnValue(
     } else {
         if (declared_ret) |drt| {
             ret_val = expression.coerceToNullableScalar(ctx, mod, builder, ret_val, drt);
+            ret_val = expression.coerceCollectionArg(builder, structs, ret_val, val_node.resolved_type, drt);
         }
         if (llvm.LLVMTypeOf(ret_val) != expected_ret_type) {
             ret_val = expression.coerceArg(builder, ret_val, expected_ret_type);
@@ -321,6 +322,7 @@ pub fn emitStatement(
                         }
                     }
                     val = expression.coerceToNullableScalar(ctx, mod, builder, val, res_type);
+                    val = expression.coerceCollectionArg(builder, structs, val, init_node.resolved_type, res_type);
                     val = expression.coerceArg(builder, val, llvm_type);
                     if (expression.storeValue(val, llvm_type)) |sv| {
                         _ = llvm.LLVMBuildStore(builder, sv, alloca_ptr);
