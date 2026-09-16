@@ -110,8 +110,8 @@ static LONG WINAPI eiwa_vectored_handler(EXCEPTION_POINTERS *info) {
     EIWA_MSG("  0: ");
     eiwa_write_hex((uintptr_t)pc);
     EIWA_MSG("\n");
-    void *frames[63];
-    int n = (int)CaptureStackBackTrace(1, 63, frames, NULL);
+    void *frames[64];
+    int n = (int)CaptureStackBackTrace(1, 64, frames, NULL);
     int cut = -1;
     int resume = -1;
     if (!eiwa_full_trace() && n > 10) {

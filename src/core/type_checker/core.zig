@@ -1341,6 +1341,7 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
     if (expected.* == .Unknown or actual.* == .Unknown) return true;
     if (expected.* == .GenericParam or actual.* == .GenericParam) return true;
     if (isNullable(expected) and actual.* == .Null) return true;
+    if (isNullable(actual) and !isNullable(expected)) return false;
     if (expected.* == .Custom and actual.* == .Custom and std.mem.eql(u8, expected.Custom, actual.Custom)) {
         return true;
     }

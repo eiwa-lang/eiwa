@@ -1,0 +1,13 @@
+import { assert } from "std.core"
+
+// MUST NOT COMPILE: `String?` into non-null `String` is a TypeError.
+// While this compiles it XPASSes instead of going XFAIL.
+
+fun takeStr(s: String): String {
+    return s
+}
+
+test "nullable arg to non-null param is rejected" {
+    val n: String? = "ok"
+    assert(takeStr(n) == "ok")
+}

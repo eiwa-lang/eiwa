@@ -1,0 +1,30 @@
+import { assert } from "std.core"
+
+fun takeOptStr(s: String?): String? {
+    return s
+}
+
+fun takeOptInt(n: Int?): Int? {
+    return n
+}
+
+test "non-null arg to nullable param is accepted" {
+    val n: String = "ok"
+    assert(takeOptStr(n) == "ok")
+}
+
+test "null literal to nullable param is accepted" {
+    assert(takeOptStr(null) == null)
+}
+
+test "nullable arg to nullable param is accepted" {
+    val n: String? = "ok"
+    assert(takeOptStr(n) == "ok")
+    val m: String? = null
+    assert(takeOptStr(m) == null)
+}
+
+test "non-null Int arg to nullable Int param is accepted" {
+    assert(takeOptInt(41) == 41)
+    assert(takeOptInt(null) == null)
+}

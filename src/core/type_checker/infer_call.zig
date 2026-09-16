@@ -18,6 +18,7 @@ fn findExtensionWithDefaults(
     ext_list: ArrayList(*ASTNode),
     base_type: *const EiwaType,
     arg_count: usize,
+    call_args: []const *ASTNode,
 ) ?*ASTNode {
     for (ext_list.items) |ext_node| {
         const f = &ext_node.data.fun_decl;
@@ -35,9 +36,25 @@ fn findExtensionWithDefaults(
             }
         }
         if (!has_defaults) continue;
+        if (!candidateHasNamedParams(f.params, call_args)) continue;
         return ext_node;
     }
     return null;
+}
+
+fn candidateHasNamedParams(params: []const ast.Param, call_args: []const *ASTNode) bool {
+    for (call_args) |arg| {
+        if (arg.data != .named_arg) continue;
+        var found_name = false;
+        for (params) |p| {
+            if (std.mem.eql(u8, p.name, arg.data.named_arg.name)) {
+                found_name = true;
+                break;
+            }
+        }
+        if (!found_name) return false;
+    }
+    return true;
 }
 
 fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
@@ -1081,6 +1098,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
                     }
                     if (!has_defaults) continue;
+                    if (!candidateHasNamedParams(fun_decl.params, c.arguments)) continue;
 
                     var all_match = true;
                     for (c.arguments, 0..) |arg, arg_i| {
@@ -1687,6 +1705,23 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
         }
         if (try inferImplicitThisOrObjectCall(self, node, scope, t, name)) return;
+        if (self.global_scope.lookupFunctions(name)) |overloads| {
+            for (overloads) |overload| {
+                if (overload.* != .Function) continue;
+                const f = overload.Function;
+                if (f.receiver != null) continue;
+                if (f.params.len != c.arguments.len) continue;
+                for (f.params, 0..) |param, arg_i| {
+                    const arg = c.arguments[arg_i];
+                    if (arg.resolved_type) |actual| {
+                        if (!self.isCompatible(param, actual)) {
+                            self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ param.*, actual.*, arg_i + 1 });
+                            return error.TypeError;
+                        }
+                    }
+                }
+            }
+        }
         self.reportError(node.line, node.column, "TypeError: Undeclared function '{s}'.", .{name});
         return error.TypeError;
     } else if (c.callee.data == .get_expr) {
@@ -1756,6 +1791,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             }
                         }
                         if (!has_defaults) continue;
+                        if (!candidateHasNamedParams(f.params, c.arguments)) continue;
                         
                         var all_match = true;
                         for (c.arguments, 0..) |arg, arg_i| {
@@ -1963,7 +1999,6 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         if (std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
                             const f = &method.data.fun_decl;
                             if (c.arguments.len > f.params.len) continue;
-
                             var has_defaults = true;
                             var i = c.arguments.len;
                             while (i < f.params.len) : (i += 1) {
@@ -1973,6 +2008,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 }
                             }
                             if (!has_defaults) continue;
+                            if (!candidateHasNamedParams(f.params, c.arguments)) continue;
 
                             var all_match = true;
                             for (c.arguments, 0..) |arg, arg_i| {
@@ -2014,14 +2050,14 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
                     if (found_method == null) {
                         if (self.extension_functions.get(g.name)) |ext_list| {
-                            found_method = findExtensionWithDefaults(self, self, ext_list, base_type, c.arguments.len);
+                            found_method = findExtensionWithDefaults(self, self, ext_list, base_type, c.arguments.len, c.arguments);
                         }
                         if (found_method == null and self.registry != null and self.imported_extension_names.contains(g.name)) {
                             var mod_it = self.registry.?.modules.iterator();
                             while (mod_it.next()) |entry| {
                                 const checker = entry.value_ptr.checker;
                                 if (checker.extension_functions.get(g.name)) |ext_list| {
-                                    found_method = findExtensionWithDefaults(self, checker, ext_list, base_type, c.arguments.len);
+                                    found_method = findExtensionWithDefaults(self, checker, ext_list, base_type, c.arguments.len, c.arguments);
                                     if (found_method != null) break;
                                 }
                             }
@@ -2140,7 +2176,6 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             c.callee.data.get_expr.resolved_c_name = rcn;
                         }
 
-
                         try resolveCallArguments(self, node, f.params, scope);
 
                         for (c.arguments, 0..) |arg, arg_i| {
@@ -2209,7 +2244,17 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         if (c.callee.resolved_type) |rt| {
             const rt_base = extractBaseType(rt);
             if (rt_base.* == .Function) {
-                const f = rt_base.Function;
+                var f = rt_base.Function;
+                if (c.callee.data == .get_expr) {
+                    if (c.callee.data.get_expr.resolved_c_name) |rcn| {
+                        if (self.functions_ast.get(rcn)) |fn_node| {
+                            if (fn_node.resolved_type) |frt| {
+                                const fbase = extractBaseType(frt);
+                                if (fbase.* == .Function) f = fbase.Function;
+                            }
+                        }
+                    }
+                }
                 // Lib functions (e.g. variadic C printf) are exempt from
                 // strict arity/type checks, but lambda args still need
                 // inference so the transpiler sees their resolved types.

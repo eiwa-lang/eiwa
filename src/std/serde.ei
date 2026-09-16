@@ -132,7 +132,7 @@ type SerdeGenericList<T>(val list: List<T>) : SerdeList {
     implement fun getAt(index: Int): SerdeValue = SerdeString("")
 }
 
-fun asSerdeObject(v: SerdeValue): SerdeObject {
+fun asSerdeObject(v: SerdeValue?): SerdeObject {
     if (v is SerdeObject) {
         return v as SerdeObject
     }
