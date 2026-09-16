@@ -1,0 +1,33 @@
+// Phase 84: `Map`/`MutableMap.contains` distinguishes a stored `null` value
+// from a missing key (bucket walk comparing keys, not `get(key) != null`).
+// `put`/`get` with nullable values work via Phase 80 heap-boxing.
+// Run: ./bin/eiwac test <this file>
+import { assert } from "std.core"
+import { MutableMap } from "std.collections"
+
+test "map with nullable value type accepts put" {
+    val mp = MutableMap<String, Int?>()
+    mp.put("a", 0)
+    assert(mp.get("a") == 0)
+}
+
+test "map with nullable value type stores null distinctly" {
+    val mp = MutableMap<String, Int?>()
+    mp.put("a", 0)
+    mp.put("b", null)
+    assert(mp.get("a") == 0)
+    assert(mp.get("b") == null)
+    assert(mp.contains("b"))
+}
+
+test "contains distinguishes null value from missing key" {
+    val mp = MutableMap<String, Int?>()
+    mp.put("a", 0)
+    mp.put("b", null)
+    assert(mp.contains("a"))
+    assert(mp.contains("b"))
+    assert(!mp.contains("c"))
+    val frozen = mp.freeze()
+    assert(frozen.contains("b"))
+    assert(!frozen.contains("c"))
+}

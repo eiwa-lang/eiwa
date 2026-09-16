@@ -245,7 +245,23 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json
     }
 
     fun contains(key: K): Bool {
-        return this.get(key) != null
+        val capacity = this.entries.size()
+        if (capacity == 0) {
+            return false
+        }
+
+        var hash = key.hashCode()
+        var index = hash - (hash / capacity) * capacity
+        if (index < 0) index = index + capacity
+
+        var curr = this.entries.items[index]
+        while (curr != null) {
+            if (curr!!.key == key) {
+                return true
+            }
+            curr = curr!!.next
+        }
+        return false
     }
 
     fun size(): Int {
@@ -299,7 +315,23 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
     }
 
     fun contains(key: K): Bool {
-        return this.get(key) != null
+        val capacity = this.entries.size()
+        if (capacity == 0) {
+            return false
+        }
+
+        var hash = key.hashCode()
+        var index = hash - (hash / capacity) * capacity
+        if (index < 0) index = index + capacity
+
+        var curr = this.entries.items[index]
+        while (curr != null) {
+            if (curr!!.key == key) {
+                return true
+            }
+            curr = curr!!.next
+        }
+        return false
     }
 
     fun size(): Int {

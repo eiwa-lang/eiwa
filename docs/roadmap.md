@@ -3,8 +3,12 @@
 This document tracks the historical progress, current status, and future roadmap of the Eiwa Compiler. 
 
 > **For AI Agents:** Use this file to identify the current phase, check what has already been built, and check off completed tasks as you work.
+> **Phase 86 — View `MutableList` → `List` na borda de chamadas** (live view com backing compartilhado, sem segfault) — **concluída**.
+> **Phase 85 — Build falha em stub, IR inválido fail-loud (issue #5)** — **concluída** (2026-09-16).
 > **Phase 73 — Incremental Object Cache & Fast `run`** (Two-Unit Split `deps.o` × `entry.o`, cache AOT `~/.eiwa/cache/bin`, 0.01s hit / 0.27s warm edit) — **concluída**.
-> **Fase atual (2026-08):** **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
+> **Phase 84 — `Map` com valor nullable** (`contains` caminhando buckets por chave) — **concluída** (2026-09-16).
+> **Fase atual (2026-09):** **Phase 82 — `this` em defaults de extension functions** + follow-ups abertos (G2–G10, F1–F4, H1–H3, 75.8/75.9).
+> **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
 
@@ -1410,18 +1414,30 @@ Semântica alvo:
   (`import { User }` sem `greet`) agora falha com
   `Extension function 'greet' exists in module '...' — add it to your imports.`
 
-### Phase 84: `Map` com valor nullable — `contains` confunde `null` com chave ausente (OPEN / RED)
-> **Status:** RED. Cobertura em `samples/tests/map_nullable_xfail_test.ei`
-> (1 PASS + 1 FAIL; harness conta como `[XFAIL]`, sem quebrar o gate verde).
-> Suporte `*_xfail_test.ei` adicionado ao harness em `src/main.zig`.
+### Phase 84: `Map` com valor nullable — `contains` confunde `null` com chave ausente (COMPLETED)
+> **Status:** COMPLETED (2026-09-16, working tree limpa na `main`). Cobertura
+> promovida de `samples/tests/map_nullable_xfail_test.ei` (XFAIL) para
+> `samples/tests/map_nullable_test.ei` (3 testes, todos verdes).
+> Suporte `*_xfail_test.ei` mantido no harness em `src/main.zig` (XPASS falha
+> o build para forçar a remoção do marker).
 >
-> **O bug (preciso):** `MutableMap<String, Int?>` compila, `put`/`get` funcionam
+> **O bug (era):** `MutableMap<String, Int?>` compilava, `put`/`get` funcionavam
 > (inclusive `get("a") == 0` graças ao heap-box da Phase 80), mas
-> `put("b", null)` seguido de `contains("b")` retorna `false` —
-> `contains(key)` é implementado como `get(key) != null`
-> (`src/std/collections.ei:150`), então valor `null` é indistinguível de chave
-> ausente. Fix sugerido (só-stdlib, sem compilador): `contains` deve caminhar
-> os buckets comparando chaves em vez de testar o valor.
+> `put("b", null)` seguido de `contains("b")` retornava `false` —
+> `contains(key)` era implementado como `get(key) != null`
+> (`src/std/collections.ei`), então valor `null` era indistinguível de chave
+> ausente.
+>
+> **Fix (só-stdlib, sem compilador):** `Map.contains` e `MutableMap.contains`
+> agora caminham os buckets comparando chaves (mesmo walk do `get`: hash →
+> index → cadeia `next`), retornando `true` no match independente do valor.
+> Cobertura extra: chave ausente (`!contains("c")`) e `Map` imutável via
+> `freeze()` com valor `null`.
+>
+> **Verificação (2026-09-16):** `map_nullable_test.ei` 3/3 + suíte completa
+> **ALL 594 TESTS PASSED** (XFAIL restante: só `nullable_arg`) +
+> `zig build test` exit 0. Nota: stdlib é `@embedFile` no binário — a mudança
+> exigiu `zig build` antes de validar.
 >
 > **Mensagens fantasmas ELIMINADAS (2026-09-14):** compilar esse teste imprimia
 > dois `error:` que não abortavam o build. Causas, ambas corrigidas:
@@ -1436,9 +1452,9 @@ Semântica alvo:
 > Verificado idêntico na main limpa antes do fix: pré-existente, sem relação
 > com Phase 80 (`MutableList<Int?>` funciona totalmente).
 
-### Phase 85: Build falha em stub — IR inválido substituído silenciosamente (issue #5) (EM ANDAMENTO)
-> **Status:** EM ANDAMENTO. Branch `fix/issue-5-stub-invalid-ir` (working tree,
-> não commitado; só o teste RED está commitado — `d008b62`). Cobertura TDD em
+### Phase 85: Build falha em stub — IR inválido substituído silenciosamente (issue #5) (COMPLETED)
+> **Status:** COMPLETED (2026-09-16, fix em `05fd76c` sobre o RED `d008b62`;
+> working tree limpa na `main`). Cobertura TDD em
 > `samples/tests/issue5_stub_invalid_ir_test.ei` (10 testes).
 >
 > **O problema (eiwa-lang/eiwa#5):** o release build emitia erros de verificação
@@ -1493,6 +1509,10 @@ Semântica alvo:
 > release 0.03s antes/depois; loop do usuário gera IR idêntico (instruções
 > novas só nos corpos que antes eram inválidos).
 >
+> **Re-verificação (2026-09-16):** `issue5_stub_invalid_ir_test.ei` 10/10 +
+> suíte completa **ALL 592 TESTS PASSED** (XFAILs esperados: `map_nullable`,
+> `nullable_arg`) + `zig build test` exit 0, com fail-loud ativo (= zero stubs).
+>
 > **Dívidas restantes (follow-ups, não bloqueiam):**
 > - Wrapper C `eiwa_strcmp` retornando `int64_t` + `@Alias` no std, eliminando
 >   o conflito de declaração na raiz (o trunc atual é workaround correto, mas
@@ -1510,7 +1530,7 @@ Semântica alvo:
 >   (ex: `Expected .{ .String = void }`).
 
 ### Phase 86: View `MutableList` → `List` na borda de chamadas (segfault em projeto real) (COMPLETED)
-> **Status:** COMPLETED (working tree, branch `fix/issue-5-stub-invalid-ir`).
+> **Status:** COMPLETED (fix `5474b9a` de 2026-09-14; working tree limpa na `main`).
 > Cobertura: `samples/tests/nullable_chain_test.ei` (2 testes, era xfail com
 > segfault) + `samples/tests/mutable_list_view_test.ei` (4 testes).
 >
@@ -1533,6 +1553,9 @@ Semântica alvo:
 > `expression.zig`). Nuláveis passam intocados (exigem branch).
 >
 > **Verificação:** 557/557 + `zig build test` exit 0; release nativo correto.
+> **Re-verificação (2026-09-16):** `nullable_chain_test.ei` 2/2 +
+> `mutable_list_view_test.ei` 4/4 + suíte completa **ALL 592 TESTS PASSED** +
+> `zig build test` exit 0.
 >
 > **Dívidas restantes:**
 > - Apertar `isCompatible` para `GenericInstance` (exigir `base_name` + args;
