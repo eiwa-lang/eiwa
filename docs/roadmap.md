@@ -8,7 +8,8 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 73 — Incremental Object Cache & Fast `run`** (Two-Unit Split `deps.o` × `entry.o`, cache AOT `~/.eiwa/cache/bin`, 0.01s hit / 0.27s warm edit) — **concluída**.
 > **Phase 84 — `Map` com valor nullable** (`contains` caminhando buckets por chave) — **concluída** (2026-09-16).
 > **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
-> **Fase atual (2026-09):** follow-ups abertos (G2–G10, F1–F4, H1–H3, 75.8/75.9) + gap novo: leitura de prop de `type` em top-level retorna lixo.
+> **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
+> **Fase atual (2026-09):** follow-ups abertos (G2–G10, F1–F4, H1–H3, 75.8/75.9).
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1575,6 +1576,50 @@ Semântica alvo:
 > - `MutableList?` → `List?` (nulável exige branch null-safe).
 > - Mensagem `Undeclared function 'f'` para mismatch de argumento (existe a
 >   função; o argumento não conforma) — enganosa, pré-existente.
+
+### Phase 87: Shadowing top-level & top-level nos testes (COMPLETED)
+> **Status:** COMPLETED (2026-09-16). TDD RED → GREEN em
+> `samples/tests/toplevel_shadow_test.ei` (teste REAL, quebrava o gate alto
+> via `*[FAIL] (no tests ran)`).
+>
+> **O bug:** `val error` no top-level perdia para `fun error(msg: String): Void`
+> (`std/exceptions.ei`, import implícito):
+> - run (SILENT): o identificador resolvia para a função; `error.code` lia de
+>   um function pointer (`-7998388550200493059`); até `val error = 7` imprimia
+>   um endereço (`4475610336`). Prova de que era só o nome: `err` → 7.
+>   (Shadowing em bloco sempre funcionou — cf. `shadow_test.ei`.)
+> - test: zero testes executavam, exit 0 — e o harness contava 0/0 como verde.
+>
+> **Causas-raiz (3):**
+> 1. Checker — `inferIdentifier` (`infer_expr.zig`): `is_local` exigia
+>    `parent != null`, então variável do escopo raiz mantinha o
+>    `resolved_c_name` do `alias_map` (nome mangled da FUNÇÃO sombreada); o
+>    emissor caía no fallback `LLVMGetNamedFunction` e lia `.code` do ponteiro
+>    da função.
+> 2. Emissor (test mode) — `eiwa_test_main` nunca chama `main`, e cada
+>    `eiwa_test_N` ganhava escopo zerado: bindings top-level invisíveis
+>    (`VariableNotFound`) e efeitos perdidos.
+> 3. Harness (`main.zig`) — filho sem `[SUMMARY]` + exit 0 contava como verde.
+>
+> **Fix:**
+> - Checker: variável com `var_decl` próprio sem `resolved_c_name` sempre
+>   sombreia, em qualquer profundidade; alias legado só para nós sem `var_decl`
+>   (importados/sintéticos). Membros de `object` (globais reais, com `resolved_c_name`
+>   próprio) e o path `is_class_property` intactos.
+> - Emissor: Pass 3 (`main` sintetizado, morto em test mode) pulado quando
+>   `is_test_mode`; Pass 4 emite o top-level no início de CADA teste (setup
+>   hermético, locals próprios por teste — espelha o Pass 3 do run).
+> - Harness: exit limpo com zero testes executados = `*[FAIL] (no tests ran)`.
+>
+> **Verificação (2026-09-16):** `toplevel_shadow_test.ei` 1/1 + repros run
+> (`error.code`, `val error = 7`, `err`) → 7 + suíte completa
+> **ALL 596 TESTS PASSED** + `zig build test` exit 0.
+>
+> **Follow-ups:**
+> - `eiwac test <arquivo-avulso>` em arquivo zero-testes ainda sai silencioso
+>   (o check `no tests ran` vive no modo diretório, o gate).
+> - Referência bare a função como valor (`val f = error`) agora falha alto em
+>   vez de resolver silencioso (loud > silent; sem cobertura — ninguém fazia).
 
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`

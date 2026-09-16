@@ -1,0 +1,13 @@
+// Top-level `val` must shadow a same-named stdlib `fun`
+// (`fun error` in std.exceptions stole the binding: run mode read garbage
+// off the function pointer, test mode ran zero tests).
+// Run: ./bin/eiwac test <this file>
+import { assert } from "std.core"
+
+type Shadowed(val code: Int = 0)
+
+val error = Shadowed(7)
+
+test "top-level val shadows same-named stdlib function" {
+    assert(error.code == 7)
+}

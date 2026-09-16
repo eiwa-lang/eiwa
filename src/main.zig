@@ -696,6 +696,10 @@ fn run(init: std.process.Init) !void {
                         failed += 1;
                         std.debug.print("*[FAIL] {s} (terminated before the harness reported results)\n", .{basename});
                     }
+                    if (exited_ok and passed == 0 and failed == 0) {
+                        failed += 1;
+                        std.debug.print("*[FAIL] {s} (no tests ran)\n", .{basename});
+                    }
                     total_passed += passed;
                     total_failed += failed;
                     if (failed > 0) files_failed += 1;

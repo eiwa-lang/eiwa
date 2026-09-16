@@ -280,7 +280,10 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             }
             owner = s.parent;
         }
-        if (is_local) {
+        // A declared variable shadows any same-named function, even at root
+        // scope (the alias names the shadowed function).
+        const shadows_fn = if (vs.decl_node) |decl| decl.data == .var_decl and decl.data.var_decl.resolved_c_name == null else false;
+        if (is_local or shadows_fn) {
             i.resolved_c_name = null;
         } else if (self.alias_map.get(i.name)) |c_name| {
             i.resolved_c_name = c_name;

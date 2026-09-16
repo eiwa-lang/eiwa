@@ -1288,8 +1288,9 @@ pub const LLVMEmitter = struct {
             return error.LLVMCodegenFailed;
         }
 
-        // Pass 3: Handle Hybrid Main (top-level statements inside main())
-        if (top_level_stmts.items.len > 0) {
+        // Pass 3: Handle Hybrid Main (top-level statements inside main()).
+        // Skipped in test mode: `eiwa_test_main` is the entry, this `main` is dead.
+        if (top_level_stmts.items.len > 0 and !self.is_test_mode) {
             var main_func = llvm.LLVMGetNamedFunction(mod, "main");
             if (main_func == null) {
                 const func_type = llvm.LLVMFunctionType(i32_type, null, 0, 0);
@@ -1340,6 +1341,11 @@ pub const LLVMEmitter = struct {
 
                     var test_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
                     defer test_scope.deinit();
+
+                    // Test mode: run top-level statements at the start of every test.
+                    for (top_level_stmts.items) |top_stmt| {
+                        try statement.emitStatement(self.context, mod, self.builder, test_fn, &test_scope, &self.structs, &self.libs, top_stmt, null);
+                    }
 
                     switch (decl.body.data) {
                         .block => |b| {
