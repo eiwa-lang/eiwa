@@ -693,7 +693,10 @@ pub fn markTrailingValue(node: *ASTNode, need: bool) void {
         .when_expr => |*w| w.is_value = need,
         .try_stmt => |*t| {
             t.is_value = need;
-            if (need) markTrailingValue(t.body, true);
+            if (need) {
+                markTrailingValue(t.body, true);
+                for (t.catches) |c| markTrailingValue(c.body, true);
+            }
         },
         .block => |b| {
             if (b.statements.len > 0) markTrailingValue(b.statements[b.statements.len - 1], need);
@@ -814,6 +817,53 @@ pub fn inferThrowStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
     t.* = .Void;
 }
 
+/// `Null` absorbs into a nullable; otherwise identical or incompatible.
+fn unifyTryCatchBranch(self: *TypeChecker, a: *const EiwaType, b: *const EiwaType) anyerror!?*const EiwaType {
+    if (a.* == .Null) return try nullableTryBranch(self, b);
+    if (b.* == .Null) return try nullableTryBranch(self, a);
+    if (self.isCompatible(a, b) and self.isCompatible(b, a)) return a;
+    return null;
+}
+
+fn nullableTryBranch(self: *TypeChecker, t: *const EiwaType) anyerror!*const EiwaType {
+    if (core.isNullable(t)) return t;
+    const left_t = try self.allocator.create(EiwaType);
+    left_t.* = t.*;
+    const right_t = try self.allocator.create(EiwaType);
+    right_t.* = .Null;
+    const wrapped = try self.allocator.create(EiwaType);
+    wrapped.* = .{ .Union = .{ .left = left_t, .right = right_t } };
+    return wrapped;
+}
+
+fn prepareCatchScope(self: *TypeChecker, node: *ASTNode, c: ast.CatchBlock, catch_scope: *Scope) anyerror!void {
+    const throwable_type = self.resolveTypeName("Throwable", false) catch {
+        self.reportError(node.line, node.column, "TypeError: Contract 'Throwable' must be declared in std.core.", .{});
+        return error.TypeError;
+    };
+    const throwable_base = core.extractBaseType(throwable_type);
+
+    if (c.var_name) |var_name| {
+        var var_type: *const EiwaType = throwable_type;
+        if (c.types.len == 1) {
+            var_type = try self.resolveTypeRef(c.types[0]);
+        }
+        try catch_scope.define(var_name, var_type, false, false);
+
+        for (c.types) |tr| {
+            const target_t = try self.resolveTypeRef(tr);
+            const target_base = core.extractBaseType(target_t);
+            if (target_base.* == .Custom) {
+                const is_contract = self.contracts_ast.contains(target_base.Custom);
+                if (!is_contract and !self.conformsTo(target_base.Custom, throwable_base.Custom)) {
+                    self.reportError(node.line, node.column, "TypeError: Catch block type must be a contract or a type implementing 'Throwable', found {}.", .{target_t.*});
+                    return error.TypeError;
+                }
+            }
+        }
+    }
+}
+
 pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const ts = node.data.try_stmt;
     // Value position: explicit flag or a non-Void expectation (annotated
@@ -822,35 +872,10 @@ pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     if (!need) {
         _ = try self.inferNode(ts.body, scope);
 
-        const throwable_type = self.resolveTypeName("Throwable", false) catch {
-            self.reportError(node.line, node.column, "TypeError: Contract 'Throwable' must be declared in std.core.", .{});
-            return error.TypeError;
-        };
-        const throwable_base = core.extractBaseType(throwable_type);
-
         for (ts.catches) |c| {
             var catch_scope = Scope.init(self.allocator, scope);
             defer catch_scope.deinit();
-
-            if (c.var_name) |var_name| {
-                var var_type: *const EiwaType = throwable_type;
-                if (c.types.len == 1) {
-                    var_type = try self.resolveTypeRef(c.types[0]);
-                }
-                try catch_scope.define(var_name, var_type, false, false);
-
-                for (c.types) |tr| {
-                    const target_t = try self.resolveTypeRef(tr);
-                    const target_base = core.extractBaseType(target_t);
-                    if (target_base.* == .Custom) {
-                        const is_contract = self.contracts_ast.contains(target_base.Custom);
-                        if (!is_contract and !self.conformsTo(target_base.Custom, throwable_base.Custom)) {
-                            self.reportError(node.line, node.column, "TypeError: Catch block type must be a contract or a type implementing 'Throwable', found {}.", .{target_t.*});
-                            return error.TypeError;
-                        }
-                    }
-                }
-            }
+            try prepareCatchScope(self, node, c, &catch_scope);
 
             _ = try self.inferNode(c.body, &catch_scope);
         }
@@ -859,40 +884,53 @@ pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         return;
     }
 
-    // Value position (Phase 81): only bare `try` without `catch` is an
-    // expression. `try/catch` with a fallback value is a follow-up.
-    if (ts.catches.len > 0) {
-        self.reportError(node.line, node.column, "TypeError: try with catch in value position is not supported yet (only bare `try` yields a value).", .{});
-        return error.TypeError;
-    }
-    // The body counts as an expression (re-mark: expected_type-driven
-    // entries like call args skip marking).
+    // Value try/catch: infer body and catches, then unify.
     markTrailingValue(ts.body, true);
-    const body_t = try inferBlockAsExpression(self, ts.body, scope);
-    const bt = body_t orelse {
-        t.* = .Void;
-        return;
-    };
-    if (bt.* == .Void) {
-        self.reportError(node.line, node.column, "TypeError: try in value position cannot yield Void.", .{});
-        return error.TypeError;
+    var unified: ?*const EiwaType = null;
+    if (try inferBlockAsExpression(self, ts.body, scope)) |bt| {
+        if (bt.* == .Void) {
+            self.reportError(node.line, node.column, "TypeError: try/catch in value position cannot yield Void.", .{});
+            return error.TypeError;
+        }
+        unified = bt;
     }
-    // Nullable wrap with flattening (short-ternary rule): `T` -> `T?`,
-    // `T?` stays `T?`.
-    const wrapped: EiwaType = if (core.isNullable(bt)) bt.* else blk: {
-        const left_t = try self.allocator.create(EiwaType);
-        left_t.* = bt.*;
-        const right_t = try self.allocator.create(EiwaType);
-        right_t.* = .Null;
-        break :blk .{ .Union = .{ .left = left_t, .right = right_t } };
+    for (ts.catches) |c| {
+        var catch_scope = Scope.init(self.allocator, scope);
+        defer catch_scope.deinit();
+        try prepareCatchScope(self, node, c, &catch_scope);
+
+        markTrailingValue(c.body, true);
+        if (try inferBlockAsExpression(self, c.body, &catch_scope)) |ct| {
+            if (ct.* == .Void) {
+                self.reportError(node.line, node.column, "TypeError: try/catch in value position cannot yield Void.", .{});
+                return error.TypeError;
+            }
+            if (unified) |u| {
+                unified = try unifyTryCatchBranch(self, u, ct) orelse {
+                    self.reportError(node.line, node.column, "TypeError: try/catch branches have incompatible types {} and {}.", .{ u.*, ct.* });
+                    return error.TypeError;
+                };
+            } else {
+                unified = ct;
+            }
+        }
+    }
+    var final = unified orelse {
+        self.reportError(node.line, node.column, "TypeError: try/catch in value position cannot yield Void.", .{});
+        return error.TypeError;
     };
+    if (ts.catches.len == 0) {
+        // Bare `try`: the exception path yields null → nullable wrap with
+        // flattening. With catches, unmatched exceptions rethrow.
+        final = try nullableTryBranch(self, final);
+    }
     if (node.expected_type) |exp_t| {
-        if (!self.isCompatible(exp_t, &wrapped)) {
-            self.reportError(node.line, node.column, "TypeError: try branch has type {} which is incompatible with expected type {}.", .{ wrapped, exp_t.* });
+        if (!self.isCompatible(exp_t, final)) {
+            self.reportError(node.line, node.column, "TypeError: try/catch has type {} which is incompatible with expected type {}.", .{ final.*, exp_t.* });
             return error.TypeError;
         }
     }
-    t.* = wrapped;
+    t.* = final.*;
 }
 
 // ---------------------------------------------------------------------------

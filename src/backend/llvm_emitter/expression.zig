@@ -4299,7 +4299,6 @@ fn emitExpressionRaw(
             const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
 
             const frame = try statement.emitTryBegin(ctx, mod, builder, func_val);
-            const catch_bb = frame.catch_bb;
             const after_bb = frame.after_bb;
 
             try emitBlockOrExpr(ctx, mod, builder, func_val, scope, structs, libs, ts_node.body, res_ptr, node.resolved_type);
@@ -4308,12 +4307,18 @@ fn emitExpressionRaw(
                 _ = llvm.LLVMBuildBr(builder, after_bb);
             }
 
-            llvm.LLVMPositionBuilderAtEnd(builder, catch_bb);
-            try statement.emitTryPop(ctx, mod, builder);
-            const fat_type = types_mapping.getFatPointerType(ctx);
-            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
-            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ret_type), res_ptr);
-            _ = llvm.LLVMBuildBr(builder, after_bb);
+            if (ts_node.catches.len > 0) {
+                // F1: each catch body stores its trailing value into `res`;
+                // unmatched exceptions rethrow (statement semantics).
+                try statement.emitTryCatches(ctx, mod, builder, func_val, scope, structs, libs, ts_node.catches, frame, .{ .ptr = res_ptr, .expected = node.resolved_type }, null);
+            } else {
+                llvm.LLVMPositionBuilderAtEnd(builder, frame.catch_bb);
+                try statement.emitTryPop(ctx, mod, builder);
+                const fat_type = types_mapping.getFatPointerType(ctx);
+                _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
+                _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ret_type), res_ptr);
+                _ = llvm.LLVMBuildBr(builder, after_bb);
+            }
 
             llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
             return llvm.LLVMBuildLoad2(builder, ret_type, res_ptr, "expr_try_res_load");
@@ -6155,7 +6160,7 @@ fn storeBlockOrExprResult(
     }
 }
 
-fn emitBlockOrExpr(
+pub fn emitBlockOrExpr(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
     builder: llvm.LLVMBuilderRef,

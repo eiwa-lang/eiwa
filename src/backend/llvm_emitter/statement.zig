@@ -220,6 +220,144 @@ pub fn emitTryPop(
     _ = llvm.LLVMBuildStore(builder, next_val, stack_global);
 }
 
+/// Result slot for value `try/catch`: catch bodies store here.
+pub const TryCatchRes = struct {
+    ptr: llvm.LLVMValueRef,
+    expected: ?*const eiwa_types.EiwaType,
+};
+
+/// Shared catch dispatch for statement (`res = null`) and value `try/catch`.
+/// Ends positioned at `frame.after_bb`.
+pub fn emitTryCatches(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    catches: []const ast.CatchBlock,
+    frame: TryFrame,
+    res: ?TryCatchRes,
+    declared_ret: ?*const eiwa_types.EiwaType,
+) !void {
+    const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
+
+    llvm.LLVMPositionBuilderAtEnd(builder, frame.catch_bb);
+    try emitTryPop(ctx, mod, builder);
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const i32_type = llvm.LLVMInt32TypeInContext(ctx);
+    const fat_type = types_mapping.getFatPointerType(ctx);
+    const exc_val = llvm.LLVMBuildLoad2(builder, fat_type, active_global, "exc");
+    _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
+
+    if (catches.len > 0) {
+        const rethrow_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.rethrow");
+        var cur_check_bb = frame.catch_bb;
+
+        for (catches, 0..) |c, idx| {
+            llvm.LLVMPositionBuilderAtEnd(builder, cur_check_bb);
+
+            const catch_body_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.body");
+            const is_last_catch = (idx + 1 == catches.len);
+            const next_check_bb = if (!is_last_catch)
+                llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.check")
+            else
+                rethrow_bb;
+
+            if (c.types.len > 0) {
+                const exc_vtable = llvm.LLVMBuildExtractValue(builder, exc_val, 1, "exc_vtable");
+                var is_matched = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
+                for (c.types) |tr| {
+                    if (tr.resolved_type) |rt| {
+                        const sub_m = try checkVtableMatch(ctx, mod, builder, ptr_type, exc_vtable, rt.*);
+                        is_matched = llvm.LLVMBuildOr(builder, is_matched, sub_m, "is_matched_or");
+                    } else {
+                        if (try expression.findVtableGlobal(ctx, mod, tr.name, "Throwable")) |target_vt| {
+                            const vt_cast = llvm.LLVMBuildPointerCast(builder, target_vt, ptr_type, "target_vt_cast");
+                            const matches_type = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, exc_vtable, vt_cast, "matches_type");
+                            is_matched = llvm.LLVMBuildOr(builder, is_matched, matches_type, "is_matched_or");
+                        } else {
+                            is_matched = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 1, 0);
+                        }
+                    }
+                }
+                _ = llvm.LLVMBuildCondBr(builder, is_matched, catch_body_bb, next_check_bb);
+            } else {
+                _ = llvm.LLVMBuildBr(builder, catch_body_bb);
+            }
+
+            // --- Catch Body ---
+            llvm.LLVMPositionBuilderAtEnd(builder, catch_body_bb);
+            if (c.var_name) |var_name| {
+                const v_z = try std.heap.page_allocator.dupeZ(u8, var_name);
+                defer std.heap.page_allocator.free(v_z);
+
+                const var_alloca = llvm.LLVMBuildAlloca(builder, fat_type, v_z.ptr);
+                _ = llvm.LLVMBuildStore(builder, exc_val, var_alloca);
+                try scope.put(var_name, var_alloca);
+            }
+            if (res) |r| {
+                try expression.emitBlockOrExpr(ctx, mod, builder, func_val, scope, structs, libs, c.body, r.ptr, r.expected);
+            } else {
+                try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, c.body, declared_ret);
+            }
+            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
+                _ = llvm.LLVMBuildBr(builder, frame.after_bb);
+            }
+
+            cur_check_bb = next_check_bb;
+        }
+
+        // --- Rethrow Block ---
+        llvm.LLVMPositionBuilderAtEnd(builder, rethrow_bb);
+        _ = llvm.LLVMBuildStore(builder, exc_val, active_global);
+        const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
+        const cur_stack2 = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "cur_stack2");
+        const null_ptr2 = llvm.LLVMConstNull(ptr_type);
+        const has_handler2 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cur_stack2, null_ptr2, "has_handler2");
+
+        const rethrow_do_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "rethrow.do");
+        const rethrow_unhandled_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "rethrow.unhandled");
+        _ = llvm.LLVMBuildCondBr(builder, has_handler2, rethrow_do_bb, rethrow_unhandled_bb);
+
+        llvm.LLVMPositionBuilderAtEnd(builder, rethrow_do_bb);
+        {
+            const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
+            const buf_gep2 = llvm.LLVMBuildStructGEP2(builder, frame_type, cur_stack2, 0, "stack_buf2");
+            const buf_ptr2 = llvm.LLVMBuildBitCast(builder, buf_gep2, ptr_type, "sbuf2");
+            const longjmp_func2 = (llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp")) orelse return error.ExceptionRuntimeMissing;
+            const lj_type2 = llvm.LLVMGlobalGetValueType(longjmp_func2);
+            const one_i322 = llvm.LLVMConstInt(i32_type, 1, 0);
+            var lj_args2 = [_]llvm.LLVMValueRef{ buf_ptr2, one_i322 };
+            _ = llvm.LLVMBuildCall2(builder, lj_type2, longjmp_func2, &lj_args2, 2, "");
+            _ = llvm.LLVMBuildUnreachable(builder);
+        }
+
+        llvm.LLVMPositionBuilderAtEnd(builder, rethrow_unhandled_bb);
+        {
+            if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
+                const puts_ft2 = llvm.LLVMGlobalGetValueType(puts_fn);
+                const msg_ptr2 = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled exception (no matching handler)\n  --> throw reached the top level without a matching try/catch", "unhandled_msg2");
+                var puts_args2 = [_]llvm.LLVMValueRef{msg_ptr2};
+                _ = llvm.LLVMBuildCall2(builder, puts_ft2, puts_fn, &puts_args2, 1, "");
+            }
+            const exit_func2 = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
+            const exit_type2 = llvm.LLVMGlobalGetValueType(exit_func2);
+            const one_i322 = llvm.LLVMConstInt(i32_type, 1, 0);
+            var exit_args2 = [_]llvm.LLVMValueRef{one_i322};
+            _ = llvm.LLVMBuildCall2(builder, exit_type2, exit_func2, &exit_args2, 1, "");
+            _ = llvm.LLVMBuildUnreachable(builder);
+        }
+    } else {
+        llvm.LLVMPositionBuilderAtEnd(builder, frame.catch_bb);
+        _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
+        _ = llvm.LLVMBuildBr(builder, frame.after_bb);
+    }
+
+    llvm.LLVMPositionBuilderAtEnd(builder, frame.after_bb);
+}
+
 pub fn emitStatement(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -616,9 +754,7 @@ pub fn emitStatement(
         },
         .try_stmt => |ts| {
             const frame = try emitTryBegin(ctx, mod, builder, func_val);
-            const catch_bb = frame.catch_bb;
             const after_bb = frame.after_bb;
-            const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
 
             try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, ts.body, declared_ret);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
@@ -626,115 +762,7 @@ pub fn emitStatement(
                 _ = llvm.LLVMBuildBr(builder, after_bb);
             }
 
-            llvm.LLVMPositionBuilderAtEnd(builder, catch_bb);
-            try emitTryPop(ctx, mod, builder);
-            const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
-            const i32_type = llvm.LLVMInt32TypeInContext(ctx);
-            const fat_type = types_mapping.getFatPointerType(ctx);
-            const exc_val = llvm.LLVMBuildLoad2(builder, fat_type, active_global, "exc");
-            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
-
-            if (ts.catches.len > 0) {
-                const rethrow_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.rethrow");
-                var cur_check_bb = catch_bb;
-
-                for (ts.catches, 0..) |c, idx| {
-                    llvm.LLVMPositionBuilderAtEnd(builder, cur_check_bb);
-
-                    const catch_body_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.body");
-                    const is_last_catch = (idx + 1 == ts.catches.len);
-                    const next_check_bb = if (!is_last_catch)
-                        llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "catch.check")
-                    else
-                        rethrow_bb;
-
-                    if (c.types.len > 0) {
-                        const exc_vtable = llvm.LLVMBuildExtractValue(builder, exc_val, 1, "exc_vtable");
-                        var is_matched = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
-                        for (c.types) |tr| {
-                            if (tr.resolved_type) |rt| {
-                                const sub_m = try checkVtableMatch(ctx, mod, builder, ptr_type, exc_vtable, rt.*);
-                                is_matched = llvm.LLVMBuildOr(builder, is_matched, sub_m, "is_matched_or");
-                            } else {
-                                if (try expression.findVtableGlobal(ctx, mod, tr.name, "Throwable")) |target_vt| {
-                                    const vt_cast = llvm.LLVMBuildPointerCast(builder, target_vt, ptr_type, "target_vt_cast");
-                                    const matches_type = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, exc_vtable, vt_cast, "matches_type");
-                                    is_matched = llvm.LLVMBuildOr(builder, is_matched, matches_type, "is_matched_or");
-                                } else {
-                                    is_matched = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 1, 0);
-                                }
-                            }
-                        }
-                        _ = llvm.LLVMBuildCondBr(builder, is_matched, catch_body_bb, next_check_bb);
-                    } else {
-                        _ = llvm.LLVMBuildBr(builder, catch_body_bb);
-                    }
-
-                    // --- Catch Body ---
-                    llvm.LLVMPositionBuilderAtEnd(builder, catch_body_bb);
-                    if (c.var_name) |var_name| {
-                        const v_z = try std.heap.page_allocator.dupeZ(u8, var_name);
-                        defer std.heap.page_allocator.free(v_z);
-
-                        const var_alloca = llvm.LLVMBuildAlloca(builder, fat_type, v_z.ptr);
-                        _ = llvm.LLVMBuildStore(builder, exc_val, var_alloca);
-                        try scope.put(var_name, var_alloca);
-                    }
-                    try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, c.body, declared_ret);
-                    if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
-                        _ = llvm.LLVMBuildBr(builder, after_bb);
-                    }
-
-                    cur_check_bb = next_check_bb;
-                }
-
-                // --- Rethrow Block ---
-                llvm.LLVMPositionBuilderAtEnd(builder, rethrow_bb);
-                _ = llvm.LLVMBuildStore(builder, exc_val, active_global);
-                const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
-                const cur_stack2 = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "cur_stack2");
-                const null_ptr2 = llvm.LLVMConstNull(ptr_type);
-                const has_handler2 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cur_stack2, null_ptr2, "has_handler2");
-
-                const rethrow_do_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "rethrow.do");
-                const rethrow_unhandled_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "rethrow.unhandled");
-                _ = llvm.LLVMBuildCondBr(builder, has_handler2, rethrow_do_bb, rethrow_unhandled_bb);
-
-                llvm.LLVMPositionBuilderAtEnd(builder, rethrow_do_bb);
-                {
-                    const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
-                    const buf_gep2 = llvm.LLVMBuildStructGEP2(builder, frame_type, cur_stack2, 0, "stack_buf2");
-                    const buf_ptr2 = llvm.LLVMBuildBitCast(builder, buf_gep2, ptr_type, "sbuf2");
-                    const longjmp_func2 = (llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp")) orelse return error.ExceptionRuntimeMissing;
-                    const lj_type2 = llvm.LLVMGlobalGetValueType(longjmp_func2);
-                    const one_i322 = llvm.LLVMConstInt(i32_type, 1, 0);
-                    var lj_args2 = [_]llvm.LLVMValueRef{ buf_ptr2, one_i322 };
-                    _ = llvm.LLVMBuildCall2(builder, lj_type2, longjmp_func2, &lj_args2, 2, "");
-                    _ = llvm.LLVMBuildUnreachable(builder);
-                }
-
-                llvm.LLVMPositionBuilderAtEnd(builder, rethrow_unhandled_bb);
-                {
-                    if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
-                        const puts_ft2 = llvm.LLVMGlobalGetValueType(puts_fn);
-                        const msg_ptr2 = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled exception (no matching handler)\n  --> throw reached the top level without a matching try/catch", "unhandled_msg2");
-                        var puts_args2 = [_]llvm.LLVMValueRef{msg_ptr2};
-                        _ = llvm.LLVMBuildCall2(builder, puts_ft2, puts_fn, &puts_args2, 1, "");
-                    }
-                    const exit_func2 = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
-                    const exit_type2 = llvm.LLVMGlobalGetValueType(exit_func2);
-                    const one_i322 = llvm.LLVMConstInt(i32_type, 1, 0);
-                    var exit_args2 = [_]llvm.LLVMValueRef{one_i322};
-                    _ = llvm.LLVMBuildCall2(builder, exit_type2, exit_func2, &exit_args2, 1, "");
-                    _ = llvm.LLVMBuildUnreachable(builder);
-                }
-            } else {
-                llvm.LLVMPositionBuilderAtEnd(builder, catch_bb);
-                _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
-                _ = llvm.LLVMBuildBr(builder, after_bb);
-            }
-
-            llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
+            try emitTryCatches(ctx, mod, builder, func_val, scope, structs, libs, ts.catches, frame, null, declared_ret);
         },
         .block => |blk| {
             for (blk.statements) |stmt| {

@@ -12,6 +12,10 @@ fun tryBoom(): String {
 
 fun tryOkInt(): Int = 42
 
+fun tryBoomInt(): Int {
+    throw TryExprErr("boom")
+}
+
 object PersonaGoal {
     fun metodo(fail: Bool): String {
         if (fail) {
@@ -74,4 +78,60 @@ test "try-expr: bare try como statement continua Void (regressao)" {
     }
     hit = true
     assert(hit == true)
+}
+
+type TryExprOther(val text: String) : Throwable {
+    implement fun message(): String {
+        return this.text
+    }
+}
+
+fun tryBoomOther(): String {
+    throw TryExprOther("other")
+}
+
+test "try-catch-expr: sucesso retorna try, excecao retorna catch" {
+    val r1: String = try { tryOk() } catch { "fb" }
+    assert(r1 == "ok")
+    val r2: String = try { tryBoom() } catch { "fb" }
+    assert(r2 == "fb")
+}
+
+test "try-catch-expr: catch tipado com variavel" {
+    val r: String = try { tryBoom() } catch (e: TryExprErr) { "caught:" + e.message() }
+    assert(r == "caught:boom")
+}
+
+test "try-catch-expr: multi-catch escolhe por tipo" {
+    val r1: String = try { tryBoom() } catch (e: TryExprOther) { "other" } catch (e: TryExprErr) { "err" }
+    assert(r1 == "err")
+    val r2: String = try { tryBoomOther() } catch (e: TryExprOther) { "other" } catch (e: TryExprErr) { "err" }
+    assert(r2 == "other")
+}
+
+test "try-catch-expr: Int unifica (com e sem anotacao)" {
+    val r1: Int = try { tryOkInt() } catch { -1 }
+    assert(r1 == 42)
+    val r2 = try { tryOkInt() } catch { -1 }
+    assert(r2 == 42)
+    val r3: Int = try { tryBoomInt() } catch { -1 }
+    assert(r3 == -1)
+    val r4 = try { tryBoomInt() } catch { -1 }
+    assert(r4 == -1)
+    val r5 = try { tryBoomInt() } ?: -1
+    assert(r5 == -1)
+}
+
+test "try-catch-expr: ramo null vira nullable" {
+    val r1: String? = try { tryBoom() } catch { null }
+    assert(r1 == null)
+    val r2: String? = try { tryOk() } catch { null }
+    assert(r2 == "ok")
+}
+
+test "try-catch-expr: sem match relanca" {
+    val r: String? = try {
+        try { tryBoom() } catch (e: TryExprOther) { "other" }
+    }
+    assert(r == null)
 }

@@ -1360,10 +1360,16 @@ Semântica alvo:
 > Nada aqui quebra código existente; são extensões e um bug pré-existente
 > exercitado pelo feature (mesmo modelo do consolidado pós-76).
 
-- [ ] **F1 — `try/catch` como expressão com fallback:** `val r = try { a } catch { b }`
-  com unificação `T` (hoje: `TypeError` dedicado "not supported yet").
-- [ ] **F2 — try-valor em `task {}`:** plumbing do slot `res` na state machine
-  (hoje: `TypeError` uniforme, espelho G5/78).
+- [x] **F1 — `try/catch` como expressão com fallback (DONE 2026-09-16):** `val r = try { a } catch { b }`
+  com unificação `T` (checker `unifyTryCatchBranch`/`nullableTryBranch` em `infer_stmt.zig`;
+  emissor `emitTryCatches` compartilhado statement/valor em `statement.zig`; dispatch por
+  tipo + `catch (e: T)` + `catch {}` + rethrow sem match; `Null` absorve em `T?`; ramos
+  divergentes (`return`/`throw`) excluídos; `Void` = `TypeError`). Cobertura
+  `try_expression_test.ei` (+6 testes: fallback, var tipada, multi-catch, Int, Null, rethrow).
+- [ ] **F2 — try-valor em `task {}`:** plumbing do slot `res` na state machine.
+  Achado na F1 (2026-09-16): a rejeição `TypeError` NÃO dispara p/ `task {}`
+  top-level — compila e trava em runtime (provado na main limpa; bare e com
+  catch idênticos). Hang pré-existente, sem relação com F1.
 - [ ] **F3 — `try` como operando geral:** ramos de ternário e operandos
   binários (exceto LHS do `?:`, que conta como slot-valor) continuam fora;
   `obj.x = try {...}` não verificado.
