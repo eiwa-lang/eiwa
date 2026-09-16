@@ -251,6 +251,7 @@ pub const LLVMEmitter = struct {
     /// Bodies that failed emission/verification and were replaced with stubs.
     /// Any entry fails the build at the end of Pass 2.
     stubbed_functions: std.StringHashMap(StubInfo),
+    symbol_names: std.StringHashMap([]const u8),
 
     pub fn init(allocator: std.mem.Allocator, module_name: []const u8, is_release: bool) !LLVMEmitter {
         llvm.LLVMLinkInMCJIT();
@@ -290,6 +291,7 @@ pub const LLVMEmitter = struct {
             .c_defines = std.StringHashMap(void).init(allocator),
             .link_libraries = std.StringHashMap(void).init(allocator),
             .stubbed_functions = std.StringHashMap(StubInfo).init(allocator),
+            .symbol_names = std.StringHashMap([]const u8).init(allocator),
             .target_info = null,
         };
     }
@@ -317,6 +319,14 @@ pub const LLVMEmitter = struct {
             var it = self.stubbed_functions.keyIterator();
             while (it.next()) |k| self.allocator.free(k.*);
             self.stubbed_functions.deinit();
+        }
+        {
+            var it = self.symbol_names.iterator();
+            while (it.next()) |e| {
+                self.allocator.free(e.key_ptr.*);
+                self.allocator.free(e.value_ptr.*);
+            }
+            self.symbol_names.deinit();
         }
         llvm.LLVMDisposeBuilder(self.builder);
         if (self.module) |m| {
@@ -476,34 +486,54 @@ pub const LLVMEmitter = struct {
         const void_fn_type = llvm.LLVMFunctionType(void_type, null, 0, 0);
         _ = llvm.LLVMAddFunction(mod, "GC_init", void_fn_type);
         _ = llvm.LLVMAddFunction(mod, "GC_allow_register_threads", void_fn_type);
+        _ = llvm.LLVMAddFunction(mod, "eiwa_install_crash_handler", void_fn_type);
 
-        // Native binaries (eiwac build) allocate via GC_malloc when
-        // prefer_gc_alloc, so the Boehm GC must be initialized before main.
-        // Emit a global constructor that calls GC_init and GC_allow_register_threads —
-        // covers every entry shape (plain main, eiwa_test_main) without touching each one.
+        // Global constructors run before main, covering every entry shape
+        // (plain main, eiwa_test_main) without touching each one.
         // The JIT path does NOT rely on this (MCJIT never runs global ctors);
         // executeJIT calls GC_init and GC_allow_register_threads from the host side.
-        // Split mode: only the entry unit defines the ctor (it owns main).
-        if (prefer_gc_alloc and (!split or is_entry)) {
-            const ctor_fn = llvm.LLVMAddFunction(mod, "__eiwa_gc_init_ctor", void_fn_type);
-            const ctor_bb = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_fn, "entry");
-            llvm.LLVMPositionBuilderAtEnd(self.builder, ctor_bb);
-            const gc_init_fn = llvm.LLVMGetNamedFunction(mod, "GC_init").?;
-            _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, gc_init_fn, null, 0, "");
-            const gc_allow_fn = llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads").?;
-            _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, gc_allow_fn, null, 0, "");
-            _ = llvm.LLVMBuildRetVoid(self.builder);
-
+        // Split mode: only the entry unit defines the ctors (it owns main).
+        if (!split or is_entry) {
             var ctor_entry_fields = [_]llvm.LLVMTypeRef{ i32_type, ptr_type, ptr_type };
             const ctor_entry_type = llvm.LLVMStructTypeInContext(self.context, &ctor_entry_fields, 3, 0);
-            var ctor_entry_vals = [_]llvm.LLVMValueRef{
+            var ctor_entries: [2]llvm.LLVMValueRef = undefined;
+            var ctor_count: usize = 0;
+
+            if (prefer_gc_alloc) {
+                const ctor_fn = llvm.LLVMAddFunction(mod, "__eiwa_gc_init_ctor", void_fn_type);
+                const ctor_bb = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_fn, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, ctor_bb);
+                const gc_init_fn = llvm.LLVMGetNamedFunction(mod, "GC_init").?;
+                _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, gc_init_fn, null, 0, "");
+                const gc_allow_fn = llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads").?;
+                _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, gc_allow_fn, null, 0, "");
+                _ = llvm.LLVMBuildRetVoid(self.builder);
+
+                var gc_entry_vals = [_]llvm.LLVMValueRef{
+                    llvm.LLVMConstInt(i32_type, 65535, 0),
+                    ctor_fn,
+                    llvm.LLVMConstNull(ptr_type),
+                };
+                ctor_entries[ctor_count] = llvm.LLVMConstStructInContext(self.context, &gc_entry_vals, 3, 0);
+                ctor_count += 1;
+            }
+
+            const crash_fn = llvm.LLVMAddFunction(mod, "__eiwa_crash_init_ctor", void_fn_type);
+            const crash_bb = llvm.LLVMAppendBasicBlockInContext(self.context, crash_fn, "entry");
+            llvm.LLVMPositionBuilderAtEnd(self.builder, crash_bb);
+            const crash_install_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_install_crash_handler").?;
+            _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, crash_install_fn, null, 0, "");
+            _ = llvm.LLVMBuildRetVoid(self.builder);
+
+            var crash_entry_vals = [_]llvm.LLVMValueRef{
                 llvm.LLVMConstInt(i32_type, 65535, 0),
-                ctor_fn,
+                crash_fn,
                 llvm.LLVMConstNull(ptr_type),
             };
-            const ctor_entry = llvm.LLVMConstStructInContext(self.context, &ctor_entry_vals, 3, 0);
-            var ctor_arr_vals = [_]llvm.LLVMValueRef{ctor_entry};
-            const ctor_arr = llvm.LLVMConstArray(ctor_entry_type, &ctor_arr_vals, 1);
+            ctor_entries[ctor_count] = llvm.LLVMConstStructInContext(self.context, &crash_entry_vals, 3, 0);
+            ctor_count += 1;
+
+            const ctor_arr = llvm.LLVMConstArray(ctor_entry_type, &ctor_entries, @intCast(ctor_count));
             const ctors_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(ctor_arr), "llvm.global_ctors");
             llvm.LLVMSetLinkage(ctors_global, llvm.LLVMAppendingLinkage);
             llvm.LLVMSetInitializer(ctors_global, ctor_arr);
@@ -1165,6 +1195,7 @@ pub const LLVMEmitter = struct {
                         try self.emitFunctionBodyOrStub(mod, stmt, fname, false);
                     } else {
                         try self.emitFunctionBody(mod, stmt, false);
+                        try self.recordSymbolName(fname, stmt);
                     }
                 } else if (stmt.data == .type_decl) {
                     // Generic templates are not emitted directly; only monomorphized
@@ -1324,6 +1355,11 @@ pub const LLVMEmitter = struct {
 
                     try test_funcs.append(test_fn);
                     try test_names_list.append(decl.name);
+                    if (!self.symbol_names.contains(fn_name)) {
+                        const pretty = try std.fmt.allocPrint(self.allocator, "test \"{s}\"", .{decl.name});
+                        errdefer self.allocator.free(pretty);
+                        try self.putSymbolEntry(fn_name, pretty);
+                    }
                 }
             }
 
@@ -1553,6 +1589,8 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "llabs") or
                     std.mem.eql(u8, fn_name_s, "memset") or
                     std.mem.eql(u8, fn_name_s, "calloc") or
+                    // Real external symbol: must NOT get a no-op stub.
+                    std.mem.eql(u8, fn_name_s, "eiwa_install_crash_handler") or
                     (is_posix_target and (
                         std.mem.eql(u8, fn_name_s, "socket") or
                         std.mem.eql(u8, fn_name_s, "setsockopt") or
@@ -1591,6 +1629,8 @@ pub const LLVMEmitter = struct {
             try self.emitArgvSupport(mod);
             try self.emitEntryShim(mod, &modules);
         }
+        try self.emitSymbolTable(mod, split, is_entry);
+        self.keepFramePointers(mod);
     }
 
     fn emitNonGCHelpers(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
@@ -4244,9 +4284,15 @@ if (define_body) {
         }
         if (self.target_info != null and self.target_info.?.os_tag == .windows) {
             try cc_argv.append("-lws2_32");
+            try cc_argv.append("-ldbghelp");
         }
         for (self.cli_c_flags) |flag| try cc_argv.append(flag);
 
+        {
+            const src_dir = eiwa_home.resolve(self.allocator);
+            const repo_root = std.fs.path.dirname(src_dir) orelse ".";
+            try cc_argv.append(try std.fs.path.join(self.allocator, &.{ repo_root, "src/runtime/eiwa_crash.c" }));
+        }
         // Build requirements declared by `lib` annotations (@Include/@Define/@Source/@Link),
         // so vendored C sources compile and link into the native binary.
         try self.appendLibRequirements(&cc_argv);
@@ -4576,6 +4622,7 @@ if (define_body) {
             if (func_val_opt) |func_val| {
                 if (functionIsWellFormed(func_val)) {
                     expression.last_failed_lookup = null;
+                    try self.recordSymbolName(fname, func_node);
                     return;
                 }
                 if (verbose) std.debug.print("LLVM Emitter: {s} produced invalid IR; stubbed.\n", .{fname});
@@ -4602,6 +4649,88 @@ if (define_body) {
                 llvm.LLVMDeleteFunction(lam_f);
             }
         }
+    }
+
+    fn recordSymbolName(self: *LLVMEmitter, fname: []const u8, func_node: *ast.ASTNode) !void {
+        if (self.symbol_names.contains(fname)) return;
+        const pretty = try self.symbolPrettyName(func_node, fname);
+        errdefer self.allocator.free(pretty);
+        try self.putSymbolEntry(fname, pretty);
+    }
+
+    fn putSymbolEntry(self: *LLVMEmitter, fname: []const u8, pretty: []const u8) !void {
+        const owned_key = try self.allocator.dupe(u8, fname);
+        errdefer self.allocator.free(owned_key);
+        try self.symbol_names.put(owned_key, pretty);
+    }
+
+    fn symbolPrettyName(self: *LLVMEmitter, func_node: *ast.ASTNode, fname: []const u8) ![]const u8 {
+        if (func_node.data == .fun_decl) {
+            const name = func_node.data.fun_decl.name;
+            if (func_node.resolved_type) |rt| {
+                if (rt.* == .Function) {
+                    if (rt.Function.receiver) |recv| {
+                        if (try self.stubReceiverName(recv)) |rname| {
+                            defer self.allocator.free(rname);
+                            return try std.fmt.allocPrint(self.allocator, "{s}.{s}()", .{ rname, name });
+                        }
+                    }
+                }
+            }
+            return try std.fmt.allocPrint(self.allocator, "{s}()", .{name});
+        }
+        return try self.allocator.dupe(u8, fname);
+    }
+
+    fn keepFramePointers(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) void {
+        const attr = llvm.LLVMCreateStringAttribute(self.context, "frame-pointer", 13, "all", 3);
+        var it = llvm.LLVMGetFirstFunction(mod);
+        while (it) |f| : (it = llvm.LLVMGetNextFunction(f)) {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) continue;
+            llvm.LLVMAddAttributeAtIndex(f, @bitCast(@as(c_int, llvm.LLVMAttributeFunctionIndex)), attr);
+        }
+    }
+
+    /// One table per linked object; the crash handler consults both.
+    fn emitSymbolTable(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, split: bool, is_entry: bool) !void {
+        var names = ArrayList([]const u8).init(self.allocator);
+        defer names.deinit();
+        var kit = self.symbol_names.keyIterator();
+        while (kit.next()) |k| try names.append(k.*);
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+        var buf = ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
+        for (names.items) |mangled| {
+            const pretty = self.symbol_names.get(mangled) orelse continue;
+            if (std.mem.indexOfAny(u8, mangled, " \n\r") != null) continue;
+            if (std.mem.indexOfAny(u8, pretty, "\n\r") != null) continue;
+            try buf.appendSlice(mangled);
+            try buf.append(' ');
+            try buf.appendSlice(pretty);
+            try buf.append('\n');
+        }
+        try buf.append(0);
+        if (!split) {
+            try self.emitTableGlobal(mod, "eiwa_symbol_table", buf.items);
+            try self.emitTableGlobal(mod, "eiwa_symbol_table_deps", null);
+        } else if (is_entry) {
+            try self.emitTableGlobal(mod, "eiwa_symbol_table", buf.items);
+        } else {
+            try self.emitTableGlobal(mod, "eiwa_symbol_table_deps", buf.items);
+        }
+    }
+
+    fn emitTableGlobal(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, name: [*:0]const u8, body: ?[]const u8) !void {
+        var one_nul = [_]u8{0};
+        const bytes: []const u8 = body orelse one_nul[0..];
+        const arr_type = llvm.LLVMArrayType(llvm.LLVMInt8TypeInContext(self.context), @intCast(bytes.len));
+        const g = llvm.LLVMAddGlobal(mod, arr_type, name);
+        llvm.LLVMSetInitializer(g, llvm.LLVMConstStringInContext(self.context, bytes.ptr, @intCast(bytes.len), 1));
+        llvm.LLVMSetGlobalConstant(g, 1);
     }
 
     /// Reports every stubbed function, then fails with `LLVMCodegenFailed`.
@@ -4809,6 +4938,8 @@ if (define_body) {
         }
     }
 
+    fn eiwa_noop_crash_install() callconv(.c) void {}
+
     /// Executes the in-memory LLVM module via JIT (for `eiwa run --backend=llvm`).
     pub fn executeJIT(self: *LLVMEmitter, io: std.Io) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
@@ -4852,6 +4983,12 @@ if (define_body) {
         // Do not dispose execution engine here; disposing MCJIT before process exit
         // unmaps JIT'd memory pages while host unwinder runs, causing segfaults.
         // defer llvm.LLVMDisposeExecutionEngine(engine);
+
+        // No-op crash-handler mapping for JIT (without it the global ctor
+        // calls a null pointer and segfaults the compiler itself).
+        if (llvm.LLVMGetNamedFunction(mod, "eiwa_install_crash_handler")) |f| {
+            llvm.LLVMAddGlobalMapping(engine, f, @constCast(@ptrCast(&eiwa_noop_crash_install)));
+        }
 
         if (has_gc) {
             const gc_syms = [_]struct { name: [:0]const u8, ptr: *const anyopaque }{

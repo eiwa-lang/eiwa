@@ -592,7 +592,7 @@ pub fn emitStatement(
             {
                 if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
                     const puts_ft = llvm.LLVMGlobalGetValueType(puts_fn);
-                    const msg_ptr = llvm.LLVMBuildGlobalStringPtr(builder, "Error: unhandled exception (no active handler)", "unhandled_msg");
+                    const msg_ptr = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled exception (no active handler)\n  --> throw reached the top level without a matching try/catch", "unhandled_msg");
                     var puts_args = [_]llvm.LLVMValueRef{msg_ptr};
                     _ = llvm.LLVMBuildCall2(builder, puts_ft, puts_fn, &puts_args, 1, "");
                 }
@@ -717,7 +717,7 @@ pub fn emitStatement(
                 {
                     if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
                         const puts_ft2 = llvm.LLVMGlobalGetValueType(puts_fn);
-                        const msg_ptr2 = llvm.LLVMBuildGlobalStringPtr(builder, "Error: unhandled exception (no matching handler)", "unhandled_msg2");
+                        const msg_ptr2 = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled exception (no matching handler)\n  --> throw reached the top level without a matching try/catch", "unhandled_msg2");
                         var puts_args2 = [_]llvm.LLVMValueRef{msg_ptr2};
                         _ = llvm.LLVMBuildCall2(builder, puts_ft2, puts_fn, &puts_args2, 1, "");
                     }

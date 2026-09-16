@@ -1,0 +1,31 @@
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { Json } from "std.json"
+
+type Stats(
+    @Alias("posts_count") val postsCount: Int = 0,
+    @Alias("followers_count") val followersCount: Int = 0
+) : Serializable + Json
+
+test "elvis: safe-field Int 0 is a value, not null" {
+    val stats: Stats? = Stats(postsCount = 1, followersCount = 0)
+    assert((stats?.followersCount ?: 2) == 0)
+    assert((stats?.postsCount ?: 2) == 1)
+}
+
+test "elvis: non-null Int field 0 with ?: keeps 0" {
+    val stats: Stats? = Stats(postsCount = 1, followersCount = 0)
+    assert((stats!!.followersCount ?: 2) == 0)
+}
+
+test "safe-call: 0?.toString() gives 0, not null" {
+    val stats: Stats? = Stats(postsCount = 1, followersCount = 0)
+    assert((stats?.followersCount?.toString() ?: "null-f") == "0")
+    assert((stats?.postsCount?.toString() ?: "null-p") == "1")
+}
+
+test "null receiver still falls back" {
+    val stats: Stats? = null
+    assert((stats?.followersCount ?: 2) == 2)
+    assert((stats?.followersCount?.toString() ?: "null-f") == "null-f")
+}

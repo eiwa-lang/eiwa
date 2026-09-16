@@ -119,3 +119,33 @@ jobs:
           else
             ./bin/eiwac run samples/main.ei
           fi
+
+      - name: Crash report (native binary)
+        shell: bash
+        run: |
+          cat > crash_probe.ei <<'EOF'
+          import { Serializable } from "std.serde"
+          import { Json } from "std.json"
+          type Probe(@Alias("n") val n: Int = 0) : Serializable + Json
+          fun Probe.describe(): String {
+              return "n=${this.n}"
+          }
+          fun main() {
+              val p: Probe? = null
+              echo(p!!.describe())
+          }
+          EOF
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bin/eiwac.exe build -o crash_probe.exe crash_probe.ei
+            BIN=./crash_probe.exe
+          else
+            ./bin/eiwac build -o crash_probe crash_probe.ei
+            BIN=./crash_probe
+          fi
+          set +e
+          OUT=$($BIN 2>&1); CODE=$?
+          set -e
+          echo "$OUT"
+          echo "$OUT" | grep -q "runtime crash"
+          test $CODE -ne 0
+          rm -f crash_probe.ei crash_probe crash_probe.exe
