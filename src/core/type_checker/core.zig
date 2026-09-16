@@ -1283,6 +1283,22 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
     }
     if (node.resolved_type == null) {
         node.resolved_type = t;
+        // A `?.` call on a nullable receiver yields null when the receiver
+        // is null, so its type must carry Null regardless of inference path.
+        if (node.data == .call_expr and t.* != .Void and t.* != .Unknown) {
+            const cc = node.data.call_expr.callee;
+            if (cc.data == .get_expr and cc.data.get_expr.is_safe) {
+                if (cc.data.get_expr.object.resolved_type) |obj_rt| {
+                    if (isNullable(obj_rt) and !isNullable(t)) {
+                        const null_t = try self.allocator.create(EiwaType);
+                        null_t.* = .Null;
+                        const union_t = try self.allocator.create(EiwaType);
+                        union_t.* = .{ .Union = .{ .left = t, .right = null_t } };
+                        node.resolved_type = union_t;
+                    }
+                }
+            }
+        }
     }
     return node.resolved_type.?;
 }

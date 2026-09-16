@@ -29,3 +29,24 @@ test "null receiver still falls back" {
     assert((stats?.followersCount ?: 2) == 2)
     assert((stats?.followersCount?.toString() ?: "null-f") == "null-f")
 }
+
+type Flags(
+    val active: Bool = false,
+    val ratio: Double = 0.0
+)
+
+test "elvis: safe-field Bool false is a value, not null" {
+    val f: Flags? = Flags(active = false, ratio = 0.0)
+    assert((f?.active ?: true) == false)
+}
+
+test "elvis: safe-field Double 0.0 is a value, not null" {
+    val f: Flags? = Flags(active = false, ratio = 0.0)
+    assert((f?.ratio ?: 1.5) == 0.0)
+}
+
+test "elvis: raw scalar zero/false never falls back" {
+    val z: Int = 0
+    assert((z ?: 2) == 0)
+    assert((false ?: true) == false)
+}

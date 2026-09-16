@@ -1114,14 +1114,16 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 param_type = try self.makeListType(param_type, node.line, node.column);
             }
 
-            if (!is_method or is_overloaded) {
+            // Extensions always carry the param suffix: same-receiver/same-name
+            // extensions with distinct signatures must not share a symbol.
+            if (!is_method or is_overloaded or receiver_type != null) {
                 try mangled_name.appendSlice("_");
                 try param_type.formatSafe(mangled_name.writer());
             }
         } else {
             param_type = try self.allocator.create(EiwaType);
             param_type.* = .Void;
-            if (!is_method or is_overloaded) {
+            if (!is_method or is_overloaded or receiver_type != null) {
                 try mangled_name.appendSlice("_Void");
             }
         }

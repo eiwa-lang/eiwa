@@ -1,0 +1,17 @@
+import { assert } from "std.core"
+
+type Box(val n: Int = 0)
+
+fun Box.describe(): String {
+    return "n=${this.n}"
+}
+
+fun Box.describe(prefix: String): String {
+    return "$prefix${this.n}"
+}
+
+test "extension overload: distinct arity dispatches" {
+    val b = Box(1)
+    assert(b.describe() == "n=1")
+    assert(b.describe("v=") == "v=1")
+}

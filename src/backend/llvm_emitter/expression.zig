@@ -814,6 +814,26 @@ fn emitExpressionRaw(
                                 const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, real_obj, @intCast(f_idx), field_name_z.ptr);
                                 const field_type = s_info.field_types[f_idx];
                                 const val_then = llvm.LLVMBuildLoad2(builder, field_type, field_ptr, "get_val");
+                                if (node.resolved_type) |nrt| {
+                                    if (nullableScalarVariant(nrt)) |variant| {
+                                        const vk = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val_then));
+                                        if (vk == llvm.LLVMIntegerTypeKind or vk == llvm.LLVMDoubleTypeKind) {
+                                            const boxed_then = boxNullableScalar(ctx, mod, builder, val_then, variant);
+                                            const then_end_bb = llvm.LLVMGetInsertBlock(builder);
+                                            _ = llvm.LLVMBuildBr(builder, merge_bb);
+                                            llvm.LLVMPositionBuilderAtEnd(builder, else_bb);
+                                            const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+                                            const else_end_bb = llvm.LLVMGetInsertBlock(builder);
+                                            _ = llvm.LLVMBuildBr(builder, merge_bb);
+                                            llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+                                            const phi = llvm.LLVMBuildPhi(builder, ptr_t, "safe_get_val");
+                                            var incoming_vals = [_]llvm.LLVMValueRef{ boxed_then, llvm.LLVMConstNull(ptr_t) };
+                                            var incoming_bbs = [_]llvm.LLVMBasicBlockRef{ then_end_bb, else_end_bb };
+                                            llvm.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+                                            return phi;
+                                        }
+                                    }
+                                }
                                 const then_end_bb = llvm.LLVMGetInsertBlock(builder);
                                 _ = llvm.LLVMBuildBr(builder, merge_bb);
 
@@ -1155,6 +1175,18 @@ fn emitExpressionRaw(
                 const lhs_val = try emitExpression(ctx, mod, builder, scope, structs, libs, bin.left);
                 const i64_type = llvm.LLVMInt64TypeInContext(ctx);
                 const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+                var target_type = llvm.LLVMTypeOf(lhs_val);
+                if (node.resolved_type) |rt| {
+                    target_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.*, global_contracts_ast_ptr);
+                }
+                if (bin.left.resolved_type) |lrt| {
+                    if (!ts.isNullable(lrt)) {
+                        if (llvm.LLVMTypeOf(lhs_val) != target_type) {
+                            return coerceArg(builder, lhs_val, target_type);
+                        }
+                        return lhs_val;
+                    }
+                }
                 const lhs_kind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(lhs_val));
                 const not_null = if (lhs_kind == llvm.LLVMStructTypeKind) blk: {
                     const data_ptr = llvm.LLVMBuildExtractValue(builder, lhs_val, 0, "elvis_data");
@@ -1163,11 +1195,6 @@ fn emitExpressionRaw(
                     llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, lhs_val, llvm.LLVMConstNull(ptr_type), "elvis_cond")
                 else
                     llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, lhs_val, llvm.LLVMConstInt(i64_type, 0, 0), "elvis_cond");
-
-                var target_type = llvm.LLVMTypeOf(lhs_val);
-                if (node.resolved_type) |rt| {
-                    target_type = types_mapping.getLLVMTypeWithContracts(ctx, rt.*, global_contracts_ast_ptr);
-                }
 
                 const lhs_end_bb = llvm.LLVMGetInsertBlock(builder);
                 const then_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "elvis_nonnull");
@@ -2324,8 +2351,11 @@ fn emitExpressionRaw(
             if (call.callee.data == .get_expr) {
                 if (call.callee.resolved_type) |rt| {
                     if (rt.* == .Function) {
-                        if (rt.Function.c_name.len > 0) {
-                            const fn_c_name = rt.Function.c_name;
+                        var fn_c_name = rt.Function.c_name;
+                        if (call.callee.data.get_expr.resolved_c_name) |rcn| {
+                            if (rcn.len > 0) fn_c_name = rcn;
+                        }
+                        if (fn_c_name.len > 0) {
                             const fn_c_name_z = try std.heap.page_allocator.dupeZ(u8, fn_c_name);
                             defer std.heap.page_allocator.free(fn_c_name_z);
                             const get_obj = call.callee.data.get_expr.object;

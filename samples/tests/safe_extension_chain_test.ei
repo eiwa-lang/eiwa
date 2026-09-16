@@ -1,0 +1,29 @@
+import { assert } from "std.core"
+
+type Session(val name: String? = null)
+
+fun String.getAvatarInitials(): String {
+    return "X"
+}
+
+test "safe extension on null local falls back" {
+    val m: String? = null
+    assert((m?.getAvatarInitials() ?: "??") == "??")
+}
+
+test "safe extension on null field chain falls back" {
+    val session: Session? = null
+    assert((session?.name?.getAvatarInitials() ?: "??") == "??")
+}
+
+test "safe extension on null field value falls back" {
+    val session: Session? = Session(null)
+    assert((session?.name?.getAvatarInitials() ?: "??") == "??")
+}
+
+test "safe extension on value works" {
+    val m: String? = "leo"
+    assert((m?.getAvatarInitials() ?: "??") == "X")
+    val session: Session? = Session("leo")
+    assert((session?.name?.getAvatarInitials() ?: "??") == "X")
+}
