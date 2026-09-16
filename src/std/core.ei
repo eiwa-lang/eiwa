@@ -296,13 +296,11 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
         return NativeString.strncmp(this.ptr + offset, suffix.ptr, suffix.length) == 0
     }
 
-    fun substring(start: Int, end: Int = -1): String {
-        val endPos = if (end == -1) this.length else end
-        
-        if (start < 0 || endPos > this.length || start > endPos) {
+    fun substring(start: Int, end: Int = this.length): String {
+        if (start < 0 || end > this.length || start > end) {
             return ""
         }
-        val len = endPos - start
+        val len = end - start
         val buf = Standard.gcMalloc(len + 1)
         NativeString.strncpy(buf, this.ptr + start, len)
         NativeMemory.writeByte(buf, len, 0)
