@@ -7,7 +7,8 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 85 — Build falha em stub, IR inválido fail-loud (issue #5)** — **concluída** (2026-09-16).
 > **Phase 73 — Incremental Object Cache & Fast `run`** (Two-Unit Split `deps.o` × `entry.o`, cache AOT `~/.eiwa/cache/bin`, 0.01s hit / 0.27s warm edit) — **concluída**.
 > **Phase 84 — `Map` com valor nullable** (`contains` caminhando buckets por chave) — **concluída** (2026-09-16).
-> **Fase atual (2026-09):** **Phase 82 — `this` em defaults de extension functions** + follow-ups abertos (G2–G10, F1–F4, H1–H3, 75.8/75.9).
+> **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
+> **Fase atual (2026-09):** follow-ups abertos (G2–G10, F1–F4, H1–H3, 75.8/75.9) + gap novo: leitura de prop de `type` em top-level retorna lixo.
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1372,29 +1373,39 @@ Semântica alvo:
   (`Int?(0)`, `Bool?(false)`, `Double?(0.0)`). Com o zero-sentinel da Phase 80,
   `try { 0 } == 0` passa (cobertura em `nullable_scalar_zero_test.ei`).
 
-### Phase 82: `this` em default initializers de extension functions (OPEN)
+### Phase 82: `this` em default initializers de extension functions (COMPLETED)
+> **Status:** COMPLETED (2026-09-16, working tree limpa na `main`). TDD RED →
+> GREEN em `samples/tests/default_params_test.ei` (8 testes).
+>
 > Surgiu ao escrever testes de default params em extensões
 > (`samples/tests/default_params_test.ei`, "should use default arguments in
 > extension functions").
-
-- [ ] **BUG (CONFIRMADO):** default initializer de parâmetro em **extension
-  function** não enxerga o receiver: `fun OnboardingError.describe(prefix: String, code: Int = this.code)`
-  falha com `Undeclared variable 'this'` — o checker resolve os defaults do
-  param fora do scope do receiver (`resolveCallArguments` em
-  `infer_call.zig` clona o initializer e infere no scope do **call site**,
-  onde `this` não existe ou pior: pode colidir com `this` de outro type).
-- [ ] **Risco maior — shadowing/confusão de nomes:** como o default é clonado e
-  inferido no scope do call site, identificadores no default podem se ligar a
-  **variáveis locais do chamador** ou a **propriedades/métodos de outro type**
-  em vez dos membros do receiver. Auditar `substituteParam` + o scope usado na
-  inferência dos defaults clonados (métodos de `type` passam hoje porque os
-  testes só usam sibling params; `this.field` em default de método comum
-  provavelmente tem o mesmo problema — verificar).
-- [ ] **Comportamento alvo (Kotlin-like):** defaults de métodos/extensões devem
-  ser avaliados com `this` = receiver da chamada e sibling params já resolvidos
-  — ex.: `fun E.describe(prefix: String, code: Int = this.code, suffix: String = prefix)`.
-- [ ] **Guardrail:** reativar os asserts com `this.code` no teste
-  `default_params_test.ei` (hoje simplificados para `code: Int = 0`).
+>
+> **Causa:** o checker resolve os defaults do param fora do scope do receiver
+> (`resolveCallArguments` em `infer_call.zig` clona o initializer e infere no
+> scope do **call site**, onde `this` não existe). Confirmado que métodos
+> comuns de `type` tinham o mesmo problema (`this.field` em default).
+>
+> **Fix (Kotlin-like):** no fill de defaults, quando a chamada é member call
+> (`callee` é `get_expr`), `this` é substituído pela expressão do receiver
+> via `substituteParam` (que já clona o replacement e para em fronteiras de
+> lambda — `this` dentro de lambda aninhada mantém seu próprio significado).
+> Free functions não têm receiver e mantêm o comportamento anterior; o erro
+> de declaração (`this` fora de método/extensão) continua falhando alto no
+> `inferFunDecl`, sem código silenciosamente errado em métodos estáticos de
+> `object`.
+>
+> **Verificação (2026-09-16):** guardrail reativado (`code: Int = this.code` +
+> `OnboardingError(7)` → `"E7E"`, provando leitura do receiver e não literal);
+> novo teste `should use this defaults in type methods`; `default_params_test.ei`
+> 8/8 + suíte completa **ALL 595 TESTS PASSED** + `zig build test` exit 0.
+>
+> **Gap pré-existente encontrado (fora de escopo, sem relação com o fix):**
+> leitura de propriedade de `type` em top-level retorna lixo
+> (`val error = OnboardingError(7); print(error.code)` → `-7998388550200493059`),
+> sem defaults/extensões/`this` envolvidos — reproduzido idêntico na main limpa
+> (stash + rebuild). Provável codegen do hybrid main (Phase 22), não do
+> mecanismo de defaults. Registrar como fase futura se confirmado o impacto.
 
 ### Phase 83: Visibilidade de extension functions por import (COMPLETED)
 > Hoje qualquer extensão de qualquer módulo do build ficava visível em todos os

@@ -357,9 +357,14 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
                         try self.substituteParam(cloned, prev_p.name, prev_arg);
                     }
                 }
+                if (c.callee.data == .get_expr) {
+                    // Member/extension call: bind `this` to the receiver so
+                    // defaults like `code: Int = this.code` resolve (Kotlin-like).
+                    // Free-function calls keep the previous behavior.
+                    try self.substituteParam(cloned, "this", c.callee.data.get_expr.object);
+                }
                 // Propagate the declared param type so an empty default like
-                // `params: List<String> = []` infers (mirrors every other
-                // default-fill site).
+                // `params: List<String> = []` infers (mirrors every other default-fill site).
                 if (p.type_ref) |tr| {
                     cloned.expected_type = self.resolveHintTypeRef(tr);
                 }
