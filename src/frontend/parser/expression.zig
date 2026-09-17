@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("../../core/compat.zig");
 const ArrayList = compat.ArrayList;
 const ast = @import("../../core/ast.zig");
+const diagnostics = @import("../../core/diagnostics.zig");
 const ASTNode = ast.ASTNode;
 const TokenType = ast.TokenType;
 const Parser = @import("core.zig").Parser;
@@ -692,7 +693,22 @@ fn parseStringLiteralOrTemplate(self: *Parser, raw: []const u8, line: usize, col
                     }
                 }
                 var sub_parser = Parser.initAt(self.allocator, expr_str, expr_line, expr_col);
-                const expr_node = try sub_parser.expression();
+                sub_parser.filename = self.filename;
+                sub_parser.suppress_errors = true;
+                const expr_node = sub_parser.expression() catch {
+                    diagnostics.printDiagnostic(
+                        self.filename,
+                        expr_line,
+                        expr_col,
+                        .err,
+                        "Expected expression inside string template '${{{s}}}'",
+                        .{expr_str},
+                        self.lexer.source,
+                        "Escape a literal dollar with `\\$` (e.g. `\\${{...}}`)",
+                    );
+                    self.had_error = true;
+                    return error.ParseError;
+                };
                 try parts.append(expr_node);
 
                 idx = j;
