@@ -1,0 +1,63 @@
+import { assert } from "std.core"
+
+type ThrowValErr(val text: String) : Throwable {
+    implement fun message(): String {
+        return this.text
+    }
+}
+
+fun retThrowOk(cond: Bool): String {
+    if (cond) {
+        return "ok"
+    }
+    return throw ThrowValErr("boom")
+}
+
+fun retThrowBoth(cond: Bool): String {
+    if (cond) {
+        return throw ThrowValErr("a")
+    }
+    return throw ThrowValErr("b")
+}
+
+test "return throw: ramo valor passa" {
+    assert(retThrowOk(true) == "ok")
+}
+
+test "return throw: ramo throw propaga" {
+    val r: String? = try { retThrowOk(false) }
+    assert(r == null)
+}
+
+test "return throw: ambos ramos throw" {
+    val r: String? = try { retThrowBoth(true) }
+    assert(r == null)
+    val r2: String? = try { retThrowBoth(false) }
+    assert(r2 == null)
+}
+
+test "leave throw em lambda propaga para try/catch" {
+    val f: (Int) -> Int = { x ->
+        if (x < 0) {
+            leave throw ThrowValErr("neg")
+        }
+        x * 2
+    }
+    val bad: Int? = try { f(-3) }
+    assert(bad == null)
+    assert(f(5) == 10)
+}
+
+test "leave throw em loop propaga para fora" {
+    val hit: Bool? = try {
+        var i = 0
+        while (i < 5) {
+            if (i == 2) {
+                leave throw ThrowValErr("loop")
+            }
+            i = i + 1
+        }
+        true
+    }
+    assert(hit == null)
+}
