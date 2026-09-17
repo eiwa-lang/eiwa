@@ -4,6 +4,33 @@ const types = @import("../../core/type_system.zig");
 const c_bindings = @import("c_bindings.zig");
 const llvm = c_bindings.llvm;
 
+/// Matches a scalar against its mangled aliases (`"String"`, `"core_String"`, `"std_core_String"`).
+pub fn isScalarName(name: []const u8, short: []const u8) bool {
+    if (std.mem.eql(u8, name, short)) return true;
+    const rest = if (std.mem.startsWith(u8, name, "std_core_")) name["std_core_".len..] else if (std.mem.startsWith(u8, name, "core_")) name["core_".len..] else return false;
+    return std.mem.eql(u8, rest, short);
+}
+
+/// Matches an EiwaType against a scalar tag or its aliases (`.String` or `Custom("core_String")`).
+pub fn isScalarType(t: types.EiwaType, short: []const u8) bool {
+    return switch (t) {
+        .Custom => |n| isScalarName(n, short),
+        else => std.mem.eql(u8, @tagName(t), short),
+    };
+}
+
+/// Mangled core name for a scalar tag (`Int` → `"core_Int"`); null otherwise.
+pub fn scalarMangled(t: types.EiwaType) ?[]const u8 {
+    return switch (t) {
+        .Int => "core_Int",
+        .Double => "core_Double",
+        .Bool => "core_Bool",
+        .String => "core_String",
+        .Pointer => "core_Pointer",
+        else => null,
+    };
+}
+
 /// Maps Eiwa types to LLVM C-API LLVMTypeRef representation.
 pub fn getLLVMType(ctx: llvm.LLVMContextRef, resolved_type: types.EiwaType) llvm.LLVMTypeRef {
     const expression = @import("expression.zig");
@@ -21,9 +48,9 @@ pub fn getLLVMTypeWithContracts(ctx: llvm.LLVMContextRef, resolved_type: types.E
         .Void => return llvm.LLVMVoidTypeInContext(ctx),
         .String, .Pointer => return llvm.LLVMPointerTypeInContext(ctx, 0),
         .Custom => |name| {
-            if (std.mem.eql(u8, name, "Int") or std.mem.eql(u8, name, "core_Int") or std.mem.eql(u8, name, "std_core_Int")) return llvm.LLVMInt64TypeInContext(ctx);
-            if (std.mem.eql(u8, name, "Bool") or std.mem.eql(u8, name, "core_Bool") or std.mem.eql(u8, name, "std_core_Bool")) return llvm.LLVMInt1TypeInContext(ctx);
-            if (std.mem.eql(u8, name, "Double") or std.mem.eql(u8, name, "core_Double") or std.mem.eql(u8, name, "std_core_Double")) return llvm.LLVMDoubleTypeInContext(ctx);
+            if (isScalarName(name, "Int")) return llvm.LLVMInt64TypeInContext(ctx);
+            if (isScalarName(name, "Bool")) return llvm.LLVMInt1TypeInContext(ctx);
+            if (isScalarName(name, "Double")) return llvm.LLVMDoubleTypeInContext(ctx);
             return llvm.LLVMPointerTypeInContext(ctx, 0);
         },
         .Array, .Function, .Union, .GenericParam, .GenericInstance => return llvm.LLVMPointerTypeInContext(ctx, 0),

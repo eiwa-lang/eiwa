@@ -1533,16 +1533,23 @@ Semântica alvo:
 > `nullable_arg`) + `zig build test` exit 0, com fail-loud ativo (= zero stubs).
 >
 > **Dívidas restantes (follow-ups, não bloqueiam):**
-> - Wrapper C `eiwa_strcmp` retornando `int64_t` + `@Alias` no std, eliminando
->   o conflito de declaração na raiz (o trunc atual é workaround correto, mas
->   workaround).
+> - [x] Wrapper C `eiwa_strcmp` retornando `int64_t` + `@Alias` no std (DONE):
+>   `src/runtime/third_party/eiwa_string/` + `@Source`/`@Header` no
+>   `lib NativeString`; helper `eiwa_string_equals` chama `eiwa_strcmp`
+>   (declaração única i64, trunc deletado). Bare `strcmp` nunca mais é
+>   declarado pelo compilador. Cobertura: `equals` exato + suíte verde.
 > - Dispatch de union multi-variante/`Void` para `toString`/`hashCode` no
 >   emissor (o gerador hoje omite esses campos; chamada explícita do usuário
 >   continua falhando alto).
 > - Tensão `unboxScalarOperand` (raw→LOAD) vs PtrToInt — caminho morto,
 >   documentado no código; não mexer sem caso reprodutível.
-> - Extrair helper compartilhado para os aliases escalares (`types.zig` ×
->   `expression.zig`).
+> - [x] Helper compartilhado para os aliases escalares (DONE):
+>   `isScalarName`/`isScalarType`/`scalarMangled` em `types.zig`; ~15 sites
+>   em `expression.zig` convertidos (incluindo `concreteCNameForVtable` e a
+>   deleção dos closures `is_int_type`/`is_double_type`). Sites com forma
+>   divergente (switch com `.Null`, checks de contrato com `endsWith`)
+>   mantidos. Unificação amplia match `std_core_*` onde faltava (correto:
+>   é o mesmo tipo).
 > - [x] Tipos renderizados como dump de debug nas mensagens (DONE): causa raiz
 >   era o Zig 0.16 — `{}` nunca despacha para método `format` (só `{f}` chama
 >   `value.format(w)`, provado com teste mínimo). Migradas ~175 mensagens do

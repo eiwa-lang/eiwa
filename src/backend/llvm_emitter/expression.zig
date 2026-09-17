@@ -686,11 +686,7 @@ fn emitExpressionRaw(
                 obj_val = llvm.LLVMBuildExtractValue(builder, obj_val, 0, "fat_data_ptr");
             }
             if (std.mem.eql(u8, get.name, "length") or std.mem.eql(u8, get.name, "len")) {
-                const is_str = if (get.object.resolved_type) |rt| (switch (ts.extractBaseType(rt).*) {
-                    .String => true,
-                    .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String") or std.mem.eql(u8, n, "std_core_String"),
-                    else => false,
-                }) else false;
+                const is_str = if (get.object.resolved_type) |rt| types_mapping.isScalarType(ts.extractBaseType(rt).*, "String") else false;
                 if (is_str) {
                     const i64_type = llvm.LLVMInt64TypeInContext(ctx);
                     const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
@@ -702,7 +698,7 @@ fn emitExpressionRaw(
             }
             if (get.object.resolved_type) |rt| {
                 var base_rt = ts.extractBaseType(rt);
-                if (base_rt.* == .String or (base_rt.* == .Custom and (std.mem.eql(u8, base_rt.Custom, "String") or std.mem.eql(u8, base_rt.Custom, "core_String") or std.mem.eql(u8, base_rt.Custom, "std_core_String")))) {
+                if (types_mapping.isScalarType(base_rt.*, "String")) {
                     if (std.mem.eql(u8, get.name, "ptr") or std.mem.eql(u8, get.name, "data")) {
                         const i64_type = llvm.LLVMInt64TypeInContext(ctx);
                         const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
@@ -2018,7 +2014,7 @@ fn emitExpressionRaw(
                 // String constructor: `String(buf)` / `String(buf, len)` builds a
                 // length-prefixed string — `[i64 len][data...]` on the GC heap —
                 // String(ptr, len) constructor: allocate %core_String { ptr, length } struct (Task 64.11)
-                if (std.mem.eql(u8, callee_name, "core_String") or std.mem.eql(u8, callee_name, "String")) {
+                if (types_mapping.isScalarName(callee_name, "String")) {
                     if (call.arguments.len > 0) {
                         const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                         const i64_type = llvm.LLVMInt64TypeInContext(ctx);
@@ -2278,7 +2274,7 @@ fn emitExpressionRaw(
                                     var arg_val = try emitExpression(ctx, mod, builder, scope, structs, libs, arg_node);
                                     if (arg_node.resolved_type) |art| {
                                         const art_base = ts.extractBaseType(art).*;
-                                        if (art_base == .String or (art_base == .Custom and (std.mem.eql(u8, art_base.Custom, "String") or std.mem.eql(u8, art_base.Custom, "core_String")))) {
+                                        if (types_mapping.isScalarType(art_base, "String")) {
                                             const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
                                             var inst_fields = [_]llvm.LLVMTypeRef{ ptr_type, i64_type };
@@ -2338,7 +2334,7 @@ fn emitExpressionRaw(
                     };
                     if (obj_rt_opt) |obj_rt| {
                         const base_obj = ts.extractBaseType(obj_rt).*;
-                        if (base_obj == .String or (base_obj == .Custom and (std.mem.eql(u8, base_obj.Custom, "String") or std.mem.eql(u8, base_obj.Custom, "core_String")))) {
+                        if (types_mapping.isScalarType(base_obj, "String")) {
                             return try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
                         }
                     }
@@ -2421,15 +2417,11 @@ fn emitExpressionRaw(
                                             llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind)
                                         {
                                             if (arg_node.resolved_type) |arg_rt| {
-                                                const arg_c_name = switch (ts.extractBaseType(arg_rt).*) {
+                                                const arg_base_t = ts.extractBaseType(arg_rt).*;
+                                                const arg_c_name = switch (arg_base_t) {
                                                     .Custom => |n| n,
                                                     .GenericInstance => |gi| gi.base_name,
-                                                    .Int => "core_Int",
-                                                    .Double => "core_Double",
-                                                    .Bool => "core_Bool",
-                                                    .String => "core_String",
-                                                    .Pointer => "core_Pointer",
-                                                    else => "",
+                                                    else => types_mapping.scalarMangled(arg_base_t) orelse "",
                                                 };
                                                 if (arg_c_name.len > 0) {
                                                     var contract_c_name: []const u8 = "";
@@ -2553,8 +2545,7 @@ fn emitExpressionRaw(
                 if (std.mem.eql(u8, g.name, "plus")) {
                     if (obj_rt_opt) |obj_rt| {
                         const obj_base = obj_rt.*;
-                        const is_string_plus = obj_base == .String or (obj_base == .Custom and std.mem.eql(u8, obj_base.Custom, "String")) or
-                            (obj_base == .Custom and std.mem.eql(u8, obj_base.Custom, "core_String"));
+                        const is_string_plus = types_mapping.isScalarType(obj_base, "String");
                         if (is_string_plus and call.arguments.len >= 1) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
                             const i8_type = llvm.LLVMInt8TypeInContext(ctx);
@@ -2983,7 +2974,7 @@ fn emitExpressionRaw(
                         }
                         if (is_raw_pointer) {
                             type_name = "core_Pointer";
-                        } else if (base_obj_rt.* == .String or (base_obj_rt.* == .Custom and (std.mem.eql(u8, base_obj_rt.Custom, "String") or std.mem.eql(u8, base_obj_rt.Custom, "core_String")))) {
+                        } else if (types_mapping.isScalarType(base_obj_rt.*, "String")) {
                             type_name = "core_String";
                         } else if (base_obj_rt.* == .Custom) {
                             type_name = base_obj_rt.Custom;
@@ -3099,15 +3090,11 @@ fn emitExpressionRaw(
                                         if (llvm.LLVMGetTypeKind(ptype) == llvm.LLVMStructTypeKind) {
                                             if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind) {
                                                 if (arg_node.resolved_type) |arg_rt| {
-                                                    const arg_c_name = switch (ts.extractBaseType(arg_rt).*) {
+                                                    const arg_base = ts.extractBaseType(arg_rt).*;
+                                                    const arg_c_name = switch (arg_base) {
                                                         .Custom => |n| n,
                                                         .GenericInstance => |gi| gi.base_name,
-                                                        .Int => "core_Int",
-                                                        .Double => "core_Double",
-                                                        .Bool => "core_Bool",
-                                                        .String => "core_String",
-                                                        .Pointer => "core_Pointer",
-                                                        else => "",
+                                                        else => types_mapping.scalarMangled(arg_base) orelse "",
                                                     };
                                                     if (arg_c_name.len > 0) {
                                                         var contract_c_name: []const u8 = "";
@@ -3351,15 +3338,11 @@ fn emitExpressionRaw(
                     if (llvm.LLVMGetTypeKind(ptype) == llvm.LLVMStructTypeKind) {
                         if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind) {
                             if (arg_node.resolved_type) |arg_rt| {
-                                const arg_c_name = switch (ts.extractBaseType(arg_rt).*) {
+                                const arg_base = ts.extractBaseType(arg_rt).*;
+                                const arg_c_name = switch (arg_base) {
                                     .Custom => |n| n,
                                     .GenericInstance => |gi| gi.base_name,
-                                    .Int => "core_Int",
-                                    .Double => "core_Double",
-                                    .Bool => "core_Bool",
-                                    .String => "core_String",
-                                    .Pointer => "core_Pointer",
-                                    else => "",
+                                    else => types_mapping.scalarMangled(arg_base) orelse "",
                                 };
                                 if (arg_c_name.len > 0) {
                                     var contract_c_name: []const u8 = "";
@@ -3681,11 +3664,11 @@ fn emitExpressionRaw(
                                 is_match = i1_true;
                             } else if (std.mem.eql(u8, target_c_name, "core_Null") or std.mem.eql(u8, target_c_name, "Null")) {
                                 is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_data, llvm.LLVMConstNull(ptr_type), "when_is_null");
-                            } else if (std.mem.eql(u8, target_c_name, "Int") or std.mem.eql(u8, target_c_name, "core_Int") or std.mem.eql(u8, target_c_name, "std_core_Int") or std.mem.eql(u8, target_c_name, "core_Double") or std.mem.eql(u8, target_c_name, "Double")) {
+                            } else if (types_mapping.isScalarName(target_c_name, "Int") or types_mapping.isScalarName(target_c_name, "Double")) {
                                 is_match = if (subj_is_fat) i1_false else is_small;
-                            } else if (std.mem.eql(u8, target_c_name, "Bool") or std.mem.eql(u8, target_c_name, "core_Bool") or std.mem.eql(u8, target_c_name, "std_core_Bool")) {
+                            } else if (types_mapping.isScalarName(target_c_name, "Bool")) {
                                 is_match = if (subj_is_fat) i1_false else is_small;
-                            } else if (std.mem.eql(u8, target_c_name, "String") or std.mem.eql(u8, target_c_name, "core_String") or std.mem.eql(u8, target_c_name, "std_core_String")) {
+                            } else if (types_mapping.isScalarName(target_c_name, "String")) {
                                 if (subj_is_fat) {
                                     is_match = i1_false;
                                 } else {
@@ -3965,10 +3948,10 @@ fn emitExpressionRaw(
                 else => i.type_ref.name,
             } else i.type_ref.name;
 
-            const is_target_int = std.mem.eql(u8, target_c_name, "Int") or std.mem.eql(u8, target_c_name, "core_Int") or target_type == .Int;
-            const is_target_str = std.mem.eql(u8, target_c_name, "String") or std.mem.eql(u8, target_c_name, "core_String") or target_type == .String;
-            const is_target_bool = std.mem.eql(u8, target_c_name, "Bool") or std.mem.eql(u8, target_c_name, "core_Bool") or target_type == .Bool;
-            const is_target_double = std.mem.eql(u8, target_c_name, "Double") or std.mem.eql(u8, target_c_name, "core_Double") or target_type == .Double;
+            const is_target_int = types_mapping.isScalarName(target_c_name, "Int") or target_type == .Int;
+            const is_target_str = types_mapping.isScalarName(target_c_name, "String") or target_type == .String;
+            const is_target_bool = types_mapping.isScalarName(target_c_name, "Bool") or target_type == .Bool;
+            const is_target_double = types_mapping.isScalarName(target_c_name, "Double") or target_type == .Double;
 
             const val = try emitExpression(ctx, mod, builder, scope, structs, libs, i.value);
 
@@ -4227,35 +4210,17 @@ fn emitExpressionRaw(
                 const v_base = ts.extractBaseType(v_rt).*;
                 if (node.resolved_type) |nrt| {
                     const n_base = ts.extractBaseType(nrt).*;
-                    const is_int_type = struct {
-                        fn f(t: ts.EiwaType) bool {
-                            return switch (t) {
-                                .Int => true,
-                                .Custom => |n| std.mem.eql(u8, n, "core_Int") or std.mem.eql(u8, n, "Int"),
-                                else => false,
-                            };
-                        }
-                    }.f;
-                    const is_double_type = struct {
-                        fn f(t: ts.EiwaType) bool {
-                            return switch (t) {
-                                .Double => true,
-                                .Custom => |n| std.mem.eql(u8, n, "core_Double") or std.mem.eql(u8, n, "Double"),
-                                else => false,
-                            };
-                        }
-                    }.f;
-                    if (is_int_type(v_base) and is_double_type(n_base)) {
+                    if (types_mapping.isScalarType(v_base, "Int") and types_mapping.isScalarType(n_base, "Double")) {
                         return emitIntToDouble(ctx, builder, val, as_e.value.resolved_type);
                     }
-                    if (is_double_type(v_base) and is_int_type(n_base)) {
+                    if (types_mapping.isScalarType(v_base, "Double") and types_mapping.isScalarType(n_base, "Int")) {
                         return emitDoubleToInt(ctx, builder, val, as_e.value.resolved_type);
                     }
-                    if (is_int_type(v_base) and n_base == .Pointer) {
+                    if (types_mapping.isScalarType(v_base, "Int") and n_base == .Pointer) {
                         const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
                         return llvm.LLVMBuildIntToPtr(builder, val, ptr_t, "int_to_ptr");
                     }
-                    if (v_base == .Pointer and is_int_type(n_base)) {
+                    if (v_base == .Pointer and types_mapping.isScalarType(n_base, "Int")) {
                         const i64_t = llvm.LLVMInt64TypeInContext(ctx);
                         return llvm.LLVMBuildPtrToInt(builder, val, i64_t, "ptr_to_int");
                     }
@@ -4810,9 +4775,7 @@ fn ptrScalarToVariant(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, va
 fn isScalarLikeType(t: ts.EiwaType) bool {
     return switch (t) {
         .Int, .Bool, .Double => true,
-        .Custom => |n| std.mem.eql(u8, n, "Int") or std.mem.eql(u8, n, "core_Int") or std.mem.eql(u8, n, "std_core_Int") or
-            std.mem.eql(u8, n, "Bool") or std.mem.eql(u8, n, "core_Bool") or std.mem.eql(u8, n, "std_core_Bool") or
-            std.mem.eql(u8, n, "Double") or std.mem.eql(u8, n, "core_Double") or std.mem.eql(u8, n, "std_core_Double"),
+        .Custom => |n| types_mapping.isScalarName(n, "Int") or types_mapping.isScalarName(n, "Bool") or types_mapping.isScalarName(n, "Double"),
         else => false,
     };
 }
@@ -4920,11 +4883,7 @@ fn emitUnionBuiltin(
         ) !llvm.LLVMValueRef {
             switch (c_method) {
                 .to_string => {
-                    const is_str = switch (c_variant) {
-                        .String => true,
-                        .Custom => |n| std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "core_String") or std.mem.eql(u8, n, "std_core_String"),
-                        else => false,
-                    };
+                    const is_str = types_mapping.isScalarType(c_variant, "String");
                     if (is_str) return c_boxed;
                     const unboxed = unboxUnionVariant(c_ctx, c_builder, c_variant, c_boxed, c_source_rt);
                     return try emitValueToString(c_ctx, c_mod, c_builder, unboxed, &c_variant);
@@ -5482,15 +5441,11 @@ pub fn findVtableGlobal(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, concr
 /// fat pointer) — the former scalar `as`-cast ICE and wrong-value
 /// contract-typed `val` initializers.
 pub fn concreteCNameForVtable(rt: *const ts.EiwaType) ?[]const u8 {
-    return switch (ts.extractBaseType(rt).*) {
+    const base = ts.extractBaseType(rt).*;
+    return switch (base) {
         .Custom => |n| n,
         .GenericInstance => |gi| gi.base_name,
-        .Int => "core_Int",
-        .Double => "core_Double",
-        .Bool => "core_Bool",
-        .String => "core_String",
-        .Pointer => "core_Pointer",
-        else => null,
+        else => types_mapping.scalarMangled(base),
     };
 }
 
@@ -5572,7 +5527,7 @@ fn isStringOperandType(rt: *const ts.EiwaType) bool {
     const base_rt = ts.extractBaseType(rt);
     return switch (base_rt.*) {
         .String => true,
-        .Custom => |n| std.mem.eql(u8, n, "core_String") or std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "std_core_String"),
+        .Custom => |n| types_mapping.isScalarName(n, "String"),
         .Union => |u| isStringOperandType(u.left) or isStringOperandType(u.right),
         else => false,
     };
@@ -5590,7 +5545,7 @@ fn isStrictString(node: *ast.ASTNode) bool {
     const base_rt = ts.extractBaseType(rt);
     return switch (base_rt.*) {
         .String => true,
-        .Custom => |n| std.mem.eql(u8, n, "core_String") or std.mem.eql(u8, n, "String") or std.mem.eql(u8, n, "std_core_String"),
+        .Custom => |n| types_mapping.isScalarName(n, "String"),
         else => false,
     };
 }
@@ -5638,10 +5593,8 @@ fn customEqualsClass(node: *ast.ASTNode, mod: llvm.LLVMModuleRef) ?[]const u8 {
     }
     defer if (cn_dyn) |dyn| std.heap.page_allocator.free(dyn);
 
-    if (std.mem.eql(u8, cn, "core_String") or std.mem.eql(u8, cn, "String") or std.mem.eql(u8, cn, "std_core_String") or
-        std.mem.eql(u8, cn, "core_Int") or std.mem.eql(u8, cn, "Int") or
-        std.mem.eql(u8, cn, "core_Double") or std.mem.eql(u8, cn, "Double") or
-        std.mem.eql(u8, cn, "core_Bool") or std.mem.eql(u8, cn, "Bool")) return null;
+    if (types_mapping.isScalarName(cn, "String") or types_mapping.isScalarName(cn, "Int") or
+        types_mapping.isScalarName(cn, "Double") or types_mapping.isScalarName(cn, "Bool")) return null;
 
     const mod_prefixes = [_][]const u8{ "", "collections_", "serde_", "json_", "time_", "std_core_", "core_", "ulid_", "uuid_", "math_", "io_", "fs_", "atomic_" };
     for (mod_prefixes) |p| {
