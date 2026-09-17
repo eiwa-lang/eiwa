@@ -89,7 +89,8 @@ fn inferContractMember(self: *TypeChecker, base_name: []const u8, type_args: []c
     return null;
 }
 
-fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, member_name: []const u8) ?*const EiwaType {    const base_type = extractBaseType(target_type);
+fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, member_name: []const u8) ?*const EiwaType {
+    const base_type = extractBaseType(target_type);
     var name_opt: ?[]const u8 = null;
 
     switch (base_type.*) {
@@ -262,7 +263,8 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             const obj = obj_node.data.object_decl;
             for (obj.members) |m| {
                 if ((m.data == .var_decl and std.mem.eql(u8, m.data.var_decl.name, g.name)) or
-                    (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, g.name))) {
+                    (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, g.name)))
+                {
                     object_class_name = actual_class_name;
                     break;
                 }
@@ -320,7 +322,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                     .params = &.{},
                     .return_type = ret_type,
                     .c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ actual_class_name, g.name }),
-                }};
+                } };
                 prop_type = fn_type;
             } else if (std.mem.eql(u8, g.name, "byName")) {
                 const fn_type = try self.allocator.create(EiwaType);
@@ -332,14 +334,14 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 ret_type.* = .{ .Union = .{
                     .left = elem_type,
                     .right = null_type,
-                }};
+                } };
                 const param_type = try self.allocator.create(EiwaType);
                 param_type.* = .String;
                 fn_type.* = .{ .Function = .{
                     .params = try self.allocator.dupe(*const EiwaType, &.{param_type}),
                     .return_type = ret_type,
                     .c_name = try std.fmt.allocPrint(self.allocator, "{s}_byName", .{actual_class_name}),
-                }};
+                } };
                 prop_type = fn_type;
             } else if (std.mem.eql(u8, g.name, "byOrdinal")) {
                 const fn_type = try self.allocator.create(EiwaType);
@@ -351,14 +353,14 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 ret_type.* = .{ .Union = .{
                     .left = elem_type,
                     .right = null_type,
-                }};
+                } };
                 const param_type = try self.allocator.create(EiwaType);
                 param_type.* = .Int;
                 fn_type.* = .{ .Function = .{
                     .params = try self.allocator.dupe(*const EiwaType, &.{param_type}),
                     .return_type = ret_type,
                     .c_name = try std.fmt.allocPrint(self.allocator, "{s}_byOrdinal", .{actual_class_name}),
-                }};
+                } };
                 prop_type = fn_type;
             } else {
                 var found_variant = false;
@@ -372,7 +374,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                     }
                 }
                 if (!found_variant) {
-                    self.reportError(node.line, node.column, "TypeError: Variant '{s}' not found in enum '{s}'.", .{g.name, class_name});
+                    self.reportError(node.line, node.column, "TypeError: Variant '{s}' not found in enum '{s}'.", .{ g.name, class_name });
                     return error.TypeError;
                 }
             }
@@ -385,12 +387,12 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 const recv_name = g.object.data.identifier.name;
                 if (scope.lookupVariableSymbol(recv_name)) |vs| {
                     if (vs.is_mut) {
-                        self.reportError(node.line, node.column, "TypeError: Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type {}. Note: '{s}' is a var and smartcast narrows vals only — bind to a val first (`val p = {s}`) or use ?./!!.", .{ obj_type.*, recv_name, recv_name });
+                        self.reportError(node.line, node.column, "TypeError: Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type {f}. Note: '{s}' is a var and smartcast narrows vals only", .{ obj_type.*, recv_name });
                         return error.TypeError;
                     }
                 }
             }
-            self.reportError(node.line, node.column, "TypeError: Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type {}.", .{obj_type.*});
+            self.reportError(node.line, node.column, "TypeError: Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type {f}.", .{obj_type.*});
             return error.TypeError;
         }
     }
@@ -433,11 +435,11 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         .Pointer => base_name = "core_Pointer",
         else => {},
     }
-    
+
     if (base_name) |bn| {
         lookup_name = self.alias_map.get(bn) orelse bn;
     }
-    
+
     if (lookup_name) |name| {
         var actual_name = name;
         if (!self.classes_ast.contains(actual_name) and std.mem.indexOf(u8, actual_name, " | ") != null) {
@@ -492,7 +494,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                     .params = &.{},
                     .return_type = str_t,
                     .c_name = try std.fmt.allocPrint(self.allocator, "{s}_toString", .{actual_name}),
-                }};
+                } };
                 prop_type = fn_t;
             } else if (std.mem.eql(u8, g.name, "hashCode")) {
                 const fn_t = try self.allocator.create(EiwaType);
@@ -502,7 +504,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                     .params = &.{},
                     .return_type = int_t,
                     .c_name = try std.fmt.allocPrint(self.allocator, "{s}_hashCode", .{actual_name}),
-                }};
+                } };
                 prop_type = fn_t;
             } else if (std.mem.eql(u8, g.name, "equals")) {
                 const fn_t = try self.allocator.create(EiwaType);
@@ -514,7 +516,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                     .params = try self.allocator.dupe(*const EiwaType, &.{param_t}),
                     .return_type = bool_t,
                     .c_name = try std.fmt.allocPrint(self.allocator, "{s}_equals", .{actual_name}),
-                }};
+                } };
                 prop_type = fn_t;
             }
         } else if (self.contracts_ast.get(name)) |contract_node| {
@@ -580,35 +582,37 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             const fun_t = try self.allocator.create(EiwaType);
             var params = try self.allocator.alloc(*const EiwaType, 1);
             params[0] = base_type.Array;
-            
+
             const void_t = try self.allocator.create(EiwaType);
             void_t.* = .Void;
-            
-            fun_t.* = .{ .Function = .{
-                .params = params,
-                .return_type = void_t,
-                .c_name = "", // Will be resolved in the C Transpiler
-            }};
+
+            fun_t.* = .{
+                .Function = .{
+                    .params = params,
+                    .return_type = void_t,
+                    .c_name = "", // Will be resolved in the C Transpiler
+                },
+            };
             prop_type = fun_t;
         } else if (std.mem.eql(u8, g.name, "set")) {
             // set(index: Int, val: T): Void
             const fun_t = try self.allocator.create(EiwaType);
             var params = try self.allocator.alloc(*const EiwaType, 2);
-            
+
             const int_t = try self.allocator.create(EiwaType);
             int_t.* = .Int;
-            
+
             params[0] = int_t;
             params[1] = base_type.Array;
-            
+
             const void_t = try self.allocator.create(EiwaType);
             void_t.* = .Void;
-            
+
             fun_t.* = .{ .Function = .{
                 .params = params,
                 .return_type = void_t,
                 .c_name = "",
-            }};
+            } };
             prop_type = fun_t;
         }
     }
@@ -705,12 +709,12 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             var hint_it = self.registry.?.modules.iterator();
             while (hint_it.next()) |entry| {
                 if (entry.value_ptr.checker.extension_functions.contains(g.name)) {
-                    self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {}. Extension function '{s}' exists in module '{s}' — add it to your imports.", .{ g.name, obj_type.*, g.name, entry.key_ptr.* });
+                    self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {f}. Extension function '{s}' exists in module '{s}' — add it to your imports.", .{ g.name, obj_type.*, g.name, entry.key_ptr.* });
                     return error.TypeError;
                 }
             }
         }
-        self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {}.", .{ g.name, obj_type.* });
+        self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {f}.", .{ g.name, obj_type.* });
         return error.TypeError;
     }
 
@@ -760,7 +764,7 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                     }
                     const prop_type = member.resolved_type.?;
                     if (!self.isCompatible(prop_type, assigned_type)) {
-                        self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when setting static property '{s}'.", .{ prop_type.*, assigned_type.*, s.name });
+                        self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} when setting static property '{s}'.", .{ prop_type.*, assigned_type.*, s.name });
                         return error.TypeError;
                     }
                     break;
@@ -838,13 +842,13 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 if (std.mem.eql(u8, prop.name, s.name)) {
                     found_prop = true;
                     if (!prop.is_mut) {
-                        self.reportError(node.line, node.column, "TypeError: Cannot assign to constant property '{s}' of type {}.", .{ s.name, base_type.* });
+                        self.reportError(node.line, node.column, "TypeError: Cannot assign to constant property '{s}' of type {f}.", .{ s.name, base_type.* });
                         return error.TypeError;
                     }
                     const prop_type = prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
                     if (prop_type) |pt| {
                         if (!self.isCompatible(pt, assigned_type)) {
-                            self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
+                            self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
                             return error.TypeError;
                         }
                         // sentinel-box scalars bound to nullable fields.
@@ -860,13 +864,13 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                     if (std.mem.eql(u8, prop.name, s.name)) {
                         found_prop = true;
                         if (!prop.is_mut) {
-                            self.reportError(node.line, node.column, "TypeError: Cannot assign to constant property '{s}' of type {}.", .{ s.name, base_type.* });
+                            self.reportError(node.line, node.column, "TypeError: Cannot assign to constant property '{s}' of type {f}.", .{ s.name, base_type.* });
                             return error.TypeError;
                         }
                         const prop_type = prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
                         if (prop_type) |pt| {
                             if (!self.isCompatible(pt, assigned_type)) {
-                                self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
+                                self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
                                 return error.TypeError;
                             }
                             // sentinel-box scalars bound to nullable fields.
@@ -880,7 +884,7 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             }
         }
         if (!found_prop) {
-            self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {}.", .{ s.name, base_type.* });
+            self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {f}.", .{ s.name, base_type.* });
             return error.TypeError;
         }
     }
@@ -921,7 +925,7 @@ fn extractArrayElemType(self: *TypeChecker, obj_type: *const EiwaType) !*const E
 pub fn inferIndexExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const i = node.data.index_expr;
     const obj_type = try self.inferNode(i.object, scope);
-    
+
     if (!isNativeArrayType(obj_type) and (obj_type.* == .Custom or obj_type.* == .GenericInstance)) {
         const base_type = extractBaseType(obj_type);
         var name_opt: ?[]const u8 = null;
@@ -954,72 +958,72 @@ pub fn inferIndexExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         // Redireciona para object.get(index)
         const get_ident = try self.allocator.create(ASTNode);
         get_ident.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .identifier = .{ .name = "get", .resolved_c_name = null } } };
-        
+
         const get_expr = try self.allocator.create(ASTNode);
         get_expr.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .get_expr = .{ .object = i.object, .name = "get", .is_safe = false } } };
-        
+
         var args = try self.allocator.alloc(*ASTNode, 1);
         args[0] = i.index;
-        
+
         node.data = .{ .call_expr = .{ .callee = get_expr, .arguments = args } };
-        
+
         try infer_call_mod.inferCallExpr(self, node, scope, t);
         return;
     }
-    
+
     if (!isNativeArrayType(obj_type)) {
-        self.reportError(node.line, node.column, "TypeError: Index operator '[]' can only be used on arrays or objects with .get(). Found {}.", .{obj_type.*});
+        self.reportError(node.line, node.column, "TypeError: Index operator '[]' can only be used on arrays or objects with .get(). Found {f}.", .{obj_type.*});
         return error.TypeError;
     }
-    
+
     const index_type = try self.inferNode(i.index, scope);
     if (index_type.* != .Int) {
-        self.reportError(node.line, node.column, "TypeError: Array index must be Int. Found {}.", .{index_type.*});
+        self.reportError(node.line, node.column, "TypeError: Array index must be Int. Found {f}.", .{index_type.*});
         return error.TypeError;
     }
-    
+
     t.* = (try extractArrayElemType(self, obj_type)).*;
 }
 
 pub fn inferIndexSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const i = node.data.index_set_expr;
     const obj_type = try self.inferNode(i.object, scope);
-    
+
     if (!isNativeArrayType(obj_type) and (obj_type.* == .Custom or obj_type.* == .GenericInstance)) {
         // Redireciona para object.put(index, value) ou object.set(index, value)
         const get_ident = try self.allocator.create(ASTNode);
         get_ident.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .identifier = .{ .name = "put", .resolved_c_name = null } } };
-        
+
         const get_expr = try self.allocator.create(ASTNode);
         get_expr.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .get_expr = .{ .object = i.object, .name = "put", .is_safe = false } } };
-        
+
         var args = try self.allocator.alloc(*ASTNode, 2);
         args[0] = i.index;
         args[1] = i.value;
-        
+
         node.data = .{ .call_expr = .{ .callee = get_expr, .arguments = args } };
-        
+
         try infer_call_mod.inferCallExpr(self, node, scope, t);
         return;
     }
-    
+
     if (!isNativeArrayType(obj_type)) {
-        self.reportError(node.line, node.column, "TypeError: Index assignment operator '[]=' can only be used on arrays or objects with .put(). Found {}.", .{obj_type.*});
+        self.reportError(node.line, node.column, "TypeError: Index assignment operator '[]=' can only be used on arrays or objects with .put(). Found {f}.", .{obj_type.*});
         return error.TypeError;
     }
-    
+
     const elem_type = try extractArrayElemType(self, obj_type);
     const index_type = try self.inferNode(i.index, scope);
     if (index_type.* != .Int) {
-        self.reportError(node.line, node.column, "TypeError: Array index must be Int. Found {}.", .{index_type.*});
+        self.reportError(node.line, node.column, "TypeError: Array index must be Int. Found {f}.", .{index_type.*});
         return error.TypeError;
     }
-    
+
     const value_type = try self.inferNode(i.value, scope);
     if (!self.isCompatible(elem_type, value_type)) {
-        self.reportError(node.line, node.column, "TypeError: Cannot assign {} to array of {}.", .{value_type.*, elem_type.*});
+        self.reportError(node.line, node.column, "TypeError: Cannot assign {f} to array of {f}.", .{ value_type.*, elem_type.* });
         return error.TypeError;
     }
-    
+
     t.* = .Void;
 }

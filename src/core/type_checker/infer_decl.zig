@@ -511,7 +511,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 cloned_init.expected_type = param_type;
                 const init_type = try self.inferNode(cloned_init, &ctor_scope);
                 if (!self.isCompatible(param_type, init_type)) {
-                    self.reportError(node.line, node.column, "TypeError: Default value type {} is incompatible with property type {}.", .{ init_type.*, param_type.* });
+                    self.reportError(node.line, node.column, "TypeError: Default value type {f} is incompatible with property type {f}.", .{ init_type.*, param_type.* });
                     return error.TypeError;
                 }
             }
@@ -541,7 +541,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 init_node.expected_type = bf_type;
                 const init_type = try self.inferNode(init_node, &class_scope);
                 if (!self.isCompatible(bf_type, init_type)) {
-                    self.reportError(node.line, node.column, "TypeError: Body field initializer type {} is incompatible with property type {}.", .{ init_type.*, bf_type });
+                    self.reportError(node.line, node.column, "TypeError: Body field initializer type {f} is incompatible with property type {f}.", .{ init_type.*, bf_type });
                     return error.TypeError;
                 }
             }
@@ -886,7 +886,7 @@ fn validateContracts(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!vo
                 }
             }
             if (!skip_ret_check and !self.isCompatible(contract_ret, impl_ret)) {
-                self.reportError(m.line, m.column, "TypeError: Method '{s}' returns {} but contract '{s}' requires {}.", .{ cm_name, impl_ret.*, cd.name, contract_ret.* });
+                self.reportError(m.line, m.column, "TypeError: Method '{s}' returns {f} but contract '{s}' requires {f}.", .{ cm_name, impl_ret.*, cd.name, contract_ret.* });
                 return error.TypeError;
             }
         }
@@ -1137,7 +1137,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 cloned_init.expected_type = param_type;
                 const init_type = try self.inferNode(cloned_init, &fun_scope);
                 if (!self.isCompatible(param_type, init_type)) {
-                    self.reportError(node.line, node.column, "TypeError: Default value type {} is incompatible with parameter type {}.", .{ init_type.*, param_type.* });
+                    self.reportError(node.line, node.column, "TypeError: Default value type {f} is incompatible with parameter type {f}.", .{ init_type.*, param_type.* });
                     return error.TypeError;
                 }
             }
@@ -1236,7 +1236,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
 
     if (f.is_expr_body) {
         if (!self.isCompatible(return_type, f.body.resolved_type.?)) {
-            self.reportError(node.line, node.column, "TypeError: Expected {} but found {} in expression body.", .{ return_type.*, f.body.resolved_type.?.* });
+            self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} in expression body.", .{ return_type.*, f.body.resolved_type.?.* });
             return error.TypeError;
         }
     } else if (return_type.* != .Void) {
@@ -1245,7 +1245,7 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         // NullPointerException (or a silent wrong value) far from the bug.
         // Unknown/GenericParam declarations stay lenient via isCompatible.
         if (!infer_stmt_mod.bodyGuaranteesReturn(f.body)) {
-            self.reportError(node.line, node.column, "TypeError: Missing return in function '{s}' with return type {}. All code paths must return a value.", .{ f.name, return_type.* });
+            self.reportError(node.line, node.column, "TypeError: Missing return in function '{s}' with return type {f}. All code paths must return a value.", .{ f.name, return_type.* });
             return error.TypeError;
         }
     }
@@ -1275,7 +1275,7 @@ pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
 
     if (declared != null and inferred != null) {
         if (!self.isCompatible(declared.?, inferred.?)) {
-            self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for variable '{s}'.", .{ declared.?.*, inferred.?.*, v.name });
+            self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} for variable '{s}'.", .{ declared.?.*, inferred.?.*, v.name });
             return error.TypeError;
         }
     }

@@ -71,7 +71,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
                     } else {
                         if (!self.isCompatible(target_t, subj_t) and !self.isCompatible(subj_t, target_t)) {
-                            self.reportError(cond.line, cond.column, "TypeError: Cannot check if {} is {}.", .{ subj_t.*, target_t.* });
+                            self.reportError(cond.line, cond.column, "TypeError: Cannot check if {f} is {f}.", .{ subj_t.*, target_t.* });
                             return error.TypeError;
                         }
                     }
@@ -79,7 +79,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     // Value check
                     const val_t = try self.inferNode(cond, scope);
                     if (!self.isCompatible(subj_t, val_t) and !self.isCompatible(val_t, subj_t)) {
-                        self.reportError(cond.line, cond.column, "TypeError: Incompatible types in when condition: expected {} but found {}.", .{ subj_t.*, val_t.* });
+                        self.reportError(cond.line, cond.column, "TypeError: Incompatible types in when condition: expected {f} but found {f}.", .{ subj_t.*, val_t.* });
                         return error.TypeError;
                     }
                 }
@@ -87,7 +87,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 // No subject: conditions must be Bool
                 const cond_t = try self.inferNode(cond, scope);
                 if (!core.isBool(cond_t)) {
-                    self.reportError(cond.line, cond.column, "TypeError: when condition without subject must be Bool. Found {}.", .{cond_t.*});
+                    self.reportError(cond.line, cond.column, "TypeError: when condition without subject must be Bool. Found {f}.", .{cond_t.*});
                     return error.TypeError;
                 }
             }
@@ -137,7 +137,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         if (body_type) |bt| {
             if (node.expected_type) |exp_t| {
                 if (!self.isCompatible(exp_t, bt)) {
-                    self.reportError(case.body.line, case.body.column, "TypeError: when branch has type {} which is incompatible with expected type {}.", .{ bt.*, exp_t.* });
+                    self.reportError(case.body.line, case.body.column, "TypeError: when branch has type {f} which is incompatible with expected type {f}.", .{ bt.*, exp_t.* });
                     return error.TypeError;
                 }
                 resolved_type = exp_t;
@@ -166,7 +166,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         resolved_type = union_t;
                     }
                 } else {
-                    self.reportError(case.body.line, case.body.column, "TypeError: when branches have incompatible types: {} and {}.", .{ curr_res.*, bt.* });
+                    self.reportError(case.body.line, case.body.column, "TypeError: when branches have incompatible types: {f} and {f}.", .{ curr_res.*, bt.* });
                     return error.TypeError;
                 }
             } else {
@@ -181,7 +181,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
     // 5. Exclusivity/Exhaustiveness check for expressions (non-Void return type)
     if (final_t.* != .Void and !has_else) {
-        self.reportError(node.line, node.column, "TypeError: when expression returning non-Void type ({}) must be exhaustive. Missing 'else' branch.", .{final_t.*});
+        self.reportError(node.line, node.column, "TypeError: when expression returning non-Void type ({f}) must be exhaustive. Missing 'else' branch.", .{final_t.*});
         return error.TypeError;
     }
 

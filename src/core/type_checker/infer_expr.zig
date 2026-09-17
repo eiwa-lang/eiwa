@@ -54,7 +54,7 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         }
         const expected = vs.eiwa_type;
         if (!self.isCompatible(expected, assigned_type)) {
-            self.reportError(node.line, node.column, "TypeError: Expected {} but found {} when reassigning variable '{s}'.", .{ expected.*, assigned_type.*, a.name });
+            self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} when reassigning variable '{s}'.", .{ expected.*, assigned_type.*, a.name });
             return error.TypeError;
         }
         a.is_boxed = vs.is_boxed;
@@ -141,13 +141,13 @@ pub fn inferUnaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         t.* = extractBaseType(op_type).*;
     } else if (u.operator == .bang) {
         if (op_type.* != .Bool) {
-            self.reportError(node.line, node.column, "TypeError: Operator '!' requires a Bool operand, but got {}.", .{op_type.*});
+            self.reportError(node.line, node.column, "TypeError: Operator '!' requires a Bool operand, but got {f}.", .{op_type.*});
             return error.TypeError;
         }
         t.* = .Bool;
     } else if (u.operator == .minus) {
         if (op_type.* != .Int and op_type.* != .Double) {
-            self.reportError(node.line, node.column, "TypeError: Operator '-' requires an Int or Double operand, but got {}.", .{op_type.*});
+            self.reportError(node.line, node.column, "TypeError: Operator '-' requires an Int or Double operand, but got {f}.", .{op_type.*});
             return error.TypeError;
         }
         t.* = op_type.*;
@@ -168,7 +168,7 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     if (b.op == .elvis) {
         const l_base = extractBaseType(left_type);
         if (!self.isCompatible(l_base, right_type)) {
-            self.reportError(node.line, node.column, "TypeError: Elvis right-hand side {} is incompatible with left base type {}.", .{ right_type.*, l_base.* });
+            self.reportError(node.line, node.column, "TypeError: Elvis right-hand side {f} is incompatible with left base type {f}.", .{ right_type.*, l_base.* });
             return error.TypeError;
         }
         t.* = l_base.*;
@@ -406,7 +406,7 @@ pub fn inferAsExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
         const is_ptr_to_int = base_val.* == .Pointer and base_target.* == .Int;
         const is_compat = is_int_to_ptr or is_ptr_to_int or self.isCompatible(target_type, val_type) or (base_val.* == .Union and self.isCompatible(base_val, base_target));
         if (!is_compat) {
-            self.reportError(node.line, node.column, "TypeError: Cannot cast {} to {}.", .{ val_type.*, target_type.* });
+            self.reportError(node.line, node.column, "TypeError: Cannot cast {f} to {f}.", .{ val_type.*, target_type.* });
             return error.TypeError;
         }
     }
@@ -438,7 +438,7 @@ pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *E
     const cond_type = try self.inferNode(ternary_node.condition, scope);
     
     if (!core.isBool(cond_type)) {
-        self.reportError(node.line, node.column, "TypeError: Ternary condition must be Bool, found {}.", .{cond_type.*});
+        self.reportError(node.line, node.column, "TypeError: Ternary condition must be Bool, found {f}.", .{cond_type.*});
         return error.TypeError;
     }
     
@@ -493,7 +493,7 @@ pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *E
                 } };
             }
         } else {
-            self.reportError(node.line, node.column, "TypeError: Ternary branches have incompatible types: {} and {}.", .{ then_type.*, else_type.* });
+            self.reportError(node.line, node.column, "TypeError: Ternary branches have incompatible types: {f} and {f}.", .{ then_type.*, else_type.* });
             return error.TypeError;
         }
     } else {
@@ -685,7 +685,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
     if (expected_return) |exp_ret| {
         if (exp_ret.* != .Void and !self.isCompatible(exp_ret, body_type)) {
-            self.reportError(node.line, node.column, "TypeError: Lambda return type {} is incompatible with expected return type {}.", .{ body_type.*, exp_ret.* });
+            self.reportError(node.line, node.column, "TypeError: Lambda return type {f} is incompatible with expected return type {f}.", .{ body_type.*, exp_ret.* });
             return error.TypeError;
         }
     }

@@ -14,7 +14,7 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
     const i = node.data.if_expr;
     const cond_type = try self.inferNode(i.condition, scope);
     if (!core.isBool(cond_type)) {
-        self.reportError(node.line, node.column, "TypeError: if condition must be Bool, found {}.", .{cond_type.*});
+        self.reportError(node.line, node.column, "TypeError: if condition must be Bool, found {f}.", .{cond_type.*});
         return error.TypeError;
     }
     
@@ -89,11 +89,11 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
             if (else_type) |et| {
                 if (node.expected_type) |exp_t| {
                     if (!self.isCompatible(exp_t, tt)) {
-                        self.reportError(i.then_branch.line, i.then_branch.column, "TypeError: if branch has type {} which is incompatible with expected type {}.", .{ tt.*, exp_t.* });
+                        self.reportError(i.then_branch.line, i.then_branch.column, "TypeError: if branch has type {f} which is incompatible with expected type {f}.", .{ tt.*, exp_t.* });
                         return error.TypeError;
                     }
                     if (!self.isCompatible(exp_t, et)) {
-                        self.reportError(else_b.line, else_b.column, "TypeError: if branch has type {} which is incompatible with expected type {}.", .{ et.*, exp_t.* });
+                        self.reportError(else_b.line, else_b.column, "TypeError: if branch has type {f} which is incompatible with expected type {f}.", .{ et.*, exp_t.* });
                         return error.TypeError;
                     }
                     t.* = exp_t.*;
@@ -152,7 +152,7 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
         if (core.isNullable(tt)) {
             if (node.expected_type) |exp_t| {
                 if (!self.isCompatible(exp_t, tt)) {
-                    self.reportError(node.line, node.column, "TypeError: if branch has type {} which is incompatible with expected type {}.", .{ tt.*, exp_t.* });
+                    self.reportError(node.line, node.column, "TypeError: if branch has type {f} which is incompatible with expected type {f}.", .{ tt.*, exp_t.* });
                     return error.TypeError;
                 }
             }
@@ -165,7 +165,7 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
             const nullable = EiwaType{ .Union = .{ .left = left_t, .right = right_t } };
             if (node.expected_type) |exp_t| {
                 if (!self.isCompatible(exp_t, &nullable)) {
-                    self.reportError(node.line, node.column, "TypeError: if branch has type {} which is incompatible with expected type {}.", .{ nullable, exp_t.* });
+                    self.reportError(node.line, node.column, "TypeError: if branch has type {f} which is incompatible with expected type {f}.", .{ nullable, exp_t.* });
                     return error.TypeError;
                 }
             }
@@ -178,7 +178,7 @@ pub fn inferWhileStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
     const w = node.data.while_stmt;
     const cond_type = try self.inferNode(w.condition, scope);
     if (!core.isBool(cond_type)) {
-        self.reportError(node.line, node.column, "TypeError: while condition must be Bool, found {}.", .{cond_type.*});
+        self.reportError(node.line, node.column, "TypeError: while condition must be Bool, found {f}.", .{cond_type.*});
         return error.TypeError;
     }
     var loop_scope = Scope.init(self.allocator, scope);
@@ -294,7 +294,7 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             return error.TypeError;
         }
         if (try desugarMapFor(self, node, scope, t, iter_type)) return;
-        self.reportError(node.line, node.column, "TypeError: for loop iterable must be an Array, List or Map, found {}.", .{iter_type.*});
+        self.reportError(node.line, node.column, "TypeError: for loop iterable must be an Array, List or Map, found {f}.", .{iter_type.*});
         return error.TypeError;
     }
 
@@ -359,9 +359,9 @@ fn inferForCollect(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
     if (node.expected_type) |exp| {
         if (!self.isCompatible(exp, list_t)) {
             if (core.isNullable(vt)) {
-                self.reportError(node.line, node.column, "TypeError: for with null iterations is incompatible with expected {}. Annotate List<T?> to collect nullables.", .{exp.*});
+                self.reportError(node.line, node.column, "TypeError: for with null iterations is incompatible with expected {f}. Annotate List<T?> to collect nullables.", .{exp.*});
             } else {
-                self.reportError(node.line, node.column, "TypeError: for used as a value yields {} but expected {}.", .{ list_t.*, exp.* });
+                self.reportError(node.line, node.column, "TypeError: for used as a value yields {f} but expected {f}.", .{ list_t.*, exp.* });
             }
             return error.TypeError;
         }
@@ -398,7 +398,7 @@ fn checkForBreakValues(self: *TypeChecker, node: *ASTNode, accept: *const EiwaTy
                 if (v.data == .throw_stmt) return;
                 const bt = v.resolved_type orelse return;
                 if (!self.isCompatible(accept, bt) and !self.isCompatible(bt, accept)) {
-                    self.reportError(node.line, node.column, "TypeError: leave value type {} is incompatible with for element type {}.", .{ bt.*, accept.* });
+                    self.reportError(node.line, node.column, "TypeError: leave value type {f} is incompatible with for element type {f}.", .{ bt.*, accept.* });
                     return error.TypeError;
                 }
             }
@@ -686,7 +686,7 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         // discarded by the backend, e.g. synthetic `funPointer` trampolines).
         if (self.current_fn_return) |decl| {
             if (decl.* != .Void and !self.isCompatible(decl, ret_type)) {
-                self.reportError(node.line, node.column, "TypeError: Expected {} but found {} in return statement.", .{ decl.*, ret_type.* });
+                self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} in return statement.", .{ decl.*, ret_type.* });
                 return error.TypeError;
             }
         }
@@ -695,7 +695,7 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     t.* = .Void;
     if (self.current_fn_return) |decl| {
         if (decl.* != .Void) {
-            self.reportError(node.line, node.column, "TypeError: Missing return value in function with return type {}.", .{decl.*});
+            self.reportError(node.line, node.column, "TypeError: Missing return value in function with return type {f}.", .{decl.*});
             return error.TypeError;
         }
     }
@@ -732,7 +732,7 @@ fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const Ei
                 if (v.data == .throw_stmt) return;
                 const vt = v.resolved_type orelse return;
                 if (!self.isCompatible(body_type, vt) and !self.isCompatible(vt, body_type)) {
-                    self.reportError(node.line, node.column, "TypeError: leave value type {} is incompatible with lambda return type {}.", .{ vt.*, body_type.* });
+                    self.reportError(node.line, node.column, "TypeError: leave value type {f} is incompatible with lambda return type {f}.", .{ vt.*, body_type.* });
                     return error.TypeError;
                 }
             } else {
@@ -873,7 +873,7 @@ pub fn inferThrowStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         conforms = self.conformsTo(expr_base.Custom, throwable_base.Custom);
     }
     if (!conforms) {
-        self.reportError(node.line, node.column, "TypeError: Can only throw values of types implementing the 'Throwable' contract, found {}.", .{expr_type.*});
+        self.reportError(node.line, node.column, "TypeError: Can only throw values of types implementing the 'Throwable' contract, found {f}.", .{expr_type.*});
         return error.TypeError;
     }
 
@@ -919,7 +919,7 @@ fn prepareCatchScope(self: *TypeChecker, node: *ASTNode, c: ast.CatchBlock, catc
             if (target_base.* == .Custom) {
                 const is_contract = self.contracts_ast.contains(target_base.Custom);
                 if (!is_contract and !self.conformsTo(target_base.Custom, throwable_base.Custom)) {
-                    self.reportError(node.line, node.column, "TypeError: Catch block type must be a contract or a type implementing 'Throwable', found {}.", .{target_t.*});
+                    self.reportError(node.line, node.column, "TypeError: Catch block type must be a contract or a type implementing 'Throwable', found {f}.", .{target_t.*});
                     return error.TypeError;
                 }
             }
@@ -970,7 +970,7 @@ pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             }
             if (unified) |u| {
                 unified = try unifyTryCatchBranch(self, u, ct) orelse {
-                    self.reportError(node.line, node.column, "TypeError: try/catch branches have incompatible types {} and {}.", .{ u.*, ct.* });
+                    self.reportError(node.line, node.column, "TypeError: try/catch branches have incompatible types {f} and {f}.", .{ u.*, ct.* });
                     return error.TypeError;
                 };
             } else {
@@ -989,7 +989,7 @@ pub fn inferTryStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
     if (node.expected_type) |exp_t| {
         if (!self.isCompatible(exp_t, final)) {
-            self.reportError(node.line, node.column, "TypeError: try/catch has type {} which is incompatible with expected type {}.", .{ final.*, exp_t.* });
+            self.reportError(node.line, node.column, "TypeError: try/catch has type {f} which is incompatible with expected type {f}.", .{ final.*, exp_t.* });
             return error.TypeError;
         }
     }

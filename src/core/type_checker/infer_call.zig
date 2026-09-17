@@ -850,7 +850,7 @@ fn inferExplicitGenericMethodCall(self: *TypeChecker, node: *ASTNode, scope: *Sc
                                         _ = try self.inferNode(arg, scope);
                                     }
                                     if (!self.isCompatible(pt, arg.resolved_type.?)) {
-                                        self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
+                                        self.reportError(arg.line, arg.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
                                         return error.TypeError;
                                     }
                                 }
@@ -932,7 +932,7 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
                             _ = try self.inferNode(arg, scope);
                         }
                         if (!self.isCompatible(pt, arg.resolved_type.?)) {
-                            self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
+                            self.reportError(arg.line, arg.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
                             return error.TypeError;
                         }
                     }
@@ -984,7 +984,7 @@ fn inferExplicitGenericCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, t
             _ = try self.inferNode(arg, scope);
         }
         if (arg.resolved_type == null or !self.isCompatible(expected, arg.resolved_type.?)) {
-            self.reportError(arg.line, arg.column, "TypeError: Expected {} for argument {} of '{s}', got {}.", .{ expected.*, arg_i + 1, name, arg.resolved_type.?.* });
+            self.reportError(arg.line, arg.column, "TypeError: Expected {f} for argument {} of '{s}', got {f}.", .{ expected.*, arg_i + 1, name, arg.resolved_type.?.* });
             return error.TypeError;
         }
     }
@@ -1176,7 +1176,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 // Double check compatibility of all arguments
                 for (c.arguments, 0..) |arg, arg_i| {
                     if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
-                        self.reportError(node.line, node.column, "TypeError: Expected {} for argument {} but got {}.", .{ f.params[arg_i].*, arg_i + 1, arg.resolved_type.?.* });
+                        self.reportError(node.line, node.column, "TypeError: Expected {f} for argument {} but got {f}.", .{ f.params[arg_i].*, arg_i + 1, arg.resolved_type.?.* });
                         return error.TypeError;
                     }
                 }
@@ -1350,7 +1350,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 _ = try self.inferNode(arg, scope);
                             }
                             if (!self.isCompatible(pt, arg.resolved_type.?)) {
-                                self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
+                                self.reportError(arg.line, arg.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
                                 return error.TypeError;
                             }
                         }
@@ -1395,9 +1395,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             is_mutable_list_mismatch = true;
                         }
                         if (is_mutable_list_mismatch) {
-                            self.reportError(node.line, node.column, "TypeError: Incompatible types: expected '{}', but got '{}'. Did you mean to call '.freeze()'?", .{ expected_arg_type.*, arg.resolved_type.?.* });
+                            self.reportError(node.line, node.column, "TypeError: Incompatible types: expected '{f}', but got '{f}'. Did you mean to call '.freeze()'?", .{ expected_arg_type.*, arg.resolved_type.?.* });
                         } else {
-                            self.reportError(node.line, node.column, "TypeError: Expected {} for argument {} but got {}.", .{ expected_arg_type.*, arg_i + 1, arg.resolved_type.?.* });
+                            self.reportError(node.line, node.column, "TypeError: Expected {f} for argument {} but got {f}.", .{ expected_arg_type.*, arg_i + 1, arg.resolved_type.?.* });
                         }
                         return error.TypeError;
                     }
@@ -1641,7 +1641,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                         _ = try self.inferNode(arg, scope);
                                     }
                                     if (!self.isCompatible(pt, arg.resolved_type.?)) {
-                                        self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
+                                        self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ pt.*, arg.resolved_type.?.*, arg_i + 1 });
                                         return error.TypeError;
                                     }
                                 }
@@ -1720,7 +1720,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     const arg = c.arguments[arg_i];
                     if (arg.resolved_type) |actual| {
                         if (!self.isCompatible(param, actual)) {
-                            self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ param.*, actual.*, arg_i + 1 });
+                            self.reportError(arg.line, arg.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ param.*, actual.*, arg_i + 1 });
                             return error.TypeError;
                         }
                     }
@@ -1756,7 +1756,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     for (c.arguments, 0..) |arg, arg_i| {
                         if (arg_i < f.params.len) {
                             if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
-                                self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
+                                self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
                                 return error.TypeError;
                             }
                         }
@@ -1765,7 +1765,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     node.resolved_type = t;
                     return;
                 } else {
-                    self.reportError(node.line, node.column, "TypeError: Cannot call a field '{s}' of non-function type {}.", .{ g.name, field_type.* });
+                    self.reportError(node.line, node.column, "TypeError: Cannot call a field '{s}' of non-function type {f}.", .{ g.name, field_type.* });
                     return error.TypeError;
                 }
             }
@@ -1969,7 +1969,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     arg.expected_type = expected_type;
                     const arg_type = try self.inferNode(arg, scope);
                     if (!self.isCompatible(expected_type, arg_type)) {
-                        self.reportError(arg.line, arg.column, "TypeError: Expected {} but found {} for argument {}.", .{ expected_type.*, arg_type.*, i + 1 });
+                        self.reportError(arg.line, arg.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ expected_type.*, arg_type.*, i + 1 });
                         return error.TypeError;
                     }
                 } else {
@@ -2284,7 +2284,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     for (c.arguments, 0..) |arg, arg_i| {
                         if (arg_i < f.params.len) {
                             if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
-                                self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
+                                self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
                                 return error.TypeError;
                             }
                         }
@@ -2315,7 +2315,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 for (c.arguments, 0..) |arg, arg_i| {
                     if (arg_i < f.params.len) {
                         if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
-                            self.reportError(node.line, node.column, "TypeError: Expected {} but found {} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
+                            self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} for argument {}.", .{ f.params[arg_i].*, arg.resolved_type.?.*, arg_i + 1 });
                             return error.TypeError;
                         }
                     }

@@ -1543,10 +1543,17 @@ Semântica alvo:
 >   documentado no código; não mexer sem caso reprodutível.
 > - Extrair helper compartilhado para os aliases escalares (`types.zig` ×
 >   `expression.zig`).
-> - Tipos renderizados como dump de debug nas mensagens (`Union{Custom{...},
->   Null}` em vez de `Post?`): o repo tem pretty-printer (`EiwaType.format`),
->   mas os diagnósticos imprimem o formato interno — sistêmico e pré-existente
->   (ex: `Expected .{ .String = void }`).
+> - [x] Tipos renderizados como dump de debug nas mensagens (DONE): causa raiz
+>   era o Zig 0.16 — `{}` nunca despacha para método `format` (só `{f}` chama
+>   `value.format(w)`, provado com teste mínimo). Migradas ~175 mensagens do
+>   checker de `{}` para `{f}` onde o arg é `EiwaType` (contagens/índices/erros
+>   mantêm `{}`/`{d}`; compilador acusa qualquer site errado). Agora
+>   `Persona?`, `Expected String but found String?`, `String | Int`.
+>   Nomes `Custom` exibem short name sem prefixo snake_case de módulo
+>   (`persona_dtos_PersonaResponse?` → `PersonaResponse?`, via `shortName`:
+>   corta segmentos minúsculos até o primeiro PascalCase; sem underscore ou
+>   sem segmento maiúsculo mantém o nome cheio). Cobertura: unit test
+>   `shortName` em `type_system.zig` + repro cross-module.
 
 ### Phase 86: View `MutableList` → `List` na borda de chamadas (segfault em projeto real) (COMPLETED)
 > **Status:** COMPLETED (fix `5474b9a` de 2026-09-14; working tree limpa na `main`).

@@ -29,6 +29,18 @@ pub const EiwaType = union(enum) {
         type_args: []const *const EiwaType,
     },
 
+    fn shortName(name: []const u8) []const u8 {
+        var i: usize = 0;
+        while (i < name.len) {
+            var j = i;
+            while (j < name.len and name[j] != '_') : (j += 1) {}
+            if (j > i and name[i] >= 'A' and name[i] <= 'Z') return name[i..];
+            if (j >= name.len) break;
+            i = j + 1;
+        }
+        return name;
+    }
+
     /// Pretty-printer (`Persona?`, `String | Int`). Note: Zig 0.16 only
     /// dispatches to it via the `{f}` specifier, not `{}` (which dumps).
     pub fn format(self: EiwaType, writer: anytype) !void {
@@ -54,7 +66,7 @@ pub const EiwaType = union(enum) {
                 try elem.format(writer);
                 try writer.writeAll(">");
             },
-            .Custom => |name| try writer.writeAll(name),
+            .Custom => |name| try writer.writeAll(shortName(name)),
             .Function => |f| {
                 if (f.receiver) |r| {
                     try r.format(writer);
@@ -81,7 +93,7 @@ pub const EiwaType = union(enum) {
             },
             .GenericParam => |name| try writer.writeAll(name),
             .GenericInstance => |g| {
-                try writer.writeAll(g.base_name);
+                try writer.writeAll(shortName(g.base_name));
                 try writer.writeAll("<");
                 for (g.type_args, 0..) |arg, i| {
                     if (i > 0) try writer.writeAll(", ");
@@ -422,4 +434,12 @@ return isCompatible(f_exp.return_type, f_act.return_type);
         }
     }
     return false;
+}
+
+test "shortName strips snake_case module prefixes" {
+    try std.testing.expectEqualStrings("PersonaResponse", EiwaType.shortName("persona_dtos_PersonaResponse"));
+    try std.testing.expectEqualStrings("String", EiwaType.shortName("core_String"));
+    try std.testing.expectEqualStrings("Foo_Bar", EiwaType.shortName("m_Foo_Bar"));
+    try std.testing.expectEqualStrings("Persona", EiwaType.shortName("Persona"));
+    try std.testing.expectEqualStrings("foo_bar", EiwaType.shortName("foo_bar"));
 }

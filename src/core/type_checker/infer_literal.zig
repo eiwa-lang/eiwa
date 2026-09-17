@@ -79,7 +79,7 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
         for (a.elements) |elem| {
             const elem_type = try self.inferNode(elem, scope);
             if (!self.isCompatible(first_type, elem_type)) {
-                self.reportError(node.line, node.column, "TypeError: Incompatible types in array literal. Expected {} but found {}.", .{ first_type.*, elem_type.* });
+                self.reportError(node.line, node.column, "TypeError: Incompatible types in array literal. Expected {f} but found {f}.", .{ first_type.*, elem_type.* });
                 return error.TypeError;
             }
             // Phase 80: raw scalars bound to a nullable element type must be
@@ -93,7 +93,7 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
         for (a.elements[1..]) |elem| {
             const elem_type = try self.inferNode(elem, scope);
             if (!self.isCompatible(first_type, elem_type)) {
-                self.reportError(node.line, node.column, "TypeError: Incompatible types in array literal. Expected {} but found {}.", .{ first_type.*, elem_type.* });
+                self.reportError(node.line, node.column, "TypeError: Incompatible types in array literal. Expected {f} but found {f}.", .{ first_type.*, elem_type.* });
                 return error.TypeError;
             }
         }
