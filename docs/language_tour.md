@@ -127,7 +127,7 @@ fun main() {
 }
 ```
 
-`break` exits the innermost `while`/`for` loop early (no `continue` in Eiwa — skipping an iteration is written with `if`/`else`):
+`leave` exits the innermost `while`/`for` loop early (no `continue` in Eiwa — skipping an iteration is written with `if`/`else`):
 
 ```kotlin
 fun main() {
@@ -135,7 +135,7 @@ fun main() {
     var total = 0
     while (true) {
         if (i >= 5) {
-            break
+            leave
         }
         if (i != 0) {
             total = total + i
@@ -156,11 +156,11 @@ assert(doubled.size() == 3)
 assert(doubled[0] == 2)
 assert(doubled[2] == 6)
 
-// `break` ends early with what was collected so far;
-// `break v` appends `v` and ends
+// `leave` ends early with what was collected so far;
+// `leave v` appends `v` and ends
 val first2 = for ([1, 2, 3, 4]) { i, n ->
     if (i == 2) {
-        break
+        leave
     }
     n * 10
 }
@@ -1525,12 +1525,12 @@ val invalid = { x: Int ->
 
 To return a value from a lambda, simply use the trailing expression.
 
-For early exits, use `break` with a value — local to the lambda (`return` stays forbidden there):
+For early exits, use `leave` with a value — local to the lambda (`return` stays forbidden there):
 
 ```kotlin
 val f: (Int) -> Int = { x ->
     if (x < 0) {
-        break 0
+        leave 0
     }
     x * 2
 }
@@ -1538,10 +1538,10 @@ assert(f(5) == 10)
 assert(f(-3) == 0)
 ```
 
-Rules for `break`:
-- The `break` value must be compatible with the lambda return type (or with the collected element type inside a value-`for`); a bare `break` in a lambda requires a `Void` lambda.
-- Bare `break` inside a loop exits the innermost loop (no labels); in a statement loop, `break v` is checked and discarded.
-- `break` outside any loop or lambda is a compile-time error, as is `break` inside `task {}` (synchronous code only). There is no `continue` — skipping an iteration is written with `if`/`else`.
+Rules for `leave`:
+- The `leave` value must be compatible with the lambda return type (or with the collected element type inside a value-`for`); a bare `leave` in a lambda requires a `Void` lambda.
+- Bare `leave` inside a loop exits the innermost loop (no labels); in a statement loop, `leave v` is checked and discarded.
+- `leave` outside any loop or lambda is a compile-time error, as is `leave` inside `task {}` (synchronous code only). There is no `continue` — skipping an iteration is written with `if`/`else`.
 
 ### 15.6 Extension Functions
 Eiwa allows you to extend existing types (including standard types like `String`, `Int`, `List<T>` or user-defined types) with new methods without modifying their original declaration or using inheritance.

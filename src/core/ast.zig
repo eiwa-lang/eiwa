@@ -16,7 +16,7 @@ pub const TokenType = enum {
     kw_if,
     kw_else,
     kw_return,
-    kw_break,
+    kw_leave,
     kw_while,
     kw_import,
     kw_from,

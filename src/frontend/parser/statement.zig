@@ -103,7 +103,7 @@ pub fn returnStatement(self: *Parser) anyerror!*ASTNode {
     return try self.createNodeAt(.{ .return_stmt = .{ .value = value } }, line, col);
 }
 
-pub fn breakStatement(self: *Parser) anyerror!*ASTNode {
+pub fn leaveStatement(self: *Parser) anyerror!*ASTNode {
     const line = self.previous.line;
     const col = self.previous.column;
     var value: ?*ASTNode = null;

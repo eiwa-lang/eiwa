@@ -21,7 +21,7 @@ test "for as value collects trailing expression" {
 test "for as value with named param and index" {
     val tens = for ([1, 2, 3, 4]) { i, n ->
         if (i == 2) {
-            break
+            leave
         }
         n * 10
     }
@@ -55,10 +55,10 @@ test "for as value with bare if filters" {
     assert(odds[1] == 3)
 }
 
-test "break appends value and ends collection" {
+test "leave appends value and ends collection" {
     val withEnd = for ([1, 2, 3]) { n ->
         if (n == 2) {
-            break -1
+            leave -1
         }
         n
     }

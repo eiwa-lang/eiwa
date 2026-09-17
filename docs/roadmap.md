@@ -9,7 +9,8 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 84 — `Map` com valor nullable** (`contains` caminhando buckets por chave) — **concluída** (2026-09-16).
 > **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
 > **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
-> **Fase atual (2026-09):** **Phases 88–90 (sintaxe)** — `break` → `leave`, String multilinha com `"` única, `throw` em `return`/`leave` + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9).
+> **Phase 88 — Renomear `break` → `leave`** (hard break da keyword, sem alias; decisão em ADR 69) — **concluída** (2026-09-17).
+> **Fase atual (2026-09):** **Phases 89–90 (sintaxe)** — String multilinha com `"` única, `throw` em `return`/`leave` + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9).
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1627,23 +1628,22 @@ Semântica alvo:
 > - Referência bare a função como valor (`val f = error`) agora falha alto em
 >   vez de resolver silencioso (loud > silent; sem cobertura — ninguém fazia).
 
-### Phase 88: Renomear palavra reservada `break` → `leave` (OPEN)
-> **Motivação:** trocar a palavra reservada de saída antecipada de `break` para
-> `leave` (`leave` bare sai do loop/lambda; `leave v` sai com valor). Hard break,
-> sem alias de transição: `break` deixa de ser keyword e volta a ser um
-> identificador válido. Semântica das Phases 76/78 intacta — só a grafia muda.
-> (Labels futuros do G6 viram `leave@outer`.)
+### Phase 88: Renomear palavra reservada `break` → `leave` (COMPLETED)
+> **Status:** COMPLETED (2026-09-17, decisão em ADR 69). Hard break sem alias:
+> `leave`/`leave v` substitui `break` em todos os sentidos; `break` volta a ser
+> identificador válido (`val break = 1` compila). Semântica das Phases 76/78
+> intacta — só a grafia muda. (Labels futuros do G6 viram `leave@outer`.)
 >
 > **Mapeamento (levantado 2026-09-16):** stdlib (`src/std`) não usa `break`;
 > `cli/src` e `samples/*.ei` também não. Uso concentrado em `break_test.ei`,
 > `for_value_test.ei`, `docs/language_tour.md` e mensagens de erro.
-- [ ] **Task 88.1:** Lexer (`src/frontend/lexer.zig:107`): reconhecer `leave` como keyword; remover `break` da lista. Decidir: renomear o token `kw_break` → `kw_leave` ou só a grafia (recomendado: renomear o token junto).
-- [ ] **Task 88.2:** Parser (`declaration.zig:58`, `statement.zig:114`): `breakStatement` passa a aceitar `kw_leave` (renomear para `leaveStatement` se o token for renomeado).
-- [ ] **Task 88.3:** Internos: decidir se `.break_stmt` (AST), `is_lambda_break`, `BreakInSuspendContext`, `TaskRejectKind.@"break"` e walkers (`coroutines.zig`, `coroutines_transform.zig`, `clone.zig`, `core.zig`, emissor) são renomeados (recomendado: manter os nomes internos, trocar só o user-facing — diff mínimo, risco zero na state machine).
-- [ ] **Task 88.4:** Diagnósticos user-facing: `'break' is only allowed inside a loop or lambda` (`infer_stmt.zig:193`), `break value type ...` (`infer_stmt.zig:348,672`), `bare 'break' in lambda ...` (`infer_stmt.zig:677`), `'break' is not supported inside task blocks` (`coroutines_transform.zig:2540`).
-- [ ] **Task 88.5:** Testes: renomear `samples/tests/break_test.ei` → `leave_test.ei` (corpos + nomes dos testes), atualizar `for_value_test.ei`; adicionar regressão do hard break (`val break = 1` deve compilar).
-- [ ] **Task 88.6:** Docs: `docs/language_tour.md` (§ for-valor ~130-163, § lambda ~1528-1544).
-- [ ] **Verify:** suíte completa verde + `zig build test`; `break` sem nenhuma ocorrência restante em `samples/`, `src/std/` e docs (exceto histórico/roadmap).
+- [x] **Task 88.1:** Lexer (`src/frontend/lexer.zig:107`): reconhecer `leave` como keyword; remover `break` da lista. Decidir: renomear o token `kw_break` → `kw_leave` ou só a grafia (recomendado: renomear o token junto).
+- [x] **Task 88.2:** Parser (`declaration.zig:58`, `statement.zig:114`): `breakStatement` passa a aceitar `kw_leave` (renomear para `leaveStatement` se o token for renomeado).
+- [x] **Task 88.3:** Internos: decidir se `.break_stmt` (AST), `is_lambda_break`, `BreakInSuspendContext`, `TaskRejectKind.@"break"` e walkers (`coroutines.zig`, `coroutines_transform.zig`, `clone.zig`, `core.zig`, emissor) são renomeados (recomendado: manter os nomes internos, trocar só o user-facing — diff mínimo, risco zero na state machine).
+- [x] **Task 88.4:** Diagnósticos user-facing: `'break' is only allowed inside a loop or lambda` (`infer_stmt.zig:193`), `break value type ...` (`infer_stmt.zig:348,672`), `bare 'break' in lambda ...` (`infer_stmt.zig:677`), `'break' is not supported inside task blocks` (`coroutines_transform.zig:2540`).
+- [x] **Task 88.5:** Testes: renomear `samples/tests/break_test.ei` → `leave_test.ei` (corpos + nomes dos testes), atualizar `for_value_test.ei`; adicionar regressão do hard break (`val break = 1` deve compilar).
+- [x] **Task 88.6:** Docs: `docs/language_tour.md` (§ for-valor ~130-163, § lambda ~1528-1544).
+- [x] **Verify:** suíte completa verde + `zig build test`; `break` sem nenhuma ocorrência restante em `samples/`, `src/std/` e docs (exceto histórico/roadmap).
 
 ### Phase 89: String multilinha com `"` única (OPEN)
 > **Motivação:** aceitar quebra de linha literal dentro de `"..."` (espírito do
@@ -1673,7 +1673,7 @@ Semântica alvo:
 > de `return`/`break` (`parser/statement.zig:90-115`) chamam `self.expression()`:
 > `return throw E("boom")` falha com `Expected expression`. (Throw como trailing
 > de bloco em `try/catch`-valor já é pulado como Nothing pela F1.)
-- [ ] **Task 90.1:** Parser: aceitar `kw_throw` nos slots de valor de `returnStatement` e `breakStatement` (futuro `leaveStatement`) — `throw` como valor tipa `Nothing` (bottom, compatível com tudo), sem virar expressão geral.
+- [ ] **Task 90.1:** Parser: aceitar `kw_throw` nos slots de valor de `returnStatement` e `leaveStatement` — `throw` como valor tipa `Nothing` (bottom, compatível com tudo), sem virar expressão geral.
 - [ ] **Task 90.2:** Checker: valor-`throw` aceito contra qualquer tipo esperado — compat de `return`, `checkLambdaBreaks` (`leave` com valor em lambda), trailing de `for` coletor; `throw` bare como ramo inteiro (`try { throw E() } catch { "fb" }`) já funciona via F1.
 - [ ] **Task 90.3:** Emissor: emitir o `throw` (longjmp + unreachable) nessas posições sem segundo terminador; código após é morto (nada a armazenar no slot de valor).
 - [ ] **Task 90.4:** Transform/walkers: `return`/`break` com valor-`throw` passam pelos walkers existentes (`b.value`/`r.value` já genéricos) — só validar `task {}` (rejeição uniforme, espelho F2/G5).

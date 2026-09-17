@@ -190,7 +190,7 @@ pub fn inferBreakStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         t.* = .Void;
         return;
     }
-    self.reportError(node.line, node.column, "TypeError: 'break' is only allowed inside a loop or lambda.", .{});
+    self.reportError(node.line, node.column, "TypeError: 'leave' is only allowed inside a loop or lambda.", .{});
     return error.TypeError;
 }
 
@@ -345,7 +345,7 @@ fn checkForBreakValues(self: *TypeChecker, node: *ASTNode, accept: *const EiwaTy
             if (b.value) |v| {
                 const bt = v.resolved_type orelse return;
                 if (!self.isCompatible(accept, bt) and !self.isCompatible(bt, accept)) {
-                    self.reportError(node.line, node.column, "TypeError: break value type {} is incompatible with for element type {}.", .{ bt.*, accept.* });
+                    self.reportError(node.line, node.column, "TypeError: leave value type {} is incompatible with for element type {}.", .{ bt.*, accept.* });
                     return error.TypeError;
                 }
             }
@@ -669,12 +669,12 @@ fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const Ei
             if (b.value) |v| {
                 const vt = v.resolved_type orelse return;
                 if (!self.isCompatible(body_type, vt) and !self.isCompatible(vt, body_type)) {
-                    self.reportError(node.line, node.column, "TypeError: break value type {} is incompatible with lambda return type {}.", .{ vt.*, body_type.* });
+                    self.reportError(node.line, node.column, "TypeError: leave value type {} is incompatible with lambda return type {}.", .{ vt.*, body_type.* });
                     return error.TypeError;
                 }
             } else {
                 if (body_type.* != .Void) {
-                    self.reportError(node.line, node.column, "TypeError: bare 'break' in lambda requires a Void lambda; use 'break value' to return a value.", .{});
+                    self.reportError(node.line, node.column, "TypeError: bare 'leave' in lambda requires a Void lambda; use 'leave value' to return a value.", .{});
                     return error.TypeError;
                 }
             }

@@ -1,12 +1,12 @@
 import { assert } from "std.core"
 import { MutableMap } from "std.collections"
 
-fun sumToBreak(): Int {
+fun sumToLeave(): Int {
     var total = 0
     var i = 0
     while (i < 10) {
         if (i == 3) {
-            break
+            leave
         }
         total = total + i
         i = i + 1
@@ -14,54 +14,54 @@ fun sumToBreak(): Int {
     return total
 }
 
-test "while with break stops at limit" {
-    assert(sumToBreak() == 3)
+test "while with leave stops at limit" {
+    assert(sumToLeave() == 3)
 }
 
-test "for with break stops early" {
+test "for with leave stops early" {
     val nums = [1, 2, 3, 4, 5]
     var total = 0
     for (nums) { n ->
         if (n == 4) {
-            break
+            leave
         }
         total = total + n
     }
     assert(total == 6)
 }
 
-test "for with break and implicit it" {
+test "for with leave and implicit it" {
     val nums = [1, 2, 3, 4, 5]
     var total = 0
     for (nums) {
         if (it == 4) {
-            break
+            leave
         }
         total = total + it
     }
     assert(total == 6)
 }
 
-test "for with index stops via break" {
+test "for with index stops via leave" {
     val nums = [10, 20, 30, 40]
     var seen = 0
     for (nums) { i, n ->
         if (i == 2) {
-            break
+            leave
         }
         seen = seen + n
     }
     assert(seen == 30)
 }
 
-test "break exits only the innermost loop" {
+test "leave exits only the innermost loop" {
     var count = 0
     var i = 0
     while (i < 3) {
         var j = 0
         while (j < 5) {
             if (j == 2) {
-                break
+                leave
             }
             count = count + 1
             j = j + 1
@@ -71,10 +71,10 @@ test "break exits only the innermost loop" {
     assert(count == 6)
 }
 
-test "lambda break v returns early value" {
+test "lambda leave v returns early value" {
     val f: (Int) -> Int = { x ->
         if (x < 0) {
-            break 0
+            leave 0
         }
         x * 2
     }
@@ -90,19 +90,19 @@ test "lambda trailing expression still works" {
     assert(g(5) == 15)
 }
 
-test "break with value in loop statement exits loop" {
+test "leave with value in loop statement exits loop" {
     val nums = [1, 2, 3]
     var total = 0
     for (nums) { n ->
         if (n == 2) {
-            break -1
+            leave -1
         }
         total = total + n
     }
     assert(total == 1)
 }
 
-test "for over map supports break" {
+test "for over map supports leave" {
     val map = MutableMap<String, Int>()
     map.put("a", 1)
     map.put("b", 2)
@@ -113,7 +113,7 @@ test "for over map supports break" {
             sum = sum + entry.value
             count = count + 1
             if (count == 1) {
-                break
+                leave
             }
         }
     }
@@ -125,11 +125,11 @@ fun callLambda(f: () -> Void) {
     f()
 }
 
-test "lambda bare break exits Void lambda early" {
+test "lambda bare leave exits Void lambda early" {
     var executed = false
     callLambda {
         if (true) {
-            break
+            leave
         }
         executed = true
         assert(true)
@@ -137,14 +137,19 @@ test "lambda bare break exits Void lambda early" {
     assert(executed == false)
 }
 
-test "lambda bare break not taken falls through" {
+test "lambda bare leave not taken falls through" {
     var executed = false
     callLambda {
         if (false) {
-            break
+            leave
         }
         executed = true
         assert(true)
     }
     assert(executed == true)
+}
+
+test "hard break: break is a valid identifier again" {
+    val break = 1
+    assert(break == 1)
 }

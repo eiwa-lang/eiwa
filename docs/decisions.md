@@ -1119,3 +1119,52 @@ estilo Kotlin) sem custo para o caso comum: std continua implícito, extensões
 locais continuam automáticas. O hint transforma o breaking change em erro
 autoexplicativo. Validação: suíte completa 516/516 sem nenhum ajuste —
 nenhum teste dependia da visibilidade global acidental.
+
+## ADR 69: Renomear Saída Antecipada `break` → `leave` (Hard Break da Keyword)
+**Status:** Aprovado (Phase 88, GREEN)
+**Data:** Setembro 2026
+
+**Contexto:**
+1. `break`/`break v` (ADR 64, Phase 78) é a saída antecipada de loops
+   (`while`/`for`) e lambdas (substituto do `return` proibido pelo ADR 53).
+   A semântica está estável e coberta (`leave_test.ei`, `for_value_test.ei`).
+2. `break` é uma das palavras mais comuns como identificador em user-space
+   (`val break`, `break` de linha, etc.). Como keyword reservada, qualquer
+   uso como variável falhava no parse — sem alternativa.
+3. A semântica Eiwa é mais ampla que o `break` do C (que só sai de loop):
+   aqui também se sai de lambda com valor. Uma palavra própria deixa claro
+   que se está "saindo do construto" e não emitindo o `break` do C.
+4. Labels de `break` (`break@outer`, follow-up G6) ainda não existem; renomear
+   antes deles evita carregar a sintaxe `break@outer` para depois migrar para
+   `leave@outer`.
+
+**Decisão:**
+1. **Hard break, sem alias:** `leave` (bare sai do loop/lambda; `leave v`
+   sai com valor) substitui `break` em todos os sentidos. `break` deixa de
+   ser keyword e volta a ser identificador válido (`val break = 1` compila).
+2. **Só a grafia muda:** semântica das Phases 76/78 intacta (loop-statement
+   checa e descarta `leave v`; lambda checa contra o retorno; `task {}`
+   rejeita; sem `continue`; aninhados = mais interno). Labels futuros viram
+   `leave@outer` (G6).
+3. **Diff mínimo no compilador:** token `kw_break` → `kw_leave`
+   (`ast.zig`, `lexer.zig`); `breakStatement` → `leaveStatement`
+   (`parser/statement.zig`, `declaration.zig`, `parser/core.zig`). Internos
+   preservados de propósito (`.break_stmt`, `is_lambda_break`,
+   `BreakInSuspendContext`, `TaskRejectKind.@"break"`, walkers) — risco zero
+   na state machine de corrotinas.
+4. **Diagnósticos user-facing trocados:** `'leave' is only allowed inside a
+   loop or lambda`, `leave value type ...`, `bare 'leave' in lambda ...`,
+   `'leave' is not supported inside task blocks`.
+5. **Histórico preservado:** ADR 64, `docs/plan_phase78_break.md` e Phase 78
+   do roadmap mantêm `break` (documentam a época); só `language_tour.md`
+   (§ loops, § for-valor, § lambda) migra para `leave`.
+
+**Razão:**
+`leave` libera um identificador comum, descreve melhor a semântica
+(loop + lambda, não só loop C) e fixa a grafia antes dos labels
+(`leave@outer`), sem custo de migração interna. O hard break sem alias segue
+o precedente da linguagem (`class`/`open`/`abstract` removidos sem compat).
+Validação: `leave_test.ei` 12/12 (inclui regressão `val break = 1`) +
+`for_value_test.ei` 12/12 + suíte completa **ALL 603 TESTS PASSED** +
+`zig build test` verde; zero ocorrências de `break` restantes em
+`samples/`, `src/std/` e `language_tour.md` (só histórico/roadmap).

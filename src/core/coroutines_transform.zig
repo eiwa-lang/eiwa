@@ -2537,7 +2537,7 @@ fn rewriteTaskCall(
     // elsewhere in the same task).
     for (body) |bstmt| {
         if (taskNodeHas(bstmt, .@"break")) |brk| {
-            checker.reportError(brk.line, brk.column, "TypeError: 'break' is not supported inside task blocks (synchronous code only).", .{});
+            checker.reportError(brk.line, brk.column, "TypeError: 'leave' is not supported inside task blocks (synchronous code only).", .{});
             return error.TypeError;
         }
         if (taskNodeHas(bstmt, .collect_for)) |cf| {
