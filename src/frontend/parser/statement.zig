@@ -92,9 +92,11 @@ pub fn returnStatement(self: *Parser) anyerror!*ASTNode {
     const col = self.previous.column;
     var value: ?*ASTNode = null;
     if (!self.check(.r_brace) and !self.check(.eof)) {
-        // Value slot: `return for (...) { ... }`.
+        // Value slot: `return for (...) { ... }` or `return throw E(...)`
         if (self.match(.kw_for)) {
             value = try self.forStatement();
+        } else if (self.match(.kw_throw)) {
+            value = try self.throwStatement();
         } else {
             value = try self.expression();
         }
@@ -108,7 +110,12 @@ pub fn leaveStatement(self: *Parser) anyerror!*ASTNode {
     const col = self.previous.column;
     var value: ?*ASTNode = null;
     if (!self.check(.r_brace) and !self.check(.eof)) {
-        value = try self.expression();
+        // Phase 90: `leave throw E(...)` — throw as the leave value.
+        if (self.match(.kw_throw)) {
+            value = try self.throwStatement();
+        } else {
+            value = try self.expression();
+        }
     }
 
     return try self.createNodeAt(.{ .break_stmt = .{ .value = value } }, line, col);

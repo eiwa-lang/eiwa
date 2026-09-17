@@ -10,7 +10,7 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
 > **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
 > **Phase 88 — Renomear `break` → `leave`** (hard break da keyword, sem alias; decisão em ADR 69) — **concluída** (2026-09-17).
-> **Fase atual (2026-09):** **Phases 89–90 (sintaxe)** — String multilinha com `"` única, `throw` em `return`/`leave` + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9).
+> **Fase atual (2026-09):** **Phase 89 (sintaxe)** — String multilinha com `"` única + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9). **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1662,7 +1662,20 @@ Semântica alvo:
 - [ ] **Task 89.5:** Docs: seção de strings em `docs/language_tour.md`.
 - [ ] **Verify:** suíte completa verde + `zig build test`.
 
-### Phase 90: `throw` como valor de `return` / `leave` (OPEN)
+### Phase 90: `throw` como valor de `return` / `leave` (COMPLETED)
+> **Status:** COMPLETED (GREEN). `return throw E(...)` e `leave throw E(...)`
+> (grafia pós-Phase 88) com `throw` divergente (`Nothing`, compatível com
+> qualquer tipo esperado). Cobertura em `samples/tests/throw_value_test.ei`
+> (5 testes). Fora de escopo mantido: `throw` geral (`val x = throw`,
+> `foo(throw)`) continua `Expected expression`.
+> **Implementação:** parser aceita `kw_throw` nos slots de `returnStatement`/
+> `leaveStatement` (`statement.zig`, sem tocar `expression()`); checker pula
+> compat em `inferReturnStmt`/`inferBreakStmt`/`checkLambdaBreaks`/
+> `checkForBreakValues` (`throw` nunca anexa em `for` coletor);
+> emissor com helper compartilhado `emitThrowStmt` (sem segundo terminador);
+> `clone.zig` com arm profundo de `throw_stmt`; `task {}` sem mudança
+> (`leave` já rejeitado no nível do `break`, `return` já proibido em lambda).
+> Docs em `language_tour.md` (§6 `throw`, §15 `leave`).
 > **Motivação:** permitir `return throw E(...)` e `leave throw E(...)` (grafia
 > pós-Phase 88). Como `throw` diverge (nunca produz valor), ele é compatível com
 > qualquer tipo esperado — equivale a lançar direto, mas sem quebrar o fluxo de
@@ -1673,13 +1686,13 @@ Semântica alvo:
 > de `return`/`break` (`parser/statement.zig:90-115`) chamam `self.expression()`:
 > `return throw E("boom")` falha com `Expected expression`. (Throw como trailing
 > de bloco em `try/catch`-valor já é pulado como Nothing pela F1.)
-- [ ] **Task 90.1:** Parser: aceitar `kw_throw` nos slots de valor de `returnStatement` e `leaveStatement` — `throw` como valor tipa `Nothing` (bottom, compatível com tudo), sem virar expressão geral.
-- [ ] **Task 90.2:** Checker: valor-`throw` aceito contra qualquer tipo esperado — compat de `return`, `checkLambdaBreaks` (`leave` com valor em lambda), trailing de `for` coletor; `throw` bare como ramo inteiro (`try { throw E() } catch { "fb" }`) já funciona via F1.
-- [ ] **Task 90.3:** Emissor: emitir o `throw` (longjmp + unreachable) nessas posições sem segundo terminador; código após é morto (nada a armazenar no slot de valor).
-- [ ] **Task 90.4:** Transform/walkers: `return`/`break` com valor-`throw` passam pelos walkers existentes (`b.value`/`r.value` já genéricos) — só validar `task {}` (rejeição uniforme, espelho F2/G5).
-- [ ] **Task 90.5:** Testes: `return throw` nos dois ramos de `fun` com retorno, `leave throw` em lambda (chamador observa exceção via `try/catch`), `leave throw` em loop (propaga para fora); `throw` fora dessas posições continua erro.
-- [ ] **Task 90.6:** Docs: `docs/language_tour.md` (§ `throw`, § lambda/`leave`).
-- [ ] **Verify:** suíte completa verde + `zig build test`.
+- [x] **Task 90.1:** Parser: aceitar `kw_throw` nos slots de valor de `returnStatement` e `leaveStatement` — `throw` como valor tipa `Nothing` (bottom, compatível com tudo), sem virar expressão geral.
+- [x] **Task 90.2:** Checker: valor-`throw` aceito contra qualquer tipo esperado — compat de `return`, `checkLambdaBreaks` (`leave` com valor em lambda), trailing de `for` coletor; `throw` bare como ramo inteiro (`try { throw E() } catch { "fb" }`) já funciona via F1.
+- [x] **Task 90.3:** Emissor: emitir o `throw` (longjmp + unreachable) nessas posições sem segundo terminador; código após é morto (nada a armazenar no slot de valor).
+- [x] **Task 90.4:** Transform/walkers: `return`/`break` com valor-`throw` passam pelos walkers existentes (`b.value`/`r.value` já genéricos) — só validar `task {}` (rejeição uniforme, espelho F2/G5).
+- [x] **Task 90.5:** Testes: `return throw` nos dois ramos de `fun` com retorno, `leave throw` em lambda (chamador observa exceção via `try/catch`), `leave throw` em loop (propaga para fora); `throw` fora dessas posições continua erro.
+- [x] **Task 90.6:** Docs: `docs/language_tour.md` (§ `throw`, § lambda/`leave`).
+- [x] **Verify:** suíte completa verde + `zig build test`.
 >
 > **Fora de escopo (futuro):** `throw` como expressão geral (`val x = throw E()`, `foo(throw E())`, operandos) — só `return` e `leave` nesta fase.
 

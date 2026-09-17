@@ -170,19 +170,29 @@ pub fn inferBreakStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         // Loop target: the value is only checked here (a collecting `for`
         // appends it at emission); bare break is just Void.
         if (b.value) |v| {
+            if (v.data == .throw_stmt) {
+                _ = try self.inferNode(v, scope);
+                t.* = .Void;
+                return;
+            }
             _ = try self.inferNode(v, scope);
         }
         t.* = .Void;
         return;
     }
     if (in_lambda) {
-        // Lambda target: local exit with an optional value (the `return`
-        // forbidden by ADR 53). Compatibility with the lambda return type is
+        // Lambda target: local exit with an optional value. 
+        // Compatibility with the lambda return type is
         // checked at the end of lambda inference (only flagged nodes).
         var nb = b;
         nb.is_lambda_break = true;
         node.data.break_stmt = nb;
         if (b.value) |v| {
+            if (v.data == .throw_stmt) {
+                _ = try self.inferNode(v, scope);
+                t.* = .Void;
+                return;
+            }
             const vt = try self.inferNode(v, scope);
             t.* = vt.*;
             return;
@@ -343,6 +353,7 @@ fn checkForBreakValues(self: *TypeChecker, node: *ASTNode, accept: *const EiwaTy
         .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
         .break_stmt => |b| {
             if (b.value) |v| {
+                if (v.data == .throw_stmt) return;
                 const bt = v.resolved_type orelse return;
                 if (!self.isCompatible(accept, bt) and !self.isCompatible(bt, accept)) {
                     self.reportError(node.line, node.column, "TypeError: leave value type {} is incompatible with for element type {}.", .{ bt.*, accept.* });
@@ -616,6 +627,15 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
     const r = node.data.return_stmt;
     if (r.value) |v| {
+        if (v.data == .throw_stmt) {
+            _ = try self.inferNode(v, scope);
+            if (self.current_fn_return) |decl| {
+                t.* = decl.*;
+            } else {
+                t.* = .Void;
+            }
+            return;
+        }
         markTrailingValue(v, true);
         const ret_type = try self.inferNode(v, scope);
         t.* = ret_type.*;
@@ -667,6 +687,7 @@ fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const Ei
         .break_stmt => |b| {
             if (!b.is_lambda_break) return;
             if (b.value) |v| {
+                if (v.data == .throw_stmt) return;
                 const vt = v.resolved_type orelse return;
                 if (!self.isCompatible(body_type, vt) and !self.isCompatible(vt, body_type)) {
                     self.reportError(node.line, node.column, "TypeError: leave value type {} is incompatible with lambda return type {}.", .{ vt.*, body_type.* });

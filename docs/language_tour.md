@@ -425,6 +425,26 @@ fun checkAge(age: Int) {
 
 Exceptions propagate up function call frames until they encounter a matching handler.
 
+`throw` also works as the value of `return` and `leave` — it diverges
+(`Nothing`), so it fits any expected type without breaking the reading flow:
+```kotlin
+fun fetchName(required: Bool): String {
+    if (required) {
+        return "guest"
+    }
+    return throw InvalidAgeException("name is required")
+}
+
+val f: (Int) -> Int = { x ->
+    if (x < 0) {
+        leave throw InvalidAgeException("negative: " + x.toString())
+    }
+    x * 2
+}
+```
+`throw` anywhere else (variable initializer, call argument, operand) is still
+rejected — only the `return`/`leave` value slots accept it.
+
 ### 6.1 Basic Usage
 Eiwa supports two forms of `try`. The standard form catches specific exception types:
 ```kotlin
@@ -1541,6 +1561,7 @@ assert(f(-3) == 0)
 Rules for `leave`:
 - The `leave` value must be compatible with the lambda return type (or with the collected element type inside a value-`for`); a bare `leave` in a lambda requires a `Void` lambda.
 - Bare `leave` inside a loop exits the innermost loop (no labels); in a statement loop, `leave v` is checked and discarded.
+- `leave throw E(...)` diverges like a bare `throw` (never appends to a value-`for`, always compatible with the lambda type) and propagates out of the loop/lambda to the nearest `try`/`catch`.
 - `leave` outside any loop or lambda is a compile-time error, as is `leave` inside `task {}` (synchronous code only). There is no `continue` — skipping an iteration is written with `if`/`else`.
 
 ### 15.6 Extension Functions

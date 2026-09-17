@@ -83,6 +83,9 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
             if (b.value) |v| val = try self.cloneNode(v);
             new_node.data = .{ .break_stmt = .{ .value = val, .is_lambda_break = b.is_lambda_break } };
         },
+        .throw_stmt => |t| {
+            new_node.data = .{ .throw_stmt = .{ .expr = try self.cloneNode(t.expr) } };
+        },
         .var_decl => |v| {
             var val: ?*ASTNode = null;
             if (v.initializer) |init| val = try self.cloneNode(init);

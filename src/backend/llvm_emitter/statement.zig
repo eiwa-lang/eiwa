@@ -124,6 +124,92 @@ fn emitReturnValue(
     }
 }
 
+/// Shared lowering for `throw E`. Terminates the current block via longjmp/unwind branches 
+/// and leaves the builder in a fresh dead block, so callers must NOT emit a second terminator.
+fn emitThrowStmt(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    throw_node: *ast.ASTNode,
+) anyerror!void {
+    const th = throw_node.data.throw_stmt;
+    const throw_ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const throw_i32_type = llvm.LLVMInt32TypeInContext(ctx);
+
+    const throw_exc_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, th.expr);
+    const throw_active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
+    const throw_stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
+    const throw_fat_type = types_mapping.getFatPointerType(ctx);
+    var throw_fat_exc = throw_exc_val;
+    if (llvm.LLVMTypeOf(throw_exc_val) != throw_fat_type) {
+        var throw_conc_c: []const u8 = "";
+        if (th.expr.resolved_type) |rt| {
+            throw_conc_c = switch (rt.*) {
+                .Custom => |n| n,
+                .GenericInstance => |gi| gi.base_name,
+                else => "",
+            };
+        }
+        throw_fat_exc = expression.coerceToContract(ctx, mod, builder, throw_exc_val, throw_conc_c, "Throwable") catch blk: {
+            var f = llvm.LLVMConstNull(throw_fat_type);
+            f = llvm.LLVMBuildInsertValue(builder, f, throw_exc_val, 0, "fat_data");
+            break :blk f;
+        };
+    }
+    _ = llvm.LLVMBuildStore(builder, throw_fat_exc, throw_active_global);
+
+    const throw_cur_stack = llvm.LLVMBuildLoad2(builder, throw_ptr_type, throw_stack_global, "cur_stack");
+    const throw_null_ptr = llvm.LLVMConstNull(throw_ptr_type);
+    const throw_has_handler = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, throw_cur_stack, throw_null_ptr, "has_handler");
+
+    const throw_do_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.do");
+    const throw_unhandled_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.unhandled");
+    _ = llvm.LLVMBuildCondBr(builder, throw_has_handler, throw_do_bb, throw_unhandled_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, throw_do_bb);
+    {
+        const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
+        const buf_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, throw_cur_stack, 0, "stack_buf");
+        const buf_ptr = llvm.LLVMBuildBitCast(builder, buf_gep, throw_ptr_type, "sbuf");
+        const longjmp_func = (llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp")) orelse return error.ExceptionRuntimeMissing;
+        const lj_type = llvm.LLVMGlobalGetValueType(longjmp_func);
+        const one_i32 = llvm.LLVMConstInt(throw_i32_type, 1, 0);
+        var lj_args = [_]llvm.LLVMValueRef{ buf_ptr, one_i32 };
+        _ = llvm.LLVMBuildCall2(builder, lj_type, longjmp_func, &lj_args, 2, "");
+        _ = llvm.LLVMBuildUnreachable(builder);
+    }
+
+    llvm.LLVMPositionBuilderAtEnd(builder, throw_unhandled_bb);
+    {
+        if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
+            const puts_ft = llvm.LLVMGlobalGetValueType(puts_fn);
+            const msg_ptr = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled exception (no active handler)\n  --> throw reached the top level without a matching try/catch", "unhandled_msg");
+            var puts_args = [_]llvm.LLVMValueRef{msg_ptr};
+            _ = llvm.LLVMBuildCall2(builder, puts_ft, puts_fn, &puts_args, 1, "");
+        }
+        const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
+        const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
+        const one_i32 = llvm.LLVMConstInt(throw_i32_type, 1, 0);
+        var exit_args = [_]llvm.LLVMValueRef{one_i32};
+        _ = llvm.LLVMBuildCall2(builder, exit_type, exit_func, &exit_args, 1, "");
+        _ = llvm.LLVMBuildUnreachable(builder);
+    }
+
+    // throw never falls through: both branches end in unreachable. Put
+    // the builder in a fresh unreachable block so subsequent statements
+    // (if any) still have a valid (dead) insertion point without
+    // leaving an unterminated basic block in the module.
+    const throw_cont_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.cont");
+    llvm.LLVMPositionBuilderAtEnd(builder, throw_cont_bb);
+    _ = llvm.LLVMBuildUnreachable(builder);
+    const throw_dead_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.dead");
+    llvm.LLVMPositionBuilderAtEnd(builder, throw_dead_bb);
+}
+
 fn checkVtableMatch(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: llvm.LLVMBuilderRef, ptr_type: llvm.LLVMTypeRef, exc_vtable: llvm.LLVMValueRef, tr_rt: eiwa_types.EiwaType) anyerror!llvm.LLVMValueRef {
     var is_m = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
     const base_rt = eiwa_types.extractBaseType(&tr_rt);
@@ -650,7 +736,12 @@ pub fn emitStatement(
         },
         .return_stmt => |ret| {
             if (ret.value) |val_node| {
-                try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
+                // Phase 90: `return throw E` diverges like a bare throw.
+                if (val_node.data == .throw_stmt) {
+                    try emitThrowStmt(ctx, mod, builder, func_val, scope, structs, libs, val_node);
+                } else {
+                    try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
+                }
             } else {
                 _ = llvm.LLVMBuildRetVoid(builder);
             }
@@ -658,99 +749,40 @@ pub fn emitStatement(
         .break_stmt => |b| {
             // Innermost loop of this function wins; a lambda-local break with
             // no enclosing loop exits the lambda (same lowering as `return`).
+            // Phase 90: `leave throw E` diverges — emit the throw inline with
+            // no append/branch/return after it (the helper terminates).
             if (loop_stack.innermostFor(func_val)) |frame| {
                 if (b.value) |val_node| {
-                    if (frame.collect) |ci| {
+                    if (val_node.data == .throw_stmt) {
+                        try emitThrowStmt(ctx, mod, builder, func_val, scope, structs, libs, val_node);
+                    } else if (frame.collect) |ci| {
                         // `break v` appends and ends the collection.
                         var v = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
                         v = expression.coerceArg(builder, v, ci.elem_type);
                         _ = try expression.emitBufferPushRaw(ctx, mod, builder, ci.buf_addr, v, ci.elem_type, ci.elem_stride);
+                        _ = llvm.LLVMBuildBr(builder, frame.after_bb);
                     } else {
                         // Loop target: evaluate and discard.
                         _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+                        _ = llvm.LLVMBuildBr(builder, frame.after_bb);
                     }
+                } else {
+                    _ = llvm.LLVMBuildBr(builder, frame.after_bb);
                 }
-                _ = llvm.LLVMBuildBr(builder, frame.after_bb);
             } else if (b.value) |val_node| {
-                try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
+                if (val_node.data == .throw_stmt) {
+                    try emitThrowStmt(ctx, mod, builder, func_val, scope, structs, libs, val_node);
+                } else {
+                    try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
+                }
             } else if (b.is_lambda_break) {
                 _ = llvm.LLVMBuildRetVoid(builder);
             } else {
                 return error.BreakOutsideLoop;
             }
         },
-        .throw_stmt => |th| {
-            const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
-            const i32_type = llvm.LLVMInt32TypeInContext(ctx);
-
-            const exc_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, th.expr);
-            const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
-            const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
-            const fat_type = types_mapping.getFatPointerType(ctx);
-            var fat_exc = exc_val;
-            if (llvm.LLVMTypeOf(exc_val) != fat_type) {
-                var conc_c: []const u8 = "";
-                if (th.expr.resolved_type) |rt| {
-                    conc_c = switch (rt.*) {
-                        .Custom => |n| n,
-                        .GenericInstance => |gi| gi.base_name,
-                        else => "",
-                    };
-                }
-                fat_exc = expression.coerceToContract(ctx, mod, builder, exc_val, conc_c, "Throwable") catch blk: {
-                    var f = llvm.LLVMConstNull(fat_type);
-                    f = llvm.LLVMBuildInsertValue(builder, f, exc_val, 0, "fat_data");
-                    break :blk f;
-                };
-            }
-            _ = llvm.LLVMBuildStore(builder, fat_exc, active_global);
-
-            const cur_stack = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "cur_stack");
-            const null_ptr = llvm.LLVMConstNull(ptr_type);
-            const has_handler = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cur_stack, null_ptr, "has_handler");
-
-            const do_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.do");
-            const unhandled_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.unhandled");
-            _ = llvm.LLVMBuildCondBr(builder, has_handler, do_bb, unhandled_bb);
-
-            llvm.LLVMPositionBuilderAtEnd(builder, do_bb);
-            {
-                const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
-                const buf_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, cur_stack, 0, "stack_buf");
-                const buf_ptr = llvm.LLVMBuildBitCast(builder, buf_gep, ptr_type, "sbuf");
-                const longjmp_func = (llvm.LLVMGetNamedFunction(mod, "_longjmp") orelse llvm.LLVMGetNamedFunction(mod, "longjmp")) orelse return error.ExceptionRuntimeMissing;
-                const lj_type = llvm.LLVMGlobalGetValueType(longjmp_func);
-                const one_i32 = llvm.LLVMConstInt(i32_type, 1, 0);
-                var lj_args = [_]llvm.LLVMValueRef{ buf_ptr, one_i32 };
-                _ = llvm.LLVMBuildCall2(builder, lj_type, longjmp_func, &lj_args, 2, "");
-                _ = llvm.LLVMBuildUnreachable(builder);
-            }
-
-            llvm.LLVMPositionBuilderAtEnd(builder, unhandled_bb);
-            {
-                if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
-                    const puts_ft = llvm.LLVMGlobalGetValueType(puts_fn);
-                    const msg_ptr = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled exception (no active handler)\n  --> throw reached the top level without a matching try/catch", "unhandled_msg");
-                    var puts_args = [_]llvm.LLVMValueRef{msg_ptr};
-                    _ = llvm.LLVMBuildCall2(builder, puts_ft, puts_fn, &puts_args, 1, "");
-                }
-                const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
-                const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
-                const one_i32 = llvm.LLVMConstInt(i32_type, 1, 0);
-                var exit_args = [_]llvm.LLVMValueRef{one_i32};
-                _ = llvm.LLVMBuildCall2(builder, exit_type, exit_func, &exit_args, 1, "");
-                _ = llvm.LLVMBuildUnreachable(builder);
-            }
-
-            // throw never falls through: both branches end in unreachable. Put
-            // the builder in a fresh unreachable block so subsequent statements
-            // (if any) still have a valid (dead) insertion point without
-            // leaving an unterminated basic block in the module.
-            const cont_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.cont");
-            llvm.LLVMPositionBuilderAtEnd(builder, cont_bb);
-            _ = llvm.LLVMBuildUnreachable(builder);
-            const dead_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.dead");
-            llvm.LLVMPositionBuilderAtEnd(builder, dead_bb);
+        .throw_stmt => {
+            try emitThrowStmt(ctx, mod, builder, func_val, scope, structs, libs, node);
         },
         .try_stmt => |ts| {
             const frame = try emitTryBegin(ctx, mod, builder, func_val);
