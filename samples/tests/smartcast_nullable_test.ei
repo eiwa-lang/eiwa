@@ -1,0 +1,194 @@
+// Phase 91 RED — Smartcast de nullable estilo Kotlin (if / ternário / when)
+// Cada teste usa acesso DIRETO após checagem explícita de null,
+// sem ?. / !!. Hoje todos falham com:
+//   "Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver"
+
+contract Drawable {
+    fun draw(): String
+}
+
+type Circle(val r: Int) : Drawable {
+    implement fun draw(): String {
+        return "circle"
+    }
+}
+
+fun lenIfNotNull(s: String?): Int {
+    if (s != null) {
+        return s.length
+    }
+    return -1
+}
+
+fun lenIfNullElse(s: String?): Int {
+    if (s == null) {
+        return -1
+    } else {
+        return s.length
+    }
+}
+
+fun lenEarlyReturn(s: String?): Int {
+    if (s == null) {
+        return -1
+    }
+    return s.length
+}
+
+fun renderDrawable(d: Drawable?): String {
+    if (d != null) {
+        return d.draw()
+    }
+    return "none"
+}
+
+type NullErr(val text: String) : Throwable {
+    implement fun message(): String {
+        return text
+    }
+}
+
+fun lenOrThrow(s: String?): Int {
+    if (s == null) {
+        throw NullErr("null")
+    }
+    return s.length
+}
+
+type Profile(val name: String?) {
+    fun nameLen(): Int {
+        if (name != null) {
+            return name.length
+        }
+        return -1
+    }
+
+    fun run(init: Profile.() -> Void) {
+        init(this)
+    }
+}
+
+type Box(val label: String) {
+    fun run(init: Box.() -> Void) {
+        init(this)
+    }
+}
+
+test "if != null narrows then-branch (String)" {
+    assert(lenIfNotNull("hello") == 5)
+    assert(lenIfNotNull(null) == -1)
+}
+
+test "if == null narrows else-branch (String)" {
+    assert(lenIfNullElse("hello") == 5)
+    assert(lenIfNullElse(null) == -1)
+}
+
+test "early-return with == null narrows flow after if" {
+    assert(lenEarlyReturn("abc") == 3)
+    assert(lenEarlyReturn(null) == -1)
+}
+
+test "ternary full narrows non-null branch" {
+    val s: String? = "hello"
+    val n: Int = (s != null) ? s.length : -1
+    assert(n == 5)
+    val t: String? = null
+    val m: Int = (t != null) ? t.length : -1
+    assert(m == -1)
+}
+
+test "ternary short narrows then and types T?" {
+    val s: String? = "hi"
+    val r: Int? = (s != null) ? s.length
+    assert(r == 2)
+}
+
+test "when with null branch narrows else" {
+    val s: String? = "hello"
+    val n = when (s) {
+        null -> -1
+        else -> s.length
+    }
+    assert(n == 5)
+    val t: String? = null
+    val m = when (t) {
+        null -> -1
+        else -> t.length
+    }
+    assert(m == -1)
+}
+
+test "contract nullable dispatches after check" {
+    val c: Drawable? = Circle(1)
+    assert(renderDrawable(c) == "circle")
+    val n: Drawable? = null
+    assert(renderDrawable(n) == "none")
+}
+
+test "smartcast of local val inside receiver lambda" {
+    val b = Box("hi")
+    b.run {
+        val s: String? = "abc"
+        if (s != null) {
+            assert(s.length == 3)
+        }
+    }
+    assert(true)
+}
+
+test "early-throw with == null narrows flow after if" {
+    assert(lenOrThrow("abcd") == 4)
+    val r: Int? = try { lenOrThrow(null) }
+    assert(r == null)
+}
+
+test "ternary full with == null narrows else-branch" {
+    val s: String? = "hello"
+    val n: Int = (s == null) ? -1 : s.length
+    assert(n == 5)
+    val t: String? = null
+    val m: Int = (t == null) ? -1 : t.length
+    assert(m == -1)
+}
+
+test "when with is Null branch narrows else" {
+    val s: String? = "hello"
+    val n = when (s) {
+        is Null -> -1
+        else -> s.length
+    }
+    assert(n == 5)
+    val t: String? = null
+    val m = when (t) {
+        is Null -> -1
+        else -> t.length
+    }
+    assert(m == -1)
+}
+
+test "smartcast of receiver nullable field without this." {
+    val p = Profile("lion")
+    assert(p.nameLen() == 4)
+    val q = Profile(null)
+    assert(q.nameLen() == -1)
+    p.run {
+        if (name != null) {
+            assert(name.length == 4)
+        }
+    }
+    assert(true)
+}
+
+// 91.9 (warning, cheap): após o smartcast, !! / ?. viram no-op.
+// Comportamento passa, mas o checker deve emitir `warning` sem quebrar o build.
+test "redundant !! and ?. after smartcast warn but pass" {
+    val s: String? = "hello"
+    if (s != null) {
+        val a = s!!
+        assert(a.length == 5)
+        val b = s?.length
+        assert(b == 5)
+    }
+    assert(true)
+}
