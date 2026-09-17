@@ -4346,6 +4346,11 @@ pub fn emitRawCharBuffer(
                 else => try unescaped.append(str[i + 1]),
             }
             i += 1;
+        } else if (str[i] == '\r') {
+            // Normalize CRLF/lone CR from Windows checkouts to LF so
+            // multiline string literals behave identically on every OS.
+            try unescaped.append('\n');
+            if (i + 1 < str.len and str[i + 1] == '\n') i += 1;
         } else {
             try unescaped.append(str[i]);
         }
