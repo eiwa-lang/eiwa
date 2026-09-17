@@ -1554,6 +1554,11 @@ Semântica alvo:
 >   corta segmentos minúsculos até o primeiro PascalCase; sem underscore ou
 >   sem segmento maiúsculo mantém o nome cheio). Cobertura: unit test
 >   `shortName` em `type_system.zig` + repro cross-module.
+> - [x] Warnings 91.9 silenciam em clones monomorfizados (DONE): corpos
+>   genéricos são re-inferidos por instanciação, poss. no checker de outro
+>   módulo com arquivo/posição trocados — warnings ali confundem (erros
+>   continuam disparando). Via `monomorph_depth` no checker (mesmo padrão do
+>   `speculative_depth` pré-existente).
 
 ### Phase 86: View `MutableList` → `List` na borda de chamadas (segfault em projeto real) (COMPLETED)
 > **Status:** COMPLETED (fix `5474b9a` de 2026-09-14; working tree limpa na `main`).
@@ -1823,3 +1828,4 @@ Semântica alvo:
 * **Method Resolution Name Mangling (July 9, 2026):** Resolved a compiler bug where primitive method resolution failed on `Int`, `Bool`, etc., because the type checker searched for the raw type names in `classes_ast` instead of using the mangled name `system_Int`.
 * **Modular Standard Library Architecture (July 21, 2026):** Refactored the monolithic `src/std/core.ei` into clean specialist modules (`std.core`, `std.io`, `std.system`, `std.exceptions`), renamed `Printable` to `Echoable`, and centralized implicit import constants in `infer_decl.zig` (ADR 30).
 * **Implicit `this` Member Syntax (July 21, 2026):** Made `this.` optional for reading/writing properties and calling sibling methods inside `type` declarations and receiver lambdas (`T.() -> Void`), adding pre-registration of class method signatures in `class_scope`, parameter shadowing resolution, and property assignment emission in CTranspiler (ADR 31).
+* **Template & Multiline Token Positions (Sep 17, 2026):** Interpolations (`${expr}`/`$ident`) were re-parsed by a zero-based sub-parser, so every diagnostic inside a template pointed at file 1:6; multiline tokens stamped END-line. Now `Lexer.initAt`/`Parser.initAt` carry the real offset (newline-aware) and `makeToken` stamps START always (single-line output bit-identical).

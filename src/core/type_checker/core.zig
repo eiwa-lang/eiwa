@@ -106,17 +106,14 @@ pub const TypeChecker = struct {
     current_class_methods: ?[]const *ASTNode = null,
     current_type_c_name: ?[]const u8 = null,
     current_fn_return: ?*const EiwaType = null,
-    /// Nesting depth of speculative type resolutions (expected-type hints,
-    /// overload probing). While > 0, undeclared-argument diagnostics stay
-    /// silent (the error still propagates for `catch null` to observe):
-    /// hint refs routinely mention enclosing templates' type variables
-    /// (e.g. `MutableSet<T>`'s `MutableMap<T, Bool>` prop), which are only
-    /// meaningful in their declaration context, never at the hint site.
+    /// While > 0, diagnostics stay silent (speculative resolutions).
     speculative_depth: usize = 0,
     registry: ?*ModuleRegistry = null,
     target_info: ?TargetInfo = null,
     pass: enum { declaration, validation } = .validation,
     status: enum { unvisited, declaring_types, declared_types, declaring_signatures, declared_signatures, resolving_imports, resolved_imports, validating, validated } = .unvisited,
+    /// While > 0, stylistic warnings stay silent (clones misattribute positions).
+    monomorph_depth: usize = 0,
 
     pub const inferNode = core_inferNode;
     pub const reportError = core_reportError;
@@ -387,6 +384,7 @@ fn core_reportError(self: *TypeChecker, line: usize, column: usize, comptime mes
 
 fn core_reportWarning(self: *TypeChecker, line: usize, column: usize, comptime message: []const u8, args: anytype) void {
     if (self.speculative_depth > 0) return;
+    if (self.monomorph_depth > 0) return;
     diagnostics.printDiagnostic(
         self.filename,
         line,

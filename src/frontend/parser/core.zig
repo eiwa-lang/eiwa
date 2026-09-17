@@ -91,6 +91,18 @@ pub const Parser = struct {
         p.advance();
         return p;
     }
+
+    pub fn initAt(allocator: std.mem.Allocator, source: []const u8, line: usize, column: usize) Parser {
+        var p = Parser{
+            .allocator = allocator,
+            .lexer = Lexer.initAt(source, line, column),
+            .current = undefined,
+            .previous = undefined,
+            .had_error = false,
+        };
+        p.advance();
+        return p;
+    }
 };
 
 fn core_parseTypeAnnotation(self: *Parser) anyerror!?*const ast.ASTTypeRef {

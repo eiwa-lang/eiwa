@@ -49,6 +49,8 @@ fn typeContainsGenericParam(self: *TypeChecker, t: *const EiwaType, generic_para
 
 pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8) !void {
     if (self.classes_ast.get(mangled_name) != null) return;
+    self.monomorph_depth += 1;
+    defer self.monomorph_depth -= 1;
     
     var actual_base_name = self.alias_map.get(base_name) orelse base_name;
     var base_node = self.classes_ast.get(actual_base_name);
@@ -275,6 +277,8 @@ pub fn lookupGenericFunction(self: *TypeChecker, name: []const u8, arity: ?usize
 
 pub fn monomorphizeFunction(self: *TypeChecker, base_node: *ASTNode, type_args: []*const EiwaType, mangled_name: []const u8, receiver: ?*const EiwaType) !void {
     if (self.functions_ast.get(mangled_name) != null) return;
+    self.monomorph_depth += 1;
+    defer self.monomorph_depth -= 1;
 
     const fun_decl = base_node.data.fun_decl;
     if (fun_decl.generic_params.len != type_args.len) {

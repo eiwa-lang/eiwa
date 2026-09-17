@@ -29,6 +29,7 @@ pub const EiwaType = union(enum) {
         type_args: []const *const EiwaType,
     },
 
+    /// Strip snake_case module prefix for display (`a_b_Foo` → `Foo`).
     fn shortName(name: []const u8) []const u8 {
         var i: usize = 0;
         while (i < name.len) {

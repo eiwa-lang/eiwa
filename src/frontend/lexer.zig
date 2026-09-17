@@ -11,6 +11,8 @@ pub const Lexer = struct {
     current: usize,
     line: usize,
     column: usize,
+    start_line: usize = 1,
+    start_column: usize = 1,
 
     /// Initializes a new Lexer instance.
     /// Does not allocate memory directly; uses slices of the provided source.
@@ -24,12 +26,27 @@ pub const Lexer = struct {
         };
     }
 
+    /// Lexer starting at a given position (template slices).
+    pub fn initAt(source: []const u8, line: usize, column: usize) Lexer {
+        return Lexer{
+            .source = source,
+            .start = 0,
+            .current = 0,
+            .line = line,
+            .column = column,
+            .start_line = line,
+            .start_column = column,
+        };
+    }
+
     /// Reads and returns the next token from the source code.
     /// Handles skipping whitespace and advancing pointers automatically.
-    pub fn scanToken(self: *Lexer) Token {
+    pub     fn scanToken(self: *Lexer) Token {
         self.skipWhitespace();
 
         self.start = self.current;
+        self.start_line = self.line;
+        self.start_column = self.column;
 
         if (self.isAtEnd()) return self.makeToken(.eof);
 
@@ -255,11 +272,8 @@ pub const Lexer = struct {
         return Token{
             .token_type = token_type,
             .lexeme = self.source[self.start..self.current],
-            .line = self.line,
-            .column = if (self.column > (self.current - self.start)) 
-                self.column - (self.current - self.start) 
-            else 
-                1,
+            .line = self.start_line,
+            .column = self.start_column,
         };
     }
 };

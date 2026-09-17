@@ -682,7 +682,16 @@ fn parseStringLiteralOrTemplate(self: *Parser, raw: []const u8, line: usize, col
                     return error.ParseError;
                 }
                 const expr_str = raw[idx + 2 .. j - 1];
-                var sub_parser = Parser.init(self.allocator, expr_str);
+                var expr_line = line;
+                var expr_col = col + idx + 3;
+                var k: usize = 0;
+                while (k < idx) : (k += 1) {
+                    if (raw[k] == '\n') {
+                        expr_line += 1;
+                        expr_col = idx + 2 - k;
+                    }
+                }
+                var sub_parser = Parser.initAt(self.allocator, expr_str, expr_line, expr_col);
                 const expr_node = try sub_parser.expression();
                 try parts.append(expr_node);
 
@@ -692,10 +701,19 @@ fn parseStringLiteralOrTemplate(self: *Parser, raw: []const u8, line: usize, col
                 var j: usize = idx + 1;
                 while (j < raw.len and (std.ascii.isAlphanumeric(raw[j]) or raw[j] == '_')) : (j += 1) {}
                 const ident_name = raw[idx + 1 .. j];
+                var ident_line = line;
+                var ident_col = col + idx + 2;
+                var k2: usize = 0;
+                while (k2 < idx) : (k2 += 1) {
+                    if (raw[k2] == '\n') {
+                        ident_line += 1;
+                        ident_col = idx + 1 - k2;
+                    }
+                }
                 const ident_node = try self.createNodeAt(.{ .identifier = .{
                     .name = ident_name,
                     .resolved_c_name = null,
-                } }, line, col);
+                } }, ident_line, ident_col);
                 try parts.append(ident_node);
 
                 idx = j;
