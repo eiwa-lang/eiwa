@@ -19,19 +19,41 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
     }
     
     var then_scope = scope;
+    var else_scope = scope;
     var local_then_scope: Scope = undefined;
+    var local_else_scope: Scope = undefined;
     var has_smart_cast = false;
-    
+    var has_then_narrow = false;
+    var has_else_narrow = false;
+    var null_check: ?core.NullCheck = null;
+    var narrowed_type: ?*const EiwaType = null;
+
     if (i.condition.data == .is_expr) {
         const is_e = i.condition.data.is_expr;
         if (is_e.is_not == false and is_e.value.data == .identifier) {
             const var_name = is_e.value.data.identifier.name;
             const target_t = try self.resolveTypeRef(is_e.type_ref);
-            
+
             local_then_scope = Scope.init(self.allocator, scope);
             try local_then_scope.define(var_name, target_t, false, false);
             then_scope = &local_then_scope;
             has_smart_cast = true;
+        }
+    } else if (core.matchNullCheck(i.condition)) |nc| {
+        if (try self.narrowedBinding(scope, nc.name)) |narrowed| {
+            narrowed_type = narrowed;
+            null_check = nc;
+            if (nc.then_narrowed) {
+                local_then_scope = Scope.init(self.allocator, scope);
+                try self.defineNarrowed(&local_then_scope, nc.name, narrowed);
+                then_scope = &local_then_scope;
+                has_then_narrow = true;
+            } else {
+                local_else_scope = Scope.init(self.allocator, scope);
+                try self.defineNarrowed(&local_else_scope, nc.name, narrowed);
+                else_scope = &local_else_scope;
+                has_else_narrow = true;
+            }
         }
     }
 
@@ -44,12 +66,25 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
     }
 
     const then_type = try inferBranchAsExpression(self, i.then_branch, then_scope);
-    if (has_smart_cast) {
+    if (has_smart_cast or has_then_narrow) {
         local_then_scope.deinit();
     }
 
     if (i.else_branch) |else_b| {
-        const else_type = try inferBranchAsExpression(self, else_b, scope);
+        const else_type = try inferBranchAsExpression(self, else_b, else_scope);
+        if (has_else_narrow) {
+            local_else_scope.deinit();
+        }
+        // A diverging branch narrows the flow after the `if`.
+        if (null_check) |nc| {
+            if (narrowed_type) |nt| {
+                if (!nc.then_narrowed and stmtGuaranteesReturn(i.then_branch)) {
+                    try self.defineNarrowed(scope, nc.name, nt);
+                } else if (nc.then_narrowed and stmtGuaranteesReturn(else_b)) {
+                    try self.defineNarrowed(scope, nc.name, nt);
+                }
+            }
+        }
         if (then_type) |tt| {
             if (else_type) |et| {
                 if (node.expected_type) |exp_t| {
@@ -94,6 +129,13 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
             t.* = .Void;
         }
     } else {
+        if (null_check) |nc| {
+            if (narrowed_type) |nt| {
+                if (!nc.then_narrowed and stmtGuaranteesReturn(i.then_branch)) {
+                    try self.defineNarrowed(scope, nc.name, nt);
+                }
+            }
+        }
         if (!need) {
             t.* = .Void;
             return;

@@ -403,6 +403,38 @@ val finalName = guest?.name ?: "Unknown"
 val dangerousName = guest!!.name
 ```
 
+**Smartcast (null check narrows `T?` to `T`):**
+After an explicit null check, a `val` of nullable type narrows to its
+non-null variant — no `?.` / `!!` needed. Works in `if`, in the ternary,
+and in `when` with a `null` branch:
+```kotlin
+fun len(s: String?): Int {
+    if (s != null) {
+        return s.length   // s: String here
+    }
+    return -1
+}
+
+fun early(s: String?): Int {
+    if (s == null) {
+        return -1         // diverging branch...
+    }
+    return s.length       // ...so s: String below
+}
+
+val n: Int = if (s != null) s.length else -1
+val m: Int = (s != null) ? s.length : -1
+val k = when (s) {
+    null -> -1
+    else -> s.length      // narrowed (a `null` branch exists)
+}
+```
+Rules (v1): only immutable `val`s narrow (params, locals, `val` fields —
+a mutated `var` keeps requiring `?.`/`!!`); reference types only
+(`Int?`/`Bool?`/`Double?` still need `?.`/`!!`); `while` conditions do not
+narrow. A `?.`/`!!` applied after the narrowing is a no-op and produces a
+`warning` (the build still passes).
+
 ---
 
 ## 6. Exception Handling (try-catch)

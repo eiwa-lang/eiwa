@@ -129,6 +129,15 @@ pub fn inferUnaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
     const op_type = try self.inferNode(u.operand, scope);
     
     if (u.operator == .bang_bang) {
+        // Warn on `!!` over a narrowed binding (no-op).
+        if (u.operand.data == .identifier) {
+            const op_name = u.operand.data.identifier.name;
+            if (scope.lookupVariableSymbol(op_name)) |vs| {
+                if (vs.is_narrowed) {
+                    self.reportWarning(node.line, node.column, "Redundant non-null assertion (!!) on non-nullable '{s}' — the null check already narrowed it.", .{op_name});
+                }
+            }
+        }
         t.* = extractBaseType(op_type).*;
     } else if (u.operator == .bang) {
         if (op_type.* != .Bool) {
@@ -298,8 +307,11 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                         i.owner_type_c_name = self.current_type_c_name;
                         break;
                     }
-                    if (s.symbols.contains(i.name)) {
-                        break;
+                    if (s.symbols.getPtr(i.name)) |sym_ptr| {
+                        // Narrowed bindings shadow for typing but must not hide the `this` owner.
+                        var shadowed = true;
+                        if (sym_ptr.*.variable) |v| shadowed = !v.is_narrowed;
+                        if (shadowed) break;
                     }
                     curr = s.parent;
                 }
@@ -430,10 +442,35 @@ pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *E
         return error.TypeError;
     }
     
-    const then_type = try self.inferNode(ternary_node.then_branch, scope);
-    
+    // Narrow the branch matching the null check.
+    var local_then_scope: Scope = undefined;
+    var local_else_scope: Scope = undefined;
+    var has_then_narrow = false;
+    var has_else_narrow = false;
+    var then_scope: *Scope = scope;
+    var else_scope: *Scope = scope;
+    if (core.matchNullCheck(ternary_node.condition)) |nc| {
+        if (try self.narrowedBinding(scope, nc.name)) |narrowed| {
+            if (nc.then_narrowed) {
+                local_then_scope = Scope.init(self.allocator, scope);
+                try self.defineNarrowed(&local_then_scope, nc.name, narrowed);
+                then_scope = &local_then_scope;
+                has_then_narrow = true;
+            } else {
+                local_else_scope = Scope.init(self.allocator, scope);
+                try self.defineNarrowed(&local_else_scope, nc.name, narrowed);
+                else_scope = &local_else_scope;
+                has_else_narrow = true;
+            }
+        }
+    }
+
+    const then_type = try self.inferNode(ternary_node.then_branch, then_scope);
+    if (has_then_narrow) local_then_scope.deinit();
+
     if (ternary_node.else_branch) |else_b| {
-        const else_type = try self.inferNode(else_b, scope);
+        const else_type = try self.inferNode(else_b, else_scope);
+        if (has_else_narrow) local_else_scope.deinit();
         
         if (self.isCompatible(then_type, else_type)) {
             t.* = then_type.*;

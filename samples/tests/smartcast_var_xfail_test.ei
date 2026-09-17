@@ -1,0 +1,18 @@
+// MUST NOT COMPILE (v1): smartcast narrows `val` only. A mutable `var`
+// can be reassigned between the check and the use, so direct access after
+// `!= null` stays a TypeError (use `?.`/`!!`). While this compiles it
+// XPASSes instead of going XFAIL (Kotlin-style var flow analysis is future).
+
+type Persona(val id: Int)
+
+object TermsRepository {
+    fun hasAcceptedCurrentTerms(personaId: Int): Bool {
+        return personaId > 0
+    }
+}
+
+test "var is not narrowed by null check" {
+    var persona: Persona? = Persona(3)
+    val termsAlreadyAccepted = if (persona != null) TermsRepository.hasAcceptedCurrentTerms(persona.id) else false
+    assert(termsAlreadyAccepted == true)
+}

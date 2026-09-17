@@ -29,6 +29,8 @@ pub const EiwaType = union(enum) {
         type_args: []const *const EiwaType,
     },
 
+    /// Pretty-printer (`Persona?`, `String | Int`). Note: Zig 0.16 only
+    /// dispatches to it via the `{f}` specifier, not `{}` (which dumps).
     pub fn format(self: EiwaType, writer: anytype) !void {
         switch (self) {
             .Int => try writer.writeAll("Int"),
@@ -203,6 +205,7 @@ pub const VariableSymbol = struct {
     is_mut: bool,
     is_boxed: bool = false,
     decl_node: ?*ast.ASTNode = null,
+    is_narrowed: bool = false,
 };
 
 pub const Symbol = struct {
@@ -341,6 +344,18 @@ pub fn isRawScalar(t: *const EiwaType) bool {
 pub fn extractBaseType(t: *const EiwaType) *const EiwaType {
     return switch (t.*) {
         .Union => |u| if (u.right.* == .Null) extractBaseType(u.left) else t,
+        else => t,
+    };
+}
+
+/// Project `Union(T, Null)` to `T`.
+pub fn stripNull(t: *const EiwaType) *const EiwaType {
+    return switch (t.*) {
+        .Union => |u| {
+            if (u.right.* == .Null) return stripNull(u.left);
+            if (u.left.* == .Null) return stripNull(u.right);
+            return t;
+        },
         else => t,
     };
 }

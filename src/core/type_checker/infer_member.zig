@@ -381,6 +381,15 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
 
     if (!is_static) {
         if (isNullable(obj_type) and !g.is_safe) {
+            if (g.object.data == .identifier) {
+                const recv_name = g.object.data.identifier.name;
+                if (scope.lookupVariableSymbol(recv_name)) |vs| {
+                    if (vs.is_mut) {
+                        self.reportError(node.line, node.column, "TypeError: Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type {}. Note: '{s}' is a var and smartcast narrows vals only — bind to a val first (`val p = {s}`) or use ?./!!.", .{ obj_type.*, recv_name, recv_name });
+                        return error.TypeError;
+                    }
+                }
+            }
             self.reportError(node.line, node.column, "TypeError: Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type {}.", .{obj_type.*});
             return error.TypeError;
         }
@@ -712,6 +721,15 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         } };
         @constCast(t.Union.right).* = .Null;
     } else {
+        // Warn on `?.` over a narrowed binding (no-op).
+        if (g.is_safe and g.object.data == .identifier) {
+            const recv_name = g.object.data.identifier.name;
+            if (scope.lookupVariableSymbol(recv_name)) |vs| {
+                if (vs.is_narrowed) {
+                    self.reportWarning(node.line, node.column, "Redundant safe call (?.) on non-nullable receiver '{s}' — the null check already narrowed it.", .{recv_name});
+                }
+            }
+        }
         t.* = prop_type.?.*;
     }
 }

@@ -180,6 +180,23 @@ test "smartcast of receiver nullable field without this." {
     assert(true)
 }
 
+test "braceless if narrows branch" {
+    val s: String? = "hello"
+    if (s != null) assert(s.length == 5)
+    var hit = 0
+    if (s == null) hit = -1 else hit = s.length
+    assert(hit == 5)
+}
+
+test "braceless if-else as value narrows" {
+    val s: String? = "hello"
+    val n: Int = if (s != null) s.length else -1
+    assert(n == 5)
+    val t: String? = null
+    val m: Int = if (t != null) t.length else -1
+    assert(m == -1)
+}
+
 // 91.9 (warning, cheap): após o smartcast, !! / ?. viram no-op.
 // Comportamento passa, mas o checker deve emitir `warning` sem quebrar o build.
 test "redundant !! and ?. after smartcast warn but pass" {

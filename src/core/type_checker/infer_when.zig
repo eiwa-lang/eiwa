@@ -19,6 +19,18 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     var resolved_type: ?*const EiwaType = null;
     var has_else = false;
 
+    // Nullable subject narrows to `T` where null is unobservable; `else` only when null is covered.
+    var nullable_subject_name: ?[]const u8 = null;
+    var nullable_stripped: ?*const EiwaType = null;
+    if (subject_type != null and w.subject.?.data == .identifier) {
+        const nm = w.subject.?.data.identifier.name;
+        if (try self.narrowedBinding(scope, nm)) |stripped| {
+            nullable_subject_name = nm;
+            nullable_stripped = stripped;
+        }
+    }
+    var saw_null_branch = false;
+
     for (w.cases, 0..) |case, i| {
         if (case.is_else) {
             has_else = true;
@@ -29,11 +41,19 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         }
 
         // 1. Validate case conditions
+        var case_matches_null = false;
+        var case_has_negated = false;
         for (case.conds) |cond| {
+            if (cond.data == .null_literal) {
+                case_matches_null = true;
+            } else if (cond.data == .is_type_cond and cond.data.is_type_cond.is_not) {
+                case_has_negated = true;
+            }
             if (subject_type) |subj_t| {
                 if (cond.data == .is_type_cond) {
                     const type_cond = cond.data.is_type_cond;
                     const target_t = try self.resolveTypeRef(type_cond.type_ref);
+                    if (target_t.* == .Null) case_matches_null = true;
                     const r_t = try self.allocator.create(EiwaType);
                     r_t.* = .Bool;
                     cond.resolved_type = r_t;
@@ -82,10 +102,23 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             if (cond.data == .is_type_cond and !cond.data.is_type_cond.is_not) {
                 const var_name = w.subject.?.data.identifier.name;
                 const target_t = try self.resolveTypeRef(cond.data.is_type_cond.type_ref);
-                
+
                 try case_scope.define(var_name, target_t, false, false);
             }
         }
+
+        // Single positive `is` uses the target narrowing above.
+        if (nullable_subject_name) |nm| {
+            if (nullable_stripped) |nt| {
+                if (case.is_else) {
+                    if (saw_null_branch) try self.defineNarrowed(&case_scope, nm, nt);
+                } else if (!case_matches_null and !case_has_negated) {
+                    const single_pos_is = case.conds.len == 1 and case.conds[0].data == .is_type_cond and !case.conds[0].data.is_type_cond.is_not;
+                    if (!single_pos_is) try self.defineNarrowed(&case_scope, nm, nt);
+                }
+            }
+        }
+        if (case_matches_null) saw_null_branch = true;
 
         if (node.expected_type) |et| {
             case.body.expected_type = et;

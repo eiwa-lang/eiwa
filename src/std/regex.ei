@@ -107,7 +107,7 @@ type RegexParser(val source: String) {
             } else {
                 val node = this.parsePiece()
                 if (node != null) {
-                    nodes.add(node!!)
+                    nodes.add(node)
                 }
             }
         }
@@ -570,7 +570,7 @@ type Regex(val pattern: String) {
             if (m == null) {
                 running = false
             } else {
-                val found = m!!
+                val found = m
                 results.add(found)
                 if (found.end == found.start) {
                     pos = found.end + 1
@@ -593,7 +593,7 @@ type Regex(val pattern: String) {
             if (m == null) {
                 running = false
             } else {
-                val found = m!!
+                val found = m
                 result = result + input.substring(lastEnd, found.start) + replacement
                 if (found.end == found.start) {
                     // Empty match: copy the current char and move forward.

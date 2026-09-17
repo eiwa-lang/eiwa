@@ -10,7 +10,7 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
 > **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
 > **Phase 88 — Renomear `break` → `leave`** (hard break da keyword, sem alias; decisão em ADR 69) — **concluída** (2026-09-17).
-> **Fase atual (2026-09):** **Phases 89, 91 (sintaxe/semântica)** — String multilinha com `"` única (89) + smartcast de nullable em `if`/ternário/`when` (91) + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9). **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
+> **Fase atual (2026-09):** **Phase 89 (sintaxe)** — String multilinha com `"` única (89) + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9, 91.3/91.4/91.10). **Phase 91** (smartcast de nullable em `if`/ternário/`when`) — **concluída**. **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1696,7 +1696,7 @@ Semântica alvo:
 >
 > **Fora de escopo (futuro):** `throw` como expressão geral (`val x = throw E()`, `foo(throw E())`, operandos) — só `return` e `leave` nesta fase.
 
-### Phase 91: Smartcast de nullable estilo Kotlin — `if`, `when` e ternário (OPEN)
+### Phase 91: Smartcast de nullable estilo Kotlin — `if`, `when` e ternário (COMPLETED)
 > **Motivação:** hoje qualquer acesso a receiver nullable sem `?.`/`!!` é erro
 > duro (`Only safe (?.) or non-null asserted (!!.) calls are allowed on a
 > nullable receiver`), mesmo após checagem explícita — validado no RED:
@@ -1734,16 +1734,21 @@ Semântica alvo:
 > * Só identificadores `val` (imutáveis — estreitamento sempre sound, sem dataflow). `var` local, `&&` encadeado e escalares boxeados são tasks separadas.
 > * Vale para `T?` referência (String, types, contracts como `Drawable?`, coleções): nullable é `Union(T, Null)` e o estreitamento é projetar a variante não-`Null` — mesmo mecanismo do smartcast de `is`, que já flui no emissor sem mudança (o receiver deixa de ser nullable e o erro de `?.`/`!!` some por construção).
 >
-> - [ ] **Task 91.1:** Checker (`inferIfExpr`): detectar `s != null` / `s == null` (`binary_expr` `bang_eq`/`eq_eq` com `null_literal`) sobre identificador de tipo nullable; criar child scope com `s` redefinido na variante não-`Null` (espelho do path `is_expr`, `infer_stmt.zig:25-36`) no ramo estreitado.
-> - [ ] **Task 91.2:** Early-exit: then divergente (`stmtGuaranteesReturn`) com `== null` redefine `s` estreitado no escopo corrente após o `if` (sound só para `val`; `var` mantém erro — documentar).
-> - [ ] **Task 91.3:** `&&` encadeado na condição (`if (s != null && s.length > 0)`): estreitamento da esquerda vale para a direita e para o then-branch.
-> - [ ] **Task 91.4:** Escalares boxeados (`Int?`/`Bool?`/`Double?`, Phase 80): o valor runtime é cell heap, não o escalar cru — o binding estreitado precisa de flag de unbox no load (espelho de `box_nullable_scalar`), ou v1 documenta referência-apenas e esta task faz o plumbing.
-> - [ ] **Task 91.7:** Ternário (`inferTernary`): mesma detecção da 91.1 nos dois ramos; curto (`cond ? s.length`) estreita o then e tipa `T?`.
-> - [ ] **Task 91.8:** `when (s)` com ramo `null`/`is null`: `Null` naquele ramo; estreitamento para `T` nos ramos restantes e no `else` (espelho do smartcast de `is`); `when` como valor segue a unificação normal.
-> - [ ] **Task 91.9 (warning, cheap):** `!!` / `?.` redundante após o smartcast — com o tipo já estreitado, `s!!`/`s?.x` viram no-op: o checker emite `warning` (não erro, sem quebrar o build) no ponto de uso quando o receiver/operando já é não-nullable no escopo corrente. Barato: só o check `!core.isNullable(t)` nos paths de `inferMember`/safe-call/`|bang_bang`, sem análise nova (reutiliza o tipo resolvido pós-estreitamento das 91.1/91.2/91.7/91.8). Cobertura no teste da 91.5 (warning presente, build passa).
-> - [ ] **Task 91.5:** Testes `samples/tests/smartcast_nullable_test.ei`: `!= null` then, `== null` else + early-return/`throw`, ternário (cheio e curto), `when` com ramo `null` + `else` estreitado, `else` do `if` mantém nullable (uso direto segue erro — negativa), contract nullable (`Drawable?` → dispatch), `val` em receiver lambda, warnings de `!!`/`?.` redundantes (91.9); negativas manuais: `var` mutada entre check e uso segue erro, `while (s != null)` sem estreitamento (fora de escopo v1).
-> - [ ] **Task 91.6:** Docs: seção null-safety em `docs/language_tour.md` (§13, `?.`/`!!`/`?:` + smartcast em `if`/ternário/`when`).
-> - [ ] **Verify:** suíte completa verde + `zig build test`; `?.`/`!!`/`?:` com regressão zero por construção (paths intocados).
+> - [x] **Task 91.1:** Checker (`inferIfExpr`): detectar `s != null` / `s == null` (`binary_expr` `bang_eq`/`eq_eq` com `null_literal`) sobre identificador de tipo nullable; criar child scope com `s` redefinido na variante não-`Null` (espelho do path `is_expr`, `infer_stmt.zig:25-36`) no ramo estreitado.
+> - [x] **Task 91.2:** Early-exit: then divergente (`stmtGuaranteesReturn`) com `== null` redefine `s` estreitado no escopo corrente após o `if` (sound só para `val`; `var` mantém erro — documentar). Espelho `!= null` + else divergente incluído.
+> - [ ] **Task 91.3 (follow-up):** `&&` encadeado na condição (`if (s != null && s.length > 0)`): estreitamento da esquerda vale para a direita e para o then-branch.
+> - [ ] **Task 91.4 (follow-up):** Escalares boxeados (`Int?`/`Bool?`/`Double?`, Phase 80): o valor runtime é cell heap, não o escalar cru — o binding estreitado precisa de flag de unbox no load (espelho de `box_nullable_scalar`); v1 documenta referência-apenas.
+> - [ ] **Task 91.10 (follow-up):** `if` braceless com branch statement (`if (s == null) return -1`): hoje o slot sem chaves chama `expression()`, então `return`/`throw`/`leave` falham com `Expected expression` (só call/atribuição passam). Permitir statement único como branch (espelho do bloco de 1 statement), com o early-exit da 91.2 valendo no fluxo abaixo. Cobertura: `if (s == null) return -1` + `return s.length` abaixo; `if` braceless-valor já coberto pela 91.5.
+> - [x] **Task 91.7:** Ternário (`inferTernary`): mesma detecção da 91.1 nos dois ramos; curto (`cond ? s.length`) estreita o then e tipa `T?`.
+> - [x] **Task 91.8:** `when (s)` com ramo `null`/`is null`: `Null` naquele ramo; estreitamento para `T` nos ramos restantes e no `else` (espelho do smartcast de `is`); `when` como valor segue a unificação normal.
+> - [x] **Task 91.9 (warning, cheap):** `!!` / `?.` redundante após o smartcast — o checker emite `warning` (não erro, sem quebrar o build) quando o receiver/operando é um identificador com binding estreitado (`is_narrowed`, sem análise nova). Restrito a narrowings (não a todo `?.` não-nullable, que é estilo defensivo legítimo no stdlib). Cobertura no teste da 91.5 (warning presente, build passa). Limpas 7 redundâncias reais no stdlib (`std/env.ei` ×4, `std/regex.ei` ×3).
+> - [x] **Task 91.5:** Testes `samples/tests/smartcast_nullable_test.ei` (15 testes): `!= null` then, `== null` else + early-return/`throw`, ternário (cheio, curto e espelho `== null`), `when` com ramo `null` e `is Null` + `else` estreitado, `if` braceless (statement e valor), `else` do `if` mantém nullable (uso direto segue erro — negativa), contract nullable (`Drawable?` → dispatch), campo nullable do receiver sem `this.` + `val` em receiver lambda, warnings de `!!`/`?.` redundantes (91.9); `smartcast_var_xfail_test.ei` trava a negativa do `var` (XPASS força promoção quando 91-var existir); negativas manuais verificadas: `var` mutada entre check e uso segue erro, `while (s != null)` sem estreitamento (fora de escopo v1). Erro de receiver nullable em `var` ganhou hint (`bind to a val first (`val p = x`) or use ?./!!`).
+> - [x] **Task 91.6:** Docs: seção null-safety em `docs/language_tour.md` (§5.2, `?.`/`!!`/`?:` + smartcast em `if`/ternário/`when`, com exemplos verificados via `eiwac run`).
+> - [x] **Verify:** suíte completa verde (**ALL 621 TESTS PASSED**) + `zig build test` exit 0; `?.`/`!!`/`?:` com regressão zero (warning não quebra o build).
+>
+> **Implementação (helpers):** `type_system.stripNull` (projeção `Union(T, Null)` → `T`), `core.matchNullCheck` (detecção `s !=/== null`, ambas as ordens), `TypeChecker.defineNarrowed` (rebind forçado + flag `is_narrowed` em `VariableSymbol`), `TypeChecker.reportWarning` (severidade `.warning`); `inferIdentifier` atravessa bindings estreitados na busca por `this` (propriedade estreitada continua field access).
+>
+> **Bug pré-existente encontrado e corrigido (exigido pela cobertura contract):** `val c: Drawable? = Circle(1)` armazenava vtable nula — o `var_decl` do emissor LLVM só anexava vtable com `res_type` `Custom` direto (`isContractType` enxerga através de Union mas o nome vinha vazio). Agora alvos `Union` usam a variante stripada + rebuild sobre null-fill prematuro (`statement.zig` `var_decl`). Cobertura pelo teste contract da 91.5 (antes: `?.` retornava null silencioso / dispatch direto dava NPE).
 >
 > **Fora de escopo (futuro):** `var` com análise de atribuição (invalidação por mutação/captura em lambda — modelo Kotlin), `?.let`-style, estreitamento de `get_expr` (`this.field != null`), ramos `null` múltiplos com `|` no `when`.
 

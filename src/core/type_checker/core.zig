@@ -17,8 +17,33 @@ const infer_decl_mod = @import("infer_decl.zig");
 const infer_when_mod = @import("infer_when.zig");
 const infer_call_mod = @import("infer_call.zig");
 pub const isNullable = type_system.isNullable;
+pub const isNullableScalar = type_system.isNullableScalar;
 pub const extractBaseType = type_system.extractBaseType;
+pub const stripNull = type_system.stripNull;
 pub const isBool = type_system.isBool;
+
+/// Detect `s != null` / `s == null` over an identifier; `then_narrowed` selects the narrowed branch.
+pub const NullCheck = struct {
+    name: []const u8,
+    then_narrowed: bool,
+};
+
+pub fn matchNullCheck(cond: *ASTNode) ?NullCheck {
+    if (cond.data != .binary_expr) return null;
+    const b = cond.data.binary_expr;
+    const then_narrowed = switch (b.op) {
+        .bang_eq => true,
+        .eq_eq => false,
+        else => return null,
+    };
+    if (b.left.data == .identifier and b.right.data == .null_literal) {
+        return .{ .name = b.left.data.identifier.name, .then_narrowed = then_narrowed };
+    }
+    if (b.right.data == .identifier and b.left.data == .null_literal) {
+        return .{ .name = b.right.data.identifier.name, .then_narrowed = then_narrowed };
+    }
+    return null;
+}
 
 pub const ModuleRegistry = struct {
     allocator: std.mem.Allocator,
@@ -95,6 +120,9 @@ pub const TypeChecker = struct {
 
     pub const inferNode = core_inferNode;
     pub const reportError = core_reportError;
+    pub const reportWarning = core_reportWarning;
+    pub const defineNarrowed = core_defineNarrowed;
+    pub const narrowedBinding = core_narrowedBinding;
     pub const resolveTypeRef = core_resolveTypeRef;
     pub const cloneTypeRef = @import("clone.zig").cloneTypeRef;
     pub const resolveTypeName = core_resolveTypeName;
@@ -355,6 +383,55 @@ fn core_reportError(self: *TypeChecker, line: usize, column: usize, comptime mes
         self.source,
         null,
     );
+}
+
+fn core_reportWarning(self: *TypeChecker, line: usize, column: usize, comptime message: []const u8, args: anytype) void {
+    if (self.speculative_depth > 0) return;
+    diagnostics.printDiagnostic(
+        self.filename,
+        line,
+        column,
+        .warning,
+        message,
+        args,
+        self.source,
+        null,
+    );
+}
+
+/// Force-rebind for narrowing (`Scope.define` is a no-op on compatible redefinition).
+/// Val-only, reference-only narrowing: `None` for `var`s, non-nullables and heap-boxed scalars.
+fn core_narrowedBinding(self: *TypeChecker, scope: *Scope, name: []const u8) !?*const EiwaType {
+    const vs = scope.lookupVariableSymbol(name) orelse return null;
+    if (vs.is_mut or !isNullable(vs.eiwa_type) or isNullableScalar(vs.eiwa_type)) return null;
+    const narrowed = try self.allocator.create(EiwaType);
+    narrowed.* = stripNull(vs.eiwa_type).*;
+    return narrowed;
+}
+
+fn core_defineNarrowed(self: *TypeChecker, scope: *Scope, name: []const u8, narrowed: *const EiwaType) !void {
+    _ = self;
+    if (scope.symbols.getPtr(name)) |sym_ptr| {
+        var sym = sym_ptr.*;
+        if (sym.variable) |v| {
+            var new_v = v;
+            new_v.eiwa_type = narrowed;
+            new_v.is_narrowed = true;
+            sym.variable = new_v;
+            sym_ptr.* = sym;
+            return;
+        }
+    }
+    try scope.define(name, narrowed, false, false);
+    if (scope.symbols.getPtr(name)) |sym_ptr| {
+        var sym = sym_ptr.*;
+        if (sym.variable) |v| {
+            var new_v = v;
+            new_v.is_narrowed = true;
+            sym.variable = new_v;
+            sym_ptr.* = sym;
+        }
+    }
 }
 
 fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!*EiwaType {

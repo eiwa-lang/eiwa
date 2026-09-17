@@ -531,16 +531,33 @@ pub fn emitStatement(
 
                 if (v.initializer) |init_node| {
                     var val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, init_node);
+                    // isContractType sees through unions: take the name from the stripped variant.
+                    var vtable_target: ?*const eiwa_types.EiwaType = null;
                     if (is_contract) {
-                        const contract_name = switch (res_type.*) {
+                        vtable_target = res_type;
+                        if (res_type.* == .Union) {
+                            vtable_target = eiwa_types.stripNull(res_type);
+                        }
+                    }
+                    if (vtable_target) |vt| {
+                        const contract_name = switch (vt.*) {
                             .Custom => |n| n,
                             .GenericInstance => |gi| gi.base_name,
                             else => "",
                         };
                         if (init_node.resolved_type) |init_rt| {
-                            if (expression.concreteCNameForVtable(init_rt)) |init_c_name| {
-                                if (contract_name.len > 0) {
-                                    val = try expression.coerceToContract(ctx, mod, builder, val, init_c_name, contract_name);
+                            // Concrete init only; other inits already carry (or correctly lack) a vtable.
+                            const init_stripped = eiwa_types.stripNull(init_rt);
+                            if (!types_mapping.isContractType(init_stripped.*, expression.global_contracts_ast_ptr) and init_stripped.* != .Null) {
+                                if (expression.concreteCNameForVtable(init_stripped)) |init_c_name| {
+                                    if (contract_name.len > 0) {
+                                        var data_val = val;
+                                        if (llvm.LLVMTypeOf(val) == types_mapping.getFatPointerType(ctx)) {
+                                            // Already null-filled: rebuild with the real vtable.
+                                            data_val = llvm.LLVMBuildExtractValue(builder, val, 0, "union_data");
+                                        }
+                                        val = try expression.coerceToContract(ctx, mod, builder, data_val, init_c_name, contract_name);
+                                    }
                                 }
                             }
                         }
