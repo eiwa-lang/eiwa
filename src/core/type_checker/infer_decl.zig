@@ -21,6 +21,7 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "math.ei", @embedFile("../../std/math.ei") },
     .{ "fs.ei", @embedFile("../../std/fs.ei") },
     .{ "collections.ei", @embedFile("../../std/collections.ei") },
+    .{ "string.ei", @embedFile("../../std/string.ei") },
     .{ "net.ei", @embedFile("../../std/net.ei") },
     .{ "http.ei", @embedFile("../../std/http.ei") },
     .{ "env.ei", @embedFile("../../std/env.ei") },
@@ -43,7 +44,7 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "money.ei", @embedFile("../../std/money.ei") },
 });
 
-pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.time", "std.serde", "std.log", "std.coroutines", "std.thread", "std.atomic", "std.uuid", "std.ulid", "std.random", "std.regex" };
+pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.string", "std.time", "std.serde", "std.log", "std.coroutines", "std.thread", "std.atomic", "std.uuid", "std.ulid", "std.random", "std.regex" };
 pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions" };
 pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 

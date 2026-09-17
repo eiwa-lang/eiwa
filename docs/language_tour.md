@@ -269,6 +269,34 @@ fun main() {
 
 The compiler's Type Checker automatically calculates the correct length of string literals in bytes after resolving these escape sequences, ensuring complete compatibility with standard library functions and C runtime operations.
 
+A literal line break inside `"..."` is preserved as-is (multiline strings need no triple-quote delimiter, and indentation is kept literally):
+```kotlin
+val s = "one
+two"
+assert(s == "one\ntwo")
+```
+
+Dedent is opt-in via `trimIndent()` / `trimMargin()` (Kotlin-style, from `std.string`):
+```kotlin
+val indented = "
+    hello
+      world
+    "
+assert(indented.trimIndent() == "hello\n  world")
+
+val margined = "
+    |hello
+    |  world
+    "
+assert(margined.trimMargin() == "hello\n  world")
+
+val hashed = "
+    #hello
+    #  world
+    "
+assert(hashed.trimMargin("#") == "hello\n  world")
+```
+
 ### 4.1 String Concatenation (`+`)
 
 Strings can be directly concatenated with other `String`s, any primitive type (`Int`, `Double`, `Bool`), or any custom `type`/`object` implementing the `Stringable` contract:

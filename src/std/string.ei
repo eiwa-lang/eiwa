@@ -1,0 +1,109 @@
+// std.string
+// String extensions: splitting and Kotlin-style dedent.
+
+import { List, MutableList } from "std.collections"
+
+// Splits on a literal delimiter. Returns a List with at least one element
+// (the whole string when the delimiter is absent). Empty parts are kept
+// ("a,,b" splits on "," into ["a", "", "b"]).
+fun String.split(delimiter: String): List<String> {
+    var parts = MutableList<String>()
+    if (delimiter.length == 0) {
+        parts.add(this)
+        return parts.freeze()
+    }
+    var start = 0
+    var idx = this.indexOf(delimiter)
+    while (idx >= 0) {
+        parts.add(this.substring(start, idx))
+        start = idx + delimiter.length
+        idx = this.substring(start, this.length).indexOf(delimiter)
+        if (idx >= 0) {
+            idx = idx + start
+        }
+    }
+    parts.add(this.substring(start, this.length))
+    return parts.freeze()
+}
+
+fun String.trimIndent(): String {
+    val all = this.split("\n")
+    var lo = 0
+    var hi = all.size()
+    if (hi > 0 && all[0].isBlank()) {
+        lo = 1
+    }
+    if (hi > lo && all[hi - 1].isBlank()) {
+        hi = hi - 1
+    }
+    var indent = -1
+    var i = lo
+    while (i < hi) {
+        val rawLine = all[i]
+        val line = if (rawLine.endsWith("\r")) rawLine.substring(0, rawLine.length - 1) else rawLine
+        if (line.isNotBlank()) {
+            var w = 0
+            while (w < line.length && (line.charAt(w) == " " || line.charAt(w) == "\t" || line.charAt(w) == "\r")) {
+                w = w + 1
+            }
+            if (indent == -1 || w < indent) {
+                indent = w
+            }
+        }
+        i = i + 1
+    }
+    if (indent == -1) {
+        return ""
+    }
+    var res = ""
+    var first = true
+    i = lo
+    while (i < hi) {
+        val rawLine = all[i]
+        val line = if (rawLine.endsWith("\r")) rawLine.substring(0, rawLine.length - 1) else rawLine
+        val out = if (line.isBlank()) "" else line.substring(indent, line.length)
+        if (first) {
+            res = out
+            first = false
+        } else {
+            res = res + "\n" + out
+        }
+        i = i + 1
+    }
+    return res
+}
+
+fun String.trimMargin(marginPrefix: String = "|"): String {
+    val all = this.split("\n")
+    var lo = 0
+    var hi = all.size()
+    if (hi > 0 && all[0].isBlank()) {
+        lo = 1
+    }
+    if (hi > lo && all[hi - 1].isBlank()) {
+        hi = hi - 1
+    }
+    var res = ""
+    var first = true
+    var i = lo
+    while (i < hi) {
+        val rawLine = all[i]
+        val line = if (rawLine.endsWith("\r")) rawLine.substring(0, rawLine.length - 1) else rawLine
+        var w = 0
+        while (w < line.length && (line.charAt(w) == " " || line.charAt(w) == "\t" || line.charAt(w) == "\r")) {
+            w = w + 1
+        }
+        var out = line
+        if (line.substring(w, w + marginPrefix.length) == marginPrefix) {
+            out = line.substring(w + marginPrefix.length, line.length)
+        }
+        if (first) {
+            res = out
+            first = false
+        } else {
+            res = res + "\n" + out
+        }
+        i = i + 1
+    }
+    return res
+}

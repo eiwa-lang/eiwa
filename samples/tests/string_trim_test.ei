@@ -1,0 +1,48 @@
+test "trimIndent basic" {
+    val s = "
+    hello
+      world
+    "
+    assert(s.trimIndent() == "hello\n  world")
+}
+
+test "trimIndent first line content" {
+    assert("  a\n  b".trimIndent() == "a\nb")
+}
+
+test "trimIndent blank middle becomes empty" {
+    assert("  a\n\n  b".trimIndent() == "a\n\nb")
+}
+
+test "trimIndent all blank is empty" {
+    assert("   \n  ".trimIndent() == "")
+}
+
+test "trimIndent keeps trailing spaces" {
+    assert("  hi  ".trimIndent() == "hi  ")
+}
+
+test "trimIndent single line" {
+    assert("  hi".trimIndent() == "hi")
+    assert("hi".trimIndent() == "hi")
+}
+
+test "trimMargin basic" {
+    val s = "
+    |hello
+    |  world
+    "
+    assert(s.trimMargin() == "hello\n  world")
+}
+
+test "trimMargin custom prefix" {
+    assert("  #a\n  #b".trimMargin("#") == "a\nb")
+}
+
+test "trimMargin line without prefix kept" {
+    assert("|a\nplain".trimMargin() == "a\nplain")
+}
+
+test "trimMargin drops blank first last" {
+    assert("\n|x\n".trimMargin() == "x")
+}

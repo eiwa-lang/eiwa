@@ -1,0 +1,28 @@
+// Phase 89 RED — String multilinha com `"` única (sem `"""`, sem trimIndent).
+// Quebra de linha literal preservada no valor; EOF sem fechar continua erro.
+
+test "multiline basic spans 3 lines" {
+    val s = "one
+two
+three"
+    assert(s == "one\ntwo\nthree")
+}
+
+test "multiline interpolation across lines" {
+    val name = "Eiwa"
+    val s = "hello ${name}
+second line"
+    assert(s == "hello Eiwa\nsecond line")
+}
+
+test "multiline mixes raw newline and escape" {
+    val s = "a\nb
+c"
+    assert(s == "a\nb\nc")
+}
+
+test "multiline only-newlines" {
+    val s = "
+"
+    assert(s == "\n")
+}

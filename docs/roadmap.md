@@ -10,7 +10,7 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
 > **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
 > **Phase 88 — Renomear `break` → `leave`** (hard break da keyword, sem alias; decisão em ADR 69) — **concluída** (2026-09-17).
-> **Fase atual (2026-09):** **Phase 89 (sintaxe)** — String multilinha com `"` única (89) + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9, 91.3/91.4/91.10). **Phase 91** (smartcast de nullable em `if`/ternário/`when`) — **concluída**. **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
+> **Fase atual (2026-09):** follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9, 91.3/91.4/91.10). **Phase 89** (string multilinha) — **concluída**. **Phase 91** (smartcast de nullable em `if`/ternário/`when`) — **concluída**. **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1664,7 +1664,7 @@ Semântica alvo:
 - [x] **Task 88.6:** Docs: `docs/language_tour.md` (§ for-valor ~130-163, § lambda ~1528-1544).
 - [x] **Verify:** suíte completa verde + `zig build test`; `break` sem nenhuma ocorrência restante em `samples/`, `src/std/` e docs (exceto histórico/roadmap).
 
-### Phase 89: String multilinha com `"` única (OPEN)
+### Phase 89: String multilinha com `"` única (COMPLETED)
 > **Motivação:** aceitar quebra de linha literal dentro de `"..."` (espírito do
 > `"""` do Kotlin, mas com uma aspa só — sem delimitador triplo, sem `trimIndent`).
 > Quebras preservadas literalmente no valor (sem `trimMargin`, sem dedent).
@@ -1674,12 +1674,13 @@ Semântica alvo:
 > (linhas 186-189); o literal vira slice do fonte (`parser/expression.zig:644`); o
 > emissor desescapa via `emitRawCharBuffer` (`expression.zig:4347`). Falta confirmar
 > o fim-a-fim e travar com testes.
-- [ ] **Task 89.1:** Lexer: `\n` cru dentro de `"..."` produz um único `string_literal` com tracking de linha/coluna correto no span; EOF sem fechar continua erro (unterminated).
-- [ ] **Task 89.2:** Pipeline do valor: byte 0x0A cru preservado fim-a-fim (slice do parser → passthrough no `emitRawCharBuffer`, sem mangling); interpolação `${}` através de linhas funciona.
-- [ ] **Task 89.3:** Decisões (v1, explícitas): SEM `trimIndent`/`trimMargin` (fora de escopo — valor preserva exatamente, incluindo newline inicial e indentação); `\r\n` preservado como está (sem normalização); `"""` NÃO é introduzido.
-- [ ] **Task 89.4:** Testes: `samples/tests/multiline_string_test.ei` (básico 2-3 linhas, interpolação entre linhas, mix de `\n` escape + newline cru, string de só-newlines); negativa manual: unterminated continua falhando.
-- [ ] **Task 89.5:** Docs: seção de strings em `docs/language_tour.md`.
-- [ ] **Verify:** suíte completa verde + `zig build test`.
+- [x] **Task 89.1:** Lexer: `\n` cru dentro de `"..."` produz um único `string_literal` com tracking de linha/coluna correto no span; EOF sem fechar continua erro (unterminated).
+- [x] **Task 89.2:** Pipeline do valor: byte 0x0A cru preservado fim-a-fim (slice do parser → passthrough no `emitRawCharBuffer`, sem mangling); interpolação `${}` através de linhas funciona.
+- [x] **Task 89.3:** Decisões (v1, explícitas): SEM `trimIndent`/`trimMargin` (fora de escopo — valor preserva exatamente, incluindo newline inicial e indentação); `\r\n` preservado como está (sem normalização); `"""` NÃO é introduzido.
+- [x] **Task 89.4:** Testes: `samples/tests/multiline_string_test.ei` (básico 2-3 linhas, interpolação entre linhas, mix de `\n` escape + newline cru, string de só-newlines); negativa manual: unterminated continua falhando.
+- [x] **Task 89.5:** Docs: seção de strings em `docs/language_tour.md`.
+- [x] **Verify:** suíte completa verde + `zig build test`.
+> **Nota:** nenhum código de compilador mudou — o pipeline já suportava `\n` cru fim-a-fim; a fase travou o comportamento com testes + docs (GREEN de primeira).
 
 ### Phase 90: `throw` como valor de `return` / `leave` (COMPLETED)
 > **Status:** COMPLETED (GREEN). `return throw E(...)` e `leave throw E(...)`
