@@ -4284,6 +4284,14 @@ if (define_body) {
             try cc_argv.append("-lws2_32");
             try cc_argv.append("-ldbghelp");
         }
+        {
+            const os_tag = if (self.target_info) |ti| ti.os_tag else builtin.target.os.tag;
+            if (os_tag == .linux) {
+                try cc_argv.append("-D_GNU_SOURCE");
+                try cc_argv.append("-rdynamic");
+                try cc_argv.append("-ldl");
+            }
+        }
         for (self.cli_c_flags) |flag| try cc_argv.append(flag);
 
         {

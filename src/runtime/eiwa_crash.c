@@ -1,4 +1,7 @@
 /* Fatal-signal handler for native binaries. Signal-safe only. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <stdint.h>
 
 #ifdef _WIN32
