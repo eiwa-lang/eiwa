@@ -19,7 +19,15 @@ test "cooperative non-blocking TCP server accept and client communication" {
         val bound = server.bind(19482)
         assert(bound, "server should bind to port")
         var serverReceived: String = ""
-        val client = server.accept()
+        // The client task runs concurrently on a loaded machine (CI runs one
+        // test child per core, each compiling LLVM), so a single 250ms accept
+        // window can be missed; retry like the client side does.
+        var client: Socket? = null
+        var acceptAttempts = 0
+        while (client == null && acceptAttempts < 20) {
+            client = server.accept()
+            acceptAttempts = acceptAttempts + 1
+        }
         assert(client != null, "server should accept client connection")
         if (client != null) {
             val s: Socket = client!!
@@ -40,7 +48,7 @@ test "cooperative non-blocking TCP server accept and client communication" {
         sleepMs(10)
         var attempts = 0
         var client = SocketClient.connect("127.0.0.1", 19482)
-        while (client == null && attempts < 50) {
+        while (client == null && attempts < 120) {
             sleepMs(5)
             client = SocketClient.connect("127.0.0.1", 19482)
             attempts = attempts + 1
