@@ -3179,7 +3179,6 @@ pub const LLVMEmitter = struct {
     fn emitStringEqualsHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i1_type = llvm.LLVMInt1TypeInContext(self.context);
-        const i32_type = llvm.LLVMInt32TypeInContext(self.context);
         const i64_type = llvm.LLVMInt64TypeInContext(self.context);
 
         var inst_fields = [_]llvm.LLVMTypeRef{ ptr_type, i64_type };
@@ -3222,22 +3221,15 @@ pub const LLVMEmitter = struct {
         const a_data = llvm.LLVMBuildLoad2(self.builder, ptr_type, a_data_ptr, "a_data");
         const b_data = llvm.LLVMBuildLoad2(self.builder, ptr_type, b_data_ptr, "b_data");
 
-        const strcmp_fn = llvm.LLVMGetNamedFunction(mod, "strcmp") orelse blk: {
+        const strcmp_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_strcmp") orelse blk: {
             var ps = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
-            const ft = llvm.LLVMFunctionType(i32_type, &ps, 2, 0);
-            break :blk llvm.LLVMAddFunction(mod, "strcmp", ft);
+            const ft = llvm.LLVMFunctionType(i64_type, &ps, 2, 0);
+            break :blk llvm.LLVMAddFunction(mod, "eiwa_strcmp", ft);
         };
         const strcmp_ft = llvm.LLVMGlobalGetValueType(strcmp_fn);
         var args = [_]llvm.LLVMValueRef{ a_data, b_data };
-        const cmp_raw = llvm.LLVMBuildCall2(self.builder, strcmp_ft, strcmp_fn, &args, 2, "seq_cmp");
-        // The shared `strcmp` symbol may be declared i64 (stdlib FFI);
-        // truncate to the true C int width (low 32 bits carry the result).
-        const cmp = if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(cmp_raw)) == llvm.LLVMIntegerTypeKind and
-            llvm.LLVMGetIntTypeWidth(llvm.LLVMTypeOf(cmp_raw)) != 32)
-            llvm.LLVMBuildTrunc(self.builder, cmp_raw, i32_type, "seq_cmp32")
-        else
-            cmp_raw;
-        const zero = llvm.LLVMConstInt(i32_type, 0, 0);
+        const cmp = llvm.LLVMBuildCall2(self.builder, strcmp_ft, strcmp_fn, &args, 2, "seq_cmp");
+        const zero = llvm.LLVMConstInt(i64_type, 0, 0);
         const is_eq = llvm.LLVMBuildICmp(self.builder, llvm.LLVMIntEQ, cmp, zero, "seq_eq");
         _ = llvm.LLVMBuildCondBr(self.builder, is_eq, ret_true, ret_false);
 

@@ -32,8 +32,10 @@ lib Standard {
     fun exit(code: Int): Void
 }
 
-@Header("<string.h>", "<ctype.h>")
+@Header("<string.h>", "<ctype.h>", "src/runtime/third_party/eiwa_string/string_helpers.h")
+@Source("src/runtime/third_party/eiwa_string/string_helpers.c")
 lib NativeString {
+    @Alias("eiwa_strcmp")
     fun strcmp(s1: Pointer, s2: Pointer): Int
 
     fun strstr(haystack: Pointer, needle: Pointer): Pointer
