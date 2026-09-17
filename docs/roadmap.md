@@ -10,7 +10,7 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
 > **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
 > **Phase 88 — Renomear `break` → `leave`** (hard break da keyword, sem alias; decisão em ADR 69) — **concluída** (2026-09-17).
-> **Fase atual (2026-09):** **Phase 89 (sintaxe)** — String multilinha com `"` única + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9). **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
+> **Fase atual (2026-09):** **Phases 89, 91 (sintaxe/semântica)** — String multilinha com `"` única (89) + smartcast de nullable em `if`/ternário/`when` (91) + follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9). **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1695,6 +1695,57 @@ Semântica alvo:
 - [x] **Verify:** suíte completa verde + `zig build test`.
 >
 > **Fora de escopo (futuro):** `throw` como expressão geral (`val x = throw E()`, `foo(throw E())`, operandos) — só `return` e `leave` nesta fase.
+
+### Phase 91: Smartcast de nullable estilo Kotlin — `if`, `when` e ternário (OPEN)
+> **Motivação:** hoje qualquer acesso a receiver nullable sem `?.`/`!!` é erro
+> duro (`Only safe (?.) or non-null asserted (!!.) calls are allowed on a
+> nullable receiver`), mesmo após checagem explícita — validado no RED:
+> `if (s != null) { return s.length }` e o early-return
+> `if (s == null) { return -1 } return s.length` falham em `String?`. O
+> smartcast existe só para `is` no `if` (`infer_stmt.zig:25-36`, then-branch)
+> e para subject no `when` (`infer_when.zig:76-94`). Kotlin estreita `T?` → `T`
+> após `!= null` / early-return `== null`, em `if`, no ternário e em `when`
+> com ramo `null`; Eiwa deve fazer o mesmo.
+>
+> **Semântica alvo (v1, conservadora — só `val`, sem análise de mutação):**
+> ```kotlin
+> fun len(s: String?): Int {
+>     if (s != null) {
+>         return s.length   // s: String aqui (sem ?. / !!)
+>     }
+>     return -1
+> }
+> fun early(s: String?): Int {
+>     if (s == null) {
+>         return -1         // ramo diverge → código abaixo vê s: String
+>     }
+>     return s.length
+> }
+> val n: Int = s != null ? s.length : -1        // ternário estreita o ramo não-null
+> when (s) {
+>     is null -> -1
+>     else -> s.length                           // subject estreitado nos demais ramos
+> }
+> ```
+> * `if (s != null)` estreita `s: T?` → `T` no then-branch (ramo `else` mantém `T?`); `if (s == null)` espelha (then mantém, `else` estreita).
+> * Ternário `cond ? a : b`: quando `cond` é `s != null`/`s == null`, estreita o ramo correspondente (then no `!=`, else no `==`); ternário curto sem else (`s != null ? s.length`) vale `T?` com o then estreitado.
+> * `when (s)`: ramo com cond `null`/`is null` restringe `s` a `Null` nele; ramos sem `null` (e o `else` depois de um ramo `null`) estreitam `s` → `T` (espelho do smartcast de `is` já existente, `infer_when.zig:76-94`).
+> * Early-exit: then-branch que diverge (`return`/`throw`/`leave`, cf. `stmtGuaranteesReturn`) com `== null` estreita o fluxo após o `if`.
+> * Só identificadores `val` (imutáveis — estreitamento sempre sound, sem dataflow). `var` local, `&&` encadeado e escalares boxeados são tasks separadas.
+> * Vale para `T?` referência (String, types, contracts como `Drawable?`, coleções): nullable é `Union(T, Null)` e o estreitamento é projetar a variante não-`Null` — mesmo mecanismo do smartcast de `is`, que já flui no emissor sem mudança (o receiver deixa de ser nullable e o erro de `?.`/`!!` some por construção).
+>
+> - [ ] **Task 91.1:** Checker (`inferIfExpr`): detectar `s != null` / `s == null` (`binary_expr` `bang_eq`/`eq_eq` com `null_literal`) sobre identificador de tipo nullable; criar child scope com `s` redefinido na variante não-`Null` (espelho do path `is_expr`, `infer_stmt.zig:25-36`) no ramo estreitado.
+> - [ ] **Task 91.2:** Early-exit: then divergente (`stmtGuaranteesReturn`) com `== null` redefine `s` estreitado no escopo corrente após o `if` (sound só para `val`; `var` mantém erro — documentar).
+> - [ ] **Task 91.3:** `&&` encadeado na condição (`if (s != null && s.length > 0)`): estreitamento da esquerda vale para a direita e para o then-branch.
+> - [ ] **Task 91.4:** Escalares boxeados (`Int?`/`Bool?`/`Double?`, Phase 80): o valor runtime é cell heap, não o escalar cru — o binding estreitado precisa de flag de unbox no load (espelho de `box_nullable_scalar`), ou v1 documenta referência-apenas e esta task faz o plumbing.
+> - [ ] **Task 91.7:** Ternário (`inferTernary`): mesma detecção da 91.1 nos dois ramos; curto (`cond ? s.length`) estreita o then e tipa `T?`.
+> - [ ] **Task 91.8:** `when (s)` com ramo `null`/`is null`: `Null` naquele ramo; estreitamento para `T` nos ramos restantes e no `else` (espelho do smartcast de `is`); `when` como valor segue a unificação normal.
+> - [ ] **Task 91.9 (warning, cheap):** `!!` / `?.` redundante após o smartcast — com o tipo já estreitado, `s!!`/`s?.x` viram no-op: o checker emite `warning` (não erro, sem quebrar o build) no ponto de uso quando o receiver/operando já é não-nullable no escopo corrente. Barato: só o check `!core.isNullable(t)` nos paths de `inferMember`/safe-call/`|bang_bang`, sem análise nova (reutiliza o tipo resolvido pós-estreitamento das 91.1/91.2/91.7/91.8). Cobertura no teste da 91.5 (warning presente, build passa).
+> - [ ] **Task 91.5:** Testes `samples/tests/smartcast_nullable_test.ei`: `!= null` then, `== null` else + early-return/`throw`, ternário (cheio e curto), `when` com ramo `null` + `else` estreitado, `else` do `if` mantém nullable (uso direto segue erro — negativa), contract nullable (`Drawable?` → dispatch), `val` em receiver lambda, warnings de `!!`/`?.` redundantes (91.9); negativas manuais: `var` mutada entre check e uso segue erro, `while (s != null)` sem estreitamento (fora de escopo v1).
+> - [ ] **Task 91.6:** Docs: seção null-safety em `docs/language_tour.md` (§13, `?.`/`!!`/`?:` + smartcast em `if`/ternário/`when`).
+> - [ ] **Verify:** suíte completa verde + `zig build test`; `?.`/`!!`/`?:` com regressão zero por construção (paths intocados).
+>
+> **Fora de escopo (futuro):** `var` com análise de atribuição (invalidação por mutação/captura em lambda — modelo Kotlin), `?.let`-style, estreitamento de `get_expr` (`this.field != null`), ramos `null` múltiplos com `|` no `when`.
 
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
