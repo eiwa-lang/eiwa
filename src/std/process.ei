@@ -131,7 +131,7 @@ object Process {
         while (i < Process.argsCount()) {
             val arg = Process.argAt(i)
             if (arg != null) {
-                list.add(arg!!)
+                list.add(arg)
             }
             i = i + 1
         }

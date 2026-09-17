@@ -77,7 +77,7 @@ fun parseArgs(): CliArgs {
         val argOpt = Process.argAt(i)
         var consumedValue = false
         if (argOpt != null) {
-            val arg = argOpt!!
+            val arg = argOpt
             if (afterDoubleDash) {
                 args.programArgs.add(arg)
             } else if (arg == "--") {
@@ -91,7 +91,7 @@ fun parseArgs(): CliArgs {
                     val nextOpt = Process.argAt(i + 1)
                     if (nextOpt != null) {
                         args.keys.add(arg)
-                        args.values.add(nextOpt!!)
+                        args.values.add(nextOpt)
                         consumedValue = true
                     } else {
                         args.flags.add(arg)
@@ -114,11 +114,11 @@ fun parseArgs(): CliArgs {
 fun eiwacPath(): String {
     val fromEnv = Env.get("EIWAC")
     if (fromEnv != null) {
-        return fromEnv!!
+        return fromEnv
     }
     val selfOpt = Process.argAt(0)
     if (selfOpt != null) {
-        val self = selfOpt!!
+        val self = selfOpt
         var slash = -1
         var i = 0
         while (i < self.length) {
@@ -131,7 +131,7 @@ fun eiwacPath(): String {
             val candidate = self.substring(0, slash + 1) + "eiwac"
             val resolved = Process.realpath(candidate)
             if (resolved != null) {
-                return resolved!!
+                return resolved
             }
             return candidate
         }
@@ -878,7 +878,7 @@ fun addCommand() {
 
     var dep = Dependency("")
     if (secondOpt != null) {
-        dep = parseDepSpec(secondOpt!!, first)
+        dep = parseDepSpec(secondOpt, first)
     } else {
         val eqIdx = first.indexOf("=")
         if (eqIdx != -1) {
@@ -896,7 +896,7 @@ fun addCommand() {
     val gitOpt = optionValue(args, "--git")
     val pathOpt = optionValue(args, "--path")
     if (pathOpt != null) {
-        dep.path = pathOpt!!
+        dep.path = pathOpt
         dep.github = ""
         dep.gitlab = ""
         dep.git = ""
@@ -905,17 +905,17 @@ fun addCommand() {
         dep.commit = ""
     }
     if (githubOpt != null) {
-        dep.github = githubOpt!!
+        dep.github = githubOpt
         dep.gitlab = ""
         dep.git = ""
     }
     if (gitlabOpt != null) {
-        dep.gitlab = gitlabOpt!!
+        dep.gitlab = gitlabOpt
         dep.github = ""
         dep.git = ""
     }
     if (gitOpt != null) {
-        dep.git = gitOpt!!
+        dep.git = gitOpt
         dep.github = ""
         dep.gitlab = ""
     }
@@ -924,15 +924,15 @@ fun addCommand() {
     val tagOpt = optionValue(args, "--tag")
     val commitOpt = optionValue(args, "--commit")
     if (branchOpt != null) {
-        dep.branch = branchOpt!!
+        dep.branch = branchOpt
         dep.tag = ""
     }
     if (tagOpt != null) {
-        dep.tag = tagOpt!!
+        dep.tag = tagOpt
         dep.branch = ""
     }
     if (commitOpt != null) {
-        dep.commit = commitOpt!!
+        dep.commit = commitOpt
     }
 
     // A path dependency has no branch/tag/commit.
@@ -1097,10 +1097,10 @@ fun compilerCommand(cmd: String) {
     }
 
     val nameOpt = parseTopField(ctx.manifest, "name")
-    val projectName = if (nameOpt == null) "app" else nameOpt!!
+    val projectName = if (nameOpt == null) "app" else nameOpt
     val cliOutputOpt = optionValue(args, "-o")
     val manifestOutputOpt = parseTopField(ctx.manifest, "output")
-    val finalOutput = if (cliOutputOpt != null) cliOutputOpt!! else if (manifestOutputOpt != null) manifestOutputOpt!! else "bin/" + projectName
+    val finalOutput = if (cliOutputOpt != null) cliOutputOpt else if (manifestOutputOpt != null) manifestOutputOpt else "bin/" + projectName
 
     if (cmd != "test") {
         val slash = finalOutput.indexOf("/")
@@ -1122,7 +1122,7 @@ fun compilerCommand(cmd: String) {
     }
     val targetVal = optionValue(args, "--target")
     if (targetVal != null) {
-        extraFlags = extraFlags + " --target " + targetVal!!
+        extraFlags = extraFlags + " --target " + targetVal
     }
     var userModulePaths = ""
     var i = 0

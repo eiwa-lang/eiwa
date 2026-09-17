@@ -11,9 +11,8 @@ type JsonRpc(val id: JsonValue, val method: String, val params: JsonValue) {
         if (v == null) {
             return ""
         }
-        val node = v!!
-        if (node.isString()) {
-            return node.asString()
+        if (v.isString()) {
+            return v.asString()
         }
         return ""
     }
@@ -23,9 +22,8 @@ type JsonRpc(val id: JsonValue, val method: String, val params: JsonValue) {
         if (v == null) {
             return 0
         }
-        val node = v!!
-        if (node.isNumber()) {
-            return node.asNumber().toInt()
+        if (v.isNumber()) {
+            return v.asNumber().toInt()
         }
         return 0
     }
@@ -35,9 +33,8 @@ type JsonRpc(val id: JsonValue, val method: String, val params: JsonValue) {
         if (v == null) {
             return 0.0
         }
-        val node = v!!
-        if (node.isNumber()) {
-            return node.asNumber()
+        if (v.isNumber()) {
+            return v.asNumber()
         }
         return 0.0
     }
@@ -47,9 +44,8 @@ type JsonRpc(val id: JsonValue, val method: String, val params: JsonValue) {
         if (v == null) {
             return false
         }
-        val node = v!!
-        if (node.isBool()) {
-            return node.asBool()
+        if (v.isBool()) {
+            return v.asBool()
         }
         return false
     }
@@ -67,9 +63,8 @@ type JsonRpc(val id: JsonValue, val method: String, val params: JsonValue) {
         val methodVal = root.get("method")
         var method = ""
         if (methodVal != null) {
-            val m = methodVal!!
-            if (m.isString()) {
-                method = m.asString()
+            if (methodVal.isString()) {
+                method = methodVal.asString()
             }
         }
 
