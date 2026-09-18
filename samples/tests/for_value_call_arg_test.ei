@@ -1,0 +1,28 @@
+import { assert } from "std.core"
+import { List } from "std.collections"
+
+// G2: `for` as a call argument collects a `List<T>` against the parameter's
+// expected type (same `expected` flow as `if`-as-value from G1).
+
+fun total(xs: List<Int>): Int {
+    var s = 0
+    for (xs) { s = s + it }
+    s
+}
+
+fun first(xs: List<Int>): Int {
+    return xs[0]
+}
+
+test "for as call argument collects" {
+    assert(total(for ([1, 2, 3]) { it * 2 }) == 12)
+}
+
+test "for as call argument with named param" {
+    assert(first(for ([7, 8, 9]) { n -> n + 1 }) == 8)
+}
+
+test "for as call argument over existing list" {
+    val nums = [1, 2, 3, 4]
+    assert(total(for (nums) { it }) == 10)
+}
