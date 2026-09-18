@@ -1,0 +1,36 @@
+// MUST NOT COMPILE (G8): suspend primitives (`sleepMs`/`yield`) only suspend
+// as separate statements inside `task {}`. In conditions or as values the
+// state machine cannot lower them — the compiler must fail loud with a
+// positioned diagnostic (never a raw `SuspendInCondition`/`SuspendInOperand`
+// leak). While any of these compiles it XPASSes instead of going XFAIL
+// (value plumbing in the state machine is future work, cf. G5/F2).
+
+test "suspend call in if condition is rejected" {
+    val t = task {
+        if (sleepMs(1) == 1) {
+            10
+        } else {
+            20
+        }
+    }
+    assert(t.await() == 20)
+}
+
+test "suspend call in while condition is rejected" {
+    val t = task {
+        var i = 0
+        while (sleepMs(1) == 1) {
+            i = i + 1
+        }
+        i
+    }
+    assert(t.await() == 0)
+}
+
+test "suspend call as a value is rejected" {
+    val t = task {
+        val s = sleepMs(1)
+        s
+    }
+    assert(t.await() == 0)
+}
