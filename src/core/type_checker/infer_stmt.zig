@@ -247,6 +247,11 @@ pub fn inferBreakStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 }
 
 pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
+    if (!node.data.for_stmt.collect) {
+        if (node.expected_type) |exp_t| {
+            if (exp_t.* != .Void) node.data.for_stmt.collect = true;
+        }
+    }
     const f = node.data.for_stmt;
     var iter_type = try self.inferNode(f.iterable, scope);
 

@@ -378,7 +378,10 @@ pub fn finishCall(self: *Parser, callee: *ASTNode, type_args: []const *const ast
     var args = ArrayList(*ASTNode).init(self.allocator);
     if (!self.check(.r_paren)) {
         while (true) {
-            if (self.check(.identifier)) {
+            if (self.check(.kw_for)) {
+                _ = self.match(.kw_for);
+                try args.append(try self.forStatement());
+            } else if (self.check(.identifier)) {
                 var temp_lexer = self.lexer;
                 const next_tok = temp_lexer.scanToken();
                 if (next_tok.token_type == .eq) {
