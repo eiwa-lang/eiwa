@@ -2,21 +2,34 @@ import { assert } from "std.core"
 import { Serializable } from "std.serde"
 import { fromJson, serializeJson } from "std.json"
 
-type User(val id: Int, val name: String, val active: Bool) : Serializable
+type User(val id: Int, val name: String, val avatar: String?, val active: Bool) : Serializable
 type Team(val name: String, val tags: List<String>, val scores: List<Int>, val members: List<User>) : Serializable
 
 test "serde: automatic static deserialization from json" {
     val jsonStr = "{\"id\": 42, \"name\": \"Alice\", \"active\": true}"
     val user = fromJson<User>(jsonStr)
     assert(user.id == 42)
+    assert(user.name != null)
     assert(user.name == "Alice")
     assert(user.active == true)
+    assert(user.avatar == null)
 
     val reencoded = serializeJson(user)
     val user2 = fromJson<User>(reencoded)
     assert(user2.id == user.id)
     assert(user2.name == user.name)
     assert(user2.active == user.active)
+    assert(user2.avatar == user.avatar)
+}
+
+test "serde: automatic static deserialization from json explicit null" {
+    val jsonStr = "{\"id\": 42, \"name\": \"Alice\", \"avatar\": null, \"active\": true}"
+    val user = fromJson<User>(jsonStr)
+    assert(user.id == 42)
+    assert(user.name != null)
+    assert(user.name == "Alice")
+    assert(user.active == true)
+    assert(user.avatar == null)
 }
 
 test "serde: collection deserialization and serialization round-trip" {

@@ -1504,27 +1504,63 @@ fn makeCall(self: *TypeChecker, line: usize, col: usize, callee_name: []const u8
     return node;
 }
 
+const SerdePrimitive = enum { int, double, boolean, string };
+
+fn serdePrimitiveKind(name: []const u8) ?SerdePrimitive {
+    if (std.mem.eql(u8, name, "Int")) return .int;
+    if (std.mem.eql(u8, name, "Double")) return .double;
+    if (std.mem.eql(u8, name, "Bool")) return .boolean;
+    if (std.mem.eql(u8, name, "String")) return .string;
+    return null;
+}
+
+fn serdeBoxFn(kind: SerdePrimitive, nullable: bool) []const u8 {
+    return switch (kind) {
+        .int => if (nullable) "boxNullableInt" else "SerdeInt",
+        .double => if (nullable) "boxNullableDouble" else "SerdeDouble",
+        .boolean => if (nullable) "boxNullableBool" else "SerdeBool",
+        .string => if (nullable) "boxNullableString" else "SerdeString",
+    };
+}
+
+fn serdeDeserializePrimitive(self: *TypeChecker, line: usize, col: usize, obj_ident: *ASTNode, key_lit: *ASTNode, kind: SerdePrimitive, nullable: bool) anyerror!*ASTNode {
+    if (nullable) {
+        const conv_fn: []const u8 = switch (kind) {
+            .int => "asNullableInt",
+            .double => "asNullableDouble",
+            .boolean => "asNullableBool",
+            .string => "asNullableString",
+        };
+        const get_args = try self.allocator.alloc(*ASTNode, 1);
+        get_args[0] = key_lit;
+        const raw_field_call = try makeObjMethodCall(self, line, col, obj_ident, "get", get_args);
+        const conv_args = try self.allocator.alloc(*ASTNode, 1);
+        conv_args[0] = raw_field_call;
+        return try makeCall(self, line, col, conv_fn, conv_args, &.{});
+    }
+    const get_fn: []const u8 = switch (kind) {
+        .int => "getInt",
+        .double => "getDouble",
+        .boolean => "getBool",
+        .string => "getString",
+    };
+    const get_args = try self.allocator.alloc(*ASTNode, 1);
+    get_args[0] = key_lit;
+    return try makeObjMethodCall(self, line, col, obj_ident, get_fn, get_args);
+}
+
 fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTypeRef, field_name: []const u8) anyerror!?*ASTNode {
     const field_ident = try makeIdent(self, line, col, field_name);
     const name = tr.name;
 
-    if (std.mem.eql(u8, name, "Int")) {
+    if (serdePrimitiveKind(name)) |kind| {
         const args = try self.allocator.alloc(*ASTNode, 1);
         args[0] = field_ident;
-        return try makeCall(self, line, col, "SerdeInt", args, &.{});
-    } else if (std.mem.eql(u8, name, "Double")) {
-        const args = try self.allocator.alloc(*ASTNode, 1);
-        args[0] = field_ident;
-        return try makeCall(self, line, col, "SerdeDouble", args, &.{});
-    } else if (std.mem.eql(u8, name, "Bool")) {
-        const args = try self.allocator.alloc(*ASTNode, 1);
-        args[0] = field_ident;
-        return try makeCall(self, line, col, "SerdeBool", args, &.{});
-    } else if (std.mem.eql(u8, name, "String")) {
-        const args = try self.allocator.alloc(*ASTNode, 1);
-        args[0] = field_ident;
-        return try makeCall(self, line, col, "SerdeString", args, &.{});
-    } else if (std.mem.eql(u8, name, "List") and tr.generic_args.len == 1) {
+        return try makeCall(self, line, col, serdeBoxFn(kind, tr.is_nullable), args, &.{});
+    }
+    // Complex nullable (List?, Child?, ...) has no boxing yet: omit the field.
+    if (tr.is_nullable) return null;
+    if (std.mem.eql(u8, name, "List") and tr.generic_args.len == 1) {
         const elem_tr = tr.generic_args[0];
         if (elem_tr.is_nullable) return null;
 
@@ -2311,7 +2347,6 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
 
     for (c.primary_constructor) |prop| {
         if (!prop.is_property) continue;
-        if (prop.type_ref.is_nullable) continue;
 
         const boxed = try serdeBoxFor(self, node.line, node.column, prop.type_ref, prop.name) orelse continue;
         const field_args = try self.allocator.alloc(*ASTNode, 2);
@@ -2782,25 +2817,8 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
         const str_lit = try makeStringLiteral(self, node.line, node.column, serdeWireName(&prop));
         const name = prop.type_ref.name;
 
-        if (std.mem.eql(u8, name, "Int")) {
-            const get_args = try self.allocator.alloc(*ASTNode, 1);
-            get_args[0] = str_lit;
-            const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getInt", get_args);
-            try ctor_args.append(call_val);
-        } else if (std.mem.eql(u8, name, "Double")) {
-            const get_args = try self.allocator.alloc(*ASTNode, 1);
-            get_args[0] = str_lit;
-            const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getDouble", get_args);
-            try ctor_args.append(call_val);
-        } else if (std.mem.eql(u8, name, "Bool")) {
-            const get_args = try self.allocator.alloc(*ASTNode, 1);
-            get_args[0] = str_lit;
-            const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getBool", get_args);
-            try ctor_args.append(call_val);
-        } else if (std.mem.eql(u8, name, "String")) {
-            const get_args = try self.allocator.alloc(*ASTNode, 1);
-            get_args[0] = str_lit;
-            const call_val = try makeObjMethodCall(self, node.line, node.column, obj_ident, "getString", get_args);
+        if (serdePrimitiveKind(name)) |kind| {
+            const call_val = try serdeDeserializePrimitive(self, node.line, node.column, obj_ident, str_lit, kind, prop.type_ref.is_nullable);
             try ctor_args.append(call_val);
         } else if (prop.type_ref.generic_args.len == 0 and self.implementsContract(name, "Serializable")) {
             // Child.deserialize(asSerdeObject(obj.get("child")))

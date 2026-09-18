@@ -182,6 +182,94 @@ fun asSerdeList(v: SerdeValue): SerdeList? {
     return null
 }
 
+fun asNullableString(v: SerdeValue?): String? {
+    if (v == null) {
+        return null
+    }
+    if (v is SerdeNull) {
+        return null
+    }
+    if (v is SerdeString) {
+        return (v as SerdeString).v
+    }
+    return null
+}
+
+fun asNullableInt(v: SerdeValue?): Int? {
+    if (v == null) {
+        return null
+    }
+    if (v is SerdeNull) {
+        return null
+    }
+    if (v is SerdeInt) {
+        return (v as SerdeInt).v
+    }
+    if (v is SerdeDouble) {
+        val d = (v as SerdeDouble).v
+        return d.toInt()
+    }
+    return null
+}
+
+fun asNullableDouble(v: SerdeValue?): Double? {
+    if (v == null) {
+        return null
+    }
+    if (v is SerdeNull) {
+        return null
+    }
+    if (v is SerdeDouble) {
+        return (v as SerdeDouble).v
+    }
+    if (v is SerdeInt) {
+        val i = (v as SerdeInt).v
+        return i.toDouble()
+    }
+    return null
+}
+
+fun asNullableBool(v: SerdeValue?): Bool? {
+    if (v == null) {
+        return null
+    }
+    if (v is SerdeNull) {
+        return null
+    }
+    if (v is SerdeBool) {
+        return (v as SerdeBool).v
+    }
+    return null
+}
+
+fun boxNullableString(s: String?): SerdeValue {
+    if (s == null) {
+        return SerdeNull()
+    }
+    return SerdeString(s)
+}
+
+fun boxNullableInt(v: Int?): SerdeValue {
+    if (v == null) {
+        return SerdeNull()
+    }
+    return SerdeInt(v!!)
+}
+
+fun boxNullableDouble(v: Double?): SerdeValue {
+    if (v == null) {
+        return SerdeNull()
+    }
+    return SerdeDouble(v!!)
+}
+
+fun boxNullableBool(v: Bool?): SerdeValue {
+    if (v == null) {
+        return SerdeNull()
+    }
+    return SerdeBool(v!!)
+}
+
 fun deserializeList<T>(serdeList: SerdeList?, mapper: (SerdeValue) -> T): List<T> {
     if (serdeList == null) {
         return List<T>()
