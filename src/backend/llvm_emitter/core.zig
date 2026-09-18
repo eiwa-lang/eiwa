@@ -1996,7 +1996,7 @@ pub const LLVMEmitter = struct {
         const saved_bb = llvm.LLVMGetInsertBlock(self.builder);
         defer if (saved_bb) |bb| llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
 
-        const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals").?;
+        const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals") orelse return error.StringEqualsNotFound;
         const seq_ft = llvm.LLVMGlobalGetValueType(seq_fn);
 
         const entry_bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "entry");
@@ -2010,7 +2010,7 @@ pub const LLVMEmitter = struct {
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, not_null_bb);
 
-        const s_info = self.structs.get(enum_name).?;
+        const s_info = self.structs.get(enum_name) orelse return error.EnumStructNotFound;
         for (variants) |variant| {
             const v_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ enum_name, variant.name });
             defer self.allocator.free(v_name);

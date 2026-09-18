@@ -1055,7 +1055,22 @@ fn run(init: std.process.Init) !void {
     // Rewrite `val x = task { ... }` / `val x = r.await()` into the
     // stackless machinery (generated Continuation + Scheduler) before emission.
     coroutines_transform.transformProgram(arena.allocator(), &registry) catch |err| {
-        std.debug.print("Error: coroutine transform failed: {s}\n", .{@errorName(err)});
+        // `TypeError` means a positioned diagnostic was already printed.
+        if (err == error.TypeError) std.process.exit(1);
+        // never leak internal error names for reachable user errors.
+        const msg: ?[]const u8 = switch (err) {
+            error.SuspendInCondition => "suspend call in condition is not supported inside task blocks (suspend calls can only be used as separate statements)",
+            error.SuspendInOperand => "suspend call as a value is not supported inside task blocks (suspend calls can only be used as separate statements)",
+            error.CollectForInSuspend => "for used as a value is not supported inside suspend context yet",
+            error.BreakInSuspendContext => "'leave' is not supported inside suspend context (synchronous code only)",
+            error.InvalidTaskCall => "invalid task call (expected a lambda block)",
+            else => null,
+        };
+        if (msg) |m| {
+            std.debug.print("Error: {s}\n", .{m});
+        } else {
+            std.debug.print("Error: coroutine transform failed: {s}\n", .{@errorName(err)});
+        }
         std.process.exit(1);
     };
 

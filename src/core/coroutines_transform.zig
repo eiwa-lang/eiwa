@@ -1245,6 +1245,24 @@ fn buildTaskBlockType(
         }
     }
 
+    // State-machine-only gate (mirrors the `leave`/value-`for` gate in
+    // `rewriteTaskCall`): the machine cannot lower suspend calls in
+    // conditions or as values. Single-shot tasks never reach this path.
+    if (state_machine) {
+        for (body) |s| {
+            if (suspendConditionNode(s)) |bad| {
+                // Conditions surface as the `if`/`while` node itself; anything
+                // else is a suspend call used directly as a value.
+                if (bad.data == .if_expr or bad.data == .while_stmt) {
+                    checker.reportError(bad.line, bad.column, "TypeError: suspend call in condition is not supported inside task blocks (suspend calls can only be used as separate statements).", .{});
+                } else {
+                    checker.reportError(bad.line, bad.column, "TypeError: suspend call as a value is not supported inside task blocks (suspend calls can only be used as separate statements).", .{});
+                }
+                return error.TypeError;
+            }
+        }
+    }
+
     var resume_method: *ASTNode = undefined;
     if (state_machine) {
         const locals = try collectLocals(allocator, body);
@@ -2443,6 +2461,82 @@ fn buildResumeStateMachine(
     // 6. Assemble resume().
     const resume_body = assembleMachine(&m);
     return mkFunDecl("resume", &.{}, resume_body, false, &.{.kw_implement});
+}
+
+// ---------------------------------------------------------------------------
+// Suspend-in-condition detection (G8)
+// ---------------------------------------------------------------------------
+
+/// Returns the innermost node holding a suspend call in a branch/loop
+/// condition, or null. Mirrors `taskNodeHas` boundaries: nested
+/// lambdas/functions lower separately, nested `task {}` calls are checked by
+/// their own rewrite — both stop the walk.
+fn suspendConditionNode(node: *ASTNode) ?*ASTNode {
+    switch (node.data) {
+        .if_expr => |i| {
+            if (containsTrueSuspend(i.condition)) return node;
+            if (suspendConditionNode(i.then_branch)) |found| return found;
+            if (i.else_branch) |e| if (suspendConditionNode(e)) |found| return found;
+            return null;
+        },
+        .while_stmt => |w| {
+            if (containsTrueSuspend(w.condition)) return node;
+            return suspendConditionNode(w.body);
+        },
+        .block => |b| {
+            for (b.statements) |s| if (suspendConditionNode(s)) |found| return found;
+            return null;
+        },
+        .lambda_expr, .fun_decl => return null,
+        .call_expr => |c| {
+            if (isTaskCall(node)) return null;
+            if (suspendConditionNode(c.callee)) |found| return found;
+            for (c.arguments) |a| if (suspendConditionNode(a)) |found| return found;
+            return null;
+        },
+        .for_stmt => |f| {
+            if (suspendConditionNode(f.iterable)) |found| return found;
+            return suspendConditionNode(f.body);
+        },
+        .try_stmt => |t| {
+            if (suspendConditionNode(t.body)) |found| return found;
+            for (t.catches) |cb| if (suspendConditionNode(cb.body)) |found| return found;
+            return null;
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| if (suspendConditionNode(s)) |found| return found;
+            for (w.cases) |case| {
+                for (case.conds) |cond| if (suspendConditionNode(cond)) |found| return found;
+                if (suspendConditionNode(case.body)) |found| return found;
+            }
+            return null;
+        },
+        .var_decl => |v| {
+            // A suspend primitive used directly as the value (`val s = sleepMs(1)`).
+            // Deeper shapes fail earlier in the checker; conditions are found by recursion.
+            if (v.initializer) |init| {
+                if (isSuspendPrimitiveCall(init)) return node;
+                return suspendConditionNode(init);
+            }
+            return null;
+        },
+        .return_stmt => |r| {
+            if (r.value) |val| {
+                if (isSuspendPrimitiveCall(val)) return node;
+                return suspendConditionNode(val);
+            }
+            return null;
+        },
+        .break_stmt => |b| {
+            if (b.value) |val| return suspendConditionNode(val);
+            return null;
+        },
+        .assignment => |a| {
+            if (isSuspendPrimitiveCall(a.value)) return node;
+            return suspendConditionNode(a.value);
+        },
+        else => return null,
+    }
 }
 
 // ---------------------------------------------------------------------------
