@@ -1433,9 +1433,6 @@ fn registerGeneratedType(checker: *TypeChecker, type_node: *ASTNode, generated: 
     try generated.append(type_node);
 }
 
-/// Returns the type of the task block result: the resolved type of the last
-/// statement of the lambda body (or Void for an empty body).
-
 // ---------------------------------------------------------------------------
 // Suspension state machines (sleep/yield inside task bodies)
 //
@@ -3138,7 +3135,6 @@ fn rewriteReturnTaskAwait(
     return out.toOwnedSlice();
 }
 
-/// `while (!<recv>.done) { if (!Scheduler.runStep()) { Coroutine.sleepMs(1) } }`
 /// Builds the two states for a cooperative await marker and returns the label
 /// where the guard state begins.
 fn machineBuildCoopAwait(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
