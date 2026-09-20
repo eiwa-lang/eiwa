@@ -197,3 +197,14 @@ jobs:
           tags: |
             eiwac/eiwa:${{ github.ref_name }}
             eiwac/eiwa:latest
+
+      - name: Update Docker Hub description
+        # Syncs docs/docker-hub-overview.md (logo + overview) to the Hub repo
+        # page on every release, using the same Hub credentials as the push.
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: eiwac/eiwa
+          short-description: "Official Eiwa toolchain: eiwac compiler + eiwa CLI + stdlib on Debian."
+          readme-filepath: ./docs/docker-hub-overview.md
