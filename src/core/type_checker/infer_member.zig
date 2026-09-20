@@ -703,6 +703,57 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     }
 
     if (prop_type == null) {
+        if (lookup_name) |lname| {
+            const l_actual = self.alias_map.get(lname) orelse lname;
+            var skill_node_opt = self.skills_ast.get(l_actual);
+            if (skill_node_opt == null and self.registry != null) {
+                var mod_it = self.registry.?.modules.iterator();
+                while (mod_it.next()) |entry| {
+                    const mod_actual = entry.value_ptr.checker.alias_map.get(l_actual) orelse l_actual;
+                    if (entry.value_ptr.checker.skills_ast.get(mod_actual)) |sn| {
+                        skill_node_opt = sn;
+                        break;
+                    }
+                }
+            }
+            if (skill_node_opt) |sn| {
+                var method_exists = false;
+                for (sn.data.skill_decl.methods) |sm| {
+                    if (sm.data == .fun_decl and std.mem.eql(u8, sm.data.fun_decl.name, g.name)) {
+                        method_exists = true;
+                        break;
+                    }
+                }
+                if (method_exists) {
+                    self.reportError(node.line, node.column, "TypeError: Skill '{s}' cannot be used as a value type. Method '{s}' exists in the skill, but skills are not polymorphic.", .{ lname, g.name });
+                } else {
+                    self.reportError(node.line, node.column, "TypeError: Skill '{s}' cannot be used as a value type — skills are not polymorphic. Use a contract (or concrete type) as parameter.", .{lname});
+                }
+                return error.TypeError;
+            }
+            const c_actual = self.alias_map.get(lname) orelse lname;
+            if (self.contracts_ast.get(c_actual)) |_| {
+                var skill_it = self.skills_ast.iterator();
+                while (skill_it.next()) |s_entry| {
+                    const sd = s_entry.value_ptr.*.data.skill_decl;
+                    var requires = false;
+                    for (sd.required_contracts) |req| {
+                        const req_actual = self.alias_map.get(req) orelse req;
+                        if (std.mem.eql(u8, req_actual, c_actual)) {
+                            requires = true;
+                            break;
+                        }
+                    }
+                    if (!requires) continue;
+                    for (sd.methods) |sm| {
+                        if (sm.data == .fun_decl and std.mem.eql(u8, sm.data.fun_decl.name, g.name)) {
+                            self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on contract '{s}'. Method '{s}' exists in skill '{s}' but is not declared in the contract — declare it in the contract or use a concrete type as parameter.", .{ g.name, lname, g.name, sd.name });
+                            return error.TypeError;
+                        }
+                    }
+                }
+            }
+        }
         // Hint when the member exists as an extension function in another
         // module but was not imported (Phase 83).
         if (self.registry != null and !self.imported_extension_names.contains(g.name)) {

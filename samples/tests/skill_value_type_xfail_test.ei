@@ -1,0 +1,26 @@
+// MUST NOT COMPILE: skill cannot be used as a value type.
+// Skills hold reusable behavior but are not polymorphic — only contracts
+// (and concrete types) can type values/parameters. While this compiles it
+// XPASSes instead of going XFAIL.
+contract Drawable {
+    fun draw()
+}
+
+skill Shadow : Drawable {
+    fun drawShadow() {
+        echo("shadow")
+    }
+}
+
+type Button(val label: String): Drawable + Shadow {
+    implement fun draw() {
+        echo(label)
+    }
+}
+
+test "skill cannot be used as value type" {
+    val shadows: List<Shadow> = [Button("OK")]
+    for (shadows) {
+        it.drawShadow()
+    }
+}
