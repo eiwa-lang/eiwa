@@ -1,0 +1,30 @@
+import { nowMillis } from "std.time"
+
+test "nowMillis is monotonic with millisecond resolution" {
+    val a = nowMillis()
+    val b = nowMillis()
+    assert(b >= a)
+    assert(b - a < 1000)
+
+    val t0 = nowMillis()
+    sleepMs(200)
+    val delta = nowMillis() - t0
+    assert(delta >= 100)
+    assert(delta < 8000)
+}
+
+test "blocking sleepMs pauses outside task" {
+    val t0 = nowMillis()
+    sleepMs(500)
+    val delta = nowMillis() - t0
+    assert(delta >= 400)
+    assert(delta < 8000)
+}
+
+test "blocking sleep pauses outside task" {
+    val t0 = nowMillis()
+    sleep(1)
+    val delta = nowMillis() - t0
+    assert(delta >= 900)
+    assert(delta < 10000)
+}

@@ -1579,6 +1579,7 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "_longjmp") or
                     std.mem.eql(u8, fn_name_s, "exit") or
                     std.mem.eql(u8, fn_name_s, "fflush") or
+                    std.mem.eql(u8, fn_name_s, "GetSystemTimeAsFileTime") or
                     std.mem.eql(u8, fn_name_s, "memcpy") or
                     std.mem.eql(u8, fn_name_s, "strcpy") or
                     std.mem.eql(u8, fn_name_s, "strcat") or
@@ -2908,7 +2909,6 @@ pub const LLVMEmitter = struct {
             }
         }
 
-        // eiwa_now_millis() -> i64
         {
             const fn_t = llvm.LLVMFunctionType(i64_t, null, 0, 0);
             const func = llvm.LLVMGetNamedFunction(mod, "eiwa_now_millis") orelse llvm.LLVMAddFunction(mod, "eiwa_now_millis", fn_t);
@@ -2916,12 +2916,44 @@ pub const LLVMEmitter = struct {
                 const bb = llvm.LLVMAppendBasicBlockInContext(self.context, func, "entry");
                 llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
 
-                const time_func = llvm.LLVMGetNamedFunction(mod, "time").?;
-                const time_type = llvm.LLVMGlobalGetValueType(time_func);
-                var time_args = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(ptr_t)};
-                const sec_v = llvm.LLVMBuildCall2(self.builder, time_type, time_func, &time_args, 1, "sec");
-                const ms_v = llvm.LLVMBuildMul(self.builder, sec_v, llvm.LLVMConstInt(i64_t, 1000, 0), "ms");
-                _ = llvm.LLVMBuildRet(self.builder, ms_v);
+                const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
+                if (is_windows) {
+                    const ft_fn = llvm.LLVMGetNamedFunction(mod, "GetSystemTimeAsFileTime") orelse blk: {
+                        var ps = [_]llvm.LLVMTypeRef{ptr_t};
+                        const ft = llvm.LLVMFunctionType(void_t, &ps, 1, 0);
+                        break :blk llvm.LLVMAddFunction(mod, "GetSystemTimeAsFileTime", ft);
+                    };
+                    const ft_ft = llvm.LLVMGlobalGetValueType(ft_fn);
+                    const ft_alloca = llvm.LLVMBuildAlloca(self.builder, i64_t, "ft");
+                    var ft_args = [_]llvm.LLVMValueRef{ft_alloca};
+                    _ = llvm.LLVMBuildCall2(self.builder, ft_ft, ft_fn, &ft_args, 1, "");
+                    const ft_v = llvm.LLVMBuildLoad2(self.builder, i64_t, ft_alloca, "ftv");
+                    const ms100ns = llvm.LLVMBuildUDiv(self.builder, ft_v, llvm.LLVMConstInt(i64_t, 10000, 0), "ms100ns");
+                    const ms_v = llvm.LLVMBuildSub(self.builder, ms100ns, llvm.LLVMConstInt(i64_t, 11644473600000, 0), "ms");
+                    _ = llvm.LLVMBuildRet(self.builder, ms_v);
+                } else {
+                    const i32_t = llvm.LLVMInt32TypeInContext(self.context);
+                    var tv_fields = [_]llvm.LLVMTypeRef{ i64_t, i32_t };
+                    const tv_type = llvm.LLVMStructTypeInContext(self.context, &tv_fields, 2, 0);
+                    const tv_alloca = llvm.LLVMBuildAlloca(self.builder, tv_type, "tv");
+                    const gtod_fn = llvm.LLVMGetNamedFunction(mod, "gettimeofday") orelse blk: {
+                        var ps = [_]llvm.LLVMTypeRef{ ptr_t, ptr_t };
+                        const ft = llvm.LLVMFunctionType(i32_t, &ps, 2, 0);
+                        break :blk llvm.LLVMAddFunction(mod, "gettimeofday", ft);
+                    };
+                    const gtod_ft = llvm.LLVMGlobalGetValueType(gtod_fn);
+                    var gtod_args = [_]llvm.LLVMValueRef{ tv_alloca, llvm.LLVMConstNull(ptr_t) };
+                    _ = llvm.LLVMBuildCall2(self.builder, gtod_ft, gtod_fn, &gtod_args, 2, "");
+                    const sec_ptr = llvm.LLVMBuildStructGEP2(self.builder, tv_type, tv_alloca, 0, "sec_ptr");
+                    const sec_v = llvm.LLVMBuildLoad2(self.builder, i64_t, sec_ptr, "sec");
+                    const usec_ptr = llvm.LLVMBuildStructGEP2(self.builder, tv_type, tv_alloca, 1, "usec_ptr");
+                    const usec32 = llvm.LLVMBuildLoad2(self.builder, i32_t, usec_ptr, "usec32");
+                    const usec_v = llvm.LLVMBuildZExt(self.builder, usec32, i64_t, "usec");
+                    const sec_ms = llvm.LLVMBuildMul(self.builder, sec_v, llvm.LLVMConstInt(i64_t, 1000, 0), "sec_ms");
+                    const usec_ms = llvm.LLVMBuildSDiv(self.builder, usec_v, llvm.LLVMConstInt(i64_t, 1000, 0), "usec_ms");
+                    const total_ms = llvm.LLVMBuildAdd(self.builder, sec_ms, usec_ms, "total_ms");
+                    _ = llvm.LLVMBuildRet(self.builder, total_ms);
+                }
             }
         }
 
@@ -3412,11 +3444,15 @@ pub const LLVMEmitter = struct {
     }
 
     fn emitNowMillisHelper(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
+        if (llvm.LLVMGetNamedFunction(mod, "eiwa_now_millis")) |existing| {
+            if (llvm.LLVMCountBasicBlocks(existing) != 0) return;
+        }
         const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
         const i64_type = llvm.LLVMInt64TypeInContext(self.context);
 
         const fn_type = llvm.LLVMFunctionType(i64_type, null, 0, 0);
-        const fn_val = llvm.LLVMAddFunction(mod, "eiwa_now_millis", fn_type);
+        const fn_val = llvm.LLVMGetNamedFunction(mod, "eiwa_now_millis") orelse llvm.LLVMAddFunction(mod, "eiwa_now_millis", fn_type);
+        if (llvm.LLVMCountBasicBlocks(fn_val) != 0) return;
 
         const entry = llvm.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
@@ -3451,6 +3487,26 @@ pub const LLVMEmitter = struct {
     fn declareLib(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, lib_node: *ast.ASTNode, module_path: ?[]const u8) !void {
         const lib = lib_node.data.lib_decl;
         if (!self.matchesTarget(lib.platform_targets)) return;
+
+        if (self.libs.getPtr(lib.name)) |existing| {
+            for (lib.functions) |func_node| {
+                if (func_node.data != .fun_decl) continue;
+                const f = func_node.data.fun_decl;
+                var c_name: []const u8 = f.name;
+                if (std.mem.eql(u8, f.name, "abs")) {
+                    c_name = "labs";
+                }
+                for (f.annotations) |ann| {
+                    if (std.mem.eql(u8, ann.name, "Alias") and ann.arguments.len > 0) {
+                        c_name = ann.arguments[0];
+                        break;
+                    }
+                }
+                try existing.put(f.name, c_name);
+                try self.declareFunctionNamed(mod, func_node, c_name);
+            }
+            return;
+        }
 
         try self.lib_declarations.put(lib.name, .{ .lib_node = lib_node, .module_path = module_path });
 
