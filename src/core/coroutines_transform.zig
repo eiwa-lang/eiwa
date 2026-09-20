@@ -75,13 +75,20 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
             // when it is NOT suspend (e.g. `main` with a bare `task {}` that is
             // never awaited still needs the machinery + a final scheduler drain).
             // rewriteFunctionBody's hasTaskOrAwait guard filters the rest.
+            // Generic templates are skipped: they are never validated nor
+            // emitted directly (their bodies carry no resolved types, so
+            // capture collection would silently miss everything); each
+            // monomorphized copy is a separate statement and is transformed.
+            if (stmt.data.fun_decl.generic_params.len > 0) continue;
             try transformFunction(allocator, checker, stmt, &counter, &generated);
         } else if (stmt.data == .type_decl) {
             const t = &stmt.data.type_decl;
+            // Same as above: skip the unvalidated generic template; its
+            // monomorphized copies are transformed as concrete types.
+            if (t.generic_params.len > 0) continue;
             var type_rewritten = false;
             for (t.methods) |m_node| {
                 if (m_node.data != .fun_decl) continue;
-                if (!m_node.data.fun_decl.is_suspend) continue;
                 if (try rewriteFunctionBody(allocator, checker, m_node, &counter, &generated)) type_rewritten = true;
             }
             if (type_rewritten) {
@@ -97,7 +104,6 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
             var obj_rewritten = false;
             for (o.members) |member| {
                 if (member.data != .fun_decl) continue;
-                if (!member.data.fun_decl.is_suspend) continue;
                 if (try rewriteFunctionBody(allocator, checker, member, &counter, &generated)) obj_rewritten = true;
             }
             if (obj_rewritten) {
@@ -1130,7 +1136,8 @@ fn hoistAwaitsWalk(
         const copy = try allocator.create(ASTNode);
         copy.* = node.*;
         const await_result = node.resolved_type;
-        try clearResolvedTypes(allocator, copy);
+        copy.resolved_type = null;
+        copy.expected_type = null;
         const decl = mkVarDecl(name, copy);
         // Preserve the await result type so the machinery can type the
         // cooperative-await marker (the copy's own types were cleared).
@@ -2622,6 +2629,276 @@ fn taskNodeHas(node: *ASTNode, kind: TaskRejectKind) ?*ASTNode {
     }
 }
 
+const outer_this_field = "__outer_this";
+
+fn findOuterThisType(body: []const *ASTNode) ?*const EiwaType {
+    for (body) |s| {
+        if (findOuterThisTypeInNode(s)) |t| return t;
+    }
+    return null;
+}
+
+fn findOuterThisTypeInNode(node: *ASTNode) ?*const EiwaType {
+    switch (node.data) {
+        .identifier => |i| {
+            if (std.mem.eql(u8, i.name, "this")) {
+                if (node.resolved_type) |rt| return rt;
+            }
+            return null;
+        },
+        .call_expr => |c| {
+            if (isTaskCall(node)) return null;
+            if (findOuterThisTypeInNode(c.callee)) |t| return t;
+            for (c.arguments) |a| {
+                if (findOuterThisTypeInNode(a)) |t| return t;
+            }
+            return null;
+        },
+        .lambda_expr => |l| {
+            for (l.params) |p| {
+                if (std.mem.eql(u8, p.name, "this")) return null;
+            }
+            for (l.body) |s| {
+                if (findOuterThisTypeInNode(s)) |t| return t;
+            }
+            return null;
+        },
+        .block => |b| {
+            for (b.statements) |s| {
+                if (findOuterThisTypeInNode(s)) |t| return t;
+            }
+            return null;
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| return findOuterThisTypeInNode(init);
+            return null;
+        },
+        .assignment => |a| return findOuterThisTypeInNode(a.value),
+        .binary_expr => |b| {
+            if (findOuterThisTypeInNode(b.left)) |t| return t;
+            return findOuterThisTypeInNode(b.right);
+        },
+        .unary_expr => |u| return findOuterThisTypeInNode(u.operand),
+        .get_expr => |g| return findOuterThisTypeInNode(g.object),
+        .set_expr => |s| {
+            if (findOuterThisTypeInNode(s.object)) |t| return t;
+            return findOuterThisTypeInNode(s.value);
+        },
+        .if_expr => |i| {
+            if (findOuterThisTypeInNode(i.condition)) |t| return t;
+            if (findOuterThisTypeInNode(i.then_branch)) |t| return t;
+            if (i.else_branch) |e| return findOuterThisTypeInNode(e);
+            return null;
+        },
+        .while_stmt => |w| {
+            if (findOuterThisTypeInNode(w.condition)) |t| return t;
+            return findOuterThisTypeInNode(w.body);
+        },
+        .for_stmt => |f| {
+            if (findOuterThisTypeInNode(f.iterable)) |t| return t;
+            return findOuterThisTypeInNode(f.body);
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| return findOuterThisTypeInNode(v);
+            return null;
+        },
+        .break_stmt => |b| {
+            if (b.value) |v| return findOuterThisTypeInNode(v);
+            return null;
+        },
+        .try_stmt => |t| {
+            if (findOuterThisTypeInNode(t.body)) |tb| return tb;
+            for (t.catches) |cb| {
+                if (findOuterThisTypeInNode(cb.body)) |ct| return ct;
+            }
+            return null;
+        },
+        .throw_stmt => |t| return findOuterThisTypeInNode(t.expr),
+        .when_expr => |w| {
+            if (w.subject) |s| {
+                if (findOuterThisTypeInNode(s)) |t| return t;
+            }
+            for (w.cases) |case| {
+                for (case.conds) |cond| {
+                    if (findOuterThisTypeInNode(cond)) |t| return t;
+                }
+                if (findOuterThisTypeInNode(case.body)) |t| return t;
+            }
+            return null;
+        },
+        .array_literal => |al| {
+            for (al.elements) |e| {
+                if (findOuterThisTypeInNode(e)) |t| return t;
+            }
+            return null;
+        },
+        .string_template => |st| {
+            for (st.parts) |e| {
+                if (findOuterThisTypeInNode(e)) |t| return t;
+            }
+            return null;
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| {
+                if (findOuterThisTypeInNode(e)) |t| return t;
+            }
+            return null;
+        },
+        .index_expr => |i| {
+            if (findOuterThisTypeInNode(i.object)) |t| return t;
+            return findOuterThisTypeInNode(i.index);
+        },
+        .index_set_expr => |i| {
+            if (findOuterThisTypeInNode(i.object)) |t| return t;
+            if (findOuterThisTypeInNode(i.index)) |t| return t;
+            return findOuterThisTypeInNode(i.value);
+        },
+        .named_arg => |na| return findOuterThisTypeInNode(na.value),
+        else => return null,
+    }
+}
+
+fn rewriteOuterThisRefs(allocator: std.mem.Allocator, body: []const *ASTNode) !void {
+    for (body) |s| try rewriteOuterThisInNode(allocator, s);
+}
+
+fn rewriteOuterThisInNode(allocator: std.mem.Allocator, node: *ASTNode) !void {
+    switch (node.data) {
+        .identifier => |i| {
+            if (std.mem.eql(u8, i.name, "this")) {
+                node.data = .{ .get_expr = .{
+                    .object = mkIdent("this"),
+                    .name = outer_this_field,
+                    .is_safe = false,
+                    .is_boxed = false,
+                } };
+                node.resolved_type = null;
+            }
+            return;
+        },
+        .call_expr => |c| {
+            if (isTaskCall(node)) return;
+            try rewriteOuterThisInNode(allocator, c.callee);
+            for (c.arguments) |a| {
+                try rewriteOuterThisInNode(allocator, a);
+            }
+            return;
+        },
+        .lambda_expr => |l| {
+            for (l.params) |p| {
+                if (std.mem.eql(u8, p.name, "this")) return;
+            }
+            for (l.body) |s| {
+                try rewriteOuterThisInNode(allocator, s);
+            }
+            return;
+        },
+        .block => |b| {
+            for (b.statements) |s| {
+                try rewriteOuterThisInNode(allocator, s);
+            }
+            return;
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| try rewriteOuterThisInNode(allocator, init);
+            return;
+        },
+        .assignment => |a| {
+            try rewriteOuterThisInNode(allocator, a.value);
+            return;
+        },
+        .binary_expr => |b| {
+            try rewriteOuterThisInNode(allocator, b.left);
+            try rewriteOuterThisInNode(allocator, b.right);
+            return;
+        },
+        .unary_expr => |u| {
+            try rewriteOuterThisInNode(allocator, u.operand);
+            return;
+        },
+        .get_expr => |g| {
+            try rewriteOuterThisInNode(allocator, g.object);
+            return;
+        },
+        .set_expr => |s| {
+            try rewriteOuterThisInNode(allocator, s.object);
+            try rewriteOuterThisInNode(allocator, s.value);
+            return;
+        },
+        .if_expr => |i| {
+            try rewriteOuterThisInNode(allocator, i.condition);
+            try rewriteOuterThisInNode(allocator, i.then_branch);
+            if (i.else_branch) |e| try rewriteOuterThisInNode(allocator, e);
+            return;
+        },
+        .while_stmt => |w| {
+            try rewriteOuterThisInNode(allocator, w.condition);
+            try rewriteOuterThisInNode(allocator, w.body);
+            return;
+        },
+        .for_stmt => |f| {
+            try rewriteOuterThisInNode(allocator, f.iterable);
+            try rewriteOuterThisInNode(allocator, f.body);
+            return;
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| try rewriteOuterThisInNode(allocator, v);
+            return;
+        },
+        .break_stmt => |b| {
+            if (b.value) |v| try rewriteOuterThisInNode(allocator, v);
+            return;
+        },
+        .try_stmt => |t| {
+            try rewriteOuterThisInNode(allocator, t.body);
+            for (t.catches) |cb| {
+                try rewriteOuterThisInNode(allocator, cb.body);
+            }
+            return;
+        },
+        .throw_stmt => |t| {
+            try rewriteOuterThisInNode(allocator, t.expr);
+            return;
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| try rewriteOuterThisInNode(allocator, s);
+            for (w.cases) |case| {
+                for (case.conds) |cond| try rewriteOuterThisInNode(allocator, cond);
+                try rewriteOuterThisInNode(allocator, case.body);
+            }
+            return;
+        },
+        .array_literal => |al| {
+            for (al.elements) |e| try rewriteOuterThisInNode(allocator, e);
+            return;
+        },
+        .string_template => |st| {
+            for (st.parts) |e| try rewriteOuterThisInNode(allocator, e);
+            return;
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| try rewriteOuterThisInNode(allocator, e);
+            return;
+        },
+        .index_expr => |i| {
+            try rewriteOuterThisInNode(allocator, i.object);
+            try rewriteOuterThisInNode(allocator, i.index);
+            return;
+        },
+        .index_set_expr => |i| {
+            try rewriteOuterThisInNode(allocator, i.object);
+            try rewriteOuterThisInNode(allocator, i.index);
+            try rewriteOuterThisInNode(allocator, i.value);
+            return;
+        },
+        .named_arg => |na| {
+            try rewriteOuterThisInNode(allocator, na.value);
+            return;
+        },
+        else => return,
+    }
+}
+
 /// Returns the sequence: `val __taskN = StackTask<T>(false, null, null)`,
 /// `Scheduler.schedule(__TaskBlockN(__taskN, <captured...>))`, `val t = __taskN`.
 fn rewriteTaskCall(
@@ -2657,7 +2934,23 @@ fn rewriteTaskCall(
         }
     }
 
-    const captures = try collectCaptures(allocator, checker, body);
+    const outer_this_t = findOuterThisType(body);
+    if (outer_this_t != null) {
+        try rewriteOuterThisRefs(allocator, body);
+    }
+
+    const captures_pre = try collectCaptures(allocator, checker, body);
+    var captures = captures_pre;
+    if (outer_this_t) |ot| {
+        var extended = ArrayList(CapturedVar).init(allocator);
+        try extended.appendSlice(captures_pre);
+        try extended.append(.{
+            .name = outer_this_field,
+            .type_ref = try typeRefForEiwaType(allocator, ot),
+            .is_boxed = false,
+        });
+        captures = try extended.toOwnedSlice();
+    }
     const result_type = blockReturnType(body);
 
     const n = counter.*;
@@ -2684,11 +2977,12 @@ fn rewriteTaskCall(
     defer ctor_args.deinit();
     try ctor_args.append(mkIdent(task_name));
     for (captures) |c| {
-        // Boxed captures pass the box pointer (the outer var's heap cell) so
-        // writes inside the task's resume propagate back. Reads/writes of
-        // `this.<name>` inside the resume are marked `is_boxed` for double-deref.
         var arg = mkIdent(c.name);
-        arg.data.identifier.is_box_ref = c.is_boxed;
+        if (std.mem.eql(u8, c.name, outer_this_field)) {
+            arg = mkIdent("this");
+        } else {
+            arg.data.identifier.is_box_ref = c.is_boxed;
+        }
         try ctor_args.append(arg);
     }
     const block_ctor_call = mkCall(mkIdent(block_type.data.type_decl.name), ctor_args.items);
