@@ -46,6 +46,10 @@ fun yield(): Void {
     Coroutine.yield()
 }
 
+fun park(): Void {
+    Coroutine.park()
+}
+
 fun exit(code: Int): Void {
     Standard.exit(code)
 }

@@ -2153,15 +2153,32 @@ O Eiwa segue o modelo de **structured concurrency**: o runtime e os dispatchers 
 
 ### 20.7 Objetos de Concorrência e I/O (`Coroutine` & `EventLoop`)
 
-A standard library expõe utilitários em `std.coroutines`:
+As formas top-level (`std.system`, implícito, sem import) para o dia a dia:
+
+```kotlin
+fun main() {
+    sleep(2)     // bloqueia a thread atual por 2 SEGUNDOS (nanosleep)
+    sleepMs(500) // bloqueia a thread atual por 500 MILISSEGUNDOS
+    yield()      // cede a thread atual (sched_yield)
+
+    // park(): estaciona a thread atual PARA SEMPRE (0% CPU) —
+    // o idioma para manter a main viva até matarem o processo:
+    // task { ... }
+    // task { ... }
+    // park()
+}
+```
+
+A standard library também expõe as formas objeto em `std.coroutines`
+(mesma semântica bloqueante fora de `task`):
 
 ```kotlin
 import { Coroutine, EventLoop } from "std.coroutines"
 
 fun example() {
-    // Fora do corpo de um task: pausa a thread (nanosleep) ou cede (sched_yield).
     Coroutine.yield()
-    Coroutine.sleep(1)
+    Coroutine.sleepMs(1)
+    Coroutine.sleep(2000000000) // nanossegundos!
 
     // Aguarda prontidão de socket/FD (poll).
     EventLoop.waitReadable(fd)
@@ -2172,6 +2189,13 @@ fun example() {
 > **Dentro do corpo de um `task { }`**, `sleep`/`sleepMs`/`yield` viram **pontos de suspensão
 > cooperativos de verdade** (state machine): o worker é liberado para outras tarefas enquanto o timer
 > não dispara. `await()` registra o caller na waiter-chain e retoma assim que o resultado estiver pronto.
+>
+> **Atenção:** a reescrita cooperativa só acontece quando a chamada está escrita **diretamente**
+> no corpo do `task`. Um `sleep` chamado de dentro de um método invocado pelo task executa como
+> `nanosleep` bloqueante no worker thread (funciona, mas prende o thread).
+>
+> **`park()` nunca suspende** — nem dentro de `task`. Use apenas na `main` (ou em threads
+> dedicadas) para estacionar o processo; dentro de task, prefira `sleep`/`await`.
 
 ### 20.8 Primitivas de Sincronização & Atomicidade (`sync`, `Mutex`, `AtomicInt`)
 

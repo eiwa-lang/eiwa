@@ -544,6 +544,13 @@ object Scheduler {
 // ============================================================================
 
 object Coroutine {
+    fun park(): Void {
+        val mutex = RawMutex.create()
+        val cond = CondVar.create()
+        mutex.lock()
+        cond.wait(mutex)
+    }
+
     @Suspend
     fun yield(): Int {
         return NativeSched.schedYield()
