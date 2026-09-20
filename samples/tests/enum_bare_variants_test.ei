@@ -1,0 +1,43 @@
+enum TrafficLight { RED, YELLOW, GREEN }
+
+type Lamp(val id: String, var status: TrafficLight = RED) {
+    fun next() {
+        status = when (status) {
+            TrafficLight.RED -> GREEN
+            GREEN -> TrafficLight.YELLOW
+            TrafficLight.YELLOW -> TrafficLight.RED
+            else -> RED
+        }
+    }
+
+    fun reset(): TrafficLight {
+        return RED
+    }
+}
+
+fun paint(s: TrafficLight): TrafficLight = s
+
+test "bare enum variants resolve from constructor defaults and args" {
+    val a = Lamp("a")
+    assert(a.status == RED)
+    val b = Lamp(id = "b", status = GREEN)
+    assert(b.status == GREEN)
+}
+
+test "bare variants in when conditions and block results" {
+    val lamp = Lamp("c")
+    lamp.next()
+    assert(lamp.status == GREEN)
+    lamp.next()
+    assert(lamp.status == YELLOW)
+    lamp.next()
+    assert(lamp.status == RED)
+}
+
+test "bare variants in return, call args and typed declarations" {
+    val lamp = Lamp("d")
+    assert(lamp.reset() == RED)
+    assert(paint(YELLOW) == YELLOW)
+    val explicit: TrafficLight = GREEN
+    assert(explicit == GREEN)
+}

@@ -163,6 +163,9 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     // instead of staying `Void`). Only turns prior errors into values.
     if (b.op == .elvis) markTrailingValue(b.left, true);
     const left_type = try self.inferNode(b.left, scope);
+    if ((b.op == .eq_eq or b.op == .bang_eq) and b.right.data == .identifier and b.right.expected_type == null and self.typeHasEnum(left_type)) {
+        b.right.expected_type = left_type;
+    }
     const right_type = try self.inferNode(b.right, scope);
 
     if (b.op == .elvis) {
@@ -359,9 +362,40 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             t.* = .{ .Custom = c_name };
             return;
         }
+        if (try resolveBareEnumVariant(self, node, scope, t)) return;
+        if (node.expected_type) |exp| {
+            if (self.countEnumVariantOwners(exp, i.name) > 1) {
+                self.reportError(node.line, node.column, "TypeError: Ambiguous enum variant '{s}': more than one expected enum owns it. Qualify explicitly (Enum.Variant).", .{i.name});
+                return error.TypeError;
+            }
+        }
         self.reportError(node.line, node.column, "TypeError: Undeclared variable '{s}'.", .{i.name});
         return error.TypeError;
     }
+}
+
+fn resolveBareEnumVariant(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!bool {
+    const want = node.data.identifier.name;
+    const exp = node.expected_type orelse return false;
+    const owner = self.uniqueEnumVariantOwner(exp, want) orelse return false;
+    const obj = try self.allocator.create(ASTNode);
+    obj.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .data = .{ .identifier = .{ .name = owner, .resolved_c_name = null } },
+    };
+    node.data = .{
+        .get_expr = .{
+            .object = obj,
+            .name = want,
+            .is_safe = false,
+            .resolved_c_name = null,
+        },
+    };
+    node.resolved_type = null;
+    try inferGetExpr(self, node, scope, t);
+    return true;
 }
 
 /// True when `val as target` is a numeric conversion (Int <-> Double).

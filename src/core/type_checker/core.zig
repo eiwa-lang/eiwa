@@ -134,6 +134,9 @@ pub const TypeChecker = struct {
     pub const resolveImports = core_resolveImports;
     pub const checkBlock = infer_stmt_mod.checkBlock;
     pub const findUndeclaredTypeArg = core_findUndeclaredTypeArg;
+    pub const uniqueEnumVariantOwner = core_uniqueEnumVariantOwner;
+    pub const countEnumVariantOwners = core_countEnumVariantOwners;
+    pub const typeHasEnum = core_typeHasEnum;
     pub const checkGenericTypeArgs = core_checkGenericTypeArgs;
     pub const resolveHintTypeRef = core_resolveHintTypeRef;
     pub const resolveHintTypeName = core_resolveHintTypeName;
@@ -700,6 +703,57 @@ fn core_findUndeclaredTypeArg(self: *TypeChecker, t: *const EiwaType, base_param
         },
         // Nested instances were validated by their own resolution.
         else => return null,
+    }
+}
+
+fn core_uniqueEnumVariantOwner(self: *TypeChecker, expected: *const EiwaType, variant: []const u8) ?[]const u8 {
+    var first: ?[]const u8 = null;
+    var second = false;
+    countOwners(self, expected, variant, &first, &second);
+    if (second) return null;
+    return first;
+}
+
+fn core_typeHasEnum(self: *TypeChecker, t: *const EiwaType) bool {
+    switch (t.*) {
+        .Custom => |name| {
+            const actual = self.alias_map.get(name) orelse name;
+            return self.enums_ast.contains(actual);
+        },
+        .Union => |u| return self.typeHasEnum(u.left) or self.typeHasEnum(u.right),
+        else => return false,
+    }
+}
+
+fn core_countEnumVariantOwners(self: *TypeChecker, expected: *const EiwaType, variant: []const u8) usize {
+    var first: ?[]const u8 = null;
+    var second = false;
+    countOwners(self, expected, variant, &first, &second);
+    if (second) return 2;
+    return if (first != null) 1 else 0;
+}
+
+fn countOwners(self: *TypeChecker, t: *const EiwaType, variant: []const u8, first: *?[]const u8, second: *bool) void {
+    switch (t.*) {
+        .Custom => |name| {
+            const actual = self.alias_map.get(name) orelse name;
+            const enum_node = self.enums_ast.get(actual) orelse return;
+            for (enum_node.data.enum_decl.variants) |v| {
+                if (!std.mem.eql(u8, v.name, variant)) continue;
+                if (first.*) |prev| {
+                    if (!std.mem.eql(u8, prev, actual)) second.* = true;
+                    return;
+                }
+                first.* = actual;
+                return;
+            }
+        },
+        .Union => |u| {
+            countOwners(self, u.left, variant, first, second);
+            if (second.*) return;
+            countOwners(self, u.right, variant, first, second);
+        },
+        else => {},
     }
 }
 

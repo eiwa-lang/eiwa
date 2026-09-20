@@ -684,6 +684,11 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             return;
         }
         markTrailingValue(v, true);
+        if (v.expected_type == null) {
+            if (self.current_fn_return) |decl| {
+                if (self.typeHasEnum(decl)) v.expected_type = decl;
+            }
+        }
         const ret_type = try self.inferNode(v, scope);
         t.* = ret_type.*;
         // A value returned from a non-Void function must match the declared
@@ -837,6 +842,13 @@ pub fn inferBlockAsExpression(self: *TypeChecker, block_node: *ASTNode, scope: *
     const b = block_node.data.block;
     var local_scope = Scope.init(self.allocator, scope);
     defer local_scope.deinit();
+
+    if (block_node.expected_type) |et| {
+        if (et.* != .Void and b.statements.len > 0 and self.typeHasEnum(et)) {
+            const last_stmt = b.statements[b.statements.len - 1];
+            if (last_stmt.expected_type == null) last_stmt.expected_type = et;
+        }
+    }
 
     var last: ?*ASTNode = null;
     var last_type: ?*const EiwaType = null;

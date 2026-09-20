@@ -76,7 +76,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         }
                     }
                 } else {
-                    // Value check
+                    if (cond.expected_type == null and self.typeHasEnum(subj_t)) cond.expected_type = subj_t;
                     const val_t = try self.inferNode(cond, scope);
                     if (!self.isCompatible(subj_t, val_t) and !self.isCompatible(val_t, subj_t)) {
                         self.reportError(cond.line, cond.column, "TypeError: Incompatible types in when condition: expected {f} but found {f}.", .{ subj_t.*, val_t.* });
