@@ -52,6 +52,19 @@ pub fn transformProgram(allocator: std.mem.Allocator, registry: *ModuleRegistry)
 fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: *ASTNode) !void {
     if (module.data != .program) return;
 
+    for (module.data.program.statements) |stmt| {
+        switch (stmt.data) {
+            .import_stmt, .fun_decl, .type_decl, .contract_decl, .skill_decl,
+            .test_decl, .lib_decl, .object_decl, .enum_decl => {},
+            else => {
+                if (hasTaskOrAwait(stmt)) {
+                    checker.reportError(stmt.line, stmt.column, "TypeError: task {{}} and await() cannot be used in top-level statements (they would silently do nothing). Wrap them in fun main() {{ ... }}.", .{});
+                    return error.TypeError;
+                }
+            },
+        }
+    }
+
     var counter: usize = 0;
     var generated = ArrayList(*ASTNode).init(allocator);
     defer generated.deinit();
