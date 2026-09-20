@@ -35,6 +35,7 @@ const ModuleRegistry = tc_core.ModuleRegistry;
 const infer_decl = @import("type_checker/infer_decl.zig");
 const ts = @import("type_system.zig");
 const EiwaType = ts.EiwaType;
+const syn = @import("coroutine_syntax.zig");
 
 const ASTTypeRef = ast.ASTTypeRef;
 
@@ -54,8 +55,7 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
 
     for (module.data.program.statements) |stmt| {
         switch (stmt.data) {
-            .import_stmt, .fun_decl, .type_decl, .contract_decl, .skill_decl,
-            .test_decl, .lib_decl, .object_decl, .enum_decl => {},
+            .import_stmt, .fun_decl, .type_decl, .contract_decl, .skill_decl, .test_decl, .lib_decl, .object_decl, .enum_decl => {},
             else => {
                 if (hasTaskOrAwait(stmt)) {
                     checker.reportError(stmt.line, stmt.column, "TypeError: task {{}} and await() cannot be used in top-level statements (they would silently do nothing). Wrap them in fun main() {{ ... }}.", .{});
@@ -125,7 +125,7 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
                 if (generated.items.len > before or test_stmts.items.len != td.body.data.block.statements.len) {
                     // Drain the scheduler at the end of the test so
                     // fire-and-forget tasks (never awaited) still run.
-                    try test_stmts.append(mkExprStmt(mkCall(mkGetExpr(mkIdent("Scheduler"), "run"), &.{})));
+                    try test_stmts.append(syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "run"), &.{})));
                     td.body.data.block.statements = try test_stmts.toOwnedSlice();
                     try clearResolvedTypes(allocator, stmt);
                     checker.pass = .validation;
@@ -198,7 +198,7 @@ fn rewriteFunctionBody(
     // `fun main()`: drain the scheduler before returning so fire-and-forget
     // tasks (`task {}` never awaited) still run. run() no-ops on empty queue.
     if (std.mem.eql(u8, f.name, "main")) {
-        try new_stmts.append(mkExprStmt(mkCall(mkGetExpr(mkIdent("Scheduler"), "run"), &.{})));
+        try new_stmts.append(syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "run"), &.{})));
     }
     const rewritten = try new_stmts.toOwnedSlice();
     f.body.data.block.statements = rewritten;
@@ -230,7 +230,7 @@ fn transformFunction(
 fn hasTaskOrAwait(node: *ASTNode) bool {
     switch (node.data) {
         .call_expr => |c| {
-            if (isTaskCall(node) or isAwaitCall(node)) return true;
+            if (syn.isTaskCall(node) or syn.isAwaitCall(node)) return true;
             if (hasTaskOrAwait(c.callee)) return true;
             for (c.arguments) |a| {
                 if (hasTaskOrAwait(a)) return true;
@@ -301,26 +301,6 @@ fn hasTaskOrAwait(node: *ASTNode) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Pattern detection
-// ---------------------------------------------------------------------------
-
-/// `task { ... }` — a call to the `@Coroutine` function `task`.
-fn isTaskCall(node: *ASTNode) bool {
-    if (node.data != .call_expr) return false;
-    const c = &node.data.call_expr;
-    if (c.callee.data != .identifier) return false;
-    return std.mem.eql(u8, c.callee.data.identifier.name, "task");
-}
-
-/// `<recv>.await()` — a call whose callee is a get_expr named "await".
-fn isAwaitCall(node: *ASTNode) bool {
-    if (node.data != .call_expr) return false;
-    const c = &node.data.call_expr;
-    if (c.callee.data != .get_expr) return false;
-    return std.mem.eql(u8, c.callee.data.get_expr.name, "await");
-}
-
-// ---------------------------------------------------------------------------
 // Statement rewriting (recursive)
 // ---------------------------------------------------------------------------
 
@@ -354,14 +334,14 @@ fn rewriteStatement(
     switch (stmt.data) {
         .var_decl => |*v| {
             if (v.initializer) |init| {
-                if (isTaskCall(init)) {
+                if (syn.isTaskCall(init)) {
                     const gen = try rewriteTaskCall(allocator, checker, stmt, init, counter, generated);
                     try out.appendSlice(gen);
                     return true;
                 }
-                if (isAwaitCall(init)) {
+                if (syn.isAwaitCall(init)) {
                     const recv = init.data.call_expr.callee.data.get_expr.object;
-                    if (isTaskCall(recv)) {
+                    if (syn.isTaskCall(recv)) {
                         const gen = try rewriteTaskAwaitCall(allocator, checker, stmt, init, counter, generated, coop);
                         try out.appendSlice(gen);
                         return true;
@@ -383,17 +363,17 @@ fn rewriteStatement(
             return false;
         },
         .assignment => |*a| {
-            if (isTaskCall(a.value)) {
+            if (syn.isTaskCall(a.value)) {
                 var temp_stmts = ArrayList(*ASTNode).init(allocator);
                 defer temp_stmts.deinit();
                 const temp_name = try std.fmt.allocPrint(allocator, "__task_tmp{d}", .{counter.*});
                 counter.* += 1;
-                const temp_decl = mkVarDecl(temp_name, null);
+                const temp_decl = syn.mkVarDecl(temp_name, null);
                 try temp_stmts.append(temp_decl);
                 const gen = try rewriteTaskCall(allocator, checker, temp_stmts.items[0], a.value, counter, generated);
                 try out.appendSlice(gen);
                 const task_name = gen[gen.len - 1].data.var_decl.initializer.?.data.identifier.name;
-                const assign = mkAssign(a.name, mkIdent(task_name));
+                const assign = syn.mkAssign(a.name, syn.mkIdent(task_name));
                 assign.data.assignment.is_boxed = a.is_boxed;
                 assign.data.assignment.is_class_property = a.is_class_property;
                 assign.data.assignment.owner_type_c_name = a.owner_type_c_name;
@@ -401,7 +381,7 @@ fn rewriteStatement(
                 try out.append(assign);
                 return true;
             }
-            if (isAwaitCall(a.value) or containsAwait(a.value)) {
+            if (syn.isAwaitCall(a.value) or containsAwait(a.value)) {
                 var preamble = ArrayList(*ASTNode).init(allocator);
                 defer preamble.deinit();
                 if (try hoistAwaitsFromExpr(allocator, checker, a.value, counter, &preamble)) {
@@ -414,9 +394,9 @@ fn rewriteStatement(
         },
         .return_stmt => |*r| {
             if (r.value) |val| {
-                if (isAwaitCall(val)) {
+                if (syn.isAwaitCall(val)) {
                     const recv = val.data.call_expr.callee.data.get_expr.object;
-                    if (isTaskCall(recv)) {
+                    if (syn.isTaskCall(recv)) {
                         const gen = try rewriteReturnTaskAwait(allocator, checker, stmt, val, counter, generated);
                         try out.appendSlice(gen);
                         return true;
@@ -500,43 +480,43 @@ fn rewriteStatement(
 
                 const iter_type = f.iterable.resolved_type orelse (checker.inferNode(f.iterable, &checker.global_scope) catch null);
 
-                const arr_decl = mkVarDecl(arr_name, f.iterable);
+                const arr_decl = syn.mkVarDecl(arr_name, f.iterable);
                 arr_decl.resolved_type = iter_type;
                 if (iter_type) |rt| {
-                    arr_decl.data.var_decl.type_ref = try typeRefForEiwaType(allocator, rt);
+                    arr_decl.data.var_decl.type_ref = try syn.typeRefForEiwaType(allocator, rt);
                 }
                 if (!try rewriteStatement(allocator, checker, arr_decl, counter, generated, out, coop)) {
                     try out.append(arr_decl);
                 }
 
-                const i_decl = mkVarDecl(i_name, mkIntLit(0));
+                const i_decl = syn.mkVarDecl(i_name, syn.mkIntLit(0));
                 i_decl.data.var_decl.is_mut = true;
-                i_decl.data.var_decl.type_ref = typeRefSimple("Int");
+                i_decl.data.var_decl.type_ref = syn.typeRefSimple("Int");
                 try out.append(i_decl);
 
-                const len_expr = mkGetExpr(mkUnary(.bang_bang, mkIdent(arr_name)), "length");
+                const len_expr = syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(arr_name)), "length");
 
-                const len_decl = mkVarDecl(len_name, len_expr);
-                len_decl.data.var_decl.type_ref = typeRefSimple("Int");
+                const len_decl = syn.mkVarDecl(len_name, len_expr);
+                len_decl.data.var_decl.type_ref = syn.typeRefSimple("Int");
                 try out.append(len_decl);
 
-                const cond = mkBinary(.less, mkIdent(i_name), mkIdent(len_name));
+                const cond = syn.mkBinary(.less, syn.mkIdent(i_name), syn.mkIdent(len_name));
 
                 var while_stmts = ArrayList(*ASTNode).init(allocator);
                 defer while_stmts.deinit();
 
                 if (f.index_name) |idx_name| {
-                    const idx_decl = mkVarDecl(idx_name, mkIdent(i_name));
-                    idx_decl.data.var_decl.type_ref = typeRefSimple("Int");
+                    const idx_decl = syn.mkVarDecl(idx_name, syn.mkIdent(i_name));
+                    idx_decl.data.var_decl.type_ref = syn.typeRefSimple("Int");
                     try while_stmts.append(idx_decl);
                 }
 
-                const item_val = mkIndexExpr(mkUnary(.bang_bang, mkIdent(arr_name)), mkIdent(i_name));
-                const item_decl = mkVarDecl(f.item_name, item_val);
+                const item_val = syn.mkIndexExpr(syn.mkUnary(.bang_bang, syn.mkIdent(arr_name)), syn.mkIdent(i_name));
+                const item_decl = syn.mkVarDecl(f.item_name, item_val);
                 if (iter_type) |rt| {
                     if (rt.* == .Array) {
                         item_decl.resolved_type = rt.Array;
-                        item_decl.data.var_decl.type_ref = try typeRefForEiwaType(allocator, rt.Array);
+                        item_decl.data.var_decl.type_ref = try syn.typeRefForEiwaType(allocator, rt.Array);
                     }
                 }
                 try while_stmts.append(item_decl);
@@ -549,11 +529,11 @@ fn rewriteStatement(
                     try while_stmts.append(f.body);
                 }
 
-                const inc = mkAssign(i_name, mkBinary(.plus, mkIdent(i_name), mkIntLit(1)));
+                const inc = syn.mkAssign(i_name, syn.mkBinary(.plus, syn.mkIdent(i_name), syn.mkIntLit(1)));
                 try while_stmts.append(inc);
 
-                const while_body = mkBlock(try while_stmts.toOwnedSlice());
-                const while_node = mkWhile(cond, while_body);
+                const while_body = syn.mkBlock(try while_stmts.toOwnedSlice());
+                const while_node = syn.mkWhile(cond, while_body);
 
                 if (!try rewriteStatement(allocator, checker, while_node, counter, generated, out, coop)) {
                     try out.append(while_node);
@@ -572,7 +552,7 @@ fn rewriteStatement(
             return false;
         },
         else => {
-            if (stmt.data == .call_expr and isTaskCall(stmt)) {
+            if (stmt.data == .call_expr and syn.isTaskCall(stmt)) {
                 const gen = try rewriteBareTaskCall(allocator, checker, stmt, stmt, counter, generated);
                 try out.appendSlice(gen);
                 return true;
@@ -640,7 +620,7 @@ fn rewritePreamble(
 fn containsAwait(node: *ASTNode) bool {
     switch (node.data) {
         .call_expr => |c| {
-            if (isAwaitCall(node)) return true;
+            if (syn.isAwaitCall(node)) return true;
             if (containsAwait(c.callee)) return true;
             for (c.arguments) |a| {
                 if (containsAwait(a)) return true;
@@ -946,7 +926,7 @@ fn addCapture(
     }
     try captures.append(.{
         .name = name,
-        .type_ref = try typeRefForEiwaType(allocator, rt),
+        .type_ref = try syn.typeRefForEiwaType(allocator, rt),
         .is_boxed = is_boxed,
     });
 }
@@ -978,7 +958,7 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
                 if (std.mem.eql(u8, i.name, c.name)) {
                     const captured_name = i.name;
                     node.data = .{ .get_expr = .{
-                        .object = mkIdent("this"),
+                        .object = syn.mkIdent("this"),
                         .name = captured_name,
                         .is_safe = false,
                         .is_boxed = c.is_boxed,
@@ -998,7 +978,7 @@ fn rewriteCapturedRefs(allocator: std.mem.Allocator, captures: []const CapturedV
                     const assignment_name = a.name;
                     const assignment_value = a.value;
                     node.data = .{ .set_expr = .{
-                        .object = mkIdent("this"),
+                        .object = syn.mkIdent("this"),
                         .name = assignment_name,
                         .value = assignment_value,
                         .is_safe = false,
@@ -1130,7 +1110,7 @@ fn hoistAwaitsWalk(
     preamble: *ArrayList(*ASTNode),
     hoisted: *bool,
 ) !void {
-    if (isAwaitCall(node)) {
+    if (syn.isAwaitCall(node)) {
         const name = try std.fmt.allocPrint(allocator, "__await{d}", .{counter.*});
         counter.* += 1;
         const copy = try allocator.create(ASTNode);
@@ -1138,7 +1118,7 @@ fn hoistAwaitsWalk(
         const await_result = node.resolved_type;
         copy.resolved_type = null;
         copy.expected_type = null;
-        const decl = mkVarDecl(name, copy);
+        const decl = syn.mkVarDecl(name, copy);
         // Preserve the await result type so the machinery can type the
         // cooperative-await marker (the copy's own types were cleared).
         if (await_result) |rt| decl.resolved_type = rt;
@@ -1152,7 +1132,7 @@ fn hoistAwaitsWalk(
     }
     switch (node.data) {
         .call_expr => |*c| {
-            if (isTaskCall(node)) return; // task blocks are boundaries
+            if (syn.isTaskCall(node)) return; // task blocks are boundaries
             try hoistAwaitsWalk(allocator, checker, c.callee, counter, preamble, hoisted);
             for (c.arguments) |arg| {
                 try hoistAwaitsWalk(allocator, checker, arg, counter, preamble, hoisted);
@@ -1221,7 +1201,7 @@ fn buildTaskBlockType(
     var props = ArrayList(ast.ClassProp).init(allocator);
     defer props.deinit();
 
-    const task_ref = try typeRefWithArgs(allocator, "StackTask", &.{result_type});
+    const task_ref = try syn.typeRefWithArgs(allocator, "StackTask", &.{result_type});
     try props.append(.{
         .is_mut = false,
         .name = "task",
@@ -1293,7 +1273,7 @@ fn buildTaskBlockType(
             if (default_init == null) {
                 const nullable_ref = try makeNullableTypeRef(allocator, l.type_ref);
                 prop_type_ref = nullable_ref;
-                default_init = mkNullLit();
+                default_init = syn.mkNullLit();
             }
             try body_fields.append(.{
                 .is_mut = true,
@@ -1311,9 +1291,9 @@ fn buildTaskBlockType(
         try body_fields.append(.{
             .is_mut = true,
             .name = "label",
-            .type_ref = typeRefSimple("Int"),
+            .type_ref = syn.typeRefSimple("Int"),
             .is_property = true,
-            .initializer = mkIntLit(@intCast(entry_label)),
+            .initializer = syn.mkIntLit(@intCast(entry_label)),
         });
     } else {
         try methods.append(try buildResume(allocator, checker, captures, body, result_type, counter, generated));
@@ -1377,12 +1357,12 @@ fn buildResume(
     // last statement is a side-effect statement (assignment/set) that must be
     // executed, not consumed as a value.
     const is_void_result = result_type.* == .Void;
-    const last_is_value = if (rewritten.items.len > 0) isValueStatement(rewritten.items[rewritten.items.len - 1]) else false;
+    const last_is_value = if (rewritten.items.len > 0) syn.isValueStatement(rewritten.items[rewritten.items.len - 1]) else false;
     const has_result = !is_void_result and last_is_value;
     const result_expr = if (has_result) rewritten.pop() else null;
 
     // result store: this.task.result = <last> (only when the task has a value)
-    const task_get = mkGetExpr(mkIdent("this"), "task");
+    const task_get = syn.mkGetExpr(syn.mkIdent("this"), "task");
     try stmts.appendSlice(rewritten.items);
 
     // The completion (result store + done=true + waiter-chain drain) must be
@@ -1391,27 +1371,27 @@ fn buildResume(
     // write and the drain is orphaned forever → its awaiter busy-loops at 100%
     // CPU. `task.mutex` is never held while a scheduler lock is acquired, so
     // this cannot deadlock with Scheduler.schedule below.
-    const task_mutex = mkGetExpr(task_get, "mutex");
-    try stmts.append(mkExprStmt(mkCall(mkGetExpr(task_mutex, "lock"), &.{})));
+    const task_mutex = syn.mkGetExpr(task_get, "mutex");
+    try stmts.append(syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(task_mutex, "lock"), &.{})));
     if (result_expr) |re| {
-        const result_set = mkSetExpr(task_get, "result", re);
+        const result_set = syn.mkSetExpr(task_get, "result", re);
         try stmts.append(result_set);
     }
 
     // this.task.done = true
-    const done_set = mkSetExpr(task_get, "done", mkBoolLit(true));
+    const done_set = syn.mkSetExpr(task_get, "done", syn.mkBoolLit(true));
     try stmts.append(done_set);
 
     // Snapshot and clear the waiter chain under the lock, then unlock before
     // scheduling them (after done=true no new waiter can be appended, so the
     // drain is race-free without holding the task lock).
     const waiter_name = try std.fmt.allocPrint(allocator, "__waiter{d}", .{counter.*});
-    const waiter_var = mkVarDecl(waiter_name, mkGetExpr(task_get, "waiters"));
+    const waiter_var = syn.mkVarDecl(waiter_name, syn.mkGetExpr(task_get, "waiters"));
     waiter_var.data.var_decl.is_mut = true;
     try stmts.append(waiter_var);
-    const waiters_null = mkSetExpr(task_get, "waiters", mkNullLit());
+    const waiters_null = syn.mkSetExpr(task_get, "waiters", syn.mkNullLit());
     try stmts.append(waiters_null);
-    try stmts.append(mkExprStmt(mkCall(mkGetExpr(task_mutex, "unlock"), &.{})));
+    try stmts.append(syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(task_mutex, "unlock"), &.{})));
 
     // Reschedule waiter chain (mirrors SpecBlockCont):
     //   var __waiter = this.task.waiters
@@ -1419,28 +1399,28 @@ fn buildResume(
     //       Scheduler.schedule(__waiter!!.cont)
     //       __waiter = __waiter!!.next
     //   }
-    const while_body = mkBlock(&.{
-        mkCall(
-            mkGetExpr(mkIdent("Scheduler"), "schedule"),
-            &.{ mkGetExpr(mkUnary(.bang_bang, mkIdent(waiter_name)), "cont") },
+    const while_body = syn.mkBlock(&.{
+        syn.mkCall(
+            syn.mkGetExpr(syn.mkIdent("Scheduler"), "schedule"),
+            &.{syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(waiter_name)), "cont")},
         ),
-        mkAssign(waiter_name, mkGetExpr(mkUnary(.bang_bang, mkIdent(waiter_name)), "next")),
+        syn.mkAssign(waiter_name, syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(waiter_name)), "next")),
     });
-    const while_stmt = mkWhile(
-        mkBinary(.bang_eq, mkIdent(waiter_name), mkNullLit()),
+    const while_stmt = syn.mkWhile(
+        syn.mkBinary(.bang_eq, syn.mkIdent(waiter_name), syn.mkNullLit()),
         while_body,
     );
     try stmts.append(while_stmt);
 
-    const block_body = mkBlock(try stmts.toOwnedSlice());
-    return mkFunDecl("resume", &.{}, block_body, false, &.{.kw_implement});
+    const block_body = syn.mkBlock(try stmts.toOwnedSlice());
+    return syn.mkFunDecl("resume", &.{}, block_body, false, &.{.kw_implement});
 }
 
 /// `isDone(): Bool = this.task.done`
 fn buildIsDone(allocator: std.mem.Allocator) !*ASTNode {
     _ = allocator;
-    const body = mkGetExpr(mkGetExpr(mkIdent("this"), "task"), "done");
-    return mkFunDecl("isDone", &.{}, body, true, &.{.kw_implement});
+    const body = syn.mkGetExpr(syn.mkGetExpr(syn.mkIdent("this"), "task"), "done");
+    return syn.mkFunDecl("isDone", &.{}, body, true, &.{.kw_implement});
 }
 
 /// Registers the generated type via `inferTypeDecl` (resolves c_name, defines
@@ -1455,26 +1435,6 @@ fn registerGeneratedType(checker: *TypeChecker, type_node: *ASTNode, generated: 
 
 /// Returns the type of the task block result: the resolved type of the last
 /// statement of the lambda body (or Void for an empty body).
-fn blockReturnType(body: []const *ASTNode) *const EiwaType {
-    if (body.len > 0) {
-        if (body[body.len - 1].resolved_type) |rt| return rt;
-    }
-    return &defaultVoidType;
-}
-
-var defaultVoidType: EiwaType = .Void;
-
-/// True when the statement produces a value usable as a task result (as
-/// opposed to a side-effect statement like an assignment/set that must be
-/// executed for its effect, not consumed as the block's value).
-fn isValueStatement(node: *ASTNode) bool {
-    switch (node.data) {
-        .int_literal, .double_literal, .string_literal, .string_template, .bool_literal, .identifier,
-        .binary_expr, .unary_expr, .call_expr, .get_expr, .index_expr,
-        .array_literal, .map_literal, .lambda_expr => return true,
-        else => return false,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Suspension state machines (sleep/yield inside task bodies)
@@ -1497,33 +1457,14 @@ fn isValueStatement(node: *ASTNode) bool {
 // continuation, and every state transition is `this.label = <next>`.
 // ---------------------------------------------------------------------------
 
-/// A call to one of the cooperative suspension primitives (`sleep`/`sleepMs`/
-/// `yield`). These are the points that must suspend the continuation. The
-/// callee may be a bare identifier (`sleepMs(1)`) or an object method
-/// (`Coroutine.sleepMs(1)`).
-fn isSuspendPrimitiveCall(node: *ASTNode) bool {
-    if (node.data != .call_expr) return false;
-    const c = &node.data.call_expr;
-    const name = switch (c.callee.data) {
-        .get_expr => |g| g.name,
-        .identifier => |i| i.name,
-        else => return false,
-    };
-    return std.mem.eql(u8, name, "sleep") or
-        std.mem.eql(u8, name, "sleepMs") or
-        std.mem.eql(u8, name, "yield") or
-        std.mem.eql(u8, name, "waitReadable") or
-        std.mem.eql(u8, name, "waitWritable");
-}
-
 /// True if the subtree contains a cooperative suspension primitive. Task
 /// blocks and lambda bodies are coroutine boundaries — their suspensions
 /// belong to those inner continuations, not this one.
 fn containsTrueSuspend(node: *ASTNode) bool {
     switch (node.data) {
         .call_expr => |c| {
-            if (isTaskCall(node)) return false;
-            if (isSuspendPrimitiveCall(node)) return true;
+            if (syn.isTaskCall(node)) return false;
+            if (syn.isSuspendPrimitiveCall(node)) return true;
             if (containsTrueSuspend(c.callee)) return true;
             for (c.arguments) |a| {
                 if (containsTrueSuspend(a)) return true;
@@ -1610,31 +1551,31 @@ fn collectLocals(allocator: std.mem.Allocator, body: []const *ASTNode) ![]Captur
 fn typeRefForVarDecl(allocator: std.mem.Allocator, node: *ASTNode) !*const ast.ASTTypeRef {
     const v = node.data.var_decl;
     if (v.type_ref) |tr| return tr;
-    if (node.resolved_type) |rt| return try typeRefForEiwaType(allocator, rt);
+    if (node.resolved_type) |rt| return try syn.typeRefForEiwaType(allocator, rt);
     if (v.initializer) |init| {
-        if (init.resolved_type) |irt| return try typeRefForEiwaType(allocator, irt);
+        if (init.resolved_type) |irt| return try syn.typeRefForEiwaType(allocator, irt);
         switch (init.data) {
-            .string_literal, .string_template => return typeRefSimple("String"),
-            .bool_literal => return typeRefSimple("Bool"),
-            .double_literal => return typeRefSimple("Double"),
-            .int_literal => return typeRefSimple("Int"),
+            .string_literal, .string_template => return syn.typeRefSimple("String"),
+            .bool_literal => return syn.typeRefSimple("Bool"),
+            .double_literal => return syn.typeRefSimple("Double"),
+            .int_literal => return syn.typeRefSimple("Int"),
             .call_expr => |c| {
                 if (c.callee.data == .identifier) {
-                    return typeRefSimple(c.callee.data.identifier.name);
+                    return syn.typeRefSimple(c.callee.data.identifier.name);
                 }
             },
             .unary_expr => |u| {
                 if (u.operand.resolved_type) |ort| {
                     if (ort.* == .Union and ort.Union.right.* == .Null) {
-                        return try typeRefForEiwaType(allocator, ort.Union.left);
+                        return try syn.typeRefForEiwaType(allocator, ort.Union.left);
                     }
-                    return try typeRefForEiwaType(allocator, ort);
+                    return try syn.typeRefForEiwaType(allocator, ort);
                 }
             },
             else => {},
         }
     }
-    return typeRefSimple("Any");
+    return syn.typeRefSimple("Any");
 }
 
 fn collectLocalVars(
@@ -1646,7 +1587,7 @@ fn collectLocalVars(
     switch (node.data) {
         .var_decl => |v| {
             if (v.initializer) |init| {
-                if (isTaskCall(init) or isAwaitCall(init)) return;
+                if (syn.isTaskCall(init) or syn.isAwaitCall(init)) return;
             }
             if (!seen.contains(v.name)) {
                 try seen.put(v.name, {});
@@ -1661,7 +1602,7 @@ fn collectLocalVars(
         },
         .lambda_expr => return,
         .call_expr => |c| {
-            if (isTaskCall(node)) return;
+            if (syn.isTaskCall(node)) return;
             try collectLocalVars(allocator, c.callee, seen, out);
             for (c.arguments) |a| try collectLocalVars(allocator, a, seen, out);
         },
@@ -1684,7 +1625,7 @@ fn collectLocalVars(
                     try seen.put(idx_name, {});
                     try out.append(.{
                         .name = idx_name,
-                        .type_ref = typeRefSimple("Int"),
+                        .type_ref = syn.typeRefSimple("Int"),
                         .is_boxed = false,
                     });
                 }
@@ -1695,7 +1636,7 @@ fn collectLocalVars(
                     if (rt.* == .Array) {
                         try out.append(.{
                             .name = f.item_name,
-                            .type_ref = try typeRefForEiwaType(allocator, rt.Array),
+                            .type_ref = try syn.typeRefForEiwaType(allocator, rt.Array),
                             .is_boxed = false,
                         });
                     }
@@ -1731,7 +1672,7 @@ fn collectLocalVars(
                 if (cb.var_name) |vname| {
                     if (!seen.contains(vname)) {
                         try seen.put(vname, {});
-                        const type_ref = if (cb.types.len > 0) cb.types[0] else typeRefSimple("Exception");
+                        const type_ref = if (cb.types.len > 0) cb.types[0] else syn.typeRefSimple("Exception");
                         try out.append(.{
                             .name = vname,
                             .type_ref = type_ref,
@@ -1777,15 +1718,13 @@ fn makeNullableTypeRef(allocator: std.mem.Allocator, ref: *const ASTTypeRef) !*c
 
 fn defaultInitializerForTypeRef(allocator: std.mem.Allocator, ref: *const ASTTypeRef) ?*ASTNode {
     _ = allocator;
-    if (ref.is_nullable or ref.union_types.len > 0) return mkNullLit();
-    if (std.mem.eql(u8, ref.name, "Int")) return mkIntLit(0);
-    if (std.mem.eql(u8, ref.name, "Double")) return mkDoubleLit(0.0);
-    if (std.mem.eql(u8, ref.name, "Bool")) return mkBoolLit(false);
-    if (std.mem.eql(u8, ref.name, "String")) return mkStringLit("");
+    if (ref.is_nullable or ref.union_types.len > 0) return syn.mkNullLit();
+    if (std.mem.eql(u8, ref.name, "Int")) return syn.mkIntLit(0);
+    if (std.mem.eql(u8, ref.name, "Double")) return syn.mkDoubleLit(0.0);
+    if (std.mem.eql(u8, ref.name, "Bool")) return syn.mkBoolLit(false);
+    if (std.mem.eql(u8, ref.name, "String")) return syn.mkStringLit("");
     return null;
 }
-
-
 
 /// Collects locals declared by the machinery rewrite (var_decls whose names are
 /// not already promoted) so they can be promoted to continuation body fields.
@@ -1804,7 +1743,7 @@ fn collectNewLocals(
                 const tr = if (v.type_ref) |t|
                     t
                 else if (node.resolved_type) |rt|
-                    try typeRefForEiwaType(allocator, rt)
+                    try syn.typeRefForEiwaType(allocator, rt)
                 else
                     null;
                 if (tr) |t| {
@@ -1822,7 +1761,7 @@ fn collectNewLocals(
             for (b.statements) |s| try collectNewLocals(allocator, s, promoted_names, out);
         },
         .call_expr => |c| {
-            if (isTaskCall(node)) return;
+            if (syn.isTaskCall(node)) return;
             try collectNewLocals(allocator, c.callee, promoted_names, out);
             for (c.arguments) |a| try collectNewLocals(allocator, a, promoted_names, out);
         },
@@ -1842,7 +1781,7 @@ fn collectNewLocals(
                     try promoted_names.put(idx_name, {});
                     try out.append(.{
                         .name = idx_name,
-                        .type_ref = typeRefSimple("Int"),
+                        .type_ref = syn.typeRefSimple("Int"),
                         .is_boxed = false,
                     });
                 }
@@ -1853,7 +1792,7 @@ fn collectNewLocals(
                     if (rt.* == .Array) {
                         try out.append(.{
                             .name = f.item_name,
-                            .type_ref = try typeRefForEiwaType(allocator, rt.Array),
+                            .type_ref = try syn.typeRefForEiwaType(allocator, rt.Array),
                             .is_boxed = false,
                         });
                     }
@@ -1889,7 +1828,7 @@ fn collectNewLocals(
                 if (cb.var_name) |vname| {
                     if (!promoted_names.contains(vname)) {
                         try promoted_names.put(vname, {});
-                        const type_ref = if (cb.types.len > 0) cb.types[0] else typeRefSimple("Exception");
+                        const type_ref = if (cb.types.len > 0) cb.types[0] else syn.typeRefSimple("Exception");
                         try out.append(.{
                             .name = vname,
                             .type_ref = type_ref,
@@ -1937,7 +1876,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
                 if (std.mem.eql(u8, i.name, c.name)) {
                     const captured_name = i.name;
                     node.data = .{ .get_expr = .{
-                        .object = mkIdent("this"),
+                        .object = syn.mkIdent("this"),
                         .name = captured_name,
                         .is_safe = false,
                         .is_boxed = c.is_boxed,
@@ -1958,7 +1897,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
                     const assignment_name = a.name;
                     const assignment_value = a.value;
                     node.data = .{ .set_expr = .{
-                        .object = mkIdent("this"),
+                        .object = syn.mkIdent("this"),
                         .name = assignment_name,
                         .value = assignment_value,
                         .is_safe = false,
@@ -1970,7 +1909,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
         },
         .var_decl => |*v| {
             if (v.initializer) |init| {
-                if (isCoopAwaitCall(init)) {
+                if (syn.isCoopAwaitCall(init)) {
                     // Cooperative-await marker: keep the var_decl (the machine
                     // builder consumes it), but still rewrite references inside
                     // its receiver so a composite `val r = __CoopAwait(__taskN)`
@@ -1978,7 +1917,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
                     try rewritePromotedRefs(allocator, promoted, init);
                     return;
                 }
-                if (!isTaskCall(init) and !isAwaitCall(init)) {
+                if (!syn.isTaskCall(init) and !syn.isAwaitCall(init)) {
                     // Rewrite references inside the initializer first (a local
                     // like `val inner = __taskN` must become `this.inner =
                     // this.__taskN`), then convert the var_decl to a field set.
@@ -1988,7 +1927,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
                             const var_name = v.name;
                             const init_value = init;
                             node.data = .{ .set_expr = .{
-                                .object = mkIdent("this"),
+                                .object = syn.mkIdent("this"),
                                 .name = var_name,
                                 .value = init_value,
                                 .is_safe = false,
@@ -2041,7 +1980,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
                 const prop_name = g.object.data.get_expr.name;
                 for (promoted) |c| {
                     if (std.mem.eql(u8, c.name, prop_name) and !c.type_ref.is_nullable and !isScalarPrimitiveName(c.type_ref.name)) {
-                        g.object = mkUnary(.bang_bang, g.object);
+                        g.object = syn.mkUnary(.bang_bang, g.object);
                         break;
                     }
                 }
@@ -2058,7 +1997,7 @@ fn rewritePromotedRefs(allocator: std.mem.Allocator, promoted: []const CapturedV
                 const prop_name = i.object.data.get_expr.name;
                 for (promoted) |c| {
                     if (std.mem.eql(u8, c.name, prop_name) and !c.type_ref.is_nullable and !isScalarPrimitiveName(c.type_ref.name)) {
-                        i.object = mkUnary(.bang_bang, i.object);
+                        i.object = syn.mkUnary(.bang_bang, i.object);
                         break;
                     }
                 }
@@ -2172,9 +2111,9 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
             if (containsTrueSuspend(w.condition)) return error.SuspendInCondition;
             const lcond = try m.newState();
             const lbody = try machineBuildBranch(m, w.body, lcond);
-            const then_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(lbody))) });
-            const else_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))) });
-            try m.append(lcond, mkIfElse(w.condition, then_block, else_block));
+            const then_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lbody)))});
+            const else_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after)))});
+            try m.append(lcond, syn.mkIfElse(w.condition, then_block, else_block));
             return lcond;
         },
         .if_expr => |i| {
@@ -2182,13 +2121,13 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
             const lthen = try machineBuildBranch(m, i.then_branch, after);
             const lelse = if (i.else_branch) |e| try machineBuildBranch(m, e, after) else after;
             const entry = try m.newState();
-            const then_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(lthen))) });
-            const else_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(lelse))) });
-            try m.append(entry, mkIfElse(i.condition, then_block, else_block));
+            const then_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lthen)))});
+            const else_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lelse)))});
+            try m.append(entry, syn.mkIfElse(i.condition, then_block, else_block));
             return entry;
         },
         .call_expr => {
-            if (isSuspendPrimitiveCall(stmt)) {
+            if (syn.isSuspendPrimitiveCall(stmt)) {
                 const entry = try m.newState();
                 // Set the next label BEFORE enqueuing/suspending: the suspend
                 // call (Scheduler.yield/sleep) hands the continuation to the
@@ -2197,15 +2136,15 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
                 // pop re-runs the suspend state (and, once the label has been
                 // advanced by a previous thread, re-runs later states) — the
                 // stale-label race behind the intermittent try/catch flake.
-                try m.append(entry, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+                try m.append(entry, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after))));
                 try m.append(entry, try buildSuspendCall(stmt));
-                try m.append(entry, mkReturnVoid());
+                try m.append(entry, syn.mkReturnVoid());
                 return entry;
             }
             if (containsTrueSuspend(stmt)) return error.SuspendInOperand;
             const entry = try m.newState();
             try m.append(entry, stmt);
-            try m.append(entry, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+            try m.append(entry, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after))));
             return entry;
         },
         .block => |b| return machineBuildStmts(m, b.statements, after),
@@ -2216,13 +2155,13 @@ fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
         .try_stmt => return machineBuildTryStmt(m, stmt, after),
         else => {
             // Cooperative await marker: `val x = __CoopAwait(<recv>)`.
-            if (isCoopAwaitMarker(stmt)) {
+            if (syn.isCoopAwaitMarker(stmt)) {
                 return machineBuildCoopAwait(m, stmt, after);
             }
             if (containsTrueSuspend(stmt)) return error.SuspendInOperand;
             const entry = try m.newState();
             try m.append(entry, stmt);
-            try m.append(entry, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+            try m.append(entry, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after))));
             return entry;
         },
     }
@@ -2296,19 +2235,19 @@ fn machineBuildTryStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize
             for (t.catches, 0..) |cb, idx| {
                 var catch_stmts = ArrayList(*ASTNode).init(m.allocator);
                 if (cb.var_name) |vname| {
-                    try catch_stmts.append(mkSetExpr(mkIdent("this"), vname, mkIdent(vname)));
+                    try catch_stmts.append(syn.mkSetExpr(syn.mkIdent("this"), vname, syn.mkIdent(vname)));
                 }
-                try catch_stmts.append(mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(catch_labels[idx]))));
+                try catch_stmts.append(syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(catch_labels[idx]))));
 
                 try synthetic_catches.append(.{
                     .var_name = cb.var_name,
                     .types = cb.types,
-                    .body = mkBlock(try catch_stmts.toOwnedSlice()),
+                    .body = syn.mkBlock(try catch_stmts.toOwnedSlice()),
                 });
             }
 
-            const wrapped_try = mkTryStmt(
-                mkBlock(try user_stmts.toOwnedSlice()),
+            const wrapped_try = syn.mkTryStmt(
+                syn.mkBlock(try user_stmts.toOwnedSlice()),
                 try synthetic_catches.toOwnedSlice(),
             );
 
@@ -2333,33 +2272,33 @@ fn buildSuspendCall(stmt: *ASTNode) anyerror!*ASTNode {
         else => unreachable,
     };
     if (std.mem.eql(u8, gname, "yield")) {
-        return mkCall(mkGetExpr(mkIdent("Scheduler"), "yield"), &.{ mkIdent("this") });
+        return syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "yield"), &.{syn.mkIdent("this")});
     }
     if (std.mem.eql(u8, gname, "waitReadable")) {
-        return mkCall(mkGetExpr(mkIdent("Scheduler"), "waitReadable"), &.{ mkIdent("this"), c.arguments[0] });
+        return syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "waitReadable"), &.{ syn.mkIdent("this"), c.arguments[0] });
     }
     if (std.mem.eql(u8, gname, "waitWritable")) {
-        return mkCall(mkGetExpr(mkIdent("Scheduler"), "waitWritable"), &.{ mkIdent("this"), c.arguments[0] });
+        return syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "waitWritable"), &.{ syn.mkIdent("this"), c.arguments[0] });
     }
     const ms_arg = if (std.mem.eql(u8, gname, "sleepMs"))
         c.arguments[0]
     else
-        mkBinary(.slash, c.arguments[0], mkIntLit(1000000));
-    return mkCall(mkGetExpr(mkIdent("Scheduler"), "sleep"), &.{ mkIdent("this"), ms_arg });
+        syn.mkBinary(.slash, c.arguments[0], syn.mkIntLit(1000000));
+    return syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "sleep"), &.{ syn.mkIdent("this"), ms_arg });
 }
 
 /// Assembles `resume()`: `while (true) { <if/else chain over states> }`.
 fn assembleMachine(m: *Machine) *ASTNode {
-    var chain: *ASTNode = mkBlock(&.{ mkReturnVoid() });
+    var chain: *ASTNode = syn.mkBlock(&.{syn.mkReturnVoid()});
     var i: usize = m.states.items.len;
     while (i > 0) {
         i -= 1;
         const s = &m.states.items[i];
-        const cond = mkBinary(.eq_eq, mkGetExpr(mkIdent("this"), "label"), mkIntLit(@intCast(s.label)));
-        const body_block = mkBlock(s.stmts.items);
-        chain = mkIfElse(cond, body_block, chain);
+        const cond = syn.mkBinary(.eq_eq, syn.mkGetExpr(syn.mkIdent("this"), "label"), syn.mkIntLit(@intCast(s.label)));
+        const body_block = syn.mkBlock(s.stmts.items);
+        chain = syn.mkIfElse(cond, body_block, chain);
     }
-    return mkWhile(mkBoolLit(true), mkBlock(&.{chain}));
+    return syn.mkWhile(syn.mkBoolLit(true), syn.mkBlock(&.{chain}));
 }
 
 /// Generates the state-machine `resume()` for a task body containing true
@@ -2408,7 +2347,7 @@ fn buildResumeStateMachine(
         if (default_init == null) {
             const nullable_ref = try makeNullableTypeRef(allocator, nl.type_ref);
             prop_type_ref = nullable_ref;
-            default_init = mkNullLit();
+            default_init = syn.mkNullLit();
         }
         try body_fields.append(.{
             .is_mut = true,
@@ -2434,7 +2373,7 @@ fn buildResumeStateMachine(
     var leading = ArrayList(*ASTNode).init(allocator);
     defer leading.deinit();
     var trailing: ?*ASTNode = null;
-    if (!is_void_result and rewritten.items.len > 0 and isValueStatement(rewritten.items[rewritten.items.len - 1])) {
+    if (!is_void_result and rewritten.items.len > 0 and syn.isValueStatement(rewritten.items[rewritten.items.len - 1])) {
         trailing = rewritten.pop();
     }
     try leading.appendSlice(rewritten.items);
@@ -2451,36 +2390,36 @@ fn buildResumeStateMachine(
     //    `task.mutex`); otherwise a waiter added between `done=true` and the
     //    drain is orphaned → its awaiter busy-loops at 100% CPU. The waiter
     //    snapshot is taken under the lock and rescheduled after unlock.
-    const task_get = mkGetExpr(mkIdent("this"), "task");
-    const task_mutex = mkGetExpr(task_get, "mutex");
-    try m.append(done_label, mkExprStmt(mkCall(mkGetExpr(task_mutex, "lock"), &.{})));
+    const task_get = syn.mkGetExpr(syn.mkIdent("this"), "task");
+    const task_mutex = syn.mkGetExpr(task_get, "mutex");
+    try m.append(done_label, syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(task_mutex, "lock"), &.{})));
     if (trailing) |tv| {
-        try m.append(done_label, mkSetExpr(task_get, "result", tv));
+        try m.append(done_label, syn.mkSetExpr(task_get, "result", tv));
     }
-    try m.append(done_label, mkSetExpr(task_get, "done", mkBoolLit(true)));
+    try m.append(done_label, syn.mkSetExpr(task_get, "done", syn.mkBoolLit(true)));
     const waiter_name = try std.fmt.allocPrint(allocator, "__waiter{d}", .{counter.*});
     counter.* += 1;
-    const waiter_var = mkVarDecl(waiter_name, mkGetExpr(task_get, "waiters"));
+    const waiter_var = syn.mkVarDecl(waiter_name, syn.mkGetExpr(task_get, "waiters"));
     waiter_var.data.var_decl.is_mut = true;
     try m.append(done_label, waiter_var);
-    try m.append(done_label, mkSetExpr(task_get, "waiters", mkNullLit()));
-    try m.append(done_label, mkExprStmt(mkCall(mkGetExpr(task_mutex, "unlock"), &.{})));
-    const while_body = mkBlock(&.{
-        mkCall(
-            mkGetExpr(mkIdent("Scheduler"), "schedule"),
-            &.{ mkGetExpr(mkUnary(.bang_bang, mkIdent(waiter_name)), "cont") },
+    try m.append(done_label, syn.mkSetExpr(task_get, "waiters", syn.mkNullLit()));
+    try m.append(done_label, syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(task_mutex, "unlock"), &.{})));
+    const while_body = syn.mkBlock(&.{
+        syn.mkCall(
+            syn.mkGetExpr(syn.mkIdent("Scheduler"), "schedule"),
+            &.{syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(waiter_name)), "cont")},
         ),
-        mkAssign(waiter_name, mkGetExpr(mkUnary(.bang_bang, mkIdent(waiter_name)), "next")),
+        syn.mkAssign(waiter_name, syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(waiter_name)), "next")),
     });
-    try m.append(done_label, mkWhile(
-        mkBinary(.bang_eq, mkIdent(waiter_name), mkNullLit()),
+    try m.append(done_label, syn.mkWhile(
+        syn.mkBinary(.bang_eq, syn.mkIdent(waiter_name), syn.mkNullLit()),
         while_body,
     ));
-    try m.append(done_label, mkReturnVoid());
+    try m.append(done_label, syn.mkReturnVoid());
 
     // 6. Assemble resume().
     const resume_body = assembleMachine(&m);
-    return mkFunDecl("resume", &.{}, resume_body, false, &.{.kw_implement});
+    return syn.mkFunDecl("resume", &.{}, resume_body, false, &.{.kw_implement});
 }
 
 // ---------------------------------------------------------------------------
@@ -2509,7 +2448,7 @@ fn suspendConditionNode(node: *ASTNode) ?*ASTNode {
         },
         .lambda_expr, .fun_decl => return null,
         .call_expr => |c| {
-            if (isTaskCall(node)) return null;
+            if (syn.isTaskCall(node)) return null;
             if (suspendConditionNode(c.callee)) |found| return found;
             for (c.arguments) |a| if (suspendConditionNode(a)) |found| return found;
             return null;
@@ -2535,14 +2474,14 @@ fn suspendConditionNode(node: *ASTNode) ?*ASTNode {
             // A suspend primitive used directly as the value (`val s = sleepMs(1)`).
             // Deeper shapes fail earlier in the checker; conditions are found by recursion.
             if (v.initializer) |init| {
-                if (isSuspendPrimitiveCall(init)) return node;
+                if (syn.isSuspendPrimitiveCall(init)) return node;
                 return suspendConditionNode(init);
             }
             return null;
         },
         .return_stmt => |r| {
             if (r.value) |val| {
-                if (isSuspendPrimitiveCall(val)) return node;
+                if (syn.isSuspendPrimitiveCall(val)) return node;
                 return suspendConditionNode(val);
             }
             return null;
@@ -2552,7 +2491,7 @@ fn suspendConditionNode(node: *ASTNode) ?*ASTNode {
             return null;
         },
         .assignment => |a| {
-            if (isSuspendPrimitiveCall(a.value)) return node;
+            if (syn.isSuspendPrimitiveCall(a.value)) return node;
             return suspendConditionNode(a.value);
         },
         else => return null,
@@ -2581,7 +2520,7 @@ fn taskNodeHas(node: *ASTNode, kind: TaskRejectKind) ?*ASTNode {
         // nested `task {}` calls are checked by their own rewrite.
         .lambda_expr, .fun_decl => return null,
         .call_expr => |c| {
-            if (isTaskCall(node)) return null;
+            if (syn.isTaskCall(node)) return null;
             if (taskNodeHas(c.callee, kind)) |found| return found;
             for (c.arguments) |a| if (taskNodeHas(a, kind)) |found| return found;
             return null;
@@ -2647,7 +2586,7 @@ fn findOuterThisTypeInNode(node: *ASTNode) ?*const EiwaType {
             return null;
         },
         .call_expr => |c| {
-            if (isTaskCall(node)) return null;
+            if (syn.isTaskCall(node)) return null;
             if (findOuterThisTypeInNode(c.callee)) |t| return t;
             for (c.arguments) |a| {
                 if (findOuterThisTypeInNode(a)) |t| return t;
@@ -2767,7 +2706,7 @@ fn rewriteOuterThisInNode(allocator: std.mem.Allocator, node: *ASTNode) !void {
         .identifier => |i| {
             if (std.mem.eql(u8, i.name, "this")) {
                 node.data = .{ .get_expr = .{
-                    .object = mkIdent("this"),
+                    .object = syn.mkIdent("this"),
                     .name = outer_this_field,
                     .is_safe = false,
                     .is_boxed = false,
@@ -2777,7 +2716,7 @@ fn rewriteOuterThisInNode(allocator: std.mem.Allocator, node: *ASTNode) !void {
             return;
         },
         .call_expr => |c| {
-            if (isTaskCall(node)) return;
+            if (syn.isTaskCall(node)) return;
             try rewriteOuterThisInNode(allocator, c.callee);
             for (c.arguments) |a| {
                 try rewriteOuterThisInNode(allocator, a);
@@ -2946,12 +2885,12 @@ fn rewriteTaskCall(
         try extended.appendSlice(captures_pre);
         try extended.append(.{
             .name = outer_this_field,
-            .type_ref = try typeRefForEiwaType(allocator, ot),
+            .type_ref = try syn.typeRefForEiwaType(allocator, ot),
             .is_boxed = false,
         });
         captures = try extended.toOwnedSlice();
     }
-    const result_type = blockReturnType(body);
+    const result_type = syn.blockReturnType(body);
 
     const n = counter.*;
     counter.* += 1;
@@ -2962,41 +2901,41 @@ fn rewriteTaskCall(
     defer out.deinit();
 
     const task_name = try std.fmt.allocPrint(allocator, "__task{d}", .{n});
-    const ctor_call = mkCall(mkIdent("StackTask"), &.{ mkBoolLit(false), mkNullLit(), mkNullLit() });
+    const ctor_call = syn.mkCall(syn.mkIdent("StackTask"), &.{ syn.mkBoolLit(false), syn.mkNullLit(), syn.mkNullLit() });
     {
         const type_arg_refs = std.heap.page_allocator.alloc(*const ASTTypeRef, 1) catch unreachable;
-        type_arg_refs[0] = try typeRefForEiwaType(allocator, result_type);
+        type_arg_refs[0] = try syn.typeRefForEiwaType(allocator, result_type);
         ctor_call.data.call_expr.type_args = type_arg_refs;
     }
-    const stack_task_ref = try typeRefWithArgs(allocator, "StackTask", &.{result_type});
-    const task_var = mkVarDecl(task_name, ctor_call);
+    const stack_task_ref = try syn.typeRefWithArgs(allocator, "StackTask", &.{result_type});
+    const task_var = syn.mkVarDecl(task_name, ctor_call);
     task_var.data.var_decl.type_ref = stack_task_ref;
     try out.append(task_var);
 
     var ctor_args = ArrayList(*ASTNode).init(allocator);
     defer ctor_args.deinit();
-    try ctor_args.append(mkIdent(task_name));
+    try ctor_args.append(syn.mkIdent(task_name));
     for (captures) |c| {
-        var arg = mkIdent(c.name);
+        var arg = syn.mkIdent(c.name);
         if (std.mem.eql(u8, c.name, outer_this_field)) {
-            arg = mkIdent("this");
+            arg = syn.mkIdent("this");
         } else {
             arg.data.identifier.is_box_ref = c.is_boxed;
         }
         try ctor_args.append(arg);
     }
-    const block_ctor_call = mkCall(mkIdent(block_type.data.type_decl.name), ctor_args.items);
+    const block_ctor_call = syn.mkCall(syn.mkIdent(block_type.data.type_decl.name), ctor_args.items);
     if (disp_node) |dn| {
-        try out.append(mkExprStmt(mkCall(mkGetExpr(dn, "ensureStarted"), &.{})));
+        try out.append(syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(dn, "ensureStarted"), &.{})));
     }
     const schedule_call = if (disp_node) |dn|
-        mkCall(mkGetExpr(mkGetExpr(dn, "scheduler"), "schedule"), &.{block_ctor_call})
+        syn.mkCall(syn.mkGetExpr(syn.mkGetExpr(dn, "scheduler"), "schedule"), &.{block_ctor_call})
     else
-        mkCall(mkGetExpr(mkIdent("Scheduler"), "schedule"), &.{block_ctor_call});
-    try out.append(mkExprStmt(schedule_call));
+        syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "schedule"), &.{block_ctor_call});
+    try out.append(syn.mkExprStmt(schedule_call));
 
     // `val/var t = __taskN`
-    const bind = mkVarDecl(v.name, mkIdent(task_name));
+    const bind = syn.mkVarDecl(v.name, syn.mkIdent(task_name));
     bind.data.var_decl.is_mut = v.is_mut;
     bind.data.var_decl.type_ref = stack_task_ref;
     try out.append(bind);
@@ -3060,23 +2999,23 @@ fn rewriteTaskAwaitCall(
         // machinery bind leaves `r` owned by the marker alone — otherwise the
         // promoted body field `this.r` takes the StackTask type and `r` on the
         // RHS of later statements (e.g. `sum = sum + r`) fails to resolve.
-        const result_type = stmt.resolved_type orelse recv_result_type(recv);
+        const result_type = stmt.resolved_type orelse syn.recv_result_type(recv);
         try out.appendSlice(machinery[0 .. machinery.len - 1]);
-        try out.append(try mkCoopAwaitMarker(allocator, mkIdent(task_name), v.name, v.is_mut, result_type));
+        try out.append(try syn.mkCoopAwaitMarker(allocator, syn.mkIdent(task_name), v.name, v.is_mut, result_type));
         return out.toOwnedSlice();
     }
 
     try out.appendSlice(machinery);
-    const poll = buildPollStmt(mkIdent(task_name));
+    const poll = syn.buildPollStmt(syn.mkIdent(task_name));
     try out.append(poll);
 
-    const result_val = mkUnary(.bang_bang, mkGetExpr(mkIdent(task_name), "result"));
-    const bind = mkVarDecl(v.name, result_val);
+    const result_val = syn.mkUnary(.bang_bang, syn.mkGetExpr(syn.mkIdent(task_name), "result"));
+    const bind = syn.mkVarDecl(v.name, result_val);
     bind.data.var_decl.is_mut = v.is_mut;
     const res_type = resolveAwaitBindingType(stmt, await_call, recv, v);
     if (res_type) |t| {
         if (t.* != .Void) {
-            bind.data.var_decl.type_ref = try typeRefForEiwaType(allocator, t);
+            bind.data.var_decl.type_ref = try syn.typeRefForEiwaType(allocator, t);
             bind.resolved_type = t;
             result_val.resolved_type = t;
         }
@@ -3095,7 +3034,7 @@ fn resolveAwaitBindingType(stmt: *ASTNode, await_call: *ASTNode, recv: *ASTNode,
     if (stmt.resolved_type) |st| {
         if (st.* != .Void) return st;
     }
-    if (recv_result_type(recv)) |rt| {
+    if (syn.recv_result_type(recv)) |rt| {
         if (rt.* != .Void) return rt;
     }
     if (v.type_ref) |tr| {
@@ -3103,7 +3042,7 @@ fn resolveAwaitBindingType(stmt: *ASTNode, await_call: *ASTNode, recv: *ASTNode,
             if (trt.* != .Void) return trt;
         }
     }
-    return stmt.resolved_type orelse await_call.resolved_type orelse recv_result_type(recv);
+    return stmt.resolved_type orelse await_call.resolved_type orelse syn.recv_result_type(recv);
 }
 
 /// `val x = <recv>.await()` -> poll + `val x = <recv>.result!!`
@@ -3124,18 +3063,18 @@ fn rewriteAwaitCall(
 
     if (coop) {
         const result_type = resolveAwaitBindingType(stmt, await_call, recv, v);
-        try out.append(try mkCoopAwaitMarker(allocator, recv, v.name, v.is_mut, result_type));
+        try out.append(try syn.mkCoopAwaitMarker(allocator, recv, v.name, v.is_mut, result_type));
         return out.toOwnedSlice();
     }
 
-    try out.append(buildPollStmt(recv));
-    const result_val = mkUnary(.bang_bang, mkGetExpr(recv, "result"));
-    const bind = mkVarDecl(v.name, result_val);
+    try out.append(syn.buildPollStmt(recv));
+    const result_val = syn.mkUnary(.bang_bang, syn.mkGetExpr(recv, "result"));
+    const bind = syn.mkVarDecl(v.name, result_val);
     bind.data.var_decl.is_mut = v.is_mut;
     const res_type = resolveAwaitBindingType(stmt, await_call, recv, v);
     if (res_type) |t| {
         if (t.* != .Void) {
-            bind.data.var_decl.type_ref = try typeRefForEiwaType(allocator, t);
+            bind.data.var_decl.type_ref = try syn.typeRefForEiwaType(allocator, t);
             bind.resolved_type = t;
             result_val.resolved_type = t;
         }
@@ -3160,8 +3099,8 @@ fn rewriteReturnAwait(
     var out = ArrayList(*ASTNode).init(allocator);
     defer out.deinit();
 
-    try out.append(buildPollStmt(recv));
-    const ret = mkReturn(mkUnary(.bang_bang, mkGetExpr(recv, "result")));
+    try out.append(syn.buildPollStmt(recv));
+    const ret = syn.mkReturn(syn.mkUnary(.bang_bang, syn.mkGetExpr(recv, "result")));
     try out.append(ret);
     return out.toOwnedSlice();
 }
@@ -3186,101 +3125,27 @@ fn rewriteReturnTaskAwait(
     defer temp_stmts.deinit();
     const temp_name = try std.fmt.allocPrint(allocator, "__rt{d}", .{counter.*});
     counter.* += 1;
-    const temp_decl = mkVarDecl(temp_name, null);
+    const temp_decl = syn.mkVarDecl(temp_name, null);
     try temp_stmts.append(temp_decl);
 
     const machinery = try rewriteTaskCall(allocator, checker, temp_stmts.items[0], recv, counter, generated);
     try out.appendSlice(machinery);
     const task_name = machinery[machinery.len - 1].data.var_decl.initializer.?.data.identifier.name;
 
-    try out.append(buildPollStmt(mkIdent(task_name)));
-    const ret = mkReturn(mkUnary(.bang_bang, mkGetExpr(mkIdent(task_name), "result")));
+    try out.append(syn.buildPollStmt(syn.mkIdent(task_name)));
+    const ret = syn.mkReturn(syn.mkUnary(.bang_bang, syn.mkGetExpr(syn.mkIdent(task_name), "result")));
     try out.append(ret);
     return out.toOwnedSlice();
 }
 
 /// `while (!<recv>.done) { if (!Scheduler.runStep()) { Coroutine.sleepMs(1) } }`
-fn buildPollStmt(recv: *ASTNode) *ASTNode {
-    const not_done = mkUnary(.bang, mkGetExpr(recv, "done"));
-    const step_call = mkCall(mkGetExpr(mkIdent("Scheduler"), "runStep"), &.{});
-    const not_step = mkUnary(.bang, step_call);
-    const sleep_call = mkCall(mkGetExpr(mkIdent("Coroutine"), "sleepMs"), &.{mkIntLit(1)});
-    const if_stmt = mkIf(not_step, mkBlock(&.{mkExprStmt(sleep_call)}));
-    const body = mkBlock(&.{if_stmt});
-    return mkWhile(not_done, body);
-}
-
-// ---------------------------------------------------------------------------
-// Cooperative await (waiter-chain) inside state-machine task bodies
-//
-// In a task body that contains a true suspension point (sleep/yield), an
-// `await()` must NOT block-poll (that would block every other cooperative
-// task). Instead it registers the caller's continuation as a waiter of the
-// awaited task and suspends:
-//
-//   `val x = <recv>.await()`  ->  `val x = __CoopAwait(<recv>)`
-//
-// The machine builder splits this marker into two states:
-//   guard: if (!<recv>.awaitCoop(this)) { this.label = <read>; return }
-//          this.label = <read>
-//   read:  this.<x> = <recv>.result!!   (fast path when already done)
-//          this.label = <after>
-// ---------------------------------------------------------------------------
-
-/// True when a node is a call to the internal `__CoopAwait` marker function.
-fn isCoopAwaitCall(node: *ASTNode) bool {
-    if (node.data != .call_expr) return false;
-    const callee = node.data.call_expr.callee;
-    if (callee.data != .identifier) return false;
-    return std.mem.eql(u8, callee.data.identifier.name, "__CoopAwait");
-}
-
-/// True when a statement is the cooperative-await marker
-/// `val <name> = __CoopAwait(<recv>)`.
-fn isCoopAwaitMarker(node: *ASTNode) bool {
-    if (node.data != .var_decl) return false;
-    const v = &node.data.var_decl;
-    const init = v.initializer orelse return false;
-    return isCoopAwaitCall(init);
-}
-
-/// The await result type for a receiver whose resolved type is `StackTask<T>`.
-fn recv_result_type(recv: *ASTNode) ?*const EiwaType {
-    if (recv.resolved_type) |rt| {
-        const t = singleTypeArg(rt);
-        if (t.* != .Void) return t;
-    }
-    return null;
-}
-
-/// Builds `val <name> = __CoopAwait(<recv>)`. The var's type is the await
-/// result type (from the statement's resolved type or the receiver's resolved
-/// `StackTask<T>`), so it can be promoted to a continuation body field with a
-/// zero-value default.
-fn mkCoopAwaitMarker(
-    allocator: std.mem.Allocator,
-    recv: *ASTNode,
-    name: []const u8,
-    is_mut: bool,
-    result_type: ?*const EiwaType,
-) !*ASTNode {
-    const marker = mkVarDecl(name, mkCall(mkIdent("__CoopAwait"), &.{recv}));
-    marker.data.var_decl.is_mut = is_mut;
-    if (result_type) |t| {
-        if (t.* != .Void) {
-            marker.data.var_decl.type_ref = try typeRefForEiwaType(allocator, t);
-        }
-    }
-    return marker;
-}
-
 /// Builds the two states for a cooperative await marker and returns the label
 /// where the guard state begins.
 fn machineBuildCoopAwait(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
     const v = &stmt.data.var_decl;
     const raw_recv = v.initializer.?.data.call_expr.arguments[0];
     const recv = if (raw_recv.data == .get_expr and raw_recv.data.get_expr.object.data == .identifier and std.mem.eql(u8, raw_recv.data.get_expr.object.data.identifier.name, "this"))
-        mkUnary(.bang_bang, raw_recv)
+        syn.mkUnary(.bang_bang, raw_recv)
     else
         raw_recv;
 
@@ -3289,338 +3154,20 @@ fn machineBuildCoopAwait(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usi
 
     // guard: if (!<recv>.awaitCoop(this)) { this.label = <read>; return }
     //        this.label = <read>
-    const not_ready = mkUnary(.bang, mkCall(mkGetExpr(recv, "awaitCoop"), &.{mkIdent("this")}));
-    const suspend_block = mkBlock(&.{
-        mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(read_label))),
-        mkReturnVoid(),
+    const not_ready = syn.mkUnary(.bang, syn.mkCall(syn.mkGetExpr(recv, "awaitCoop"), &.{syn.mkIdent("this")}));
+    const suspend_block = syn.mkBlock(&.{
+        syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(read_label))),
+        syn.mkReturnVoid(),
     });
-    const fall_block = mkBlock(&.{ mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(read_label))) });
-    try m.append(guard_label, mkIfElse(not_ready, suspend_block, fall_block));
+    const fall_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(read_label)))});
+    try m.append(guard_label, syn.mkIfElse(not_ready, suspend_block, fall_block));
 
     // read: this.<x> = <recv>.result!! ; this.label = <after>
-    const result_get = mkUnary(.bang_bang, mkGetExpr(recv, "result"));
-    try m.append(read_label, mkSetExpr(mkIdent("this"), v.name, result_get));
-    try m.append(read_label, mkSetExpr(mkIdent("this"), "label", mkIntLit(@intCast(after))));
+    const result_get = syn.mkUnary(.bang_bang, syn.mkGetExpr(recv, "result"));
+    try m.append(read_label, syn.mkSetExpr(syn.mkIdent("this"), v.name, result_get));
+    try m.append(read_label, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after))));
 
     return guard_label;
-}
-
-// ---------------------------------------------------------------------------
-// Node builders
-// ---------------------------------------------------------------------------
-
-fn mkIdent(name: []const u8) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .identifier = .{
-            .name = name,
-            .resolved_c_name = null,
-        } },
-    };
-    return n;
-}
-
-fn mkIntLit(value: i64) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .int_literal = value },
-    };
-    return n;
-}
-
-fn mkBoolLit(value: bool) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .bool_literal = value },
-    };
-    return n;
-}
-
-fn mkArrayLit(elements: []const *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .array_literal = .{
-            .elements = elements,
-        } },
-    };
-    return n;
-}
-
-fn mkTryStmt(body: *ASTNode, catches: []const ast.CatchBlock) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .try_stmt = .{
-            .body = body,
-            .catches = @constCast(catches),
-        } },
-    };
-    return n;
-}
-
-fn mkNullLit() *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .null_literal,
-    };
-    return n;
-}
-
-fn mkVarDecl(name: []const u8, initializer: ?*ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .var_decl = .{
-            .is_mut = false,
-            .name = name,
-            .type_ref = null,
-            .initializer = initializer,
-        } },
-    };
-    return n;
-}
-
-fn mkExprStmt(expr: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    const copy = std.heap.page_allocator.alloc(*ASTNode, 1) catch unreachable;
-    copy[0] = expr;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .block = .{ .statements = copy } },
-    };
-    return n;
-}
-
-fn mkCall(callee: *ASTNode, args: []const *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    const copy = std.heap.page_allocator.alloc(*ASTNode, args.len) catch unreachable;
-    @memcpy(copy, args);
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .call_expr = .{
-            .callee = callee,
-            .arguments = copy,
-        } },
-    };
-    return n;
-}
-
-fn mkGetExpr(object: *ASTNode, name: []const u8) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .get_expr = .{
-            .object = object,
-            .name = name,
-            .is_safe = false,
-        } },
-    };
-    return n;
-}
-
-fn mkSetExpr(object: *ASTNode, name: []const u8, value: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .set_expr = .{
-            .object = object,
-            .name = name,
-            .value = value,
-            .is_safe = false,
-        } },
-    };
-    return n;
-}
-
-fn mkIndexExpr(object: *ASTNode, index: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .index_expr = .{
-            .object = object,
-            .index = index,
-        } },
-    };
-    return n;
-}
-
-fn mkAssign(name: []const u8, value: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .assignment = .{
-            .name = name,
-            .value = value,
-        } },
-    };
-    return n;
-}
-
-fn mkBlock(statements: []const *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    const copy = std.heap.page_allocator.alloc(*ASTNode, statements.len) catch unreachable;
-    @memcpy(copy, statements);
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .block = .{ .statements = copy } },
-    };
-    return n;
-}
-
-fn mkIf(condition: *ASTNode, then_branch: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .if_expr = .{
-            .condition = condition,
-            .then_branch = then_branch,
-            .else_branch = null,
-        } },
-    };
-    return n;
-}
-
-fn mkIfElse(condition: *ASTNode, then_branch: *ASTNode, else_branch: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .if_expr = .{
-            .condition = condition,
-            .then_branch = then_branch,
-            .else_branch = else_branch,
-        } },
-    };
-    return n;
-}
-
-fn mkDoubleLit(value: f64) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .double_literal = value },
-    };
-    return n;
-}
-
-fn mkStringLit(value: []const u8) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .string_literal = value },
-    };
-    return n;
-}
-
-fn mkWhile(condition: *ASTNode, body: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .while_stmt = .{
-            .condition = condition,
-            .body = body,
-        } },
-    };
-    return n;
-}
-
-fn mkBinary(op: ast.TokenType, left: *ASTNode, right: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .binary_expr = .{
-            .left = left,
-            .op = op,
-            .right = right,
-        } },
-    };
-    return n;
-}
-
-fn mkUnary(op: ast.TokenType, operand: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .unary_expr = .{
-            .operator = op,
-            .operand = operand,
-        } },
-    };
-    return n;
-}
-
-fn mkReturn(value: *ASTNode) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .return_stmt = .{ .value = value } },
-    };
-    return n;
-}
-
-fn mkReturnVoid() *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .return_stmt = .{ .value = null } },
-    };
-    return n;
-}
-
-fn mkFunDecl(name: []const u8, params: []const ast.Param, body: *ASTNode, is_expr_body: bool, modifiers: []const ast.TokenType) *ASTNode {
-    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
-    n.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .fun_decl = .{
-            .annotations = &.{},
-            .modifiers = modifiers,
-            .name = name,
-            .generic_params = &.{},
-            .params = @constCast(params),
-            .type_ref = if (std.mem.eql(u8, name, "isDone")) blk: {
-                const tr = std.heap.page_allocator.create(ASTTypeRef) catch unreachable;
-                tr.* = .{
-                    .name = "Bool",
-                    .generic_args = &.{},
-                    .is_array = false,
-                    .is_nullable = false,
-                };
-                break :blk tr;
-            } else null,
-            .body = body,
-            .is_expr_body = is_expr_body,
-            .resolved_c_name = null,
-        } },
-    };
-    return n;
 }
 
 /// Clears resolved types so re-inference descends into rewritten subtrees.
@@ -3740,140 +3287,4 @@ fn clearResolvedTypes(allocator: std.mem.Allocator, node: *ASTNode) !void {
         },
         else => {},
     }
-}
-
-// ---------------------------------------------------------------------------
-// Type reference helpers
-// ---------------------------------------------------------------------------
-
-/// Builds an `ASTTypeRef` describing an `EiwaType`.
-fn typeRefForEiwaType(allocator: std.mem.Allocator, t: *const EiwaType) !*const ASTTypeRef {
-    switch (t.*) {
-        .Int => return typeRefSimple("Int"),
-        .Bool => return typeRefSimple("Bool"),
-        .String => return typeRefSimple("String"),
-        .Void => return typeRefSimple("Void"),
-        .Double => return typeRefSimple("Double"),
-        .Null => return typeRefSimple("Nothing?"),
-        .Custom => |name| {
-            return typeRefSimple(name);
-        },
-        .GenericInstance => |gi| {
-            var args = ArrayList(*const ASTTypeRef).init(allocator);
-            for (gi.type_args) |arg| {
-                try args.append(try typeRefForEiwaType(allocator, arg));
-            }
-            const ref = try allocator.create(ASTTypeRef);
-            ref.* = .{
-                .name = gi.base_name,
-                .generic_args = try args.toOwnedSlice(),
-                .is_array = false,
-                .is_nullable = false,
-            };
-            return ref;
-        },
-        .Union => |u| {
-            var parts = ArrayList(*const ASTTypeRef).init(allocator);
-            try parts.append(try typeRefForEiwaType(allocator, u.left));
-            try parts.append(try typeRefForEiwaType(allocator, u.right));
-            const ref = try allocator.create(ASTTypeRef);
-            ref.* = .{
-                .name = "",
-                .generic_args = &.{},
-                .is_array = false,
-                .is_nullable = false,
-                .union_types = try parts.toOwnedSlice(),
-            };
-            return ref;
-        },
-        .Array => |elem_t| {
-            const elem_ref = try typeRefForEiwaType(allocator, elem_t);
-            const args = try allocator.alloc(*const ASTTypeRef, 1);
-            args[0] = elem_ref;
-            const ref = try allocator.create(ASTTypeRef);
-            ref.* = .{
-                .name = "NativeArray",
-                .generic_args = args,
-                .is_array = false,
-                .is_nullable = false,
-            };
-            return ref;
-        },
-        .Pointer => |elem_t| {
-            if (elem_t.* == .Void) return typeRefSimple("Pointer");
-            const elem_ref = try typeRefForEiwaType(allocator, elem_t);
-            const args = try allocator.alloc(*const ASTTypeRef, 1);
-            args[0] = elem_ref;
-            const ref = try allocator.create(ASTTypeRef);
-            ref.* = .{
-                .name = "Pointer",
-                .generic_args = args,
-                .is_array = false,
-                .is_nullable = false,
-            };
-            return ref;
-        },
-        .GenericParam => |gp| return typeRefSimple(gp),
-        .Function => |f| {
-            var params = ArrayList(*const ASTTypeRef).init(allocator);
-            for (f.params) |p| {
-                try params.append(try typeRefForEiwaType(allocator, p));
-            }
-            const ret_ref = try typeRefForEiwaType(allocator, f.return_type);
-            const rec_ref = if (f.receiver) |r| try typeRefForEiwaType(allocator, r) else null;
-            const ref = try allocator.create(ASTTypeRef);
-            ref.* = .{
-                .name = "",
-                .generic_args = try params.toOwnedSlice(),
-                .is_function = true,
-                .is_array = false,
-                .return_type = ret_ref,
-                .receiver_type = rec_ref,
-                .is_nullable = false,
-            };
-            return ref;
-        },
-        .Unknown => return typeRefSimple("Int"),
-    }
-}
-
-/// Builds `Name<T1, T2, ...>` type ref from a base name and resolved type args.
-fn typeRefWithArgs(allocator: std.mem.Allocator, name: []const u8, args: []const *const EiwaType) !*const ASTTypeRef {
-    var arg_refs = ArrayList(*const ASTTypeRef).init(allocator);
-    for (args) |arg| {
-        try arg_refs.append(try typeRefForEiwaType(allocator, arg));
-    }
-    const ref = try allocator.create(ASTTypeRef);
-    ref.* = .{
-        .name = name,
-        .generic_args = try arg_refs.toOwnedSlice(),
-        .is_array = false,
-        .is_nullable = false,
-    };
-    return ref;
-}
-
-fn singleTypeArg(t: *const EiwaType) *const EiwaType {
-    switch (t.*) {
-        .GenericInstance => |gi| {
-            if (gi.type_args.len > 0) return gi.type_args[0];
-        },
-        .Pointer => |e| return singleTypeArg(e),
-        .Array => |e| return e,
-        else => {},
-    }
-    return &defaultVoidType;
-}
-
-var typeRefInt = ASTTypeRef{ .name = "Int", .generic_args = &.{}, .is_array = false, .is_nullable = false };
-
-fn typeRefSimple(name: []const u8) *const ASTTypeRef {
-    const n = std.heap.page_allocator.create(ASTTypeRef) catch unreachable;
-    n.* = .{
-        .name = name,
-        .generic_args = &.{},
-        .is_array = false,
-        .is_nullable = false,
-    };
-    return n;
 }
