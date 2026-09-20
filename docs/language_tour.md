@@ -3122,6 +3122,58 @@ binary, target triple, codegen flags, or the set of instantiated generic types
 invalidates the relevant entry automatically. Clearing `~/.eiwa/cache` is
 always safe (nothing more than a speed hit).
 
+### 30.8 Docker (`eiwac/eiwa` image)
+
+The repo ships a toolchain image (`Dockerfile`): `eiwac` + `eiwa` CLI + stdlib
+on `debian:trixie-slim`, published as `eiwac/eiwa:latest` plus one tag per
+release by `.github/workflows/release.yml`. It downloads the release tarball
+`eiwa-<version>-linux-<arch>.tar.gz`, sets `EIWA_HOME=/opt/eiwa/src`,
+`EIWA_BASELINE_CPU=1`, `WORKDIR /work` and `ENTRYPOINT eiwa`.
+
+> **Tag policy:** `latest` is for local development only. For production builds,
+> pin the exact version — check
+> `https://github.com/eiwa-lang/eiwa/releases` for the newest tag.
+
+```bash
+docker pull eiwac/eiwa:latest   # dev loop
+
+# Run a project (mount it on /work)
+docker run --rm -v "$PWD":/work -p 8080:8080 eiwac/eiwa:latest run .
+
+# Run / build a standalone file (delegates to eiwac, no eiwa.yaml needed)
+docker run --rm -v "$PWD":/work eiwac/eiwa:latest eiwac run script.ei
+```
+
+To ship a service, use a multi-stage build: compile with `eiwac/eiwa`, copy only
+the native binary into a slim runtime. Canonical example:
+`example/home/Dockerfile` (`eiwa build --release`, then `debian:stable-slim`
+with `libcurl4`, `libgc1`, `ca-certificates`):
+
+```dockerfile
+FROM eiwac/eiwa:latest AS compile   # prod: pin the exact version, never latest
+WORKDIR /app
+COPY ./ ./
+RUN eiwa build --release
+
+FROM debian:stable-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libcurl4 libgc1 ca-certificates openssl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=compile /app/app /app/server
+WORKDIR /app
+CMD ["./server"]
+```
+
+```bash
+docker build -t my-service .
+docker run --rm -p 8080:8080 my-service
+```
+
+Notes: commit `eiwa.freeze` and add `--frozen` to the in-image build for
+reproducible CI builds; read the listen port from the environment (`PORT`);
+the deployed example (`example/home/k8s/02-eiwa.yaml`) runs image
+`eiwac/eiwa-home:latest` with liveness/readiness probes on `/health`.
+
 ---
 
 ## 31. Cross-Compilation & Platform Abstraction
