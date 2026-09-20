@@ -1,4 +1,6 @@
-![Eiwa language logo](https://eiwa.dev/assets/eiwa.png)
+<p align="center">
+  <img src="https://eiwa.dev/assets/eiwa.png" alt="Eiwa" width="32" />
+</p>
 
 # Quick reference
 
@@ -9,6 +11,10 @@
 - **Source of this description:** [`docs/docker-hub-overview.md`](https://github.com/eiwa-lang/eiwa/blob/main/docs/docker-hub-overview.md) in [`eiwa-lang/eiwa`](https://github.com/eiwa-lang/eiwa) (synced to the Hub on every release)
 
 # What is Eiwa?
+
+<p align="center">
+  <img src="https://eiwa.dev/assets/owl-card.png" alt="Eitau, the Eiwa mascot" width="220" />
+</p>
 
 Eiwa is a pragmatic, statically typed, natively compiled systems language with Kotlin-inspired syntax. Everything compiles directly to native code via LLVM — with a JIT for instant development loops and `-O3` for production — backed by a conservative garbage collector. Its type system is 100% composition-based (`type`, `contract`, `skill`, `object`, `implement`; no inheritance), with compile-time null safety, stackless coroutines (`task {}` / `.await()`), and an `eiwa` developer CLI for project and dependency management. Learn more at [eiwa.dev](https://eiwa.dev).
 
