@@ -1,0 +1,29 @@
+// RED: exposes the coroutine receiver-spill bug — a suspension point inline
+// in a task loop body loses the receiver on resume (SIGSEGV in
+// __TaskBlock1.resume() when a member is accessed after it). Keep failing
+// until the transform preserves the receiver across inline suspensions.
+
+contract TaskLoopProbe {
+    fun getId(): String
+}
+
+skill TaskLoopSk : TaskLoopProbe {
+    fun runTicks() {
+        task {
+            while (ticks < 3) {
+                sleep(1)
+                ticks = ticks + 1
+            }
+        }.await()
+    }
+}
+
+type TaskLoopT(val id: String, var ticks: Int = 0): TaskLoopProbe + TaskLoopSk {
+    implement fun getId() = id
+}
+
+test "task loop with inline sleep keeps receiver across resume" {
+    val t = TaskLoopT("t1")
+    t.runTicks()
+    assert(t.ticks == 3)
+}

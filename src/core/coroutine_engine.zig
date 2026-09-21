@@ -1021,7 +1021,7 @@ pub fn rewriteTaskCall(ctx: Ctx, stmt: *ASTNode, task_call: *ASTNode) ![]*ASTNod
         }
     }
 
-    const outer_this_t = caps.findOuterThisType(body);
+    const outer_this_t = caps.findOuterThisType(ctx, body);
     if (outer_this_t != null) {
         try caps.rewriteOuterThisRefs(ctx, body);
     }

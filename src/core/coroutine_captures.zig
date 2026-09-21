@@ -840,130 +840,146 @@ pub fn rewritePromotedRefs(ctx: Ctx, promoted: []const CapturedVar, node: *ASTNo
     }
 }
 
-pub fn findOuterThisType(body: []const *ASTNode) ?*const EiwaType {
-    for (body) |s| {
-        if (findOuterThisTypeInNode(s)) |t| return t;
+pub fn findOuterThisType(ctx: Ctx, body: []const *ASTNode) ?*const EiwaType {
+    const refs = findOuterScopeRefs(body);
+    if (refs.this_type) |t| return t;
+    // No explicit `this`: a bare outer property (`ticks`, `ticks = ...`)
+    // still needs the receiver captured. Derive it from the property's
+    // owner type; skip generic owners (their type args are unknown here).
+    if (refs.prop_owner) |owner| {
+        const actual = ctx.checker.alias_map.get(owner) orelse owner;
+        if (ctx.checker.classes_ast.get(actual)) |class_node| {
+            if (class_node.data != .type_decl) return null;
+            if (class_node.data.type_decl.generic_params.len > 0) return null;
+        } else if (ctx.checker.objects_ast.get(actual) == null) {
+            return null;
+        }
+        const t = ctx.allocator.create(EiwaType) catch return null;
+        t.* = .{ .Custom = actual };
+        return t;
     }
     return null;
 }
 
-pub fn findOuterThisTypeInNode(node: *ASTNode) ?*const EiwaType {
+const OuterScopeRefs = struct {
+    this_type: ?*const EiwaType = null,
+    prop_owner: ?[]const u8 = null,
+
+    fn complete(self: OuterScopeRefs) bool {
+        return self.this_type != null and self.prop_owner != null;
+    }
+};
+
+fn findOuterScopeRefs(body: []const *ASTNode) OuterScopeRefs {
+    var refs = OuterScopeRefs{};
+    for (body) |s| {
+        findOuterScopeRefsInNode(s, &refs, true);
+        if (refs.complete()) break;
+    }
+    return refs;
+}
+
+fn findOuterScopeRefsInNode(node: *ASTNode, refs: *OuterScopeRefs, record_this: bool) void {
+    if (refs.complete()) return;
     switch (node.data) {
         .identifier => |i| {
-            if (std.mem.eql(u8, i.name, "this")) {
-                if (node.resolved_type) |rt| return rt;
+            if (record_this and std.mem.eql(u8, i.name, "this")) {
+                if (refs.this_type == null) {
+                    if (node.resolved_type) |rt| refs.this_type = rt;
+                }
+            } else if (i.is_class_property) {
+                if (refs.prop_owner == null) {
+                    if (i.owner_type_c_name) |o| refs.prop_owner = o;
+                }
             }
-            return null;
         },
         .call_expr => |c| {
-            if (syn.isTaskCall(node)) return null;
-            if (findOuterThisTypeInNode(c.callee)) |t| return t;
-            for (c.arguments) |a| {
-                if (findOuterThisTypeInNode(a)) |t| return t;
-            }
-            return null;
+            if (syn.isTaskCall(node)) return;
+            findOuterScopeRefsInNode(c.callee, refs, record_this);
+            for (c.arguments) |a| findOuterScopeRefsInNode(a, refs, record_this);
         },
         .lambda_expr => |l| {
+            var shadows_this = false;
             for (l.params) |p| {
-                if (std.mem.eql(u8, p.name, "this")) return null;
+                if (std.mem.eql(u8, p.name, "this")) shadows_this = true;
             }
-            for (l.body) |s| {
-                if (findOuterThisTypeInNode(s)) |t| return t;
-            }
-            return null;
+            for (l.body) |s| findOuterScopeRefsInNode(s, refs, record_this and !shadows_this);
         },
         .block => |b| {
-            for (b.statements) |s| {
-                if (findOuterThisTypeInNode(s)) |t| return t;
-            }
-            return null;
+            for (b.statements) |s| findOuterScopeRefsInNode(s, refs, record_this);
         },
         .var_decl => |v| {
-            if (v.initializer) |init| return findOuterThisTypeInNode(init);
-            return null;
+            if (v.initializer) |init| findOuterScopeRefsInNode(init, refs, record_this);
         },
-        .assignment => |a| return findOuterThisTypeInNode(a.value),
+        .assignment => |a| {
+            if (a.is_class_property) {
+                if (refs.prop_owner == null) {
+                    if (a.owner_type_c_name) |o| refs.prop_owner = o;
+                }
+            }
+            findOuterScopeRefsInNode(a.value, refs, record_this);
+        },
         .binary_expr => |b| {
-            if (findOuterThisTypeInNode(b.left)) |t| return t;
-            return findOuterThisTypeInNode(b.right);
+            findOuterScopeRefsInNode(b.left, refs, record_this);
+            findOuterScopeRefsInNode(b.right, refs, record_this);
         },
-        .unary_expr => |u| return findOuterThisTypeInNode(u.operand),
-        .get_expr => |g| return findOuterThisTypeInNode(g.object),
+        .unary_expr => |u| findOuterScopeRefsInNode(u.operand, refs, record_this),
+        .get_expr => |g| findOuterScopeRefsInNode(g.object, refs, record_this),
         .set_expr => |s| {
-            if (findOuterThisTypeInNode(s.object)) |t| return t;
-            return findOuterThisTypeInNode(s.value);
+            findOuterScopeRefsInNode(s.object, refs, record_this);
+            findOuterScopeRefsInNode(s.value, refs, record_this);
         },
         .if_expr => |i| {
-            if (findOuterThisTypeInNode(i.condition)) |t| return t;
-            if (findOuterThisTypeInNode(i.then_branch)) |t| return t;
-            if (i.else_branch) |e| return findOuterThisTypeInNode(e);
-            return null;
+            findOuterScopeRefsInNode(i.condition, refs, record_this);
+            findOuterScopeRefsInNode(i.then_branch, refs, record_this);
+            if (i.else_branch) |e| findOuterScopeRefsInNode(e, refs, record_this);
         },
         .while_stmt => |w| {
-            if (findOuterThisTypeInNode(w.condition)) |t| return t;
-            return findOuterThisTypeInNode(w.body);
+            findOuterScopeRefsInNode(w.condition, refs, record_this);
+            findOuterScopeRefsInNode(w.body, refs, record_this);
         },
         .for_stmt => |f| {
-            if (findOuterThisTypeInNode(f.iterable)) |t| return t;
-            return findOuterThisTypeInNode(f.body);
+            findOuterScopeRefsInNode(f.iterable, refs, record_this);
+            findOuterScopeRefsInNode(f.body, refs, record_this);
         },
         .return_stmt => |r| {
-            if (r.value) |v| return findOuterThisTypeInNode(v);
-            return null;
+            if (r.value) |v| findOuterScopeRefsInNode(v, refs, record_this);
         },
         .break_stmt => |b| {
-            if (b.value) |v| return findOuterThisTypeInNode(v);
-            return null;
+            if (b.value) |v| findOuterScopeRefsInNode(v, refs, record_this);
         },
         .try_stmt => |t| {
-            if (findOuterThisTypeInNode(t.body)) |tb| return tb;
-            for (t.catches) |cb| {
-                if (findOuterThisTypeInNode(cb.body)) |ct| return ct;
-            }
-            return null;
+            findOuterScopeRefsInNode(t.body, refs, record_this);
+            for (t.catches) |cb| findOuterScopeRefsInNode(cb.body, refs, record_this);
         },
-        .throw_stmt => |t| return findOuterThisTypeInNode(t.expr),
+        .throw_stmt => |t| findOuterScopeRefsInNode(t.expr, refs, record_this),
         .when_expr => |w| {
-            if (w.subject) |s| {
-                if (findOuterThisTypeInNode(s)) |t| return t;
-            }
+            if (w.subject) |s| findOuterScopeRefsInNode(s, refs, record_this);
             for (w.cases) |case| {
-                for (case.conds) |cond| {
-                    if (findOuterThisTypeInNode(cond)) |t| return t;
-                }
-                if (findOuterThisTypeInNode(case.body)) |t| return t;
+                for (case.conds) |cond| findOuterScopeRefsInNode(cond, refs, record_this);
+                findOuterScopeRefsInNode(case.body, refs, record_this);
             }
-            return null;
         },
         .array_literal => |al| {
-            for (al.elements) |e| {
-                if (findOuterThisTypeInNode(e)) |t| return t;
-            }
-            return null;
+            for (al.elements) |e| findOuterScopeRefsInNode(e, refs, record_this);
         },
         .string_template => |st| {
-            for (st.parts) |e| {
-                if (findOuterThisTypeInNode(e)) |t| return t;
-            }
-            return null;
+            for (st.parts) |e| findOuterScopeRefsInNode(e, refs, record_this);
         },
         .map_literal => |ml| {
-            for (ml.elements) |e| {
-                if (findOuterThisTypeInNode(e)) |t| return t;
-            }
-            return null;
+            for (ml.elements) |e| findOuterScopeRefsInNode(e, refs, record_this);
         },
         .index_expr => |i| {
-            if (findOuterThisTypeInNode(i.object)) |t| return t;
-            return findOuterThisTypeInNode(i.index);
+            findOuterScopeRefsInNode(i.object, refs, record_this);
+            findOuterScopeRefsInNode(i.index, refs, record_this);
         },
         .index_set_expr => |i| {
-            if (findOuterThisTypeInNode(i.object)) |t| return t;
-            if (findOuterThisTypeInNode(i.index)) |t| return t;
-            return findOuterThisTypeInNode(i.value);
+            findOuterScopeRefsInNode(i.object, refs, record_this);
+            findOuterScopeRefsInNode(i.index, refs, record_this);
+            findOuterScopeRefsInNode(i.value, refs, record_this);
         },
-        .named_arg => |na| return findOuterThisTypeInNode(na.value),
-        else => return null,
+        .named_arg => |na| findOuterScopeRefsInNode(na.value, refs, record_this),
+        else => {},
     }
 }
 
@@ -978,6 +994,14 @@ pub fn rewriteOuterThisInNode(ctx: Ctx, node: *ASTNode) !void {
                 node.data = .{ .get_expr = .{
                     .object = syn.mkIdent("this"),
                     .name = cctx.outer_this_field,
+                    .is_safe = false,
+                    .is_boxed = false,
+                } };
+                node.resolved_type = null;
+            } else if (i.is_class_property) {
+                node.data = .{ .get_expr = .{
+                    .object = syn.mkGetExpr(syn.mkIdent("this"), cctx.outer_this_field),
+                    .name = i.name,
                     .is_safe = false,
                     .is_boxed = false,
                 } };
@@ -1014,6 +1038,18 @@ pub fn rewriteOuterThisInNode(ctx: Ctx, node: *ASTNode) !void {
         },
         .assignment => |a| {
             try rewriteOuterThisInNode(ctx, a.value);
+            if (a.is_class_property) {
+                const assignment_name = a.name;
+                const assignment_value = a.value;
+                node.data = .{ .set_expr = .{
+                    .object = syn.mkGetExpr(syn.mkIdent("this"), cctx.outer_this_field),
+                    .name = assignment_name,
+                    .value = assignment_value,
+                    .is_safe = false,
+                    .is_boxed = false,
+                } };
+                node.resolved_type = null;
+            }
             return;
         },
         .binary_expr => |b| {
