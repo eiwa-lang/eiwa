@@ -93,7 +93,7 @@ pub fn isCoopAwaitMarker(node: *ASTNode) bool {
     return isCoopAwaitCall(init);
 }
 
-pub fn recv_result_type(recv: *ASTNode) ?*const EiwaType {
+pub fn awaitResultType(recv: *ASTNode) ?*const EiwaType {
     if (recv.resolved_type) |rt| {
         const t = singleTypeArg(rt);
         if (t.* != .Void) return t;
@@ -558,4 +558,242 @@ pub fn typeRefSimple(name: []const u8) *const ASTTypeRef {
         .is_nullable = false,
     };
     return n;
+}
+
+pub fn appendSchedulerDrain(stmts: *ArrayList(*ASTNode)) !void {
+    try stmts.append(mkExprStmt(mkCall(mkGetExpr(mkIdent("Scheduler"), "run"), &.{})));
+}
+
+pub fn buildIsDone() *ASTNode {
+    const body = mkGetExpr(mkGetExpr(mkIdent("this"), "task"), "done");
+    return mkFunDecl("isDone", &.{}, body, true, &.{.kw_implement});
+}
+
+pub fn defaultInitializerForTypeRef(ref: *const ASTTypeRef) ?*ASTNode {
+    if (ref.is_nullable or ref.union_types.len > 0) return mkNullLit();
+    if (std.mem.eql(u8, ref.name, "Int")) return mkIntLit(0);
+    if (std.mem.eql(u8, ref.name, "Double")) return mkDoubleLit(0.0);
+    if (std.mem.eql(u8, ref.name, "Bool")) return mkBoolLit(false);
+    if (std.mem.eql(u8, ref.name, "String")) return mkStringLit("");
+    return null;
+}
+
+pub fn hasTaskOrAwait(node: *ASTNode) bool {
+    switch (node.data) {
+        .call_expr => |c| {
+            if (isTaskCall(node) or isAwaitCall(node)) return true;
+            if (hasTaskOrAwait(c.callee)) return true;
+            for (c.arguments) |a| {
+                if (hasTaskOrAwait(a)) return true;
+            }
+        },
+        .lambda_expr => return false,
+        .block => |b| {
+            for (b.statements) |s| {
+                if (hasTaskOrAwait(s)) return true;
+            }
+        },
+        .binary_expr => |b| return hasTaskOrAwait(b.left) or hasTaskOrAwait(b.right),
+        .unary_expr => |u| return hasTaskOrAwait(u.operand),
+        .get_expr => |g| return hasTaskOrAwait(g.object),
+        .set_expr => |s| return hasTaskOrAwait(s.object) or hasTaskOrAwait(s.value),
+        .if_expr => |i| {
+            if (hasTaskOrAwait(i.condition)) return true;
+            if (hasTaskOrAwait(i.then_branch)) return true;
+            if (i.else_branch) |e| {
+                if (hasTaskOrAwait(e)) return true;
+            }
+        },
+        .while_stmt => |w| return hasTaskOrAwait(w.condition) or hasTaskOrAwait(w.body),
+        .for_stmt => |f| return hasTaskOrAwait(f.iterable) or hasTaskOrAwait(f.body),
+        .return_stmt => |r| return if (r.value) |v| hasTaskOrAwait(v) else false,
+        .break_stmt => |b| return if (b.value) |v| hasTaskOrAwait(v) else false,
+        .assignment => |a| return hasTaskOrAwait(a.value),
+        .index_expr => |i| return hasTaskOrAwait(i.object) or hasTaskOrAwait(i.index),
+        .index_set_expr => |i| return hasTaskOrAwait(i.object) or hasTaskOrAwait(i.index) or hasTaskOrAwait(i.value),
+        .try_stmt => |t| {
+            if (hasTaskOrAwait(t.body)) return true;
+            for (t.catches) |cb| {
+                if (hasTaskOrAwait(cb.body)) return true;
+            }
+        },
+        .throw_stmt => |t| return hasTaskOrAwait(t.expr),
+        .when_expr => |w| {
+            if (w.subject) |s| {
+                if (hasTaskOrAwait(s)) return true;
+            }
+            for (w.cases) |case| {
+                for (case.conds) |cond| {
+                    if (hasTaskOrAwait(cond)) return true;
+                }
+                if (hasTaskOrAwait(case.body)) return true;
+            }
+        },
+        .named_arg => |na| return hasTaskOrAwait(na.value),
+        .array_literal => |al| {
+            for (al.elements) |e| {
+                if (hasTaskOrAwait(e)) return true;
+            }
+        },
+        .string_template => |st| {
+            for (st.parts) |e| {
+                if (hasTaskOrAwait(e)) return true;
+            }
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| {
+                if (hasTaskOrAwait(e)) return true;
+            }
+        },
+        .var_decl => |v| return if (v.initializer) |init| hasTaskOrAwait(init) else false,
+        else => {},
+    }
+    return false;
+}
+
+pub fn containsAwait(node: *ASTNode) bool {
+    switch (node.data) {
+        .call_expr => |c| {
+            if (isAwaitCall(node)) return true;
+            if (containsAwait(c.callee)) return true;
+            for (c.arguments) |a| {
+                if (containsAwait(a)) return true;
+            }
+        },
+        .lambda_expr => return false,
+        .block => |b| {
+            for (b.statements) |s| {
+                if (containsAwait(s)) return true;
+            }
+        },
+        .binary_expr => |b| return containsAwait(b.left) or containsAwait(b.right),
+        .unary_expr => |u| return containsAwait(u.operand),
+        .get_expr => |g| return containsAwait(g.object),
+        .set_expr => |s| return containsAwait(s.object) or containsAwait(s.value),
+        .if_expr => |i| {
+            if (containsAwait(i.condition)) return true;
+            if (containsAwait(i.then_branch)) return true;
+            if (i.else_branch) |e| {
+                if (containsAwait(e)) return true;
+            }
+        },
+        .while_stmt => |w| return containsAwait(w.condition) or containsAwait(w.body),
+        .for_stmt => |f| return containsAwait(f.iterable) or containsAwait(f.body),
+        .return_stmt => |r| return if (r.value) |v| containsAwait(v) else false,
+        .break_stmt => |b| return if (b.value) |v| containsAwait(v) else false,
+        .assignment => |a| return containsAwait(a.value),
+        .index_expr => |i| return containsAwait(i.object) or containsAwait(i.index),
+        .index_set_expr => |i| return containsAwait(i.object) or containsAwait(i.index) or containsAwait(i.value),
+        .try_stmt => |t| {
+            if (containsAwait(t.body)) return true;
+            for (t.catches) |cb| {
+                if (containsAwait(cb.body)) return true;
+            }
+        },
+        .throw_stmt => |t| return containsAwait(t.expr),
+        .when_expr => |w| {
+            if (w.subject) |s| {
+                if (containsAwait(s)) return true;
+            }
+            for (w.cases) |case| {
+                for (case.conds) |cond| {
+                    if (containsAwait(cond)) return true;
+                }
+                if (containsAwait(case.body)) return true;
+            }
+        },
+        .named_arg => |na| return containsAwait(na.value),
+        .array_literal => |al| {
+            for (al.elements) |e| {
+                if (containsAwait(e)) return true;
+            }
+        },
+        .string_template => |st| {
+            for (st.parts) |e| {
+                if (containsAwait(e)) return true;
+            }
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| {
+                if (containsAwait(e)) return true;
+            }
+        },
+        .var_decl => |v| return if (v.initializer) |init| containsAwait(init) else false,
+        else => {},
+    }
+    return false;
+}
+
+pub fn containsTrueSuspend(node: *ASTNode) bool {
+    switch (node.data) {
+        .call_expr => |c| {
+            if (isTaskCall(node)) return false;
+            if (isSuspendPrimitiveCall(node)) return true;
+            if (containsTrueSuspend(c.callee)) return true;
+            for (c.arguments) |a| {
+                if (containsTrueSuspend(a)) return true;
+            }
+        },
+        .lambda_expr => return false,
+        .block => |b| {
+            for (b.statements) |s| {
+                if (containsTrueSuspend(s)) return true;
+            }
+        },
+        .binary_expr => |b| return containsTrueSuspend(b.left) or containsTrueSuspend(b.right),
+        .unary_expr => |u| return containsTrueSuspend(u.operand),
+        .get_expr => |g| return containsTrueSuspend(g.object),
+        .set_expr => |s| return containsTrueSuspend(s.object) or containsTrueSuspend(s.value),
+        .if_expr => |i| {
+            if (containsTrueSuspend(i.condition)) return true;
+            if (containsTrueSuspend(i.then_branch)) return true;
+            if (i.else_branch) |e| {
+                if (containsTrueSuspend(e)) return true;
+            }
+        },
+        .while_stmt => |w| return containsTrueSuspend(w.condition) or containsTrueSuspend(w.body),
+        .for_stmt => |f| return containsTrueSuspend(f.iterable) or containsTrueSuspend(f.body),
+        .return_stmt => |r| return if (r.value) |v| containsTrueSuspend(v) else false,
+        .break_stmt => |b| return if (b.value) |v| containsTrueSuspend(v) else false,
+        .assignment => |a| return containsTrueSuspend(a.value),
+        .index_expr => |i| return containsTrueSuspend(i.object) or containsTrueSuspend(i.index),
+        .index_set_expr => |i| return containsTrueSuspend(i.object) or containsTrueSuspend(i.index) or containsTrueSuspend(i.value),
+        .try_stmt => |t| {
+            if (containsTrueSuspend(t.body)) return true;
+            for (t.catches) |cb| {
+                if (containsTrueSuspend(cb.body)) return true;
+            }
+        },
+        .throw_stmt => |t| return containsTrueSuspend(t.expr),
+        .when_expr => |w| {
+            if (w.subject) |s| {
+                if (containsTrueSuspend(s)) return true;
+            }
+            for (w.cases) |case| {
+                for (case.conds) |cond| {
+                    if (containsTrueSuspend(cond)) return true;
+                }
+                if (containsTrueSuspend(case.body)) return true;
+            }
+        },
+        .named_arg => |na| return containsTrueSuspend(na.value),
+        .array_literal => |al| {
+            for (al.elements) |e| {
+                if (containsTrueSuspend(e)) return true;
+            }
+        },
+        .string_template => |st| {
+            for (st.parts) |e| {
+                if (containsTrueSuspend(e)) return true;
+            }
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| {
+                if (containsTrueSuspend(e)) return true;
+            }
+        },
+        .var_decl => |v| return if (v.initializer) |init| containsTrueSuspend(init) else false,
+        else => {},
+    }
+    return false;
 }
