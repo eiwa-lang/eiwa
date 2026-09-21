@@ -318,6 +318,56 @@ test "MutableList plus creates new lists without mutating" {
     assert(m.get(0) == 1)
 }
 
+type User2(val name: String, val age: Int) {
+    implement fun toString(): String = name + ":" + age.toString()
+}
+
+test "List joinToString defaults and named args" {
+    assert([1, 2, 3].joinToString() == "1, 2, 3")
+    assert([1, 2, 3].joinToString(separator = "; ") == "1; 2; 3")
+    assert([1, 2, 3].joinToString(separator = "-", prefix = "<", postfix = ">") == "<1-2-3>")
+    assert(["a", "b", "c"].joinToString(separator = "|") == "a|b|c")
+    assert([1.5, 2.5].joinToString(separator = " + ") == "1.5 + 2.5")
+    assert([true, false].joinToString(separator = " & ") == "true & false")
+    assert(List<Int>().joinToString() == "")
+    assert(List<Int>().joinToString(prefix = "<", postfix = ">") == "<>")
+}
+
+test "List joinToString limit and truncated" {
+    assert([1, 2, 3, 4, 5].joinToString(limit = 2) == "1, 2, ...")
+    assert([1, 2, 3, 4, 5].joinToString(separator = ", ", prefix = "[", postfix = "]", limit = 2, truncated = "...") == "[1, 2, ...]")
+    assert([1, 2, 3].joinToString(limit = 10) == "1, 2, 3")
+    assert([1, 2, 3].joinToString(limit = 0) == "...")
+}
+
+test "List joinToString nullable elements" {
+    val n: List<Int?> = [1, null, 3]
+    assert(n.joinToString() == "1, null, 3")
+    assert(n.joinToString(separator = "|", prefix = "<", postfix = ">") == "<1|null|3>")
+}
+
+test "List joinToString custom Stringable type" {
+    val users: List<User2> = [User2("ana", 30), User2("bob", 25)]
+    assert(users.joinToString() == "ana:30, bob:25")
+    assert(users.joinToString(separator = " | ") == "ana:30 | bob:25")
+}
+
+test "List joinToString with transform" {
+    val users: List<User2> = [User2("ana", 30), User2("bob", 25)]
+    assert(users.joinToString({ u -> u.name }) == "ana, bob")
+    assert(users.joinToString({ u -> u.name }, separator = "; ") == "ana; bob")
+    assert(users.joinToString(transform = { u: User2 -> u.name + "!" }, separator = "|") == "ana!|bob!")
+    assert(users.joinToString({ u -> u.age.toString() }, ",", "", "", 1) == "30,...")
+    assert(users.joinToString({ u -> u.age.toString() }, ",", "[", "]", 1, "...") == "[30,...]")
+}
+
+test "MutableList joinToString delegates to Joining" {
+    val m = MutableList([1, 2, 3])
+    assert(m.joinToString() == "1, 2, 3")
+    assert(m.joinToString(separator = "+") == "1+2+3")
+    assert(m.joinToString(separator = "-", prefix = "<", postfix = ">", limit = 2) == "<1-2-...>")
+}
+
 test "List and MutableList searching" {
     val l = [10, 20, 30]
     assert(l.contains(20) == true)

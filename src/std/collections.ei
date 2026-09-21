@@ -62,6 +62,64 @@ skill Appending : Indexed<T> {
     }
 }
 
+skill Joining : Indexed<T> {
+
+    fun joinToString(separator: String = ", ", prefix: String = "", postfix: String = "", limit: Int = -1, truncated: String = "..."): String {
+        var result = prefix
+        val count = this.size()
+        var lim = count
+        var trunc = false
+        if (limit >= 0 && count > limit) {
+            lim = limit
+            trunc = true
+        }
+        var i = 0
+        while (i < lim) {
+            if (i > 0) {
+                result = result + separator
+            }
+            val e: T = this.get(i)
+            result = result + (e?.toString() ?: "null")
+            i = i + 1
+        }
+        if (trunc) {
+            if (lim > 0) {
+                result = result + separator
+            }
+            result = result + truncated
+        }
+        result = result + postfix
+        return result
+    }
+
+    fun joinToString(transform: (T) -> String, separator: String = ", ", prefix: String = "", postfix: String = "", limit: Int = -1, truncated: String = "..."): String {
+        var result = prefix
+        val count = this.size()
+        var lim = count
+        var trunc = false
+        if (limit >= 0 && count > limit) {
+            lim = limit
+            trunc = true
+        }
+        var i = 0
+        while (i < lim) {
+            if (i > 0) {
+                result = result + separator
+            }
+            result = result + transform(this.get(i))
+            i = i + 1
+        }
+        if (trunc) {
+            if (lim > 0) {
+                result = result + separator
+            }
+            result = result + truncated
+        }
+        result = result + postfix
+        return result
+    }
+}
+
 skill Searching : Indexed<T> {
 
     implement fun isEmpty(): Bool = this.size() == 0
@@ -95,7 +153,7 @@ skill Searching : Indexed<T> {
     implement fun last(): T = this.get(this.size() - 1)
 }
 
-type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching {
+type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching + Joining {
     fun add(element: T): Void {
         this.list.items.push(element)
     }
@@ -142,7 +200,7 @@ type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Searchable
     implement fun serialize(): SerdeValue = this.list.serialize()
 }
 
-type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching {
+type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching + Joining {
 
     implement operator fun get(index: Int): T {
         return this.items[index]
