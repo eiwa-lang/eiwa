@@ -429,9 +429,12 @@ pub fn resolveConstructorArguments(self: *TypeChecker, node: *ASTNode, props: []
         }
     }
 
-    if (!has_named and c.arguments.len == props.len) return;
+    const has_varargs = props.len > 0 and props[props.len - 1].is_varargs;
+    const varargs_idx: ?usize = if (has_varargs) props.len - 1 else null;
 
-    if (c.arguments.len > props.len) {
+    if (!has_named and c.arguments.len == props.len and !has_varargs) return;
+
+    if (c.arguments.len > props.len and varargs_idx == null) {
         self.reportError(node.line, node.column, "TypeError: Expected at most {} arguments for constructor, got {}.", .{ props.len, c.arguments.len });
         return error.TypeError;
     }
@@ -440,6 +443,8 @@ pub fn resolveConstructorArguments(self: *TypeChecker, node: *ASTNode, props: []
     for (new_args) |*slot| {
         slot.* = null;
     }
+
+    var varargs_buf = ArrayList(*ASTNode).init(self.allocator);
 
     var pos_i: usize = 0;
     for (c.arguments) |arg| {
@@ -466,11 +471,62 @@ pub fn resolveConstructorArguments(self: *TypeChecker, node: *ASTNode, props: []
         } else {
             while (pos_i < props.len and new_args[pos_i] != null) : (pos_i += 1) {}
             if (pos_i >= props.len) {
+                // Varargs overflow: the extra positional arg is collected into the List.
+                if (varargs_idx != null) {
+                    try varargs_buf.append(arg);
+                    continue;
+                }
                 self.reportError(arg.line, arg.column, "TypeError: Too many positional arguments in constructor call.", .{});
                 return error.TypeError;
             }
+            // A positional arg landing directly on the variadic property is
+            // collected into its List rather than passed as a scalar.
+            if (varargs_idx) |vi| {
+                if (pos_i == vi) {
+                    try varargs_buf.append(arg);
+                    pos_i += 1;
+                    continue;
+                }
+            }
             new_args[pos_i] = arg;
             pos_i += 1;
+        }
+    }
+
+    if (varargs_idx) |vi| {
+        var elements = try self.allocator.alloc(*ASTNode, varargs_buf.items.len);
+        for (varargs_buf.items, 0..) |item, i| {
+            elements[i] = item;
+        }
+
+        // A named argument may have already provided the variadic List; merge it in.
+        if (new_args[vi] != null and elements.len > 0) {
+            const existing = new_args[vi].?;
+            if (existing.data != .array_literal) {
+                self.reportError(node.line, node.column, "TypeError: Cannot combine a named varargs argument with positional varargs arguments.", .{});
+                return error.TypeError;
+            }
+            const merged = try self.allocator.alloc(*ASTNode, existing.data.array_literal.elements.len + elements.len);
+            var mi: usize = 0;
+            for (existing.data.array_literal.elements) |el| {
+                merged[mi] = el;
+                mi += 1;
+            }
+            for (elements) |el| {
+                merged[mi] = el;
+                mi += 1;
+            }
+            elements = merged;
+        }
+
+        if (new_args[vi] == null or elements.len > 0) {
+            const list_node = try self.allocator.create(ASTNode);
+            list_node.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .array_literal = .{ .elements = elements } } };
+            // Give the empty-list case a target type so `[]` infers as List<T>.
+            const elem_t = try self.resolveTypeRef(props[vi].type_ref);
+            list_node.expected_type = try self.makeListType(elem_t, node.line, node.column);
+            _ = try self.inferNode(list_node, scope);
+            new_args[vi] = list_node;
         }
     }
 

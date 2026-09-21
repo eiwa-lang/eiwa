@@ -127,6 +127,9 @@ pub const ClassProp = struct {
     /// True when the field holds a box pointer to a shared mutable capture;
     /// the emitter stores/loads through the box (stackless task capture).
     is_boxed: bool = false,
+    /// Varargs constructor property (`name: T...`): accepts N trailing call
+    /// arguments, exposed as `List<T>` in the body and stored as `List<T>`.
+    is_varargs: bool = false,
 };
 
 pub const CatchBlock = struct {

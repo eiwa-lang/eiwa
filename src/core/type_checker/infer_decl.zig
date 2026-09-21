@@ -503,7 +503,13 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     defer ctor_scope.deinit();
 
     for (c.primary_constructor) |*prop| {
-        const param_type = prop.resolved_type orelse try self.resolveTypeRef(prop.type_ref);
+        // NOTE: resolved_type persists across passes, so only wrap once.
+        const needs_wrap = prop.is_varargs and prop.resolved_type == null;
+        var param_type = prop.resolved_type orelse try self.resolveTypeRef(prop.type_ref);
+        // Varargs (`T...`): the body sees and stores a `List<T>`.
+        if (needs_wrap) {
+            param_type = try self.makeListType(param_type, node.line, node.column);
+        }
         prop.resolved_type = param_type;
 
         if (prop.initializer) |init_node| {

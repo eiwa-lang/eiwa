@@ -1450,7 +1450,7 @@ Statically typed defaults and named arguments are validated during type checking
 
 ### 14.2 Varargs (`T...`)
 
-A function or method can accept a variable number of trailing arguments by marking its **last** parameter with a `...` suffix on the type. Inside the body, the parameter is a `List<T>`; at the call site, every positional argument beyond the fixed ones is collected into that list.
+A function, method, or `type` primary constructor can accept a variable number of trailing arguments by marking its **last** parameter with a `...` suffix on the type. Inside the body, the parameter is a `List<T>`; at the call site, every positional argument beyond the fixed ones is collected into that list.
 
 ```kotlin
 fun sum(numbers: Int...): Int {
@@ -1476,12 +1476,25 @@ assert(greet("Hi", "Ana") == "Hi, Ana!")
 assert(greet("Yo", "Leo", "Bob") == "Yo, Leo, Bob!")
 ```
 
+**Constructors** — the same syntax works on the last property of a `type` primary constructor. The field is stored as an immutable `List<T>`:
+
+```kotlin
+type CarSemaphore(val id: String, var status: Int = 0, val deps: Semaphore...) {
+    fun count(): Int = this.deps.size()
+}
+
+val empty = CarSemaphore("c0")          // deps == [], status == 0
+val full = CarSemaphore("c1", 1, s1, s2) // deps == [s1, s2]
+assert(full.count() == 2)
+assert(full.deps[0] == s1)
+```
+
 **Rules:**
 - `...` may only be on the **last** parameter, and the parameter must have a type.
 - The element type `T` is what the compiler requires at each trailing call argument.
 - Inside the body, the varargs parameter is an immutable `List<T>` — iterate, index, or call `.size()`.
 - Calling with zero trailing arguments yields an empty list.
-- Works on top-level functions, `type`/`object`/`skill` methods, and constructors.
+- Works on top-level functions, `type`/`object`/`skill` methods, and `type` primary-constructor properties.
 
 ```kotlin
 // ❌ Invalid — `...` must be the last parameter

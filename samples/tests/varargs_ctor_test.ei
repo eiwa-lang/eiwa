@@ -1,0 +1,48 @@
+import { assert } from "std.core"
+import { List } from "std.collections"
+
+type Box(val id: String, val items: Int...) {
+    fun count(): Int = this.items.size()
+    fun first(): Int = this.items[0]
+}
+
+type WithDefault(val id: String, var status: Int = 7, val tags: String...) {
+    fun count(): Int = this.tags.size()
+}
+
+test "ctor varargs: zero trailing args yields an empty list" {
+    val c = Box("b")
+    assert(c.count() == 0)
+    assert(c.items.size() == 0)
+}
+
+test "ctor varargs: collects trailing args into a List" {
+    val c = Box("b", 10, 20, 30)
+    assert(c.count() == 3)
+    assert(c.first() == 10)
+    assert(c.items[2] == 30)
+    assert(c.items.toString() == "[10, 20, 30]")
+}
+
+test "ctor varargs: works with defaults before the tail" {
+    val dflt = WithDefault("w")
+    assert(dflt.status == 7)
+    assert(dflt.count() == 0)
+    val full = WithDefault("w", 1, "a", "b")
+    assert(full.status == 1)
+    assert(full.count() == 2)
+    assert(full.tags[1] == "b")
+}
+
+test "ctor varargs: named list argument still works" {
+    val c = Box("b", items = [1, 2])
+    assert(c.count() == 2)
+    assert(c.items[0] == 1)
+}
+
+test "ctor varargs: field is a plain List<Int>" {
+    val c = Box("b", 5)
+    val lst: List<Int> = c.items
+    assert(lst.size() == 1)
+    assert(lst[0] == 5)
+}

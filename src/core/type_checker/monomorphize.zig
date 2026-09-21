@@ -118,7 +118,24 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
         new_props[i] = prop;
         new_props[i].type_ref = try self.cloneTypeRef(prop.type_ref);
         if (generic_map.get(prop.type_ref.name)) |g_type| {
-            if (prop.type_ref.is_nullable) {
+            if (prop.is_varargs) {
+                const list_c_name = self.alias_map.get("List") orelse "List";
+                if (self.classes_ast.get(list_c_name)) |list_node| {
+                    var list_args = try self.allocator.alloc(*const EiwaType, 1);
+                    list_args[0] = g_type;
+                    var mangled = ArrayList(u8).init(self.allocator);
+                    try mangled.appendSlice(list_c_name);
+                    try mangled.appendSlice("_");
+                    try g_type.formatSafe(mangled.writer());
+                    const list_mangled = try mangled.toOwnedSlice();
+                    try self.monomorphizeClass(list_node.data.type_decl.name, list_args, list_mangled);
+                    const list_t = try self.allocator.create(EiwaType);
+                    list_t.* = .{ .Custom = self.alias_map.get(list_mangled) orelse list_mangled };
+                    new_props[i].resolved_type = list_t;
+                } else {
+                    new_props[i].resolved_type = g_type;
+                }
+            } else if (prop.type_ref.is_nullable) {
                 // T? must become `Concrete | null`, not bare Concrete
                 const union_t = try self.allocator.create(EiwaType);
                 union_t.* = .{ .Union = .{

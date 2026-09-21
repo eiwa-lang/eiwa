@@ -423,6 +423,18 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
                     return error.ParseError;
                 };
 
+                const is_varargs = self.match(.ellipsis);
+                if (is_varargs) {
+                    if (self.check(.comma)) {
+                        self.reportLexerError(self.previous.line, self.previous.column, "Syntax Error: varargs parameter ('...') must be the last parameter.", .{});
+                        return error.ParseError;
+                    }
+                    if (!self.check(.r_paren)) {
+                        self.reportLexerError(self.current.line, self.current.column, "Syntax Error: varargs parameter ('...') must be the last parameter.", .{});
+                        return error.ParseError;
+                    }
+                }
+
                 var initializer: ?*ASTNode = null;
                 if (self.match(.eq)) {
                     initializer = try self.expression();
@@ -435,6 +447,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
                     .is_property = is_property,
                     .initializer = initializer,
                     .annotations = prop_annotations,
+                    .is_varargs = is_varargs,
                 });
 
                 if (!self.match(.comma)) break;
