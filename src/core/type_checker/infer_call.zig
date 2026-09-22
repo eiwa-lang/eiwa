@@ -936,7 +936,7 @@ pub fn canMatchOverload(self: *TypeChecker, node: *const ASTNode, fun_decl: anyt
             var target_slot: ?usize = null;
             var search_i: usize = pos_i;
             while (search_i < f.params.len) : (search_i += 1) {
-                if (!provided.items[search_i] and f.params[search_i].* == .Function) {
+                if (!provided.items[search_i] and extractBaseType(f.params[search_i]).* == .Function) {
                     target_slot = search_i;
                     break;
                 }
@@ -1379,7 +1379,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                     var all_match = true;
                     for (c.arguments, 0..) |arg, arg_i| {
                         if (arg.data == .lambda_expr) {
-                            if (arg_i >= f.params.len or f.params[arg_i].* != .Function) {
+                            if (arg_i >= f.params.len or extractBaseType(f.params[arg_i]).* != .Function) {
                                 all_match = false;
                                 break;
                             }
