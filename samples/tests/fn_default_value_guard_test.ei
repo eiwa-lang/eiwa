@@ -1,0 +1,30 @@
+import { assert } from "std.core"
+
+// GUARD (TDD) — passa HOJE e deve continuar passando após o fix.
+// `= {}` isolado (sem fn-type posterior) + `when` com `->` + trailing
+// aninhado: comportamentos que o fix não pode quebrar.
+
+type GuardWidget(var label: String = "")
+
+fun guardBuild(label: String, init: GuardWidget.() -> Void = {}): String {
+    val w = GuardWidget(label = label)
+    init(w)
+    return w.label
+}
+
+fun guardDescribe(n: Int): String {
+    return when (n) {
+        1 -> "one"
+        else -> "other"
+    }
+}
+
+test "fn_default_guard: empty lambda default with no later fn-type" {
+    assert(guardBuild("x") == "x")
+    assert(guardBuild("x") { label = label + "!" } == "x!")
+}
+
+test "fn_default_guard: when arrows coexist with lambda defaults" {
+    assert(guardDescribe(1) == "one")
+    assert(guardDescribe(9) == "other")
+}
