@@ -1,0 +1,81 @@
+test "awaitAll on List preserves order" {
+    val t1 = task {
+        sleepMs(100)
+        1
+    }
+    val t2 = task {
+        sleepMs(50)
+        2
+    }
+    val t3 = task {
+        sleepMs(10)
+        3
+    }
+    val tasks = [t1, t2, t3]
+    val results = tasks.awaitAll()
+    assert(results.size() == 3)
+    assert(results.get(0) == 1)
+    assert(results.get(1) == 2)
+    assert(results.get(2) == 3)
+}
+
+test "awaitAll on MutableList" {
+    val pending = MutableList<StackTask<Int>>([])
+    pending.add(task {
+        sleepMs(30)
+        10
+    })
+    pending.add(task {
+        sleepMs(10)
+        20
+    })
+    val results = pending.awaitAll()
+    assert(results.get(0) == 10)
+    assert(results.get(1) == 20)
+}
+
+test "awaitAll on empty list" {
+    val pending = MutableList<StackTask<Int>>([])
+    val results = pending.awaitAll()
+    assert(results.size() == 0)
+}
+
+test "awaitAll inside task body" {
+    val t = task {
+        val a = task {
+            sleepMs(20)
+            7
+        }
+        val b = task {
+            8
+        }
+        val xs = [a, b]
+        xs.awaitAll()
+    }
+    val results = t.await()
+    assert(results.get(0) == 7)
+    assert(results.get(1) == 8)
+}
+
+test "generic extension infers from receiver" {
+    val numbers = [1, 2, 3]
+    assert(numbers.firstOr(0) == 1)
+    assert(numbers.tail().get(0) == 2)
+}
+
+fun <T> List<T>.firstOr(fallback: T): T {
+    if (this.size() == 0) {
+        return fallback
+    }
+    return this.get(0)
+}
+
+fun <T> List<T>.tail(): List<T> {
+    val out = MutableList<T>()
+    var i = 1
+    while (i < this.size()) {
+        out.add(this.get(i))
+        i = i + 1
+    }
+    return out.freeze()
+}

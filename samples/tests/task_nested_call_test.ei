@@ -1,18 +1,5 @@
 type CaptureBox(var n: Int = 0)
 
-test "task nested in call argument runs" {
-    val pending = MutableList<StackTask<Int>>([])
-    val b = CaptureBox()
-    pending.add(task {
-        sleep(1)
-        b.n = 1
-        0
-    })
-    val t = pending.get(0)
-    t.await()
-    assert(b.n == 1)
-}
-
 test "tasks capturing loop variable complete" {
     val boxes = [CaptureBox(), CaptureBox()]
     val pending = MutableList<StackTask<Int>>([])

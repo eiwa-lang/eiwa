@@ -23,9 +23,13 @@ fn findExtensionWithDefaults(
     for (ext_list.items) |ext_node| {
         const f = &ext_node.data.fun_decl;
         if (f.receiver_type == null) continue;
-        const rec_t = resolver.resolveHintTypeRef(f.receiver_type.?);
-        if (rec_t == null) continue;
-        if (!self.isCompatible(rec_t.?, base_type) and !self.isCompatible(base_type, rec_t.?)) continue;
+        if (f.generic_params.len > 0) {
+            if (matchGenericExtension(self, resolver, ext_node, base_type) == null) continue;
+        } else {
+            const rec_t = resolver.resolveHintTypeRef(f.receiver_type.?);
+            if (rec_t == null) continue;
+            if (!self.isCompatible(rec_t.?, base_type) and !self.isCompatible(base_type, rec_t.?)) continue;
+        }
         if (arg_count > f.params.len) continue;
         var has_defaults = true;
         var i = arg_count;
@@ -38,6 +42,217 @@ fn findExtensionWithDefaults(
         if (!has_defaults) continue;
         if (!candidateHasNamedParams(f.params, call_args)) continue;
         return ext_node;
+    }
+    return null;
+}
+
+fn extParamIndex(params: []const []const u8, name: []const u8) ?usize {
+    for (params, 0..) |p, i| {
+        if (std.mem.eql(u8, p, name)) return i;
+    }
+    return null;
+}
+
+fn buildReceiverPattern(self: *TypeChecker, resolver: *TypeChecker, ref: *const ast.ASTTypeRef, params: []const []const u8) ?*const EiwaType {
+    if (ref.generic_args.len == 0 and !ref.is_array and !ref.is_function and ref.union_types.len == 0) {
+        if (extParamIndex(params, ref.name) != null) {
+            const t = self.allocator.create(EiwaType) catch return null;
+            t.* = .{ .GenericParam = ref.name };
+            return t;
+        }
+        return resolver.resolveHintTypeRef(ref);
+    }
+    if (ref.is_array) {
+        const elem = buildReceiverPattern(self, resolver, ref.generic_args[0], params) orelse return null;
+        const t = self.allocator.create(EiwaType) catch return null;
+        t.* = .{ .Array = elem };
+        return t;
+    }
+    const actual_base = resolver.alias_map.get(ref.name) orelse ref.name;
+    var args = self.allocator.alloc(*const EiwaType, ref.generic_args.len) catch return null;
+    for (ref.generic_args, 0..) |ga, i| {
+        args[i] = buildReceiverPattern(self, resolver, ga, params) orelse return null;
+    }
+    const out = self.allocator.create(EiwaType) catch return null;
+    out.* = .{ .GenericInstance = .{ .base_name = actual_base, .type_args = args } };
+    return out;
+}
+
+pub fn extensionReceiverPattern(self: *TypeChecker, resolver: *TypeChecker, ext_node: *ASTNode) ?*const EiwaType {
+    const f = &ext_node.data.fun_decl;
+    const rt_ref = f.receiver_type orelse return null;
+    if (f.generic_params.len == 0) return resolver.resolveHintTypeRef(rt_ref);
+    return buildReceiverPattern(self, resolver, rt_ref, f.generic_params);
+}
+
+fn genericArity(self: *TypeChecker, base_actual: []const u8) usize {
+    if (self.classes_ast.get(base_actual)) |bn| {
+        if (bn.data == .type_decl) return bn.data.type_decl.generic_params.len;
+    }
+    if (self.contracts_ast.get(base_actual)) |cn| {
+        if (cn.data == .contract_decl) return cn.data.contract_decl.generic_params.len;
+    }
+    if (self.registry) |reg| {
+        var it = reg.modules.iterator();
+        while (it.next()) |entry| {
+            const c = entry.value_ptr.checker;
+            const ma = c.alias_map.get(base_actual) orelse base_actual;
+            if (c.classes_ast.get(ma)) |bn| {
+                if (bn.data == .type_decl) return bn.data.type_decl.generic_params.len;
+            }
+            if (c.contracts_ast.get(ma)) |cn| {
+                if (cn.data == .contract_decl) return cn.data.contract_decl.generic_params.len;
+            }
+        }
+    }
+    return 1;
+}
+
+fn parseMangledType(self: *TypeChecker, name: []const u8) ?*const EiwaType {
+    var bases = ArrayList([]const u8).init(self.allocator);
+    defer bases.deinit();
+    var ci = self.classes_ast.iterator();
+    while (ci.next()) |e| {
+        if (e.value_ptr.*.data == .type_decl and e.value_ptr.*.data.type_decl.generic_params.len > 0) {
+            bases.append(e.key_ptr.*) catch return null;
+        }
+    }
+    var ni = self.contracts_ast.iterator();
+    while (ni.next()) |e| {
+        if (e.value_ptr.*.data.contract_decl.generic_params.len > 0) {
+            bases.append(e.key_ptr.*) catch return null;
+        }
+    }
+    std.mem.sort([]const u8, bases.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return a.len > b.len;
+        }
+    }.lessThan);
+    for (bases.items) |b| {
+        if (!std.mem.startsWith(u8, name, b)) continue;
+        const rest = name[b.len..];
+        if (!std.mem.startsWith(u8, rest, "_")) continue;
+        const inner = rest[1..];
+        const arity = genericArity(self, b);
+        const pieces = splitMangledPieces(self, inner, arity) orelse continue;
+        if (pieces.len != arity) continue;
+        var args = self.allocator.alloc(*const EiwaType, pieces.len) catch continue;
+        var ok = true;
+        for (pieces, 0..) |p, i| {
+            args[i] = parseMangledType(self, p) orelse {
+                ok = false;
+                break;
+            };
+        }
+        if (!ok) continue;
+        const out = self.allocator.create(EiwaType) catch continue;
+        out.* = .{ .GenericInstance = .{ .base_name = b, .type_args = args } };
+        return out;
+    }
+    if (self.resolveHintTypeName(name, false)) |t| return t;
+    return null;
+}
+
+fn splitMangledPieces(self: *TypeChecker, inner: []const u8, arity: usize) ?[][]const u8 {
+    var pieces = ArrayList([]const u8).init(self.allocator);
+    if (splitPiecesRec(self, inner, arity, &pieces)) return pieces.toOwnedSlice() catch null;
+    return null;
+}
+
+fn splitPiecesRec(self: *TypeChecker, s: []const u8, n: usize, out: *ArrayList([]const u8)) bool {
+    if (n == 0) return s.len == 0;
+    if (s.len == 0) return false;
+    if (n == 1) {
+        if (parseMangledType(self, s) == null) return false;
+        out.append(s) catch return false;
+        return true;
+    }
+    var i: usize = 1;
+    while (i < s.len) : (i += 1) {
+        if (s[i] != '_') continue;
+        const head = s[0..i];
+        if (parseMangledType(self, head) == null) continue;
+        const checkpoint = out.items.len;
+        out.append(head) catch return false;
+        if (splitPiecesRec(self, s[i + 1 ..], n - 1, out)) return true;
+        while (out.items.len > checkpoint) _ = out.pop();
+    }
+    return false;
+}
+
+pub fn unifyExtensionReceiver(self: *TypeChecker, bindings: *std.StringHashMap(*const EiwaType), params: []const []const u8, pattern: *const EiwaType, actual: *const EiwaType) bool {
+    const act = extractBaseType(actual);
+    switch (pattern.*) {
+        .GenericParam, .Custom => |n| {
+            const in_params = extParamIndex(params, n) != null;
+            if (!in_params and pattern.* == .GenericParam) return false;
+            if (in_params) {
+                if (bindings.get(n)) |b| {
+                    return self.isCompatible(b, act) or self.isCompatible(act, b);
+                }
+                bindings.put(n, act) catch return false;
+                return true;
+            }
+            return self.isCompatible(pattern, act) or self.isCompatible(act, pattern);
+        },
+        .GenericInstance => |gi| {
+            const rbase = self.alias_map.get(gi.base_name) orelse gi.base_name;
+            switch (act.*) {
+                .GenericInstance => |ag| {
+                    const abase = self.alias_map.get(ag.base_name) orelse ag.base_name;
+                    if (!std.mem.eql(u8, rbase, abase)) return false;
+                    if (gi.type_args.len != ag.type_args.len) return false;
+                    for (gi.type_args, ag.type_args) |ra, aa| {
+                        if (!unifyExtensionReceiver(self, bindings, params, ra, aa)) return false;
+                    }
+                    return true;
+                },
+                .Custom => |mangled| {
+                    const inst = parseMangledType(self, mangled) orelse return self.isCompatible(pattern, act);
+                    if (inst.* != .GenericInstance) return self.isCompatible(pattern, act);
+                    return unifyExtensionReceiver(self, bindings, params, pattern, inst);
+                },
+                else => return self.isCompatible(pattern, act),
+            }
+        },
+        else => return self.isCompatible(pattern, act) or self.isCompatible(act, pattern),
+    }
+}
+
+pub fn matchGenericExtension(self: *TypeChecker, resolver: *TypeChecker, ext_node: *ASTNode, actual: *const EiwaType) ?[]*const EiwaType {
+    const f = &ext_node.data.fun_decl;
+    if (f.generic_params.len == 0) return null;
+    var bindings = std.StringHashMap(*const EiwaType).init(self.allocator);
+    defer bindings.deinit();
+    if (matchExtensionBindings(self, resolver, ext_node, actual, &bindings) == null) return null;
+    var out = self.allocator.alloc(*const EiwaType, f.generic_params.len) catch return null;
+    for (f.generic_params, 0..) |p, i| {
+        out[i] = bindings.get(p) orelse return null;
+    }
+    return out;
+}
+
+// Unified match filling caller-owned bindings; returns the pattern's base
+// for mangling, or null. Tries the defining module first, then the registry.
+fn matchExtensionBindings(self: *TypeChecker, resolver: *TypeChecker, ext_node: *ASTNode, actual: *const EiwaType, bindings: *std.StringHashMap(*const EiwaType)) ?[]const u8 {
+    const f = &ext_node.data.fun_decl;
+    if (extensionReceiverPattern(self, resolver, ext_node)) |pattern| {
+        if (unifyExtensionReceiver(self, bindings, f.generic_params, pattern, actual)) {
+            if (pattern.* == .GenericInstance) return pattern.GenericInstance.base_name;
+            return "ext";
+        }
+    }
+    if (self.registry) |reg| {
+        var it = reg.modules.iterator();
+        while (it.next()) |entry| {
+            const checker = entry.value_ptr.checker;
+            if (extensionReceiverPattern(self, checker, ext_node)) |pattern| {
+                if (unifyExtensionReceiver(self, bindings, f.generic_params, pattern, actual)) {
+                    if (pattern.* == .GenericInstance) return pattern.GenericInstance.base_name;
+                    return "ext";
+                }
+            }
+        }
     }
     return null;
 }
@@ -2127,7 +2342,53 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
                     
                     if (found_method) |m| {
-                        const f = &m.data.fun_decl;
+                        var f = &m.data.fun_decl;
+
+                        if (f.receiver_type != null and f.generic_params.len > 0 and c.type_args.len == 0) {
+                            var bindings = std.StringHashMap(*const EiwaType).init(self.allocator);
+                            defer bindings.deinit();
+                            const recv_base = matchExtensionBindings(self, self, m, base_type, &bindings) orelse {
+                                self.reportError(node.line, node.column, "TypeError: Could not infer generic parameters for extension '{s}'.", .{f.name});
+                                return error.TypeError;
+                            };
+                            for (f.params, 0..) |p, arg_i| {
+                                if (arg_i >= c.arguments.len) break;
+                                if (p.type_ref) |tr| {
+                                    if (tr.generic_args.len == 0 and extParamIndex(f.generic_params, tr.name) != null) {
+                                        if (bindings.get(tr.name) == null) {
+                                            if (c.arguments[arg_i].resolved_type) |rt| {
+                                                try bindings.put(tr.name, rt);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            var type_args = try self.allocator.alloc(*const EiwaType, f.generic_params.len);
+                            for (f.generic_params, 0..) |param_name, i| {
+                                type_args[i] = bindings.get(param_name) orelse {
+                                    self.reportError(node.line, node.column, "TypeError: Could not infer generic parameter '{s}' for extension '{s}'.", .{ param_name, f.name });
+                                    return error.TypeError;
+                                };
+                            }
+                            var mangled = ArrayList(u8).init(self.allocator);
+                            try mangled.appendSlice(f.name);
+                            try mangled.appendSlice("_");
+                            try mangled.appendSlice(recv_base);
+                            for (type_args) |ta| {
+                                try mangled.appendSlice("_");
+                                try ta.formatSafe(mangled.writer());
+                            }
+                            const final_mangled = try mangled.toOwnedSlice();
+                            try self.monomorphizeFunction(m, type_args, final_mangled, null);
+                            if (self.functions_ast.get(final_mangled)) |spec_node| {
+                                c.callee.data.get_expr.resolved_c_name = final_mangled;
+                                c.callee.resolved_type = spec_node.resolved_type;
+                                f = &spec_node.data.fun_decl;
+                            } else {
+                                self.reportError(node.line, node.column, "TypeError: Monomorphized extension '{s}' not found.", .{f.name});
+                                return error.TypeError;
+                            }
+                        }
 
                         // Handle generic method with inferred type args
                         if (f.generic_params.len > 0 and c.type_args.len == 0 and c.arguments.len >= f.params.len) {

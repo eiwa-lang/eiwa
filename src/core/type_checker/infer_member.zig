@@ -673,6 +673,16 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                             break;
                         }
                     }
+                    if (prop_type == null and f.generic_params.len > 0) {
+                        if (infer_call_mod.matchGenericExtension(self, self, ext_node, base_type)) |bound| {
+                            _ = bound;
+                            if (ext_node.resolved_type == null or ext_node.resolved_type.?.* != .Function) {
+                                _ = self.inferNode(ext_node, scope) catch null;
+                            }
+                            prop_type = ext_node.resolved_type;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -688,6 +698,16 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                         const rec_t = entry.value_ptr.checker.resolveTypeRef(rt_ref) catch null;
                         if (rec_t) |rt| {
                             if (self.isCompatible(rt, base_type) or self.isCompatible(base_type, rt)) {
+                                if (ext_node.resolved_type == null or ext_node.resolved_type.?.* != .Function) {
+                                    _ = entry.value_ptr.checker.inferNode(ext_node, scope) catch null;
+                                }
+                                prop_type = ext_node.resolved_type;
+                                break;
+                            }
+                        }
+                        if (prop_type == null and f.generic_params.len > 0) {
+                            if (infer_call_mod.matchGenericExtension(self, entry.value_ptr.checker, ext_node, base_type)) |bound| {
+                                _ = bound;
                                 if (ext_node.resolved_type == null or ext_node.resolved_type.?.* != .Function) {
                                     _ = entry.value_ptr.checker.inferNode(ext_node, scope) catch null;
                                 }

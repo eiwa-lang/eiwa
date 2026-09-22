@@ -1043,6 +1043,22 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         } else {
             try my_list.?.append(node);
         }
+        if (f.receiver_type != null) {
+            if (self.extension_functions.getPtr(f.name)) |list| {
+                var already_present = false;
+                for (list.items) |existing| {
+                    if (existing == node) {
+                        already_present = true;
+                        break;
+                    }
+                }
+                if (!already_present) try list.append(node);
+            } else {
+                var list = ArrayList(*ASTNode).init(self.allocator);
+                try list.append(node);
+                try self.extension_functions.put(f.name, list);
+            }
+        }
         t.* = .Void;
         return;
     }
@@ -2589,10 +2605,23 @@ fn generateSerdeListDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype, 
     if (isMonomorphizedClass(self, elem_tr.name)) return;
     const elem_name = elem_tr.name;
 
-    const is_int = std.mem.eql(u8, elem_name, "Int") or std.mem.endsWith(u8, elem_name, "_Int");
-    const is_double = std.mem.eql(u8, elem_name, "Double") or std.mem.endsWith(u8, elem_name, "_Double");
-    const is_bool = std.mem.eql(u8, elem_name, "Bool") or std.mem.endsWith(u8, elem_name, "_Bool");
-    const is_string = std.mem.eql(u8, elem_name, "String") or std.mem.endsWith(u8, elem_name, "_String");
+    // Mangled names ("Awaitable_Int") also end in "_Int": classify by
+    // resolved type so the converter lambda only emits for real primitives.
+    const elem_resolved = self.resolveHintTypeName(elem_name, false);
+    if (elem_resolved) |er| {
+        if (er.* == .Custom and isMonomorphizedClass(self, er.Custom)) return;
+    }
+    var is_int = std.mem.eql(u8, elem_name, "Int");
+    var is_double = std.mem.eql(u8, elem_name, "Double");
+    var is_bool = std.mem.eql(u8, elem_name, "Bool");
+    var is_string = std.mem.eql(u8, elem_name, "String");
+    if (elem_resolved) |er| {
+        const eb = core.extractBaseType(er);
+        is_int = is_int or eb.* == .Int;
+        is_double = is_double or eb.* == .Double;
+        is_bool = is_bool or eb.* == .Bool;
+        is_string = is_string or eb.* == .String;
+    }
     const is_serializable = self.implementsContract(elem_name, "Serializable");
     if (!is_int and !is_double and !is_bool and !is_string and !is_serializable) return;
 

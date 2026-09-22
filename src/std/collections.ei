@@ -3,6 +3,7 @@
 
 import { Json } from "std.json"
 import { Serializable, SerdeField, SerdeList, SerdeObjectList, SerdeValue, SerdeString, SerdeObject } from "std.serde"
+import { StackTask } from "std.coroutines"
 
 skill Slicing : Indexed<T> {
 
@@ -120,6 +121,60 @@ skill Joining : Indexed<T> {
     }
 }
 
+skill Filtering : Indexed<T> {
+
+    fun filter(predicate: (T) -> Bool): List<T> {
+        val out = MutableList<T>()
+        var i = 0
+        while (i < this.size()) {
+            val e: T = this.get(i)
+            if (predicate(e)) {
+                out.add(e)
+            }
+            i = i + 1
+        }
+        return out.freeze()
+    }
+
+    fun filterNot(predicate: (T) -> Bool): List<T> {
+        val out = MutableList<T>()
+        var i = 0
+        while (i < this.size()) {
+            val e: T = this.get(i)
+            if (!predicate(e)) {
+                out.add(e)
+            }
+            i = i + 1
+        }
+        return out.freeze()
+    }
+
+    fun filterIndexed(predicate: (Int, T) -> Bool): List<T> {
+        val out = MutableList<T>()
+        var i = 0
+        while (i < this.size()) {
+            val e: T = this.get(i)
+            if (predicate(i, e)) {
+                out.add(e)
+            }
+            i = i + 1
+        }
+        return out.freeze()
+    }
+
+    fun count(predicate: (T) -> Bool): Int {
+        var n = 0
+        var i = 0
+        while (i < this.size()) {
+            if (predicate(this.get(i))) {
+                n = n + 1
+            }
+            i = i + 1
+        }
+        return n
+    }
+}
+
 skill Searching : Indexed<T> {
 
     implement fun isEmpty(): Bool = this.size() == 0
@@ -153,7 +208,7 @@ skill Searching : Indexed<T> {
     implement fun last(): T = this.get(this.size() - 1)
 }
 
-type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching + Joining {
+type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching + Joining + Filtering {
     fun add(element: T): Void {
         this.list.items.push(element)
     }
@@ -200,7 +255,7 @@ type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Searchable
     implement fun serialize(): SerdeValue = this.list.serialize()
 }
 
-type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching + Joining {
+type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>, Searchable<T>, Serializable + Slicing + Json + Appending + Searching + Joining + Filtering {
 
     implement operator fun get(index: Int): T {
         return this.items[index]
@@ -520,4 +575,27 @@ type Set<T>(val map: Map<T, Bool> = Map()) {
         }
         return m
     }
+}
+
+// awaitAll (Kotlin parity): preserves order; created tasks already run concurrently.
+@Suspend
+fun <T> List<StackTask<T>>.awaitAll(): List<T> {
+    val out = MutableList<T>()
+    var i = 0
+    while (i < this.size()) {
+        out.add(this.get(i).await())
+        i = i + 1
+    }
+    return out.freeze()
+}
+
+@Suspend
+fun <T> MutableList<StackTask<T>>.awaitAll(): List<T> {
+    val out = MutableList<T>()
+    var i = 0
+    while (i < this.size()) {
+        out.add(this.get(i).await())
+        i = i + 1
+    }
+    return out.freeze()
 }
