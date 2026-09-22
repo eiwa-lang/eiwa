@@ -115,27 +115,44 @@ fn core_parseTypeAnnotation(self: *Parser) anyerror!?*const ast.ASTTypeRef {
 fn core_parseType(self: *Parser) anyerror!*const ast.ASTTypeRef {
     var ref = try self.allocator.create(ast.ASTTypeRef);
     if (self.match(.l_paren)) {
+        const saved = self.*;
+        self.suppress_errors = true;
         var params = ArrayList(*const ast.ASTTypeRef).init(self.allocator);
+        var spec_ok = true;
         if (!self.check(.r_paren)) {
             while (true) {
-                const p_t = try self.parseType();
-                try params.append(p_t);
+                const p_t = self.parseType() catch {
+                    spec_ok = false;
+                    break;
+                };
+                params.append(p_t) catch {
+                    spec_ok = false;
+                    break;
+                };
                 if (!self.match(.comma)) break;
             }
         }
-        try self.consume(.r_paren, "Expected ')' after function type parameters.");
-        try self.consume(.arrow, "Expected '->' in function type signature.");
-        const ret_t = try self.parseType();
-
-        ref.* = .{
-            .name = "",
-            .generic_args = try params.toOwnedSlice(),
-            .is_array = false,
-            .is_nullable = false,
-            .is_function = true,
-            .receiver_type = null,
-            .return_type = ret_t,
-        };
+        var spec_ret: ?*const ast.ASTTypeRef = null;
+        if (spec_ok and self.match(.r_paren) and self.match(.arrow)) {
+            spec_ret = self.parseType() catch null;
+        }
+        if (spec_ok and spec_ret != null) {
+            self.suppress_errors = saved.suppress_errors;
+            ref.* = .{
+                .name = "",
+                .generic_args = try params.toOwnedSlice(),
+                .is_array = false,
+                .is_nullable = false,
+                .is_function = true,
+                .receiver_type = null,
+                .return_type = spec_ret.?,
+            };
+        } else {
+            self.* = saved;
+            const inner = try self.parseType();
+            try self.consume(.r_paren, "Expected ')' after grouped type.");
+            ref.* = inner.*;
+        }
     } else if (self.match(.l_bracket)) {
         const inner = try self.parseType();
         try self.consume(.r_bracket, "Expected ']' after array type.");

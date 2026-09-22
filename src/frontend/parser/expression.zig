@@ -406,13 +406,21 @@ pub fn finishCall(self: *Parser, callee: *ASTNode, type_args: []const *const ast
     return try self.createNodeAt(.{ .call_expr = .{ .callee = callee, .arguments = try args.toOwnedSlice(), .type_args = type_args } }, line, col);
 }
 
+fn isLambdaHeadStop(t: TokenType) bool {
+    if (t == .eq) return true;
+    return std.mem.startsWith(u8, @tagName(t), "kw_");
+}
+
 pub fn parseLambdaLiteral(self: *Parser, line: usize, col: usize) anyerror!*ASTNode {
     var params = ArrayList(ast.Param).init(self.allocator);
     var temp_lexer = self.lexer;
     var has_arrow = false;
     var brace_depth: usize = 0;
+    // `{` was already consumed: include current token or `{}` scans past itself.
+    var use_current = true;
     while (true) {
-        const tok = temp_lexer.scanToken();
+        const tok = if (use_current) self.current else temp_lexer.scanToken();
+        use_current = false;
         if (tok.token_type == .eof) break;
         if (tok.token_type == .l_brace) brace_depth += 1;
         if (tok.token_type == .r_brace) {
@@ -423,6 +431,7 @@ pub fn parseLambdaLiteral(self: *Parser, line: usize, col: usize) anyerror!*ASTN
             has_arrow = true;
             break;
         }
+        if (brace_depth == 0 and isLambdaHeadStop(tok.token_type)) break;
     }
 
     if (has_arrow) {

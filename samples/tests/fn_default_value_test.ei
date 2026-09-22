@@ -1,0 +1,53 @@
+import { assert } from "std.core"
+
+// RED (TDD) — valores default para tipos-função.
+// Falha hoje (Bug A em T1/T1b, Bug B em T2); deve passar após o fix
+// descrito em docs/plan_default-values.md.
+
+// T1 — Bug A: fn-type simples anulável com parênteses + `?` + default null.
+fun maybeDouble(n: Int, cb: ((Int) -> Int)? = null): Int {
+    if (cb != null) {
+        return cb(n)
+    }
+    return -1
+}
+
+type Widget(var label: String = "")
+
+// T1b — Bug A com receiver (caso exato do uiButton).
+fun renderWidget(label: String, handler: (Widget.() -> Void)? = null): String {
+    val w = Widget(label = label)
+    if (handler != null) {
+        handler(w)
+    }
+    return w.label
+}
+
+// T2 — Bug B: `= {}` com parâmetro fn-type posterior no arquivo.
+fun buildWidget(label: String, init: Widget.() -> Void = {}): String {
+    val w = Widget(label = label)
+    init(w)
+    return w.label
+}
+
+fun consumeWidget(id: String, bodyContent: Widget.() -> Void): String {
+    val w = Widget(label = id)
+    bodyContent(w)
+    return w.label
+}
+
+test "fn_default: nullable fn-type with ? and null default" {
+    assert(maybeDouble(21) == -1)
+    assert(maybeDouble(21, { it * 2 }) == 42)
+}
+
+test "fn_default: nullable receiver fn-type with ? and null default" {
+    assert(renderWidget("a") == "a")
+    assert(renderWidget("a", { label = "b" }) == "b")
+}
+
+test "fn_default: empty lambda default with later fn-typed param" {
+    assert(buildWidget("x") == "x")
+    assert(buildWidget("x") { label = label + "!" } == "x!")
+    assert(consumeWidget("a", { label = "b" }) == "b")
+}

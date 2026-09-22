@@ -1,0 +1,45 @@
+import { assert } from "std.core"
+
+// RED (TDD) — lookahead `->` de lambda começa um token atrasado
+// (`src/frontend/parser/expression.zig:409-444`). Falha hoje;
+// deve passar após o fix descrito em docs/plan_default-values.md.
+
+fun runIt(block: () -> Void) {
+    block()
+}
+
+var sideEffect = 0
+
+runIt {
+    sideEffect = 41
+}
+
+runIt {}
+
+fun useIt(cb: () -> Int): Int = cb()
+
+fun annotatedInBody(): Int {
+    var result = 0
+    runIt {
+        val f: (Int) -> Int = { it * 2 }
+        result = f(21)
+    }
+    return result
+}
+
+test "lookahead: top-level trailing lambdas before later fn-type" {
+    assert(sideEffect == 41)
+    assert(useIt({ 42 }) == 42)
+}
+
+test "lookahead: fn-type annotation inside lambda body" {
+    assert(annotatedInBody() == 42)
+}
+
+test "lookahead: nested trailing empty lambda still works" {
+    var hit = false
+    runIt {
+        hit = true
+    }
+    assert(hit == true)
+}
