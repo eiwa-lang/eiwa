@@ -1,0 +1,6 @@
+import { ident, depUse } from "dep"
+
+fun main() {
+    print(ident(2))
+    print(depUse())
+}

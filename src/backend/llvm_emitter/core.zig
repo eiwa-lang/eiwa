@@ -1180,6 +1180,10 @@ pub const LLVMEmitter = struct {
                     if (stmt.data.fun_decl.generic_params.len > 0) continue;
                     const fname = stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name;
                     if (split) {
+                        if (is_entry and dep_owned_fns.contains(fname)) {
+                            try foreign_names.put(fname, {});
+                            continue;
+                        }
                         if (own_body) try owned_names.put(fname, {}) else {
                             try foreign_names.put(fname, {});
                             continue;
@@ -1216,6 +1220,10 @@ pub const LLVMEmitter = struct {
                         if (m_node.data.fun_decl.generic_params.len > 0) continue;
                         const fname = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ t_name, m_node.data.fun_decl.name });
                         if (split) {
+                            if (is_entry and dep_owned_fns.contains(fname)) {
+                                try foreign_names.put(fname, {});
+                                continue;
+                            }
                             if (own_body and !skip_dep_owned) try owned_names.put(fname, {}) else {
                                 try foreign_names.put(fname, {});
                                 continue;
@@ -1234,6 +1242,10 @@ pub const LLVMEmitter = struct {
                         if (member.data.fun_decl.generic_params.len > 0) continue;
                         const fname = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
                         if (split) {
+                            if (is_entry and dep_owned_fns.contains(fname)) {
+                                try foreign_names.put(fname, {});
+                                continue;
+                            }
                             if (own_body) try owned_names.put(fname, {}) else {
                                 try foreign_names.put(fname, {});
                                 continue;
