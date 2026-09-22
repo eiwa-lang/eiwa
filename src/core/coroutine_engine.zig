@@ -27,6 +27,16 @@ pub fn rewriteStatements(ctx: Ctx, stmts: []const *ASTNode, out: *ArrayList(*AST
 
 /// Returns true when the statement was fully replaced and must not be appended.
 pub fn rewriteStatement(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode), coop: bool) !bool {
+    // Hoist nested `task {}` first so every position composes (call args,
+    // var initializers, return values, conditions). Direct shapes keep their
+    // dedicated arms below and are skipped here.
+    if (!isDirectTaskShape(stmt)) {
+        var task_pre = ArrayList(*ASTNode).init(ctx.allocator);
+        defer task_pre.deinit();
+        var tasks_hoisted = false;
+        try hoistTasksWalk(ctx, stmt, &task_pre, &tasks_hoisted);
+        if (tasks_hoisted) try out.appendSlice(task_pre.items);
+    }
     switch (stmt.data) {
         .var_decl => |*v| {
             if (v.initializer) |init| {
@@ -296,6 +306,10 @@ pub fn hoistAwaitsFromExpr(ctx: Ctx, expr: *ASTNode, preamble: *ArrayList(*ASTNo
 }
 
 pub fn hoistAwaitsWalk(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), hoisted: *bool) !void {
+    try walkExpr(ctx, node, preamble, hoisted, awaitAction);
+}
+
+fn awaitAction(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), hoisted: *bool) !bool {
     if (syn.isAwaitCall(node)) {
         const name = try std.fmt.allocPrint(ctx.allocator, "__await{d}", .{ctx.counter.*});
         ctx.counter.* += 1;
@@ -312,56 +326,108 @@ pub fn hoistAwaitsWalk(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode),
             .resolved_c_name = null,
         } };
         hoisted.* = true;
-        return;
+        return true;
     }
+    if (syn.isTaskCall(node)) return true;
+    return false;
+}
+
+fn taskAction(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), hoisted: *bool) !bool {
+    if (syn.isTaskCall(node)) {
+        const temp_name = try std.fmt.allocPrint(ctx.allocator, "__taskhoist{d}", .{ctx.counter.*});
+        ctx.counter.* += 1;
+        const temp_decl = syn.mkVarDecl(temp_name, null);
+        temp_decl.line = node.line;
+        temp_decl.column = node.column;
+        const gen = try rewriteTaskCall(ctx, temp_decl, node);
+        try preamble.appendSlice(gen);
+        const task_name = gen[gen.len - 1].data.var_decl.initializer.?.data.identifier.name;
+        const saved_rt = node.resolved_type;
+        const saved_exp = node.expected_type;
+        node.data = .{ .identifier = .{
+            .name = task_name,
+            .resolved_c_name = null,
+        } };
+        node.resolved_type = saved_rt;
+        node.expected_type = saved_exp;
+        hoisted.* = true;
+        return true;
+    }
+    if (syn.isAwaitCall(node)) return true;
+    return false;
+}
+
+fn walkExpr(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), hoisted: *bool, action: *const fn (Ctx, *ASTNode, *ArrayList(*ASTNode), *bool) anyerror!bool) !void {
+    if (try action(ctx, node, preamble, hoisted)) return;
     switch (node.data) {
         .call_expr => |*c| {
-            if (syn.isTaskCall(node)) return; // task blocks are boundaries
-            try hoistAwaitsWalk(ctx, c.callee, preamble, hoisted);
+            try walkExpr(ctx, c.callee, preamble, hoisted, action);
             for (c.arguments) |arg| {
-                try hoistAwaitsWalk(ctx, arg, preamble, hoisted);
+                try walkExpr(ctx, arg, preamble, hoisted, action);
             }
         },
         .lambda_expr => return,
         .binary_expr => |*b| {
-            try hoistAwaitsWalk(ctx, b.left, preamble, hoisted);
-            try hoistAwaitsWalk(ctx, b.right, preamble, hoisted);
+            try walkExpr(ctx, b.left, preamble, hoisted, action);
+            try walkExpr(ctx, b.right, preamble, hoisted, action);
         },
-        .unary_expr => |*u| try hoistAwaitsWalk(ctx, u.operand, preamble, hoisted),
-        .get_expr => |*g| try hoistAwaitsWalk(ctx, g.object, preamble, hoisted),
+        .unary_expr => |*u| try walkExpr(ctx, u.operand, preamble, hoisted, action),
+        .get_expr => |*g| try walkExpr(ctx, g.object, preamble, hoisted, action),
         .set_expr => |*s| {
-            try hoistAwaitsWalk(ctx, s.object, preamble, hoisted);
-            try hoistAwaitsWalk(ctx, s.value, preamble, hoisted);
+            try walkExpr(ctx, s.object, preamble, hoisted, action);
+            try walkExpr(ctx, s.value, preamble, hoisted, action);
         },
         .index_expr => |*i| {
-            try hoistAwaitsWalk(ctx, i.object, preamble, hoisted);
-            try hoistAwaitsWalk(ctx, i.index, preamble, hoisted);
+            try walkExpr(ctx, i.object, preamble, hoisted, action);
+            try walkExpr(ctx, i.index, preamble, hoisted, action);
         },
         .index_set_expr => |*i| {
-            try hoistAwaitsWalk(ctx, i.object, preamble, hoisted);
-            try hoistAwaitsWalk(ctx, i.index, preamble, hoisted);
-            try hoistAwaitsWalk(ctx, i.value, preamble, hoisted);
+            try walkExpr(ctx, i.object, preamble, hoisted, action);
+            try walkExpr(ctx, i.index, preamble, hoisted, action);
+            try walkExpr(ctx, i.value, preamble, hoisted, action);
         },
         .array_literal => |*al| {
             for (al.elements) |e| {
-                try hoistAwaitsWalk(ctx, e, preamble, hoisted);
+                try walkExpr(ctx, e, preamble, hoisted, action);
             }
         },
         .string_template => |*st| {
             for (st.parts) |e| {
-                try hoistAwaitsWalk(ctx, e, preamble, hoisted);
+                try walkExpr(ctx, e, preamble, hoisted, action);
             }
         },
         .map_literal => |*ml| {
             for (ml.elements) |e| {
-                try hoistAwaitsWalk(ctx, e, preamble, hoisted);
+                try walkExpr(ctx, e, preamble, hoisted, action);
             }
         },
-        .named_arg => |*na| try hoistAwaitsWalk(ctx, na.value, preamble, hoisted),
-        .assignment => |*a| try hoistAwaitsWalk(ctx, a.value, preamble, hoisted),
-        .var_decl => |*v| if (v.initializer) |init| try hoistAwaitsWalk(ctx, init, preamble, hoisted),
+        .named_arg => |*na| try walkExpr(ctx, na.value, preamble, hoisted, action),
+        .assignment => |*a| try walkExpr(ctx, a.value, preamble, hoisted, action),
+        .var_decl => |*v| if (v.initializer) |init| try walkExpr(ctx, init, preamble, hoisted, action),
+        .return_stmt => |*r| if (r.value) |v| try walkExpr(ctx, v, preamble, hoisted, action),
+        .break_stmt => |*b| if (b.value) |v| try walkExpr(ctx, v, preamble, hoisted, action),
         else => {},
     }
+}
+
+fn isDirectTaskShape(stmt: *ASTNode) bool {
+    if (syn.isTaskCall(stmt)) return true;
+    switch (stmt.data) {
+        .var_decl => |v| {
+            if (v.initializer) |init| {
+                if (syn.isTaskCall(init)) return true;
+            }
+        },
+        .assignment => |a| {
+            if (syn.isTaskCall(a.value)) return true;
+        },
+        else => {},
+    }
+    return false;
+}
+
+pub fn hoistTasksWalk(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), hoisted: *bool) !void {
+    try walkExpr(ctx, node, preamble, hoisted, taskAction);
 }
 
 // ---------------------------------------------------------------------------
