@@ -355,7 +355,7 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = [], var count: Int = 0) :
                 val node = curr!!
                 curr = node.next
                 var hash = node.key.hashCode()
-                var index = hash - (hash / newCap) * newCap
+                var index = hash % newCap
                 if (index < 0) {
                     index = index + newCap
                 }
@@ -371,7 +371,7 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = [], var count: Int = 0) :
         var capacity = this.entries.size()
 
         var hash = key.hashCode()
-        var index = hash - (hash / capacity) * capacity
+        var index = hash % capacity
         if (index < 0) {
             index = index + capacity
         }
@@ -397,7 +397,7 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = [], var count: Int = 0) :
         }
 
         var hash = key.hashCode()
-        var index = hash - (hash / capacity) * capacity
+        var index = hash % capacity
         if (index < 0) index = index + capacity
 
         var curr = this.entries.items[index]
@@ -417,7 +417,7 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = [], var count: Int = 0) :
         }
 
         var hash = key.hashCode()
-        var index = hash - (hash / capacity) * capacity
+        var index = hash % capacity
         if (index < 0) index = index + capacity
 
         var curr = this.entries.items[index]
@@ -457,7 +457,7 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
         }
 
         var hash = key.hashCode()
-        var index = hash - (hash / capacity) * capacity
+        var index = hash % capacity
         if (index < 0) index = index + capacity
 
         var curr = this.entries.items[index]
@@ -477,7 +477,7 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
         }
 
         var hash = key.hashCode()
-        var index = hash - (hash / capacity) * capacity
+        var index = hash % capacity
         if (index < 0) index = index + capacity
 
         var curr = this.entries.items[index]

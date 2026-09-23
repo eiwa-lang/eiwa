@@ -74,6 +74,7 @@ pub const Lexer = struct {
             '-' => self.makeToken(if (self.match('>')) .arrow else .minus),
             '*' => self.makeToken(.star),
             '/' => self.makeToken(.slash),
+            '%' => self.makeToken(.percent),
             '=' => self.makeToken(if (self.match('=')) .eq_eq else .eq),
             '!' => {
                 if (self.match('=')) return self.makeToken(.bang_eq);

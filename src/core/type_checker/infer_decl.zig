@@ -614,7 +614,8 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             const is_operator = std.mem.eql(u8, m_name, "plus") or
                 std.mem.eql(u8, m_name, "minus") or
                 std.mem.eql(u8, m_name, "star") or
-                std.mem.eql(u8, m_name, "slash");
+                std.mem.eql(u8, m_name, "slash") or
+                std.mem.eql(u8, m_name, "rem");
             if (is_operator) {
                 var has_operator_mod = false;
                 for (method.data.fun_decl.modifiers) |mod| {

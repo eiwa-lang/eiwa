@@ -1,0 +1,43 @@
+import { assert } from "std.core"
+import { mod } from "std.math"
+
+type Clock(val hours: Int) {
+    operator fun rem(other: Clock): Clock {
+        return Clock(this.hours % other.hours)
+    }
+}
+
+test "rem: Int remainder" {
+    assert(17 % 5 == 2)
+    assert(10 % 3 == 1)
+    assert(4 % 4 == 0)
+    assert(0 % 7 == 0)
+}
+
+test "rem: negative operands follow truncation" {
+    assert((-17) % 5 == -2)
+    assert(17 % (-5) == 2)
+    assert((-17) % (-5) == -2)
+}
+
+test "rem: Double remainder" {
+    assert(7.5 % 2.0 == 1.5)
+    assert(10.0 % 3.0 == 1.0)
+}
+
+test "rem: same precedence as mul/div" {
+    assert(10 + 17 % 5 == 12)
+    assert(100 - 17 % 5 * 3 == 94)
+    assert(17 % 5 % 2 == 0)
+}
+
+test "rem: custom operator overload" {
+    val a = Clock(25)
+    val b = Clock(12)
+    assert((a % b).hours == 1)
+}
+
+test "rem: std mod matches operator" {
+    assert(mod(17, 5) == 17 % 5)
+    assert(mod(-17, 5) == (-17) % 5)
+}

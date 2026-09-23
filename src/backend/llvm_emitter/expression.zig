@@ -1500,6 +1500,10 @@ fn emitExpressionRaw(
                     if (is_double) return llvm.LLVMBuildFDiv(builder, left_val, right_val, "fdivtmp");
                     return llvm.LLVMBuildSDiv(builder, left_val, right_val, "divtmp");
                 },
+                .percent => {
+                    if (is_double) return llvm.LLVMBuildFRem(builder, left_val, right_val, "fremtmp");
+                    return llvm.LLVMBuildSRem(builder, left_val, right_val, "remtmp");
+                },
                 .less => {
                     if (is_double) return llvm.LLVMBuildFCmp(builder, llvm.LLVMRealOLT, left_val, right_val, "flttmp");
                     return llvm.LLVMBuildICmp(builder, llvm.LLVMIntSLT, left_val, right_val, "lttmp");

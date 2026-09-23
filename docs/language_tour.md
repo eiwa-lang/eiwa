@@ -2811,6 +2811,7 @@ Eiwa provides two core primitive numerical types for high-performance systems pr
 `Int` represents a 64-bit signed integer (mapped directly to LLVM `i64`).
 
 * **Literals**: `42`, `-10`, `0`.
+* **Arithmetic**: Supports `+`, `-`, `*`, `/` and `%` (remainder, truncated sign — `17 % 5 == 2`, `(-17) % 5 == -2`). Custom types overload `%` via `operator fun rem`.
 * **Conversions**:
   * `.toDouble()`: Converts `Int` to a 64-bit `Double`.
   * `.toInt()`: Returns `this` (`Int`).
@@ -2828,7 +2829,7 @@ val s: String = a.toString() // "42"
 `Double` represents a 64-bit IEEE 754 double precision floating point number (mapped directly to LLVM `double`).
 
 * **Literals**: Decimal numbers such as `3.14159`, `0.0`, `-15.5`, `123.456`.
-* **Arithmetic & Comparisons**: Supports `+`, `-`, `*`, `/`, `<`, `>`, `<=`, `>=`, `==`, `!=`.
+* **Arithmetic & Comparisons**: Supports `+`, `-`, `*`, `/`, `%`, `<`, `>`, `<=`, `>=`, `==`, `!=`.
 * **Automatic Promotion**: Mixing `Int` and `Double` in binary arithmetic (`+`, `-`, `*`, `/`) automatically promotes the operation and result to `Double`.
 * **Conversions**:
   * `.toInt()`: Truncates and converts `Double` to 64-bit `Int`.

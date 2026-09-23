@@ -220,7 +220,7 @@ pub fn term(self: *Parser) anyerror!*ASTNode {
 pub fn factor(self: *Parser) anyerror!*ASTNode {
     var expr = try self.unary();
 
-    while (self.match(.slash) or self.match(.star)) {
+    while (self.match(.slash) or self.match(.star) or self.match(.percent)) {
         const op = self.previous.token_type;
         const line = self.previous.line;
         const col = self.previous.column;
