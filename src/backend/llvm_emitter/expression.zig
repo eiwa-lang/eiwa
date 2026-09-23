@@ -542,7 +542,7 @@ fn emitExpressionRaw(
                         const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, get.object);
                         if (obj_base == .Int) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                            const gc_func = core.getHeapAllocFn(mod);
+                            const gc_func = core.getHeapAllocAtomicFn(mod);
                             const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                             const buf_size = llvm.LLVMConstInt(i64_type, 32, 0);
                             var gc_args = [_]llvm.LLVMValueRef{buf_size};
@@ -567,7 +567,7 @@ fn emitExpressionRaw(
                             return try wrapStringWithHeader(ctx, mod, builder, sel, "bool_str");
                         } else if (obj_base == .Double) {
                             const i64_type = llvm.LLVMInt64TypeInContext(ctx);
-                            const gc_func = core.getHeapAllocFn(mod);
+                            const gc_func = core.getHeapAllocAtomicFn(mod);
                             const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                             const buf_size = llvm.LLVMConstInt(i64_type, 64, 0);
                             var gc_args = [_]llvm.LLVMValueRef{buf_size};
@@ -1001,9 +1001,12 @@ fn emitExpressionRaw(
             // The array is laid out as a raw buffer (header + elements),
             // matching the C transpiler's EiwaArray model. Header is 2 x i64
             // slots (size, capacity); each element occupies `elem_stride`
-            // bytes. Allocation goes through the active heap allocator
-            // (GC_malloc when prefer_gc_alloc).
-            const malloc_func = core.getHeapAllocFn(mod);
+            // bytes. Atomic only for provably raw scalar elements.
+            const atomic_elem = if (node.resolved_type orelse node.expected_type) |lrt| blk: {
+                if (core.listElemType(lrt)) |et| break :blk core.isAtomicElemEiwaType(et);
+                break :blk false;
+            } else false;
+            const malloc_func = if (atomic_elem) core.getHeapAllocAtomicFn(mod) else core.getHeapAllocFn(mod);
             const malloc_type = llvm.LLVMGlobalGetValueType(malloc_func);
             const size_bytes: i64 = 16 + count * elem_stride;
             const size_val = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), @bitCast(size_bytes), 0);
@@ -1333,7 +1336,7 @@ fn emitExpressionRaw(
                 const total_len = llvm.LLVMBuildAdd(builder, a_len, b_len, "concat_len");
                 const total_alloc = llvm.LLVMBuildAdd(builder, total_len, llvm.LLVMConstInt(i64_t, 1, 0), "concat_alloc");
 
-                const gc_func = core.getHeapAllocFn(mod);
+                const gc_func = core.getHeapAllocAtomicFn(mod);
                 const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                 var gc_args = [_]llvm.LLVMValueRef{total_alloc};
                 const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "concat_buf");
@@ -1357,9 +1360,12 @@ fn emitExpressionRaw(
                 const nul_ptr = llvm.LLVMBuildGEP2(builder, i8_t, buf, &tot_idx, 1, "nul_ptr");
                 _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i8_t, 0, 0), nul_ptr);
 
-                // Allocate 16 bytes for core_String { ptr, length }
+                // Allocate 16 bytes for core_String { ptr, length}. The struct
+                // holds a heap pointer: keep the scanning allocator.
                 var ga16 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 16, 0)};
-                const raw_inst = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &ga16, 1, "str_inst_alloc");
+                const struct_alloc = core.getHeapAllocFn(mod);
+                const struct_alloc_type = llvm.LLVMGlobalGetValueType(struct_alloc);
+                const raw_inst = llvm.LLVMBuildCall2(builder, struct_alloc_type, struct_alloc, &ga16, 1, "str_inst_alloc");
                 const inst_ptr = llvm.LLVMBuildBitCast(builder, raw_inst, ptr_t, "str_inst");
 
                 const f0_ptr = llvm.LLVMBuildStructGEP2(builder, inst_struct_t, inst_ptr, 0, "f0_ptr");
@@ -2595,7 +2601,7 @@ fn emitExpressionRaw(
                             const total_len = llvm.LLVMBuildAdd(builder, a_len, b_len, "concat_len");
                             const total_alloc = llvm.LLVMBuildAdd(builder, total_len, llvm.LLVMConstInt(i64_type, 1, 0), "concat_alloc");
 
-                            const gc_func = core.getHeapAllocFn(mod);
+                            const gc_func = core.getHeapAllocAtomicFn(mod);
                             const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                             var gc_args = [_]llvm.LLVMValueRef{total_alloc};
                             const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "concat_buf");
@@ -2619,9 +2625,12 @@ fn emitExpressionRaw(
                             const nul_ptr = llvm.LLVMBuildGEP2(builder, i8_type, buf, &tot_idx, 1, "nul_ptr");
                             _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i8_type, 0, 0), nul_ptr);
 
-                            // Allocate 16 bytes for core_String { ptr, length }
+                            // Allocate 16 bytes for core_String { ptr, length}. The struct
+                            // holds a heap pointer: keep the scanning allocator.
                             var ga16 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
-                            const raw_inst = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &ga16, 1, "str_inst_alloc");
+                            const struct_alloc = core.getHeapAllocFn(mod);
+                            const struct_alloc_type = llvm.LLVMGlobalGetValueType(struct_alloc);
+                            const raw_inst = llvm.LLVMBuildCall2(builder, struct_alloc_type, struct_alloc, &ga16, 1, "str_inst_alloc");
                             const inst_ptr = llvm.LLVMBuildBitCast(builder, raw_inst, ptr_t, "str_inst");
 
                             const f0_ptr = llvm.LLVMBuildStructGEP2(builder, inst_struct_t, inst_ptr, 0, "f0_ptr");
@@ -4363,7 +4372,7 @@ pub fn emitRawCharBuffer(
     const i64_type = llvm.LLVMInt64TypeInContext(ctx);
     const i8_type = llvm.LLVMInt8TypeInContext(ctx);
 
-    const gc_alloc = core.getHeapAllocFn(mod);
+    const gc_alloc = core.getHeapAllocAtomicFn(mod);
     const gc_type = llvm.LLVMGlobalGetValueType(gc_alloc);
 
     const str_len = unescaped.items.len;
@@ -4558,7 +4567,7 @@ pub fn emitStringTemplate(
     }
 
     const total_alloc = llvm.LLVMBuildAdd(builder, total_len, llvm.LLVMConstInt(i64_t, 1, 0), "total_alloc");
-    const gc_func = core.getHeapAllocFn(mod);
+    const gc_func = core.getHeapAllocAtomicFn(mod);
     const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
     var gc_args = [_]llvm.LLVMValueRef{total_alloc};
     const buf = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &gc_args, 1, "template_buf");
@@ -4584,7 +4593,9 @@ pub fn emitStringTemplate(
     _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i8_t, 0, 0), nul_ptr);
 
     var ga16 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 16, 0)};
-    const raw_inst = llvm.LLVMBuildCall2(builder, gc_type, gc_func, &ga16, 1, "str_inst_alloc");
+    const struct_alloc = core.getHeapAllocFn(mod);
+    const struct_alloc_type = llvm.LLVMGlobalGetValueType(struct_alloc);
+    const raw_inst = llvm.LLVMBuildCall2(builder, struct_alloc_type, struct_alloc, &ga16, 1, "str_inst_alloc");
     const inst_ptr = llvm.LLVMBuildBitCast(builder, raw_inst, ptr_t, "str_inst");
 
     const f0_ptr = llvm.LLVMBuildStructGEP2(builder, inst_struct_t, inst_ptr, 0, "f0_ptr");
@@ -4682,7 +4693,7 @@ pub fn boxNullableScalar(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, buil
         const dbl_t = llvm.LLVMDoubleTypeInContext(ctx);
         i64_val = llvm.LLVMBuildBitCast(builder, coerceArg(builder, val, dbl_t), i64_t, "ns_dbl_bits");
     }
-    const alloc_fn = core.getHeapAllocFn(mod);
+    const alloc_fn = core.getHeapAllocAtomicFn(mod);
     const alloc_ty = llvm.LLVMGlobalGetValueType(alloc_fn);
     var sargs = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_t, 8, 0)};
     const cell = llvm.LLVMBuildCall2(builder, alloc_ty, alloc_fn, &sargs, 1, "ns_box");
@@ -5071,7 +5082,7 @@ pub fn emitValueToString(
         const base_rt = ts.extractBaseType(rt);
         switch (base_rt.*) {
             .Int => {
-                const gc_func = core.getHeapAllocFn(mod);
+                const gc_func = core.getHeapAllocAtomicFn(mod);
                 const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                 const buf_size = llvm.LLVMConstInt(i64_t, 32, 0);
                 var gc_args = [_]llvm.LLVMValueRef{buf_size};
@@ -5096,7 +5107,7 @@ pub fn emitValueToString(
                 return llvm.LLVMBuildSelect(builder, b_val, true_str, false_str, "bool_str");
             },
             .Double => {
-                const gc_func = core.getHeapAllocFn(mod);
+                const gc_func = core.getHeapAllocAtomicFn(mod);
                 const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
                 const buf_size = llvm.LLVMConstInt(i64_t, 64, 0);
                 var gc_args = [_]llvm.LLVMValueRef{buf_size};

@@ -306,6 +306,7 @@ fn computeProgramCacheKey(
 ) ?[64]u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(&.{ @intFromBool(build_options.has_llvm), @intFromBool(build_options.has_gc), @intFromBool(is_release) });
+    hasher.update(&.{@intFromBool(llvm_emitter.prefer_gc_atomic)});
     hasher.update(target_info.triple);
     hasher.update(&.{0});
     for (cli_c_flags) |f| {
@@ -475,6 +476,10 @@ fn run(init: std.process.Init) !void {
             \\
             \\Incremental cache: unchanged builds reuse artifacts under
             \\EIWA_CACHE_DIR (default ~/.eiwa/cache) keyed by content hashes.
+            \\
+            \\Codegen:
+            \\  EIWA_GC_ATOMIC=0      Disable atomic (unscanned) payload
+            \\                       allocation, restoring plain GC_malloc
             \\
         , .{});
         return;
@@ -911,6 +916,16 @@ fn run(init: std.process.Init) !void {
         }
     }
 
+    // Allocate via real GC_malloc/
+    // GC_realloc (zeroed, GC-managed) instead of raw malloc. Always for
+    // host native builds (the binary links -lgc); for the JIT only when the
+    // host eiwac links libgc. For cross-target builds without vendored libgc,
+    // uses standard libc allocator.
+    llvm_emitter.prefer_gc_alloc = (is_build and target_info.is_host) or (llvm_emitter.has_gc and target_info.is_host);
+    // Atomic payloads, unless EIWA_GC_ATOMIC=0. Set before the cache-key
+    // computation so the flag participates in the key.
+    llvm_emitter.prefer_gc_atomic = llvm_emitter.prefer_gc_alloc and (if (std.c.getenv("EIWA_GC_ATOMIC")) |v| !std.mem.eql(u8, std.mem.span(v), "0") else true);
+
     // Incremental binary cache (docs/perf-plan-incremental-cache.md): the key
     // covers the full import closure + compiler binary + flags, so a change
     // anywhere invalidates. A hit lets `build` skip the whole backend and
@@ -1080,12 +1095,6 @@ fn run(init: std.process.Init) !void {
     }
     const emitter = try allocator.create(llvm_emitter.LLVMEmitter);
     emitter.* = try llvm_emitter.LLVMEmitter.init(allocator, filename, is_release);
-    // Allocate via real GC_malloc/
-    // GC_realloc (zeroed, GC-managed) instead of raw malloc. Always for
-    // host native builds (the binary links -lgc); for the JIT only when the
-    // host eiwac links libgc. For cross-target builds without vendored libgc,
-    // uses standard libc allocator.
-    llvm_emitter.prefer_gc_alloc = (is_build and target_info.is_host) or (llvm_emitter.has_gc and target_info.is_host);
     emitter.is_test_mode = is_test;
     emitter.contracts_ast = &global_contracts_ast;
     emitter.classes_ast = &global_classes_ast;

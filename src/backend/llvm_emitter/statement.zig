@@ -1008,11 +1008,12 @@ pub fn emitForCollect(
     const elem_stride = expression.arrayElemStride(ctx, elem_type);
 
     // Fresh collection buffer: size = 0, capacity = 0 (first push grows to 4,
-    // same as `NativeArray.push`). The address lives in an alloca so pushes
+    // same as `NativeArray.push`). Atomic only for provably raw scalars.
+    // The address lives in an alloca so pushes
     // can write back the (possibly reallocated) pointer.
     const i64_type = llvm.LLVMInt64TypeInContext(ctx);
     const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
-    const malloc_fn = core.getHeapAllocFn(mod);
+    const malloc_fn = if (core.isAtomicElemEiwaType(trailing_rt)) core.getHeapAllocAtomicFn(mod) else core.getHeapAllocFn(mod);
     const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
     var malloc_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 16, 0)};
     const buf_val = llvm.LLVMBuildCall2(builder, malloc_type, malloc_fn, &malloc_args, 1, "for_buf");

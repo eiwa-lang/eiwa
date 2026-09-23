@@ -1,0 +1,63 @@
+import { assert } from "std.core"
+import { MutableList } from "std.collections"
+
+test "atomic: string churn keeps contents exact" {
+    var i = 0
+    var total = 0
+    while (i < 3000) {
+        val sb = StringBuilder()
+        var j = 0
+        while (j < 50) {
+            sb.append("k").appendInt(i).append(";")
+            j = j + 1
+        }
+        val s = sb.toString()
+        total = total + s.length
+        assert(s.startsWith("k${i};") == true)
+        assert(s.contains("k${i};") == true)
+        i = i + 1
+    }
+    assert(total > 0)
+}
+
+test "atomic: int/double arrays under pressure" {
+    val ints = MutableList<Int>()
+    val dbls = MutableList<Double>()
+    val hold = MutableList<String>()
+    var i = 0
+    while (i < 20000) {
+        ints.add(i)
+        dbls.add(i.toDouble() + 0.5)
+        if (i % 3 == 0) { hold.add("junk $i padding padding") }
+        i = i + 1
+    }
+    var sum = 0
+    var k = 0
+    while (k < ints.size()) {
+        sum = sum + ints.get(k)
+        k = k + 1
+    }
+    assert(sum == 199990000)
+    assert(hold.size() == 6667)
+    assert(dbls.get(19999) == 19999.5)
+}
+
+test "atomic: nullable boxes survive collections" {
+    val l = MutableList<Int?>()
+    var i = 0
+    while (i < 5000) {
+        if (i % 2 == 0) { l.add(i) } else { l.add(null) }
+        val junk = "noise $i"
+        i = i + 1
+    }
+    var sum = 0
+    var nulls = 0
+    var k = 0
+    while (k < l.size()) {
+        val v = l.get(k)
+        if (v == null) { nulls = nulls + 1 } else { sum = sum + v!! }
+        k = k + 1
+    }
+    assert(nulls == 2500)
+    assert(sum == 6247500)
+}

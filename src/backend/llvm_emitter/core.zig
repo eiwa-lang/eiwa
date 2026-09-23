@@ -99,12 +99,17 @@ pub const has_gc = build_options.has_gc;
 /// historical malloc-first ordering and everything behaves as before.
 pub var prefer_gc_alloc: bool = false;
 
+/// Pointer-free payloads use GC_malloc_atomic (unscanned, no false
+/// retention). Kill switch: EIWA_GC_ATOMIC=0 restores plain GC_malloc.
+pub var prefer_gc_atomic: bool = true;
+
 /// libgc bindings into the host process. Only referenced when `has_gc` is
 /// true (Zig lazily compiles externs, so hosts without libgc never link these).
 const gc = struct {
     pub extern "c" fn GC_init() void;
     pub extern "c" fn GC_allow_register_threads() void;
     pub extern "c" fn GC_malloc(size: usize) ?*anyopaque;
+    pub extern "c" fn GC_malloc_atomic(size: usize) ?*anyopaque;
     pub extern "c" fn GC_malloc_uncollectable(size: usize) ?*anyopaque;
     pub extern "c" fn GC_realloc(ptr: ?*anyopaque, size: usize) ?*anyopaque;
     pub extern "c" fn GC_get_stack_base(sb: ?*anyopaque) c_int;
@@ -122,6 +127,35 @@ pub fn getHeapAllocFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
     const primary: [*:0]const u8 = if (prefer_gc_alloc) "GC_malloc" else "malloc";
     const fallback: [*:0]const u8 = if (prefer_gc_alloc) "malloc" else "GC_malloc";
     return llvm.LLVMGetNamedFunction(mod, primary) orelse llvm.LLVMGetNamedFunction(mod, fallback).?;
+}
+
+/// Heap allocator for pointer-free payloads. Callers must fully write the
+/// buffer (atomic objects may be unzeroed) and never store heap pointers.
+pub fn getHeapAllocAtomicFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
+    if (prefer_gc_alloc and prefer_gc_atomic) {
+        if (llvm.LLVMGetNamedFunction(mod, "GC_malloc_atomic")) |f| return f;
+    }
+    return getHeapAllocFn(mod);
+}
+
+/// True only for raw Int/Double/Bool (never nullable, generic or
+/// reference): the sound gate for atomic array buffers. The LLVM-level
+/// element guess of an empty literal is i64 even when pushes later store
+/// box pointers, so LLVM kind alone must not decide.
+pub fn isAtomicElemEiwaType(elem_t: *const ts.EiwaType) bool {
+    return elem_t.* == .Int or elem_t.* == .Double or elem_t.* == .Bool;
+}
+
+/// Element type of a List/MutableList/array reference, or null when unknown
+/// (caller keeps the scanning allocator).
+pub fn listElemType(list_rt: *const ts.EiwaType) ?*const ts.EiwaType {
+    const base = ts.extractBaseType(list_rt);
+    if (base.* == .Array) return base.Array;
+    if (base.* == .GenericInstance) {
+        const targs = base.GenericInstance.type_args;
+        if (targs.len > 0) return targs[0];
+    }
+    return null;
 }
 
 /// Returns the heap allocation function for uncollectable permanent roots (enums/static data):
@@ -420,6 +454,7 @@ pub const LLVMEmitter = struct {
         var gc_params = [_]llvm.LLVMTypeRef{size_t_type};
         const gc_type = llvm.LLVMFunctionType(ptr_type, &gc_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "GC_malloc", gc_type);
+        _ = llvm.LLVMAddFunction(mod, "GC_malloc_atomic", gc_type);
         _ = llvm.LLVMAddFunction(mod, "GC_malloc_uncollectable", gc_type);
         _ = llvm.LLVMAddFunction(mod, "malloc", gc_type);
         {
@@ -1576,6 +1611,7 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "realloc") or
                     (prefer_gc_alloc and (
                         std.mem.eql(u8, fn_name_s, "GC_malloc") or
+                        std.mem.eql(u8, fn_name_s, "GC_malloc_atomic") or
                         std.mem.eql(u8, fn_name_s, "GC_malloc_uncollectable") or
                         std.mem.eql(u8, fn_name_s, "GC_realloc") or
                         std.mem.eql(u8, fn_name_s, "GC_init") or
@@ -1720,6 +1756,19 @@ pub const LLVMEmitter = struct {
                 const m_type = llvm.LLVMGlobalGetValueType(malloc_fn);
                 var args = [_]llvm.LLVMValueRef{size_val};
                 const res = llvm.LLVMBuildCall2(self.builder, m_type, malloc_fn, &args, 1, "gc_mu");
+                _ = llvm.LLVMBuildRet(self.builder, res);
+            }
+        }
+        // GC_malloc_atomic -> call malloc (atomicity is a GC-only concept)
+        if (llvm.LLVMGetNamedFunction(mod, "GC_malloc_atomic")) |f| {
+            if (llvm.LLVMCountBasicBlocks(f) == 0) {
+                const bb = llvm.LLVMAppendBasicBlockInContext(self.context, f, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
+                const size_val = llvm.LLVMGetParam(f, 0);
+                const malloc_fn = llvm.LLVMGetNamedFunction(mod, "malloc").?;
+                const m_type = llvm.LLVMGlobalGetValueType(malloc_fn);
+                var args = [_]llvm.LLVMValueRef{size_val};
+                const res = llvm.LLVMBuildCall2(self.builder, m_type, malloc_fn, &args, 1, "gc_ma");
                 _ = llvm.LLVMBuildRet(self.builder, res);
             }
         }
@@ -2996,6 +3045,8 @@ pub const LLVMEmitter = struct {
 
         const gc_func = getHeapAllocFn(mod);
         const gc_type = llvm.LLVMGlobalGetValueType(gc_func);
+        const gc_atomic = getHeapAllocAtomicFn(mod);
+        const gc_atomic_type = llvm.LLVMGlobalGetValueType(gc_atomic);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
         const val = llvm.LLVMGetParam(fn_val, 0);
@@ -3007,7 +3058,7 @@ pub const LLVMEmitter = struct {
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, null_bb);
         var ga5 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 5, 0)};
-        const null_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga5, 1, "null_buf");
+        const null_buf = llvm.LLVMBuildCall2(self.builder, gc_atomic_type, gc_atomic, &ga5, 1, "null_buf");
         for ("null\x00", 0..) |c, i| {
             var b_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(i), 0)};
             const b_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, null_buf, &b_idx, 1, "nb_ptr");
@@ -3033,7 +3084,7 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMBuildCondBr(self.builder, is_zero, false_bb, small_bb);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, true_bb);
-        const true_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga5, 1, "true_buf");
+        const true_buf = llvm.LLVMBuildCall2(self.builder, gc_atomic_type, gc_atomic, &ga5, 1, "true_buf");
         for ("true\x00", 0..) |c, i| {
             var b_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(i), 0)};
             const b_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, true_buf, &b_idx, 1, "tb_ptr");
@@ -3048,7 +3099,7 @@ pub const LLVMEmitter = struct {
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, false_bb);
         var ga6 = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 6, 0)};
-        const false_buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &ga6, 1, "false_buf");
+        const false_buf = llvm.LLVMBuildCall2(self.builder, gc_atomic_type, gc_atomic, &ga6, 1, "false_buf");
         for ("false\x00", 0..) |c, i| {
             var b_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, @intCast(i), 0)};
             const b_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, false_buf, &b_idx, 1, "fb_ptr");
@@ -3069,7 +3120,7 @@ pub const LLVMEmitter = struct {
         llvm.LLVMPositionBuilderAtEnd(self.builder, int_bb);
         const buf_size = llvm.LLVMConstInt(i64_type, 32, 0);
         var gc_args = [_]llvm.LLVMValueRef{buf_size};
-        const buf = llvm.LLVMBuildCall2(self.builder, gc_type, gc_func, &gc_args, 1, "ts_buf");
+        const buf = llvm.LLVMBuildCall2(self.builder, gc_atomic_type, gc_atomic, &gc_args, 1, "ts_buf");
 
         const sprintf_func = llvm.LLVMGetNamedFunction(mod, "sprintf") orelse return error.SprintfNotFound;
         const sprintf_type = llvm.LLVMGlobalGetValueType(sprintf_func);
@@ -3125,7 +3176,7 @@ pub const LLVMEmitter = struct {
         const strstr_type = llvm.LLVMGlobalGetValueType(strstr_fn);
         const memcpy_fn = llvm.LLVMGetNamedFunction(mod, "memcpy") orelse return error.MemcpyNotFound;
         const memcpy_type = llvm.LLVMGlobalGetValueType(memcpy_fn);
-        const malloc_fn = getHeapAllocFn(mod);
+        const malloc_fn = getHeapAllocAtomicFn(mod);
         const malloc_type = llvm.LLVMGlobalGetValueType(malloc_fn);
 
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry);
@@ -5068,6 +5119,7 @@ if (define_body) {
                 .{ .name = "GC_init", .ptr = @ptrCast(&gc.GC_init) },
                 .{ .name = "GC_allow_register_threads", .ptr = @ptrCast(&gc.GC_allow_register_threads) },
                 .{ .name = "GC_malloc", .ptr = @ptrCast(&gc.GC_malloc) },
+                .{ .name = "GC_malloc_atomic", .ptr = @ptrCast(&gc.GC_malloc_atomic) },
                 .{ .name = "GC_malloc_uncollectable", .ptr = @ptrCast(&gc.GC_malloc_uncollectable) },
                 .{ .name = "GC_realloc", .ptr = @ptrCast(&gc.GC_realloc) },
                 .{ .name = "GC_get_stack_base", .ptr = @ptrCast(&gc.GC_get_stack_base) },
