@@ -235,6 +235,15 @@ pub fn unary(self: *Parser) anyerror!*ASTNode {
         const op = self.previous.token_type;
         const line = self.previous.line;
         const col = self.previous.column;
+        // `-9223372036854775808` (Int64.MIN) has no positive literal form,
+        // so fold it here instead of overflowing in primary().
+        if (op == .minus and self.check(.int_literal)) {
+            const u = std.fmt.parseInt(u64, self.current.lexeme, 10) catch null;
+            if (u == (@as(u64, 1) << 63)) {
+                self.advance();
+                return try self.createNodeAt(.{ .int_literal = std.math.minInt(i64) }, line, col);
+            }
+        }
         const right = try self.unary();
         return try self.createNodeAt(.{ .unary_expr = .{ .operator = op, .operand = right } }, line, col);
     }
@@ -591,7 +600,10 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
     }
     
     if (self.match(.int_literal)) {
-        const value = try std.fmt.parseInt(i64, self.previous.lexeme, 10);
+        const value = std.fmt.parseInt(i64, self.previous.lexeme, 10) catch {
+            self.reportLexerError(self.previous.line, self.previous.column, "Integer literal out of range for Int (64-bit signed, -9223372036854775808..9223372036854775807).", .{});
+            return error.ParseError;
+        };
         return try self.createNodeAt(.{ .int_literal = value }, line, col);
     }
     if (self.match(.double_literal)) {

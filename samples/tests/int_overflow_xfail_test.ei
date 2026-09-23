@@ -1,0 +1,6 @@
+// MUST NOT COMPILE: positive literal above Int64 max is out of range.
+// While this compiles it XPASSes instead of going XFAIL.
+
+test "int literal above max is rejected" {
+    println(9223372036854775808.toString())
+}
