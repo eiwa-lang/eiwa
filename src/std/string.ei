@@ -13,14 +13,11 @@ fun String.split(delimiter: String): List<String> {
         return parts.freeze()
     }
     var start = 0
-    var idx = this.indexOf(delimiter)
+    var idx = this.indexOfFrom(delimiter, 0)
     while (idx >= 0) {
         parts.add(this.substring(start, idx))
         start = idx + delimiter.length
-        idx = this.substring(start, this.length).indexOf(delimiter)
-        if (idx >= 0) {
-            idx = idx + start
-        }
+        idx = this.indexOfFrom(delimiter, start)
     }
     parts.add(this.substring(start, this.length))
     return parts.freeze()
@@ -55,7 +52,7 @@ fun String.trimIndent(): String {
     if (indent == -1) {
         return ""
     }
-    var res = ""
+    val sb = StringBuilder()
     var first = true
     i = lo
     while (i < hi) {
@@ -63,14 +60,14 @@ fun String.trimIndent(): String {
         val line = if (rawLine.endsWith("\r")) rawLine.substring(0, rawLine.length - 1) else rawLine
         val out = if (line.isBlank()) "" else line.substring(indent, line.length)
         if (first) {
-            res = out
+            sb.append(out)
             first = false
         } else {
-            res = res + "\n" + out
+            sb.append("\n").append(out)
         }
         i = i + 1
     }
-    return res
+    return sb.toString()
 }
 
 fun String.trimMargin(marginPrefix: String = "|"): String {
@@ -83,7 +80,7 @@ fun String.trimMargin(marginPrefix: String = "|"): String {
     if (hi > lo && all[hi - 1].isBlank()) {
         hi = hi - 1
     }
-    var res = ""
+    var res = StringBuilder()
     var first = true
     var i = lo
     while (i < hi) {
@@ -98,12 +95,12 @@ fun String.trimMargin(marginPrefix: String = "|"): String {
             out = line.substring(w + marginPrefix.length, line.length)
         }
         if (first) {
-            res = out
+            res.append(out)
             first = false
         } else {
-            res = res + "\n" + out
+            res.append("\n").append(out)
         }
         i = i + 1
     }
-    return res
+    return res.toString()
 }

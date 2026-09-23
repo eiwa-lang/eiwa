@@ -223,9 +223,12 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
     }
 
     operator fun plus(other: Stringable): String {
-        val totalLen = this.length + other.toString().length
+        val s = other.toString()
+        val totalLen = this.length + s.length
         val buf = Standard.gcMalloc(totalLen + 1)
-        Standard.sprintfInt(buf, "%s%s".ptr, this.ptr, other.toString().ptr)
+        Standard.memcpy(buf, this.ptr, this.length)
+        Standard.memcpy(buf + this.length, s.ptr, s.length)
+        NativeMemory.writeByte(buf, totalLen, 0)
         return String(buf, totalLen)
     }
 
@@ -275,6 +278,18 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
 
     fun indexOf(needle: String): Int {
         val match = NativeString.strstr(this.ptr, needle.ptr)
+        if (match == null) { return -1 }
+        return match - this.ptr
+    }
+
+    fun indexOfFrom(needle: String, fromIndex: Int): Int {
+        if (fromIndex <= 0) {
+            return this.indexOf(needle)
+        }
+        if (fromIndex >= this.length) {
+            return -1
+        }
+        val match = NativeString.strstr(this.ptr + fromIndex, needle.ptr)
         if (match == null) { return -1 }
         return match - this.ptr
     }
@@ -404,6 +419,85 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
             i = i + 1
         }
         return hash
+    }
+}
+
+type StringBuilder(var cap: Int = 32, var buf: Pointer = Standard.gcMalloc(cap + 1), var len: Int = 0) : Stringable {
+    fun length(): Int = this.len
+
+    fun isEmpty(): Bool = this.len == 0
+
+    fun ensure(extra: Int): Void {
+        val need = this.len + extra + 1
+        if (need > this.cap) {
+            var newCap = if (this.cap == 0) 32 else this.cap * 2
+            while (newCap < need) {
+                newCap = newCap * 2
+            }
+            if (this.buf == null) {
+                this.buf = Standard.gcMalloc(newCap)
+            } else {
+                this.buf = Standard.gcRealloc(this.buf, newCap)
+            }
+            this.cap = newCap
+        }
+    }
+
+    fun append(s: String): StringBuilder {
+        this.ensure(s.length)
+        Standard.memcpy(this.buf + this.len, s.ptr, s.length)
+        this.len = this.len + s.length
+        NativeMemory.writeByte(this.buf, this.len, 0)
+        return this
+    }
+
+    fun appendInt(v: Int): StringBuilder {
+        if (v == 0) {
+            return this.append("0")
+        }
+        var n = v
+        var neg = false
+        if (n < 0) {
+            neg = true
+        }
+        var tmp = n
+        var digits = 0
+        while (tmp != 0) {
+            digits = digits + 1
+            tmp = tmp / 10
+        }
+        var total = digits
+        if (neg) {
+            total = total + 1
+        }
+        this.ensure(total)
+        var pos = this.len + total
+        tmp = n
+        while (tmp != 0) {
+            var d = tmp - (tmp / 10) * 10
+            if (d < 0) {
+                d = 0 - d
+            }
+            pos = pos - 1
+            NativeMemory.writeByte(this.buf, pos, 48 + d)
+            tmp = tmp / 10
+        }
+        if (neg) {
+            pos = pos - 1
+            NativeMemory.writeByte(this.buf, pos, 45)
+        }
+        this.len = this.len + total
+        NativeMemory.writeByte(this.buf, this.len, 0)
+        return this
+    }
+
+    implement fun toString(): String {
+        val out = Standard.gcMalloc(this.len + 1)
+        if (this.len > 0) {
+            Standard.memcpy(out, this.buf, this.len)
+        }
+        NativeMemory.writeByte(out, this.len, 0)
+        return String(out, this.len)
     }
 }
 

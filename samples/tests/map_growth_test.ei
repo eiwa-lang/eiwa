@@ -1,0 +1,78 @@
+import { assert } from "std.core"
+import { MutableMap, Map } from "std.collections"
+
+test "MutableMap grows past 16 buckets and stays correct" {
+    val m = MutableMap<String, Int>()
+    var i = 0
+    while (i < 500) {
+        m.put("k$i", i)
+        i = i + 1
+    }
+    assert(m.size() == 500)
+    var j = 0
+    while (j < 500) {
+        assert(m.get("k$j") == j)
+        j = j + 1
+    }
+    assert(m.get("missing") == null)
+    assert(m.contains("k0") == true)
+    assert(m.contains("missing") == false)
+}
+
+test "MutableMap update does not grow size" {
+    val m = MutableMap<String, Int>()
+    var i = 0
+    while (i < 100) {
+        m.put("k$i", i)
+        i = i + 1
+    }
+    assert(m.size() == 100)
+    m.put("k0", 999)
+    m.put("k99", 888)
+    assert(m.size() == 100)
+    assert(m.get("k0") == 999)
+    assert(m.get("k99") == 888)
+}
+
+test "MutableMap freeze/mut roundtrip after growth" {
+    val m = MutableMap<String, Int>()
+    var i = 0
+    while (i < 100) {
+        m.put("k$i", i)
+        i = i + 1
+    }
+    val frozen: Map<String, Int> = m.freeze()
+    assert(frozen.get("k42") == 42)
+    val m2 = frozen.mut()
+    assert(m2.size() == 100)
+    m2.put("new", 1)
+    assert(m2.size() == 101)
+    assert(m2.get("k42") == 42)
+    assert(m2.get("new") == 1)
+}
+
+test "map literal with many pairs" {
+    val map = [
+        "a" of "1",
+        "b" of "2",
+        "c" of "3",
+        "d" of "4",
+        "e" of "5",
+        "f" of "6",
+        "g" of "7",
+        "h" of "8",
+        "i" of "9",
+        "j" of "10",
+        "k" of "11",
+        "l" of "12",
+        "m" of "13",
+        "n" of "14",
+        "o" of "15",
+        "p" of "16",
+        "q" of "17",
+        "r" of "18"
+    ]
+    assert(map["a"] == "1")
+    assert(map["r"] == "18")
+    assert(map["zzz"] == null)
+}

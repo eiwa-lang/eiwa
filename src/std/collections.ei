@@ -66,7 +66,8 @@ skill Appending : Indexed<T> {
 skill Joining : Indexed<T> {
 
     fun joinToString(separator: String = ", ", prefix: String = "", postfix: String = "", limit: Int = -1, truncated: String = "..."): String {
-        var result = prefix
+        val sb = StringBuilder()
+        sb.append(prefix)
         val count = this.size()
         var lim = count
         var trunc = false
@@ -77,24 +78,25 @@ skill Joining : Indexed<T> {
         var i = 0
         while (i < lim) {
             if (i > 0) {
-                result = result + separator
+                sb.append(separator)
             }
             val e: T = this.get(i)
-            result = result + (e?.toString() ?: "null")
+            sb.append(e?.toString() ?: "null")
             i = i + 1
         }
         if (trunc) {
             if (lim > 0) {
-                result = result + separator
+                sb.append(separator)
             }
-            result = result + truncated
+            sb.append(truncated)
         }
-        result = result + postfix
-        return result
+        sb.append(postfix)
+        return sb.toString()
     }
 
     fun joinToString(transform: (T) -> String, separator: String = ", ", prefix: String = "", postfix: String = "", limit: Int = -1, truncated: String = "..."): String {
-        var result = prefix
+        val sb = StringBuilder()
+        sb.append(prefix)
         val count = this.size()
         var lim = count
         var trunc = false
@@ -105,19 +107,19 @@ skill Joining : Indexed<T> {
         var i = 0
         while (i < lim) {
             if (i > 0) {
-                result = result + separator
+                sb.append(separator)
             }
-            result = result + transform(this.get(i))
+            sb.append(transform(this.get(i)))
             i = i + 1
         }
         if (trunc) {
             if (lim > 0) {
-                result = result + separator
+                sb.append(separator)
             }
-            result = result + truncated
+            sb.append(truncated)
         }
-        result = result + postfix
-        return result
+        sb.append(postfix)
+        return sb.toString()
     }
 }
 
@@ -286,18 +288,19 @@ type List<T>(val items: NativeArray<T> = []): Equatable, Slicable<T>, Indexed<T>
     fun mut(): MutableList<T> = MutableList(this)
 
     implement fun toString(): String {
-        var result = "["
+        val sb = StringBuilder()
+        sb.append("[")
         var i = 0
         while (i < this.items.length) {
-            val e: T = this.items[i]
-            result = result + (e?.toString() ?: "null")
-            if (i < this.items.length - 1) {
-                result = result + ", "
+            if (i > 0) {
+                sb.append(", ")
             }
+            val e: T = this.items[i]
+            sb.append(e?.toString() ?: "null")
             i = i + 1
         }
-        result = result + "]"
-        return result
+        sb.append("]")
+        return sb.toString()
     }
 }
 
@@ -305,9 +308,23 @@ type Node<K, V>(val key: K, var value: V, var next: Node<K, V>?) {
     implement fun toString(): String = "Node(key=${this.key}, value=${this.value})"
 }
 
-type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
+type MutableMap<K, V>(val entries: List<Node<K, V>?> = [], var count: Int = 0) : Serializable + Json {
 
-    operator fun put(key: K, value: V): Void {
+    fun recount(): Void {
+        var n = 0
+        var i = 0
+        while (i < this.entries.size()) {
+            var curr = this.entries.items[i]
+            while (curr != null) {
+                n = n + 1
+                curr = curr!!.next
+            }
+            i = i + 1
+        }
+        this.count = n
+    }
+
+    fun ensureCapacity(): Void {
         var capacity = this.entries.size()
         if (capacity == 0) {
             var i = 0
@@ -315,8 +332,43 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json
                 this.entries.items.push(null)
                 i = i + 1
             }
-            capacity = this.entries.size()
+            return
         }
+        if ((this.count + 1) * 4 > capacity * 3) {
+            this.grow()
+        }
+    }
+
+    fun grow(): Void {
+        val oldCap = this.entries.size()
+        val newCap = oldCap * 2
+        var i = oldCap
+        while (i < newCap) {
+            this.entries.items.push(null)
+            i = i + 1
+        }
+        var b = 0
+        while (b < oldCap) {
+            var curr = this.entries.items[b]
+            this.entries.items[b] = null
+            while (curr != null) {
+                val node = curr!!
+                curr = node.next
+                var hash = node.key.hashCode()
+                var index = hash - (hash / newCap) * newCap
+                if (index < 0) {
+                    index = index + newCap
+                }
+                node.next = this.entries.items[index]
+                this.entries.items[index] = node
+            }
+            b = b + 1
+        }
+    }
+
+    operator fun put(key: K, value: V): Void {
+        this.ensureCapacity()
+        var capacity = this.entries.size()
 
         var hash = key.hashCode()
         var index = hash - (hash / capacity) * capacity
@@ -335,6 +387,7 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json
 
         val newNode = Node(key, value, this.entries.items[index])
         this.entries.items[index] = newNode
+        this.count = this.count + 1
     }
 
     operator fun get(key: K): V? {
@@ -378,22 +431,12 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json
     }
 
     fun size(): Int {
-        var count = 0
-        var i = 0
-        while (i < this.entries.size()) {
-            var curr = this.entries.items[i]
-            while (curr != null) {
-                count = count + 1
-                curr = curr!!.next
-            }
-            i = i + 1
-        }
-        return count
+        return this.count
     }
 
-    fun isEmpty(): Bool = this.size() == 0
+    fun isEmpty(): Bool = this.count == 0
 
-    fun isNotEmpty(): Bool = this.size() > 0
+    fun isNotEmpty(): Bool = this.count > 0
 
     fun freeze(): Map<K, V> = Map(this.entries)
 
@@ -465,7 +508,11 @@ type Map<K, V>(val entries: List<Node<K, V>?> = []) : Serializable + Json {
 
     fun isNotEmpty(): Bool = this.size() > 0
 
-    fun mut(): MutableMap<K, V> = MutableMap(this.entries)
+    fun mut(): MutableMap<K, V> {
+        val m = MutableMap(this.entries)
+        m.recount()
+        return m
+    }
 
     fun keys(): MapKeys<K, V> = MapKeys(this.entries)
 

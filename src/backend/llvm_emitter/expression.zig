@@ -4131,13 +4131,13 @@ fn emitExpressionRaw(
                         _ = llvm.LLVMBuildStore(builder, null_ptr, llvm.LLVMBuildGEP2(builder, i64_type, buckets, &sidx, 1, "bs"));
                     }
 
-                    // 2. List(items=buckets) -> 3. MutableMap(entries=list)
+                    // 2. List(items=buckets) -> 3. MutableMap(entries=list, count=0)
                     var l_args = [_]llvm.LLVMValueRef{buckets};
                     const list_t = llvm.LLVMGlobalGetValueType(list_ctor);
                     const list_val = llvm.LLVMBuildCall2(builder, list_t, list_ctor, &l_args, 1, "map_list");
-                    var mm_args = [_]llvm.LLVMValueRef{list_val};
+                    var mm_args = [_]llvm.LLVMValueRef{ list_val, llvm.LLVMConstInt(i64_type, 0, 0) };
                     const mm_t = llvm.LLVMGlobalGetValueType(mmap_ctor);
-                    const mmap_val = llvm.LLVMBuildCall2(builder, mm_t, mmap_ctor, &mm_args, 1, "map_mmap");
+                    const mmap_val = llvm.LLVMBuildCall2(builder, mm_t, mmap_ctor, &mm_args, 2, "map_mmap");
 
                     // 4. put(k, v) for each pair
                     const put_t = llvm.LLVMGlobalGetValueType(put_fn);

@@ -1,0 +1,53 @@
+import { assert } from "std.core"
+
+test "StringBuilder appends and snapshots" {
+    val sb = StringBuilder()
+    sb.append("hello").append(" ").append("world")
+    assert(sb.toString() == "hello world")
+    assert(sb.length() == 11)
+    assert(sb.isEmpty() == false)
+    // snapshot: builder stays reusable afterwards
+    sb.append("!")
+    assert(sb.toString() == "hello world!")
+}
+
+test "StringBuilder empty" {
+    val sb = StringBuilder()
+    assert(sb.toString() == "")
+    assert(sb.length() == 0)
+    assert(sb.isEmpty() == true)
+}
+
+test "StringBuilder appendInt" {
+    val sb = StringBuilder()
+    sb.appendInt(0).append("|").appendInt(42).append("|").appendInt(-7)
+    assert(sb.toString() == "0|42|-7")
+    val big = StringBuilder()
+    big.appendInt(9223372036854775807)
+    assert(big.toString() == "9223372036854775807")
+    val min = -9223372036854775807 - 1
+    val sbMin = StringBuilder()
+    sbMin.appendInt(min)
+    assert(sbMin.toString() == "-9223372036854775808")
+}
+
+test "StringBuilder grows past initial capacity" {
+    val sb = StringBuilder()
+    var i = 0
+    while (i < 1000) {
+        sb.append("ab")
+        i = i + 1
+    }
+    val s = sb.toString()
+    assert(s.length == 2000)
+    assert(s.startsWith("ab") == true)
+    assert(s.endsWith("ab") == true)
+}
+
+test "String indexOfFrom" {
+    assert("abcabc".indexOfFrom("b", 0) == 1)
+    assert("abcabc".indexOfFrom("b", 2) == 4)
+    assert("abcabc".indexOfFrom("z", 0) == -1)
+    assert("abc".indexOfFrom("a", 3) == -1)
+    assert("abc".indexOfFrom("a", 99) == -1)
+}
