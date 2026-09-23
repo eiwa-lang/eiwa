@@ -942,8 +942,7 @@ pub const LLVMEmitter = struct {
                     const type_c_name = t.resolved_c_name orelse t.name;
                     if (seen_vtable_types.contains(type_c_name)) continue;
                     try seen_vtable_types.put(type_c_name, {});
-                    const is_dep_type = dep_owned_types.contains(type_c_name) or isDepTypePrefix(type_c_name);
-                    const own_vt = !split or (if (is_entry) !is_dep_type else is_dep_type);
+                    const own_vt = !split or is_entry;
                     try type_nodes_to_emit.append(.{ .node = c_node, .own = own_vt });
                 }
             }
