@@ -1,5 +1,6 @@
 import { Socket, TCPServer } from "std.net"
 import { Map, MutableMap } from "std.collections"
+import { slice } from "std.string"
 
 @Link("curl")
 @Header("<curl/curl.h>")
@@ -286,10 +287,12 @@ type ServerConnection(val sock: Socket) {
         val bodyStart = raw.indexOf("\r\n\r\n")
         if (bodyStart >= 0) {
             val contentLength = this.parseContentLength(raw.substring(0, bodyStart))
+            // slice (memcpy), not substring (strncpy): request bodies may
+            // carry binary bytes (file uploads) with embedded NULs.
             if (contentLength > 0 && bodyStart + 4 + contentLength <= raw.length) {
-                body = raw.substring(bodyStart + 4, bodyStart + 4 + contentLength)
+                body = raw.slice(bodyStart + 4, bodyStart + 4 + contentLength)
             } else {
-                body = raw.substring(bodyStart + 4, raw.length)
+                body = raw.slice(bodyStart + 4, raw.length)
             }
         }
         

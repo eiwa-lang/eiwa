@@ -12,6 +12,7 @@
 // (* + ? {n} {n,} {n,m}), capturing groups (...), alternation (|).
 
 import { List, MutableList } from "std.collections"
+import { replace } from "std.string"
 
 enum RegexNodeKind {
     LITERAL,

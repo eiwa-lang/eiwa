@@ -1,5 +1,7 @@
 // std.string
-// String extensions: splitting and Kotlin-style dedent.
+// String extensions: search, slicing, case conversion, checks, splitting
+// and Kotlin-style dedent. (The String type itself plus trait impls and the
+// concatenation operator live in std.core.)
 
 import { List, MutableList } from "std.collections"
 
@@ -103,4 +105,167 @@ fun String.trimMargin(marginPrefix: String = "|"): String {
         i = i + 1
     }
     return res.toString()
+}
+
+fun String.contains(other: String): Bool {
+    return this.indexOf(other) != -1
+}
+
+fun String.startsWith(prefix: String): Bool {
+    if (prefix.length > this.length) {
+        return false
+    }
+    return NativeString.strncmp(this.ptr, prefix.ptr, prefix.length) == 0
+}
+
+fun String.endsWith(suffix: String): Bool {
+    if (suffix.length > this.length) {
+        return false
+    }
+    val offset = this.length - suffix.length
+    return NativeString.strncmp(this.ptr + offset, suffix.ptr, suffix.length) == 0
+}
+
+// Binary-safe slice: same contract as substring but memcpy-based, so
+// embedded NUL bytes survive (file uploads, images). Never use str* ops
+// on the result — treat it as an opaque byte container (ptr + length).
+fun String.slice(start: Int, end: Int = this.length): String {
+    if (start < 0 || end > this.length || start > end) {
+        return ""
+    }
+    val len = end - start
+    val buf = Standard.gcMalloc(len + 1)
+    Standard.memcpy(buf, this.ptr + start, len)
+    NativeMemory.writeByte(buf, len, 0)
+    return String(buf, len)
+}
+
+fun String.charAt(index: Int): String {
+    if (index < 0 || index >= this.length) {
+        return ""
+    }
+    val buf = Standard.gcMalloc(2)
+    val b = NativeMemory.readByte(this.ptr, index)
+    NativeMemory.writeByte(buf, 0, b)
+    NativeMemory.writeByte(buf, 1, 0)
+    return String(buf, 1)
+}
+
+fun String.replace(old: String, newStr: String): String {
+    var count = 0
+    var curr = this.ptr
+    var searching = true
+
+    while (searching) {
+        val match = NativeString.strstr(curr, old.ptr)
+        if (match != null) {
+            count = count + 1
+            curr = match + old.length
+        } else {
+            searching = false
+        }
+    }
+
+    if (count == 0) { return this }
+
+    val newLen = this.length + (count * (newStr.length - old.length))
+    val res = Standard.gcMalloc(newLen + 1)
+
+    curr = this.ptr
+    var resCurr = res
+    searching = true
+
+    while (searching) {
+        val match = NativeString.strstr(curr, old.ptr)
+        if (match != null) {
+            val prefixLen = match - curr
+            NativeString.strncpy(resCurr, curr, prefixLen)
+            resCurr = resCurr + prefixLen
+
+            NativeString.strcpy(resCurr, newStr.ptr)
+            resCurr = resCurr + newStr.length
+
+            curr = match + old.length
+        } else {
+            NativeString.strcpy(resCurr, curr)
+            searching = false
+        }
+    }
+
+    return String(res, newLen)
+}
+
+fun String.trim(): String {
+    var start = 0
+    while (start < this.length) {
+        val b = NativeMemory.readByte(this.ptr, start)
+        if (b > 32) {
+            var end = this.length - 1
+            while (end >= start) {
+                val eb = NativeMemory.readByte(this.ptr, end)
+                if (eb > 32) {
+                    return this.substring(start, end + 1)
+                }
+                end = end - 1
+            }
+            return this.substring(start, end + 1)
+        }
+        start = start + 1
+    }
+    return ""
+}
+
+fun String.isEmpty(): Bool {
+    return this.length == 0
+}
+
+fun String.isNotEmpty(): Bool {
+    return !this.isEmpty()
+}
+
+fun String.isBlank(): Bool {
+    var i = 0
+    while (i < this.length) {
+        if (NativeMemory.readByte(this.ptr, i) > 32) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fun String.isNotBlank(): Bool {
+    return !this.isBlank()
+}
+
+fun String.lowercase(): String {
+    val buf = Standard.gcMalloc(this.length + 1)
+    var i = 0
+    while (i < this.length) {
+        val c = NativeMemory.readByte(this.ptr, i)
+        NativeMemory.writeByte(buf, i, NativeString.tolower(c))
+        i = i + 1
+    }
+    NativeMemory.writeByte(buf, this.length, 0)
+    return String(buf, this.length)
+}
+
+fun String.uppercase(): String {
+    val buf = Standard.gcMalloc(this.length + 1)
+    var i = 0
+    while (i < this.length) {
+        val c = NativeMemory.readByte(this.ptr, i)
+        NativeMemory.writeByte(buf, i, NativeString.toupper(c))
+        i = i + 1
+    }
+    NativeMemory.writeByte(buf, this.length, 0)
+    return String(buf, this.length)
+}
+
+fun isNullOrEmpty(s: String?): Bool {
+    return s == null || s!!.isEmpty()
+}
+
+fun isNullOrBlank(s: String?): Bool {
+    return s == null || s!!.isBlank()
 }

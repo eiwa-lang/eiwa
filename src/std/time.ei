@@ -2,6 +2,7 @@ import { mod } from "std.math"
 import { Serializable, SerdeValue, SerdeString } from "std.serde"
 import { Json } from "std.json"
 import { Yaml } from "std.yaml"
+import { replace } from "std.string"
 
 @Header("<time.h>")
 lib NativeTime {
