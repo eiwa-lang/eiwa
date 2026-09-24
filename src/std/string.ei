@@ -134,7 +134,7 @@ fun String.slice(start: Int, end: Int = this.length): String {
         return ""
     }
     val len = end - start
-    val buf = Standard.gcMalloc(len + 1)
+    val buf = Standard.gcMallocAtomic(len + 1)
     Standard.memcpy(buf, this.ptr + start, len)
     NativeMemory.writeByte(buf, len, 0)
     return String(buf, len)
@@ -144,7 +144,7 @@ fun String.charAt(index: Int): String {
     if (index < 0 || index >= this.length) {
         return ""
     }
-    val buf = Standard.gcMalloc(2)
+    val buf = Standard.gcMallocAtomic(2)
     val b = NativeMemory.readByte(this.ptr, index)
     NativeMemory.writeByte(buf, 0, b)
     NativeMemory.writeByte(buf, 1, 0)
@@ -169,7 +169,7 @@ fun String.replace(old: String, newStr: String): String {
     if (count == 0) { return this }
 
     val newLen = this.length + (count * (newStr.length - old.length))
-    val res = Standard.gcMalloc(newLen + 1)
+    val res = Standard.gcMallocAtomic(newLen + 1)
 
     curr = this.ptr
     var resCurr = res
@@ -239,7 +239,7 @@ fun String.isNotBlank(): Bool {
 }
 
 fun String.lowercase(): String {
-    val buf = Standard.gcMalloc(this.length + 1)
+    val buf = Standard.gcMallocAtomic(this.length + 1)
     var i = 0
     while (i < this.length) {
         val c = NativeMemory.readByte(this.ptr, i)
@@ -251,7 +251,7 @@ fun String.lowercase(): String {
 }
 
 fun String.uppercase(): String {
-    val buf = Standard.gcMalloc(this.length + 1)
+    val buf = Standard.gcMallocAtomic(this.length + 1)
     var i = 0
     while (i < this.length) {
         val c = NativeMemory.readByte(this.ptr, i)

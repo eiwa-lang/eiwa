@@ -17,6 +17,9 @@ lib Standard {
     @Alias("GC_MALLOC")
     fun gcMalloc(size: Int): Pointer
 
+    @Alias("GC_malloc_atomic")
+    fun gcMallocAtomic(size: Int): Pointer
+
     @Alias("GC_REALLOC")
     fun gcRealloc(ptr: Pointer, newSize: Int): Pointer
 
@@ -176,7 +179,7 @@ type Pointer {
     // Lets synthesized default toString/hashCode for types with Pointer
     // fields resolve to real bodies.
     fun toString(): String {
-        val buf = Standard.gcMalloc(32)
+        val buf = Standard.gcMallocAtomic(32)
         Standard.sprintfInt(buf, "%p".ptr, this as Int)
         return String(buf, NativeString.strlen(buf))
     }
@@ -225,7 +228,7 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
     operator fun plus(other: Stringable): String {
         val s = other.toString()
         val totalLen = this.length + s.length
-        val buf = Standard.gcMalloc(totalLen + 1)
+        val buf = Standard.gcMallocAtomic(totalLen + 1)
         Standard.memcpy(buf, this.ptr, this.length)
         Standard.memcpy(buf + this.length, s.ptr, s.length)
         NativeMemory.writeByte(buf, totalLen, 0)
@@ -259,7 +262,7 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
             return ""
         }
         val len = end - start
-        val buf = Standard.gcMalloc(len + 1)
+        val buf = Standard.gcMallocAtomic(len + 1)
         NativeString.strncpy(buf, this.ptr + start, len)
         NativeMemory.writeByte(buf, len, 0)
         return String(buf, len)
@@ -285,7 +288,7 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
     }
 }
 
-type StringBuilder(var cap: Int = 32, var buf: Pointer = Standard.gcMalloc(cap + 1), var len: Int = 0) : Stringable {
+type StringBuilder(var cap: Int = 32, var buf: Pointer = Standard.gcMallocAtomic(cap + 1), var len: Int = 0) : Stringable {
     fun length(): Int = this.len
 
     fun isEmpty(): Bool = this.len == 0
@@ -298,7 +301,7 @@ type StringBuilder(var cap: Int = 32, var buf: Pointer = Standard.gcMalloc(cap +
                 newCap = newCap * 2
             }
             if (this.buf == null) {
-                this.buf = Standard.gcMalloc(newCap)
+                this.buf = Standard.gcMallocAtomic(newCap)
             } else {
                 this.buf = Standard.gcRealloc(this.buf, newCap)
             }
@@ -355,7 +358,7 @@ type StringBuilder(var cap: Int = 32, var buf: Pointer = Standard.gcMalloc(cap +
     }
 
     implement fun toString(): String {
-        val out = Standard.gcMalloc(this.len + 1)
+        val out = Standard.gcMallocAtomic(this.len + 1)
         if (this.len > 0) {
             Standard.memcpy(out, this.buf, this.len)
         }
@@ -367,7 +370,7 @@ type StringBuilder(var cap: Int = 32, var buf: Pointer = Standard.gcMalloc(cap +
 @Primitive("int64_t")
 type Int : Stringable, Equatable, Hashable {
     implement fun toString(): String {
-        val buf = Standard.gcMalloc(32)
+        val buf = Standard.gcMallocAtomic(32)
         Standard.sprintfInt(buf, "%lld".ptr, this)
         return String(buf, NativeString.strlen(buf))
     }
@@ -393,7 +396,7 @@ type Int : Stringable, Equatable, Hashable {
 @Primitive("double")
 type Double : Stringable, Equatable, Hashable {
     implement fun toString(): String {
-        val buf = Standard.gcMalloc(64)
+        val buf = Standard.gcMallocAtomic(64)
         Standard.sprintfDouble(buf, "%g".ptr, this)
         return String(buf, NativeString.strlen(buf))
     }

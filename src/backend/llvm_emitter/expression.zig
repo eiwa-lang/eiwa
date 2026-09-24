@@ -2266,7 +2266,10 @@ fn emitExpressionRaw(
                     const lib_name = g.object.data.identifier.name;
                     if (libs.get(lib_name)) |func_names| {
                         if (func_names.get(g.name)) |c_name| {
-                            const c_name_z = try std.heap.page_allocator.dupeZ(u8, c_name);
+                            // Kill switch: std-level atomic allocation honors
+                            // EIWA_GC_ATOMIC=0 via the scanning allocator.
+                            const eff_name = if (!core.prefer_gc_atomic and std.mem.eql(u8, c_name, "GC_malloc_atomic")) "GC_malloc" else c_name;
+                            const c_name_z = try std.heap.page_allocator.dupeZ(u8, eff_name);
                             defer std.heap.page_allocator.free(c_name_z);
 
                             if (llvm.LLVMGetNamedFunction(mod, c_name_z.ptr)) |func_val| {
