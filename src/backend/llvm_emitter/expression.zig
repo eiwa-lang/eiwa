@@ -2248,7 +2248,7 @@ fn emitExpressionRaw(
                         }
                     }
 
-                    return llvm.LLVMBuildCall2(
+                    const calltmp_ret = llvm.LLVMBuildCall2(
                         builder,
                         func_type,
                         func_val,
@@ -2256,6 +2256,11 @@ fn emitExpressionRaw(
                         @intCast(arg_vals.len),
                         if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) "" else "calltmp",
                     );
+                    const calltmp_ret_type = llvm.LLVMGetReturnType(func_type);
+                    if (llvm.LLVMGetTypeKind(calltmp_ret_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetIntTypeWidth(calltmp_ret_type) == 32) {
+                        return llvm.LLVMBuildSExt(builder, calltmp_ret, llvm.LLVMInt64TypeInContext(ctx), "ffi_sext");
+                    }
+                    return calltmp_ret;
                 }
             }
 
@@ -2319,7 +2324,7 @@ fn emitExpressionRaw(
                                     arg_vals[idx] = llvm.LLVMConstNull(expected_type);
                                 }
 
-                                return llvm.LLVMBuildCall2(
+                                const ffi_ret = llvm.LLVMBuildCall2(
                                     builder,
                                     func_type,
                                     func_val,
@@ -2327,6 +2332,11 @@ fn emitExpressionRaw(
                                     @intCast(arg_vals.len),
                                     if (llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(func_type)) == llvm.LLVMVoidTypeKind) "" else "ffitmp",
                                 );
+                                const ffi_ret_type = llvm.LLVMGetReturnType(func_type);
+                                if (llvm.LLVMGetTypeKind(ffi_ret_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetIntTypeWidth(ffi_ret_type) == 32) {
+                                    return llvm.LLVMBuildSExt(builder, ffi_ret, llvm.LLVMInt64TypeInContext(ctx), "ffi_sext");
+                                }
+                                return ffi_ret;
                             }
                         }
                     }

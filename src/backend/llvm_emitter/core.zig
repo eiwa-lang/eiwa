@@ -3693,6 +3693,51 @@ pub const LLVMEmitter = struct {
             }
         }
 
+        var returns_int = false;
+        if (func_node.resolved_type) |rt| {
+            if (rt.* == .Function) {
+                returns_int = rt.Function.return_type.* == .Int;
+            }
+        } else if (f.type_ref) |tr| {
+            if (tr.resolved_type) |rrt| {
+                returns_int = rrt.* == .Int;
+            } else {
+                returns_int = std.mem.eql(u8, tr.name, "Int");
+            }
+        }
+        var has_int32 = false;
+        for (f.annotations) |ann| {
+            if (std.mem.eql(u8, ann.name, "Int32")) {
+                has_int32 = true;
+                break;
+            }
+        }
+        if (has_int32 and returns_int) {
+            ret_type = llvm.LLVMInt32TypeInContext(self.context);
+        }
+        if (has_int32) {
+            for (0..fixed_count) |i| {
+                var is_int = false;
+                if (func_node.resolved_type) |rt| {
+                    if (rt.* == .Function and i < rt.Function.params.len) {
+                        is_int = rt.Function.params[i].* == .Int;
+                    }
+                }
+                if (!is_int and i < f.params.len) {
+                    if (f.params[i].type_ref) |ptr| {
+                        if (ptr.resolved_type) |prt| {
+                            is_int = prt.* == .Int;
+                        } else {
+                            is_int = std.mem.eql(u8, ptr.name, "Int");
+                        }
+                    }
+                }
+                if (is_int) {
+                    param_types[i] = llvm.LLVMInt32TypeInContext(self.context);
+                }
+            }
+        }
+
         const func_type = llvm.LLVMFunctionType(ret_type, if (param_types.len > 0) param_types.ptr else null, @intCast(param_types.len), if (has_vararg) 1 else 0);
 
         const name_z = try self.allocator.dupeZ(u8, c_name);

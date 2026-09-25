@@ -1692,6 +1692,16 @@ Annotated `lib` blocks instruct the compiler and linker on how to process native
 - **`@Source` (Vendored C Sources)**: Appends a C source file to the compilation, e.g. `@Source("src/runtime/third_party/mylib/mylib.c")`. Use for vendored C libraries compiled together with the program.
 - **`@Define` (Preprocessor Definitions)**: Appends a `-D<NAME>` or `-D<NAME=value>` flag when compiling vendored C sources, e.g. `@Define("MYLIB_BUFFER_SIZE=4096")`.
 - **`@Alias` (Name Mapping)**: Placed on individual functions inside `lib` blocks to map Eiwa `camelCase` function names to the corresponding C `snake_case` library functions. Also accepted on `type` primary-constructor properties to rename the serialized field (see §21.5).
+- **`@Int32` (32-bit C `int`)**: Marks a foreign function whose C signature uses 32-bit `int` in a position declared as Eiwa `Int` (Eiwa `Int` is always 64-bit). Applies to the return type and to `Int` parameters: the declaration is emitted as `i32`, arguments are truncated on the way in, and results are sign-extended back to 64-bit on the way out. Without it, a negative C `int` return arrives zero-extended (C `-1` reads as `4294967295`). Use it whenever the C header says `int`; leave it off for `long`, `size_t`, `ssize_t` and `time_t`, which are already 64-bit:
+
+```kotlin
+@Source("int_sign_helpers.c")
+lib NativeSign {
+    @Alias("eiwa_neg_one")
+    @Int32
+    fun negOne(): Int
+}
+```
 
 ### 16.1 Self-Contained Library Bindings
 

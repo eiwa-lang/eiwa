@@ -1,0 +1,28 @@
+@Source("samples/tests/fixtures/int_sign_helpers.c")
+lib NativeIntSignTest {
+
+    @Alias("eiwa_neg_one")
+    @Int32
+    fun negOne(): Int
+
+    @Alias("eiwa_neg_answer")
+    @Int32
+    fun negAnswer(): Int
+
+    @Alias("eiwa_echo_int")
+    @Int32
+    fun echoInt(x: Int): Int
+}
+
+test "ffi: C int -1 sign-extends to Eiwa Int -1" {
+    assert(NativeIntSignTest.negOne() == -1)
+}
+
+test "ffi: C int -42 sign-extends to Eiwa Int -42" {
+    assert(NativeIntSignTest.negAnswer() == -42)
+}
+
+test "ffi: C int param round-trips through @Int32" {
+    assert(NativeIntSignTest.echoInt(-42) == -42)
+    assert(NativeIntSignTest.echoInt(100000) == 100000)
+}

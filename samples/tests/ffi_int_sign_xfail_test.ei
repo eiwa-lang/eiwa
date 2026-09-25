@@ -1,0 +1,19 @@
+import { assert } from "std.core"
+
+@Source("samples/tests/fixtures/int_sign_helpers.c")
+lib NativeNoInt32 {
+
+    @Alias("eiwa_neg_one")
+    fun negOnePlain(): Int
+
+    @Alias("eiwa_echo_int")
+    fun echoPlain(x: Int): Int
+}
+
+test "no @Int32: C int -1 arrives corrupted" {
+    assert(NativeNoInt32.negOnePlain() == -1)
+}
+
+test "no @Int32: C int echo round-trip corrupts negatives" {
+    assert(NativeNoInt32.echoPlain(-42) == -42)
+}

@@ -1168,3 +1168,41 @@ Validação: `leave_test.ei` 12/12 (inclui regressão `val break = 1`) +
 `for_value_test.ei` 12/12 + suíte completa **ALL 603 TESTS PASSED** +
 `zig build test` verde; zero ocorrências de `break` restantes em
 `samples/`, `src/std/` e `language_tour.md` (só histórico/roadmap).
+
+## ADR 70: Anotação `@Int32` para `int` de 32 bits no FFI
+**Status:** Aprovado (testes)
+**Data:** Setembro 2026
+
+**Contexto:**
+1. `Int` em Eiwa tem 64 bits; `int` em C tem 32. Funções estrangeiras
+   declaradas como `fun f(): Int` eram emitidas com retorno i64, mas o C
+   escrevia só 32 bits — um C `-1` chegava como `4294967295`
+   (zero-extension em vez de sign-extension).
+2. Corrigir no escuro para todo `Int` de `lib` quebraria o outro lado:
+   `strlen` (`size_t`), `time` (`time_t`), `socketRead` (`ssize_t`),
+   `nowMillis` e tamanhos (`gcMalloc`, `memcpy`) são 64 bits de verdade e
+   estão corretos hoje. Auditoria completa não achou nenhum uso atual
+   quebrado — só o padrão latente.
+3. Um tipo `Int32` resolveria, mas é gold-plating para uma necessidade que
+   mora inteira na fronteira FFI: ninguém precisa de aritmética 32 bits
+   em Eiwa, só de declarar assinaturas C com fidelidade.
+
+**Decisão:**
+1. Nova anotação `@Int32` em funções de bloco `lib`: posições `Int`
+   (retorno e parâmetros) passam a declarar i32. Argumentos são
+   truncados pela coerção existente; retornos i32 recebem `sext` para
+   i64 nos dois caminhos de chamada FFI (identificador e `Lib.fun`).
+2. Sem a marca, nada muda: i64 como antes. Params fora de `@Int32`
+   seguem intocados.
+3. Casos sem a marca onde ela seria necessária ficam documentados como
+   XFAIL (`ffi_int_sign_xfail_test.ei`): se um dia passarem, o build
+   quebra e força revisitar a marca.
+
+**Razão:**
+Metadados de fronteira FFI já são o padrão da casa (`@Alias`, `@Link`,
+`@Source`) — largura faz parte da assinatura C como o nome do símbolo.
+Blast radius mínimo (só `lib`, zero checker, zero stdlib, zero semântica
+nova para código existente). Validação: `ffi_int_sign_test.ei` 3/3 +
+XFAIL comportando-se como XFAIL + suíte completa **720 PASSED, 1 FAILED**
+(só o RED de `time` ainda aberto) + `zig build test` verde + `crypto`
+8/8 + webclient 43/43.
