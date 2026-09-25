@@ -430,6 +430,36 @@ type MutableMap<K, V>(val entries: List<Node<K, V>?> = [], var count: Int = 0) :
         return false
     }
 
+    fun remove(key: K): V? {
+        val capacity = this.entries.size()
+        if (capacity == 0) {
+            return null
+        }
+
+        var hash = key.hashCode()
+        var index = hash % capacity
+        if (index < 0) index = index + capacity
+
+        var prev: Node<K, V>? = null
+        var curr = this.entries.items[index]
+        while (curr != null) {
+            if (curr!!.key == key) {
+                val removed = curr!!.value
+                val next = curr!!.next
+                if (prev == null) {
+                    this.entries.items[index] = next
+                } else {
+                    prev!!.next = next
+                }
+                this.count = this.count - 1
+                return removed
+            }
+            prev = curr
+            curr = curr!!.next
+        }
+        return null
+    }
+
     fun size(): Int {
         return this.count
     }
@@ -587,6 +617,14 @@ type MutableSet<T>(val map: MutableMap<T, Bool> = MutableMap()) {
 
     fun contains(element: T): Bool {
         return this.map.contains(element)
+    }
+
+    fun remove(element: T): Bool {
+        if (this.map.contains(element) == false) {
+            return false
+        }
+        this.map.remove(element)
+        return true
     }
 
     fun size(): Int = this.map.size()

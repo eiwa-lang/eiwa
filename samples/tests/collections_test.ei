@@ -392,3 +392,62 @@ test "List and MutableList searching" {
     assert(m.size() == 3)
 }
 
+
+test "MutableMap remove deletes entries and reports the value" {
+    val map: MutableMap<String, Int> = MutableMap<String, Int>()
+    map.put("a", 1)
+    map.put("b", 2)
+    map.put("c", 3)
+    assert(map.size() == 3)
+
+    val rb = map.remove("b")
+    assert(rb == 2)
+    assert(map.contains("b") == false)
+    assert(map.get("b") == null)
+    assert(map.size() == 2)
+    assert(map.get("a") == 1)
+    assert(map.get("c") == 3)
+
+    assert(map.remove("missing") == null)
+    assert(map.size() == 2)
+
+    assert(map.remove("a") == 1)
+    assert(map.remove("c") == 3)
+    assert(map.isEmpty())
+    assert(map.remove("c") == null)
+
+    map.put("d", 4)
+    assert(map.get("d") == 4)
+    assert(map.size() == 1)
+}
+
+test "MutableMap remove survives growth" {
+    val map: MutableMap<String, Int> = MutableMap<String, Int>()
+    var i = 0
+    while (i < 50) {
+        map.put("k$i", i)
+        i = i + 1
+    }
+    assert(map.size() == 50)
+    i = 0
+    while (i < 50) {
+        val v = map.remove("k$i")
+        assert(v == i)
+        i = i + 1
+    }
+    assert(map.isEmpty())
+    assert(map.size() == 0)
+}
+
+test "MutableSet remove deletes members" {
+    val set: MutableSet<String> = MutableSet<String>()
+    set.add("Eiwa")
+    set.add("Zig")
+    assert(set.remove("Eiwa") == true)
+    assert(set.contains("Eiwa") == false)
+    assert(set.contains("Zig") == true)
+    assert(set.size() == 1)
+    assert(set.remove("Eiwa") == false)
+    assert(set.remove("Kotlin") == false)
+    assert(set.size() == 1)
+}
