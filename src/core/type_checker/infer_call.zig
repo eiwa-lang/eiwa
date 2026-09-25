@@ -1938,6 +1938,16 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                     if (arg.resolved_type == null) {
                                         _ = try self.inferNode(arg, scope);
                                     }
+                                    if (arg.resolved_type) |art| {
+                                        const arg_is_simple = arg.data == .identifier or arg.data == .string_literal or arg.data == .int_literal or arg.data == .double_literal or arg.data == .bool_literal;
+                                        const exp_base = extractBaseType(pt);
+                                        const act_base = extractBaseType(art);
+                                        const is_cstr_decay = exp_base.* == .Pointer and act_base.* == .String;
+                                        if (arg_is_simple and !is_cstr_decay and !self.isCompatible(pt, art)) {
+                                            self.reportError(arg.line, arg.column, "TypeError: Expected {f} for argument {} of '{s}', got {f}.", .{ pt.*, arg_i + 1, name, art.* });
+                                            return error.TypeError;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1969,6 +1979,16 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                     arg.expected_type = pt;
                                     if (arg.resolved_type == null) {
                                         _ = try self.inferNode(arg, scope);
+                                    }
+                                    if (arg.resolved_type) |art| {
+                                        const arg_is_simple = arg.data == .identifier or arg.data == .string_literal or arg.data == .int_literal or arg.data == .double_literal or arg.data == .bool_literal;
+                                        const exp_base = extractBaseType(pt);
+                                        const act_base = extractBaseType(art);
+                                        const is_cstr_decay = exp_base.* == .Pointer and act_base.* == .String;
+                                        if (arg_is_simple and !is_cstr_decay and !self.isCompatible(pt, art)) {
+                                            self.reportError(arg.line, arg.column, "TypeError: Expected {f} for argument {} of '{s}', got {f}.", .{ pt.*, arg_i + 1, name, art.* });
+                                            return error.TypeError;
+                                        }
                                     }
                                 }
                             }
