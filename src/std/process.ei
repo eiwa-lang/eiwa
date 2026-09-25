@@ -3,8 +3,10 @@
 // All buffers are allocated via the Boehm GC (Standard.gcMalloc).
 
 import { List, MutableList } from "std.collections"
+import { Env } from "std.env"
+import { split } from "std.string"
 
-@Header("<stdlib.h>", "<stdio.h>", "<unistd.h>")
+@Header("<stdlib.h>", "<stdio.h>", "<unistd.h>", "<sys/wait.h>", "<signal.h>")
 lib("posix") PosixProcess {
     fun system(cmd: String): Int
     fun popen(cmd: String, mode: String): Pointer
@@ -14,9 +16,16 @@ lib("posix") PosixProcess {
     fun realpath(path: String, resolved: Pointer): Pointer
     fun eiwa_args_count(): Int
     fun eiwa_args_get(i: Int): Pointer
+    fun fork(): Int
+    fun execvp(file: String, argv: Pointer): Int
+    @Alias("_exit")
+    fun childExit(code: Int): Void
+    fun access(path: String, mode: Int): Int
+    fun kill(pid: Int, sig: Int): Int
+    fun waitpid(pid: Int, status: Pointer, options: Int): Int
 }
 
-@Header("<stdlib.h>", "<stdio.h>", "<direct.h>")
+@Header("<stdlib.h>", "<stdio.h>", "<direct.h>", "<process.h>", "<windows.h>")
 lib("windows") Win32Process {
     fun system(cmd: String): Int
     @Alias("_popen")
@@ -30,6 +39,14 @@ lib("windows") Win32Process {
     fun fullpath(resolved: Pointer, path: String, maxLen: Int): Pointer
     fun eiwa_args_count(): Int
     fun eiwa_args_get(i: Int): Pointer
+    @Alias("_spawnvp")
+    fun spawnvp(mode: Int, file: String, argv: Pointer): Int
+    @Alias("TerminateProcess")
+    fun terminateProcess(handle: Pointer, code: Int): Int
+    @Alias("WaitForSingleObject")
+    fun waitForSingleObject(handle: Pointer, ms: Int): Int
+    @Alias("GetExitCodeProcess")
+    fun getExitCodeProcess(handle: Pointer, code: Pointer): Int
 }
 
 contract PathResolverContract {
@@ -56,6 +73,10 @@ contract NativeProcessOpsContract {
     fun chdir(path: String): Int
     fun eiwa_args_count(): Int
     fun eiwa_args_get(i: Int): Pointer
+    fun spawnProcess(exe: String, argv: Pointer): Int
+    fun processAlive(token: Int): Bool
+    fun processKill(token: Int): Bool
+    fun processWait(token: Int): Int
 }
 
 object("posix") NativeProcess : NativeProcessOpsContract {
@@ -66,6 +87,83 @@ object("posix") NativeProcess : NativeProcessOpsContract {
     implement fun chdir(path: String): Int = PosixProcess.chdir(path)
     implement fun eiwa_args_count(): Int = PosixProcess.eiwa_args_count()
     implement fun eiwa_args_get(i: Int): Pointer = PosixProcess.eiwa_args_get(i)
+
+    // fork + immediate execvp is the only fork use: async-signal-safe,
+    // stdio inherited, no pipes. Returns the child pid, -1 on failure
+    // (including "not found": PATH is searched up front so both
+    // platforms report -1 instead of a 127 zombie).
+    implement fun spawnProcess(exe: String, argv: Pointer): Int {
+        if (exe == "") {
+            return -1
+        }
+        if (exe.indexOf("/") >= 0) {
+            if (PosixProcess.access(exe, 1) != 0) {
+                return -1
+            }
+        } else {
+            val path = Env.get("PATH")
+            if (path == null || path == "") {
+                return -1
+            }
+            var found = false
+            val dirs = path!!.split(":")
+            var i = 0
+            while (i < dirs.size()) {
+                if (PosixProcess.access("${dirs.get(i)}/$exe", 1) == 0) {
+                    found = true
+                }
+                i = i + 1
+            }
+            if (found == false) {
+                return -1
+            }
+        }
+        val pid = PosixProcess.fork()
+        if (pid < 0) {
+            return -1
+        }
+        if (pid == 0) {
+            PosixProcess.execvp(exe, argv)
+            PosixProcess.childExit(127)
+            return -1
+        }
+        return pid
+    }
+
+    // signal 0 performs existence check without delivering.
+    implement fun processAlive(token: Int): Bool {
+        if (token <= 0) {
+            return false
+        }
+        return PosixProcess.kill(token, 0) == 0
+    }
+
+    implement fun processKill(token: Int): Bool {
+        if (token <= 0) {
+            return false
+        }
+        if (PosixProcess.kill(token, 9) == 0) {
+            return true
+        }
+        return PosixProcess.kill(token, 0) != 0
+    }
+
+    // Exit code on normal exit, -1 when signaled or on error.
+    implement fun processWait(token: Int): Int {
+        if (token <= 0) {
+            return -1
+        }
+        val status = Standard.gcMalloc(8)
+        if (PosixProcess.waitpid(token, status, 0) != token) {
+            return -1
+        }
+        val b0 = NativeMemory.readByte(status, 0)
+        val b1 = NativeMemory.readByte(status, 1)
+        if (b0 % 128 != 0) {
+            return -1
+        }
+        return b1
+    }
 }
 
 object("windows") NativeProcess : NativeProcessOpsContract {
@@ -76,6 +174,48 @@ object("windows") NativeProcess : NativeProcessOpsContract {
     implement fun chdir(path: String): Int = Win32Process.chdir(path)
     implement fun eiwa_args_count(): Int = Win32Process.eiwa_args_count()
     implement fun eiwa_args_get(i: Int): Pointer = Win32Process.eiwa_args_get(i)
+
+    // _P_NOWAIT (1) returns a process handle cast to Int, -1 on failure.
+    implement fun spawnProcess(exe: String, argv: Pointer): Int {
+        val handle = Win32Process.spawnvp(1, exe, argv)
+        if (handle == 0 || handle == -1) {
+            return -1
+        }
+        return handle
+    }
+
+    // WAIT_TIMEOUT (258) means still running.
+    implement fun processAlive(token: Int): Bool {
+        if (token <= 0) {
+            return false
+        }
+        return Win32Process.waitForSingleObject(token as Pointer, 0) == 258
+    }
+
+    implement fun processKill(token: Int): Bool {
+        if (token <= 0) {
+            return false
+        }
+        return Win32Process.terminateProcess(token as Pointer, 1) != 0
+    }
+
+    implement fun processWait(token: Int): Int {
+        if (token <= 0) {
+            return -1
+        }
+        if (Win32Process.waitForSingleObject(token as Pointer, -1) != 0) {
+            return -1
+        }
+        val code = Standard.gcMalloc(8)
+        if (Win32Process.getExitCodeProcess(token as Pointer, code) == 0) {
+            return -1
+        }
+        val b0 = NativeMemory.readByte(code, 0)
+        val b1 = NativeMemory.readByte(code, 1)
+        val b2 = NativeMemory.readByte(code, 2)
+        val b3 = NativeMemory.readByte(code, 3)
+        return b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
+    }
 }
 
 object Process {
@@ -136,5 +276,38 @@ object Process {
             i = i + 1
         }
         return list.freeze()
+    }
+
+    // Builds a null-terminated argv array (exe first) for spawnProcess.
+    fun spawnArgv(exe: String, args: List<String>): Pointer {
+        val argc = args.size() + 1
+        val argv = Standard.gcMalloc((argc + 1) * 8)
+        Standard.storeInt64(argv, exe.ptr as Int)
+        var i = 0
+        while (i < args.size()) {
+            Standard.storeInt64(argv + (i + 1) * 8, args.get(i).ptr as Int)
+            i = i + 1
+        }
+        Standard.storeInt64(argv + argc * 8, 0)
+        return argv
+    }
+
+    // Launches a background process with inherited stdio. Returns a token
+    // (pid on posix, handle on windows), -1 when it cannot start.
+    fun spawn(exe: String, args: List<String>): Int {
+        return NativeProcess.spawnProcess(exe, Process.spawnArgv(exe, args))
+    }
+
+    fun alive(token: Int): Bool {
+        return NativeProcess.processAlive(token)
+    }
+
+    fun kill(token: Int): Bool {
+        return NativeProcess.processKill(token)
+    }
+
+    // Blocks until exit. Returns the exit code, -1 when signaled/error.
+    fun wait(token: Int): Int {
+        return NativeProcess.processWait(token)
     }
 }

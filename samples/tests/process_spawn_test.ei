@@ -1,0 +1,50 @@
+import { assert } from "std.core"
+import { List } from "std.collections"
+import { Env } from "std.env"
+import { sleepMs } from "std.system"
+import { Process } from "std.process"
+
+// TDD RED: background spawn with alive/kill/wait. Sleeper and quick-exit
+// commands branch on OS because no single binary exists everywhere
+// (Windows always sets OS=Windows_NT).
+
+fun sleeperExe(): String {
+    if (Env.get("OS") == "Windows_NT") {
+        return "timeout"
+    }
+    return "sleep"
+}
+
+fun sleeperArgs(): List<String> {
+    if (Env.get("OS") == "Windows_NT") {
+        return ["/t", "30"]
+    }
+    return ["30"]
+}
+
+test "process: missing binary fails with -1" {
+    val noArgs: List<String> = []
+    assert(Process.spawn("eiwa-definitely-missing-binary-xyz", noArgs) == -1)
+}
+
+test "process: spawn runs detached, kill stops it" {
+    val pid = Process.spawn(sleeperExe(), sleeperArgs())
+    assert(pid > 0)
+    sleepMs(200)
+    assert(Process.alive(pid))
+    assert(Process.kill(pid))
+    // Killed by signal: wait reports -1 and reaps, then it is gone.
+    assert(Process.wait(pid) == -1)
+    assert(Process.alive(pid) == false)
+}
+
+test "process: wait returns the exit code" {
+    var pid = 0
+    if (Env.get("OS") == "Windows_NT") {
+        pid = Process.spawn("cmd", ["/c", "exit", "3"])
+    } else {
+        pid = Process.spawn("sh", ["-c", "exit 3"])
+    }
+    assert(pid > 0)
+    assert(Process.wait(pid) == 3)
+}
