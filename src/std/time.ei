@@ -3,6 +3,7 @@ import { Serializable, SerdeValue, SerdeString } from "std.serde"
 import { Json } from "std.json"
 import { Yaml } from "std.yaml"
 import { replace } from "std.string"
+import { Exception } from "std.exceptions"
 
 @Header("<time.h>")
 lib NativeTime {
@@ -29,6 +30,17 @@ fun daysInMonth(m: Int, isLeap: Bool): Int {
     else if (m == 9) 31
     else if (m == 10) 30
     else 31
+}
+
+fun isDigits(s: String): Bool {
+    var i = 0
+    while (i < s.length) {
+        if ("0123456789".indexOf(s.substring(i, i + 1)) < 0) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
 }
 
 type Duration(val seconds: Int) {
@@ -152,6 +164,38 @@ type Time(val sec: Int) : Serializable {
 
     implement fun toString(): String = this.format("YYYY-MM-DD HH:mm:ss")
 
+} object {
+    fun parse(s: String): Time {
+        if (s.length != 20) {
+            throw Exception("Time.parse expects ISO-8601 UTC like 2026-09-23T06:33:46Z")
+        }
+        if (s.substring(4, 5) != "-" || s.substring(7, 8) != "-" || s.substring(10, 11) != "T" || s.substring(13, 14) != ":" || s.substring(16, 17) != ":" || s.substring(19, 20) != "Z") {
+            throw Exception("Time.parse expects ISO-8601 UTC like 2026-09-23T06:33:46Z")
+        }
+        val yearStr = s.substring(0, 4)
+        val monthStr = s.substring(5, 7)
+        val dayStr = s.substring(8, 10)
+        val hourStr = s.substring(11, 13)
+        val minuteStr = s.substring(14, 16)
+        val secondStr = s.substring(17, 19)
+        if (!isDigits(yearStr) || !isDigits(monthStr) || !isDigits(dayStr) || !isDigits(hourStr) || !isDigits(minuteStr) || !isDigits(secondStr)) {
+            throw Exception("Time.parse expects ISO-8601 UTC like 2026-09-23T06:33:46Z")
+        }
+        val year = yearStr.toInt()
+        val month = monthStr.toInt()
+        val day = dayStr.toInt()
+        val hour = hourStr.toInt()
+        val minute = minuteStr.toInt()
+        val second = secondStr.toInt()
+        if (year < 1970 || month < 1 || month > 12 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+            throw Exception("Time.parse expects ISO-8601 UTC like 2026-09-23T06:33:46Z")
+        }
+        val isLeap = (mod(year, 4) == 0 && mod(year, 100) != 0) || (mod(year, 400) == 0)
+        if (day < 1 || day > daysInMonth(month - 1, isLeap)) {
+            throw Exception("Time.parse expects ISO-8601 UTC like 2026-09-23T06:33:46Z")
+        }
+        return date(year, month, day) + seconds(hour * 3600 + minute * 60 + second)
+    }
 }
 
 fun now(): Time {

@@ -1,5 +1,6 @@
 import { daysInMonth, hours, minutes, seconds, date, Time, Duration } from "std.time"
 import { mod } from "std.math"
+import { Exception } from "std.exceptions"
 
 test "should calculate daysInMonth math helpers" {
     assert(mod(10, 3) == 1)
@@ -63,4 +64,35 @@ test "should support time math" {
     assert(future.month() == 7)
     assert(future.day() == 22)
     assert(future.hour() == 0)
+}
+
+test "should parse strict ISO-8601 UTC" {
+    val t = Time.parse("2026-09-23T06:33:46Z")
+    assert(t.year() == 2026)
+    assert(t.month() == 9)
+    assert(t.day() == 23)
+    assert(t.hour() == 6)
+    assert(t.minute() == 33)
+    assert(t.second() == 46)
+    assert(t.format("YYYY-MM-DD HH:mm:ss") == "2026-09-23 06:33:46")
+}
+
+test "should reject non-UTC and malformed timestamps loudly" {
+    var threw = 0
+    try {
+        Time.parse("not-a-date")
+    } catch (e: Exception) {
+        threw = threw + 1
+    }
+    try {
+        Time.parse("2026-09-23 06:33:46")
+    } catch (e: Exception) {
+        threw = threw + 1
+    }
+    try {
+        Time.parse("2026-13-01T00:00:00Z")
+    } catch (e: Exception) {
+        threw = threw + 1
+    }
+    assert(threw == 3)
 }
