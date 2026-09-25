@@ -1,0 +1,18 @@
+import { assert } from "std.core"
+import { MutableList, MutableMap } from "std.collections"
+
+// XFAIL: `for` over a Map whose value type is generic fails to compile
+// with `Unresolved property 'list'`. Same loop over Map<String, Int>
+// works (see for_map_test.ei). Promote to a normal test once fixed.
+
+test "for over Map with generic value type iterates entries" {
+    val m: MutableMap<String, MutableList<String>> = MutableMap<String, MutableList<String>>()
+    val inner: MutableList<String> = MutableList<String>()
+    inner.add("x")
+    m.put("a", inner)
+    var n = 0
+    for (m) { entry ->
+        n = n + 1
+    }
+    assert(n == 1)
+}
