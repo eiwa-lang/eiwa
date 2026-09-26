@@ -1,0 +1,58 @@
+import { assert } from "std.core"
+import { NativeMemory } from "std.core"
+import { SocketClient, TCPServer } from "std.net"
+import { sleepMs } from "std.time"
+
+// TDD RED: socket reads corrupt bytes after the first NUL.
+// Sending [65, 0, 66] arrives as [65, 0, 0] (strncpy-pad fingerprint:
+// length preserved, tail zeroed). Blocks any binary protocol (WS
+// extended lengths, masked payloads) until the backend copies by
+// length, not by NUL terminator.
+
+fun nulServer(port: Int): String {
+    val server = TCPServer()
+    if (server.bind(port) == false) {
+        return "bind-fail"
+    }
+    val conn = server.accept()
+    if (conn == null) {
+        server.close()
+        return "accept-fail"
+    }
+    val buf = Standard.gcMalloc(4)
+    NativeMemory.writeByte(buf, 0, 65)
+    NativeMemory.writeByte(buf, 1, 0)
+    NativeMemory.writeByte(buf, 2, 66)
+    NativeMemory.writeByte(buf, 3, 0)
+    val data = String(buf, 3)
+    var sent = 0
+    while (sent < data.length) {
+        val n = conn.write(data.substring(sent, data.length))
+        if (n <= 0) {
+            conn.close()
+            server.close()
+            return "write-fail"
+        }
+        sent = sent + n
+    }
+    conn.close()
+    server.close()
+    return "ok"
+}
+
+test "socket: NUL bytes survive a round-trip" {
+    val port = 19884
+    val server = task {
+        nulServer(port)
+    }
+    sleepMs(150)
+    val sock = SocketClient.connect("127.0.0.1", port)
+    assert(sock != null)
+    val r1 = sock!!.read(10)
+    assert(server.await() == "ok")
+    assert(r1.length == 3)
+    assert(NativeMemory.readByte(r1.ptr!!, 0) == 65)
+    assert(NativeMemory.readByte(r1.ptr!!, 1) == 0)
+    assert(NativeMemory.readByte(r1.ptr!!, 2) == 66)
+    sock!!.close()
+}
