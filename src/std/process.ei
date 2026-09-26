@@ -346,9 +346,10 @@ object("posix") Shell : ShellCommandContract {
 }
 
 object("windows") Shell : ShellCommandContract {
-    // Via cmd so `timeout` resolves to System32, not MSYS2 coreutils.
+    // ping as sleeper: timeout.exe aborts with redirected stdin (CI),
+    // ping only needs the network stack.
     implement fun sleep(seconds: Int): ShellCommand {
-        return ShellCommand("cmd", ["/c", "timeout", "/t", "$seconds"])
+        return ShellCommand("cmd", ["/c", "ping", "-n", "$seconds", "127.0.0.1"])
     }
 
     implement fun exit(code: Int): ShellCommand {
