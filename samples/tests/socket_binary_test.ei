@@ -3,11 +3,9 @@ import { NativeMemory } from "std.core"
 import { SocketClient, TCPServer } from "std.net"
 import { sleepMs } from "std.time"
 
-// TDD RED: socket reads corrupt bytes after the first NUL.
-// Sending [65, 0, 66] arrives as [65, 0, 0] (strncpy-pad fingerprint:
-// length preserved, tail zeroed). Blocks any binary protocol (WS
-// extended lengths, masked payloads) until the backend copies by
-// length, not by NUL terminator.
+// TDD: socket reads must preserve bytes after the first NUL ([65,0,66]
+// arrived as [65,0,0] via strncpy-style copy). Split in granular tests
+// so CI pinpoints the failing step by test name.
 
 fun nulServer(port: Int): String {
     val server = TCPServer()
@@ -40,8 +38,7 @@ fun nulServer(port: Int): String {
     return "ok"
 }
 
-test "socket: NUL bytes survive a round-trip" {
-    val port = 19884
+fun readNul(port: Int): String? {
     val server = task {
         nulServer(port)
     }
@@ -53,12 +50,27 @@ test "socket: NUL bytes survive a round-trip" {
         tries = tries + 1
         sock = SocketClient.connect("127.0.0.1", port)
     }
-    assert(sock != null, "connect after retry")
-    val r1 = sock!!.read(10)
-    assert(server.await() == "ok", "server done")
-    assert(r1.length == 3, "length")
-    assert(NativeMemory.readByte(r1.ptr!!, 0) == 65, "byte 0")
-    assert(NativeMemory.readByte(r1.ptr!!, 1) == 0, "byte 1")
-    assert(NativeMemory.readByte(r1.ptr!!, 2) == 66, "byte 2")
-    sock!!.close()
+    if (sock == null) {
+        return null
+    }
+    val s = sock!!
+    val r1 = s.read(10)
+    s.close()
+    return r1
+}
+
+test "socket: client connects to the server" {
+    assert(readNul(19884) != null)
+}
+
+test "socket: read length survives NUL" {
+    val r1 = readNul(19885)!!
+    assert(r1.length == 3)
+}
+
+test "socket: byte after NUL survives" {
+    val r1 = readNul(19886)!!
+    assert(NativeMemory.readByte(r1.ptr!!, 0) == 65)
+    assert(NativeMemory.readByte(r1.ptr!!, 1) == 0)
+    assert(NativeMemory.readByte(r1.ptr!!, 2) == 66)
 }
