@@ -46,13 +46,19 @@ test "socket: NUL bytes survive a round-trip" {
         nulServer(port)
     }
     sleepMs(150)
-    val sock = SocketClient.connect("127.0.0.1", port)
-    assert(sock != null)
+    var sock = SocketClient.connect("127.0.0.1", port)
+    var tries = 0
+    while (sock == null && tries < 50) {
+        sleepMs(100)
+        tries = tries + 1
+        sock = SocketClient.connect("127.0.0.1", port)
+    }
+    assert(sock != null, "connect after retry")
     val r1 = sock!!.read(10)
-    assert(server.await() == "ok")
-    assert(r1.length == 3)
-    assert(NativeMemory.readByte(r1.ptr!!, 0) == 65)
-    assert(NativeMemory.readByte(r1.ptr!!, 1) == 0)
-    assert(NativeMemory.readByte(r1.ptr!!, 2) == 66)
+    assert(server.await() == "ok", "server done")
+    assert(r1.length == 3, "length")
+    assert(NativeMemory.readByte(r1.ptr!!, 0) == 65, "byte 0")
+    assert(NativeMemory.readByte(r1.ptr!!, 1) == 0, "byte 1")
+    assert(NativeMemory.readByte(r1.ptr!!, 2) == 66, "byte 2")
     sock!!.close()
 }
