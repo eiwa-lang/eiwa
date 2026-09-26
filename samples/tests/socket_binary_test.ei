@@ -4,14 +4,24 @@ import { SocketClient, TCPServer } from "std.net"
 import { sleepMs } from "std.time"
 
 // TDD: socket reads must preserve bytes after the first NUL ([65,0,66]
-// arrived as [65,0,0] via strncpy-style copy). Split in granular tests
-// so CI pinpoints the failing step by test name.
+// arrived as [65,0,0] via strncpy-style copy). Bind happens synchronously
+// in the test thread (no bind/connect race); a small port range absorbs
+// anything else on the runner.
 
-fun nulServer(port: Int): String {
-    val server = TCPServer()
-    if (server.bind(port) == false) {
-        return "bind-fail"
+fun pickPort(): Int {
+    var p = 19884
+    while (p < 19894) {
+        val probe = TCPServer()
+        if (probe.bind(p)) {
+            probe.close()
+            return p
+        }
+        p = p + 1
     }
+    return -1
+}
+
+fun serveNulOnce(server: TCPServer): String {
     val conn = server.accept()
     if (conn == null) {
         server.close()
@@ -38,9 +48,17 @@ fun nulServer(port: Int): String {
     return "ok"
 }
 
-fun readNul(port: Int): String? {
-    val server = task {
-        nulServer(port)
+fun readNul(): String? {
+    val port = pickPort()
+    if (port < 0) {
+        return null
+    }
+    val server = TCPServer()
+    if (server.bind(port) == false) {
+        return null
+    }
+    val serving = task {
+        serveNulOnce(server)
     }
     sleepMs(150)
     var sock = SocketClient.connect("127.0.0.1", port)
@@ -56,20 +74,23 @@ fun readNul(port: Int): String? {
     val s = sock!!
     val r1 = s.read(10)
     s.close()
+    if (serving.await() != "ok") {
+        return null
+    }
     return r1
 }
 
 test "socket: client connects to the server" {
-    assert(readNul(19884) != null)
+    assert(readNul() != null)
 }
 
 test "socket: read length survives NUL" {
-    val r1 = readNul(19885)!!
+    val r1 = readNul()!!
     assert(r1.length == 3)
 }
 
 test "socket: byte after NUL survives" {
-    val r1 = readNul(19886)!!
+    val r1 = readNul()!!
     assert(NativeMemory.readByte(r1.ptr!!, 0) == 65)
     assert(NativeMemory.readByte(r1.ptr!!, 1) == 0)
     assert(NativeMemory.readByte(r1.ptr!!, 2) == 66)
