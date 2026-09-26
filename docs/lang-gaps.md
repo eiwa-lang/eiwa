@@ -12,25 +12,30 @@ as regression record with the version that fixed them.
 - `for` over `MutableMap<String, Int>` works; `MutableMap<String, MutableList<String>>` does not.
 - Impact: `PluginRegistry` keeps a parallel names list instead of iterating.
 
+## Fixed
+
 ### 2. `std.math.mod` does not infer a return type
-- Status: OPEN (reported, no RED test — inference failure, not runtime)
-- `fun mod(a: Int, b: Int) = a % b` + `mod(x, 2)` call site errors with
-  `Unresolved property 'plus' on type Unknown`. The `%` overload
-  (SRem/FRem) does not resolve without an expected type.
-- Workaround in user code: use the `%` operator directly (typed operands).
+- Status: FIXED — annotated explicit return type `: Int` (`src/std/math.ei`).
+  `fun mod(a: Int, b: Int) = a % b` + `mod(x, 2)` call site errored with
+  `Unresolved property 'plus' on type Unknown`: the `%` overload
+  (SRem/FRem) does not resolve without an expected type, so single-expression
+  inference still requires the annotation. Bare `= a % b` without `: Int`
+  remains unsupported by design.
+- Workaround no longer needed (was: use the `%` operator directly).
 
 ### 3. `eiwa build -o` rejects absolute paths
-- Status: OPEN (reported, no RED test yet)
-- `eiwa build -o /out/worker` fails with `mkdir -p` empty operand;
-  relative `-o worker` works. Suspect: dirname handling of absolute paths.
-- Workaround in user code: build relative, then `mv` (see browser Dockerfile).
+- Status: FIXED (`cli/src/main.ei`) — dirname now uses the LAST `/`
+  (loop over `indexOfFrom`) and skips `mkdir` when there is no parent dir
+  (`slash <= 0`). Previously `indexOf("/")` took the FIRST slash, so
+  `-o /out/worker` produced `mkdir -p ""` and `-o a/b/c` only created `a`.
+- Workaround no longer needed (was: build relative, then `mv`).
 
-### 4. No `break` statement (unconfirmed whether intentional)
-- Status: OPEN question — no `break` found in std, samples or arest;
-  loops use flag conditions instead.
-- Impact: low (flag pattern works); needs a yes/no from language owners.
-
-## Fixed
+### 4. No `break` statement — intentional, use `leave`
+- Status: CLOSED, works as documented — ADR 69 renamed `break` → `leave`
+  (hard break, `break` is a plain identifier again). `leave` / `leave v`
+  exits the innermost `while`/`for` (no `continue`); see
+  `docs/language_tour.md` (`leave` section) and `samples/tests/leave_test.ei`.
+  There is no `break` keyword by design.
 
 ### 5. `String.substring` corrupted bytes after the first NUL (strncpy)
 - Status: FIXED — memcpy-based, same contract as `String.slice`.

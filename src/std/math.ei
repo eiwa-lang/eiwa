@@ -24,4 +24,4 @@ object Math {
     fun round(x: Double): Double = NativeMath.round(x)
 }
 
-fun mod(a: Int, b: Int) = a % b
+fun mod(a: Int, b: Int): Int = a % b

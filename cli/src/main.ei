@@ -1103,8 +1103,13 @@ fun compilerCommand(cmd: String) {
     val finalOutput = if (cliOutputOpt != null) cliOutputOpt else if (manifestOutputOpt != null) manifestOutputOpt else "bin/" + projectName
 
     if (cmd != "test") {
-        val slash = finalOutput.indexOf("/")
-        if (slash != -1) {
+        var slash = -1
+        var probe = finalOutput.indexOf("/")
+        while (probe != -1) {
+            slash = probe
+            probe = finalOutput.indexOfFrom("/", probe + 1)
+        }
+        if (slash > 0) {
             Fs.mkdirP(finalOutput.substring(0, slash))
         }
     }
