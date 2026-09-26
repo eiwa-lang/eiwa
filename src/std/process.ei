@@ -306,6 +306,20 @@ object Process {
         return NativeProcess.processKill(token)
     }
 
+    // Stops a background process and reaps it. True when it is gone,
+    // hiding the platform split (signaled on posix, exit code injected
+    // on Windows). An already-gone process counts as stopped.
+    fun terminate(token: Int): Bool {
+        if (token <= 0) {
+            return false
+        }
+        if (NativeProcess.processKill(token) == false) {
+            return NativeProcess.processAlive(token) == false
+        }
+        NativeProcess.processWait(token)
+        return NativeProcess.processAlive(token) == false
+    }
+
     // Blocks until exit. Returns the exit code, -1 when signaled/error.
     // NOTE: OS handles are not closed (Windows); long-lived hosts should
     // recycle workers. A Process.release comes with the engine work.

@@ -27,19 +27,15 @@ test "process: missing binary fails with -1" {
     assert(Process.spawn("eiwa-definitely-missing-binary-xyz", noArgs) == -1)
 }
 
-test "process: spawn runs detached, kill stops it" {
+test "process: spawn runs detached, terminate stops it" {
     val pid = Process.spawn(sleeperExe(), sleeperArgs())
     assert(pid > 0)
     sleepMs(200)
     assert(Process.alive(pid))
-    assert(Process.kill(pid))
-    // Signaled on posix (-1); exit code 1 from TerminateProcess on Windows.
-    if (Env.get("OS") == "Windows_NT") {
-        assert(Process.wait(pid) == 1)
-    } else {
-        assert(Process.wait(pid) == -1)
-    }
+    assert(Process.terminate(pid))
     assert(Process.alive(pid) == false)
+    assert(Process.terminate(pid))
+    assert(Process.terminate(-1) == false)
 }
 
 test "process: wait returns the exit code" {
