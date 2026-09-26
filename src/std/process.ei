@@ -327,3 +327,31 @@ object Process {
         return NativeProcess.processWait(token)
     }
 }
+
+type ShellCommand(val exe: String, val args: List<String>)
+
+contract ShellCommandContract {
+    fun sleep(seconds: Int): ShellCommand
+    fun exit(code: Int): ShellCommand
+}
+
+object("posix") Shell : ShellCommandContract {
+    implement fun sleep(seconds: Int): ShellCommand {
+        return ShellCommand("sh", ["-c", "sleep $seconds"])
+    }
+
+    implement fun exit(code: Int): ShellCommand {
+        return ShellCommand("sh", ["-c", "exit $code"])
+    }
+}
+
+object("windows") Shell : ShellCommandContract {
+    // Via cmd so `timeout` resolves to System32, not MSYS2 coreutils.
+    implement fun sleep(seconds: Int): ShellCommand {
+        return ShellCommand("cmd", ["/c", "timeout", "/t", "$seconds"])
+    }
+
+    implement fun exit(code: Int): ShellCommand {
+        return ShellCommand("cmd", ["/c", "exit", "$code"])
+    }
+}

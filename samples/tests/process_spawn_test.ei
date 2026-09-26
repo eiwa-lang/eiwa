@@ -1,27 +1,10 @@
 import { assert } from "std.core"
 import { List } from "std.collections"
-import { Env } from "std.env"
 import { sleepMs } from "std.system"
-import { Process } from "std.process"
+import { Process, Shell } from "std.process"
 
-// TDD RED: background spawn with alive/kill/wait. Sleeper and quick-exit
-// commands branch on OS because no single binary exists everywhere
-// (Windows always sets OS=Windows_NT).
-
-fun sleeperExe(): String {
-    if (Env.get("OS") == "Windows_NT") {
-        return "cmd"
-    }
-    return "sh"
-}
-
-fun sleeperArgs(): List<String> {
-    if (Env.get("OS") == "Windows_NT") {
-        // Via cmd so `timeout` resolves to System32, not MSYS2 coreutils.
-        return ["/c", "timeout", "/t", "30"]
-    }
-    return ["-c", "sleep 30"]
-}
+// TDD: background spawn with alive/terminate/wait. Platform split lives
+// in `Shell` (specialized objects), so tests carry no OS branches.
 
 test "process: missing binary fails with -1" {
     val noArgs: List<String> = []
@@ -29,7 +12,8 @@ test "process: missing binary fails with -1" {
 }
 
 test "process: spawn runs detached, terminate stops it" {
-    val pid = Process.spawn(sleeperExe(), sleeperArgs())
+    val sleep = Shell.sleep(30)
+    val pid = Process.spawn(sleep.exe, sleep.args)
     assert(pid > 0)
     sleepMs(200)
     assert(Process.alive(pid))
@@ -40,12 +24,8 @@ test "process: spawn runs detached, terminate stops it" {
 }
 
 test "process: wait returns the exit code" {
-    var pid = 0
-    if (Env.get("OS") == "Windows_NT") {
-        pid = Process.spawn("cmd", ["/c", "exit", "3"])
-    } else {
-        pid = Process.spawn("sh", ["-c", "exit 3"])
-    }
+    val done = Shell.exit(3)
+    val pid = Process.spawn(done.exe, done.args)
     assert(pid > 0)
     assert(Process.wait(pid) == 3)
 }
