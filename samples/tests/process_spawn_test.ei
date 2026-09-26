@@ -33,8 +33,12 @@ test "process: spawn runs detached, kill stops it" {
     sleepMs(200)
     assert(Process.alive(pid))
     assert(Process.kill(pid))
-    // Killed by signal: wait reports -1 and reaps, then it is gone.
-    assert(Process.wait(pid) == -1)
+    // Signaled on posix (-1); exit code 1 from TerminateProcess on Windows.
+    if (Env.get("OS") == "Windows_NT") {
+        assert(Process.wait(pid) == 1)
+    } else {
+        assert(Process.wait(pid) == -1)
+    }
     assert(Process.alive(pid) == false)
 }
 

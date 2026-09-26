@@ -307,6 +307,8 @@ object Process {
     }
 
     // Blocks until exit. Returns the exit code, -1 when signaled/error.
+    // NOTE: OS handles are not closed (Windows); long-lived hosts should
+    // recycle workers. A Process.release comes with the engine work.
     fun wait(token: Int): Int {
         return NativeProcess.processWait(token)
     }
