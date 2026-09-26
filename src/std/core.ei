@@ -263,7 +263,7 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
         }
         val len = end - start
         val buf = Standard.gcMallocAtomic(len + 1)
-        NativeString.strncpy(buf, this.ptr + start, len)
+        Standard.memcpy(buf, this.ptr + start, len)
         NativeMemory.writeByte(buf, len, 0)
         return String(buf, len)
     }

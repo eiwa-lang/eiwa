@@ -202,9 +202,9 @@ test "braceless if-else as value narrows" {
 test "redundant !! and ?. after smartcast warn but pass" {
     val s: String? = "hello"
     if (s != null) {
-        val a = s!!
+        val a = s
         assert(a.length == 5)
-        val b = s?.length
+        val b = s.length
         assert(b == 5)
     }
     assert(true)

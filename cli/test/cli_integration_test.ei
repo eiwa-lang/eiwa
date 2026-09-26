@@ -57,7 +57,7 @@ object("windows") CliEnv : CliEnvContract {
 fun eiwacPathForTests(): String {
     val fromEnv = Env.get("EIWAC")
     if (fromEnv != null) {
-        return fromEnv!!
+        return fromEnv
     }
     val bin = CliEnv.binName()
     if (File.exists(bin)) {
