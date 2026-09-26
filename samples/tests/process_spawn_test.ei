@@ -10,16 +10,17 @@ import { Process } from "std.process"
 
 fun sleeperExe(): String {
     if (Env.get("OS") == "Windows_NT") {
-        return "timeout"
+        return "cmd"
     }
-    return "sleep"
+    return "sh"
 }
 
 fun sleeperArgs(): List<String> {
     if (Env.get("OS") == "Windows_NT") {
-        return ["/t", "30"]
+        // Via cmd so `timeout` resolves to System32, not MSYS2 coreutils.
+        return ["/c", "timeout", "/t", "30"]
     }
-    return ["30"]
+    return ["-c", "sleep 30"]
 }
 
 test "process: missing binary fails with -1" {
