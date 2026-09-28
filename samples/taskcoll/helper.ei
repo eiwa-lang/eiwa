@@ -1,0 +1,9 @@
+import { sleepMs } from "std.time"
+
+fun helperWork(x: Int): Int {
+    val t = task {
+        sleepMs(1)
+        x + 1
+    }
+    return t.await()
+}

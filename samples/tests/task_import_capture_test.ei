@@ -1,0 +1,13 @@
+import { assert } from "std.core"
+import { helperWork } from ".samples.taskcoll.helper"
+
+// Regression: generated __TaskBlockN names are program-unique. A task
+// block capturing locals must resolve even when an imported module
+// contains its own task blocks.
+test "task capture over import from task-containing module" {
+    val port = 5
+    val t = task {
+        helperWork(port)
+    }
+    assert(t.await() == 6)
+}

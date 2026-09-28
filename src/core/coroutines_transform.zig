@@ -32,13 +32,14 @@ const clearResolvedTypes = cctx.clearResolvedTypes;
 // ---------------------------------------------------------------------------
 
 pub fn transformProgram(allocator: std.mem.Allocator, registry: *ModuleRegistry) !void {
+    var counter: usize = 0;
     for (registry.ordered_modules.items) |path| {
         const mod = registry.modules.get(path) orelse continue;
-        try transformModule(allocator, mod.checker, mod.ast_root);
+        try transformModule(allocator, mod.checker, mod.ast_root, &counter);
     }
 }
 
-fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: *ASTNode) !void {
+fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: *ASTNode, counter: *usize) !void {
     if (module.data != .program) return;
 
     for (module.data.program.statements) |stmt| {
@@ -53,10 +54,9 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
         }
     }
 
-    var counter: usize = 0;
     var generated = ArrayList(*ASTNode).init(allocator);
     defer generated.deinit();
-    const ctx = Ctx{ .allocator = allocator, .checker = checker, .counter = &counter, .generated = &generated };
+    const ctx = Ctx{ .allocator = allocator, .checker = checker, .counter = counter, .generated = &generated };
 
     for (module.data.program.statements) |stmt| {
         if (stmt.data == .fun_decl) {

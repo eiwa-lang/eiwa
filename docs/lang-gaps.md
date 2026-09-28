@@ -14,6 +14,17 @@ as regression record with the version that fixed them.
 
 ## Fixed
 
+### 0. Synthesized TaskBlock collides across modules
+- Status: FIXED locally, awaiting commit decision — per-module counter
+  reset made every module generate `__TaskBlock1`, which resolved to the
+  wrong module's block (captures mismatch). Fix: one counter shared
+  across `transformProgram` (`coroutines_transform.zig`).
+- Proof: minimal repro `samples/taskcoll/` + `task_import_capture_test.ei`
+  RED→GREEN; full suite 733/733; browser 60/60 (its worker_test hit this).
+- NOTE (pre-existing, unrelated, found while verifying): arest
+  `server_serde_test.ei:24` `respond(u, status = 201)` fails on main too
+  (pristine binary reproduces) — overload/default-arg issue, not tasks.
+
 ### 2. `std.math.mod` does not infer a return type
 - Status: FIXED — annotated explicit return type `: Int` (`src/std/math.ei`).
   `fun mod(a: Int, b: Int) = a % b` + `mod(x, 2)` call site errored with
@@ -52,8 +63,13 @@ as regression record with the version that fixed them.
 ### 8. SHA-1 / standard base64 missing (WebSocket handshake)
 - Status: FIXED in crypto lib — `sha1Base64`, `base64`, `randomBase64`.
 
-## Checker notes (work as documented, no change requested)
+## Known limitations, no action
 
+- `std.http` server is a correct HTTP/1.1 subset (Content-Length bodies,
+  always closes): no chunked, keep-alive, Host validation or Upgrade.
+  Sufficient for REST (arest); WS upgrade stays at raw-socket level.
+
+## Checker notes (work as documented, no change requested)
 - `val` narrows after early-return null checks on simple calls, but NOT
   on member-access chains (`this.values.get(..)`) and NOT through `||`
   chains — `!!` after explicit guards is the working pattern.
