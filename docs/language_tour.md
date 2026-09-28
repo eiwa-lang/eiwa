@@ -46,6 +46,16 @@ fun main() {
 **The Implicit Standard Library**
 Eiwa comes with a core module named `system.ei` which contains fundamental types, C-bindings, and intrinsic functions (like `print`). The compiler automatically injects an `import {} from "system"` at the top of every file, making all standard functions globally available without explicitly requiring an import statement.
 
+**Naming conventions.** File names and module paths are always `snake_case`/lowercase. Identifiers in code follow Kotlin-style casing:
+
+| Identifier | Casing | Example |
+|---|---|---|
+| files, module paths | `snake_case` | `http_client.ei`, `import {...} from "std.net"` |
+| functions, variables, parameters | `camelCase` | `fun pickPort()`, `val liveConn` |
+| `type`, `contract`, `skill`, `object`, `enum` names | `PascalCase` | `type Button`, `contract Drawable` |
+| `enum` variants | `UPPER_SNAKE` | `Direction.NORTH` |
+| C functions in `lib` blocks | `snake_case` via `@Alias` | `@Alias("curl_easy_init") fun curlEasyInit()` |
+
 *(Note: the compiler automatically performs Name Mangling to prevent collisions across files, meaning `add` inside `math.ei` becomes `math_add` in the final native binary, ensuring absolute safety).*
 
 ---
