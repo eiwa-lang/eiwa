@@ -460,8 +460,14 @@ val k = when (s) {
 Rules (v1): only immutable `val`s narrow (params, locals, `val` fields —
 a mutated `var` keeps requiring `?.`/`!!`); reference types only
 (`Int?`/`Bool?`/`Double?` still need `?.`/`!!`); `while` conditions do not
-narrow. A `?.`/`!!` applied after the narrowing is a no-op and produces a
-`warning` (the build still passes).
+narrow. `&&` / `||` chains narrow too: the right side of `&&` sees the
+`!= null` facts from the left (`if (s != null && s.length > 0)`), the right
+side of `||` sees the `== null`-negated facts, the `then` branch pins every
+`!= null` conjunct and the `else` branch every `== null` disjunct. Early exit
+is `return` / `throw` / `leave`, so `if (id == null || done) { return ... }`
+leaves `id` narrowed below. Member chains never narrow — bind first
+(`val v = this.values.get(k)`). A `?.`/`!!` applied after the narrowing is
+a no-op and produces a `warning` (the build still passes).
 
 ---
 

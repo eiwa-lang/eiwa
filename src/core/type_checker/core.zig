@@ -45,6 +45,36 @@ pub fn matchNullCheck(cond: *ASTNode) ?NullCheck {
     return null;
 }
 
+pub fn collectThenNarrowings(cond: *ASTNode, out: *ArrayList([]const u8)) !void {
+    return collectChainNarrowings(cond, out, .and_and, true);
+}
+
+pub fn collectElseNarrowings(cond: *ASTNode, out: *ArrayList([]const u8)) !void {
+    return collectChainNarrowings(cond, out, .or_or, false);
+}
+
+fn collectChainNarrowings(cond: *ASTNode, out: *ArrayList([]const u8), chain_op: ast.TokenType, want_then: bool) !void {
+    if (cond.data == .binary_expr and cond.data.binary_expr.op == chain_op) {
+        try collectChainNarrowings(cond.data.binary_expr.left, out, chain_op, want_then);
+        try collectChainNarrowings(cond.data.binary_expr.right, out, chain_op, want_then);
+        return;
+    }
+    if (matchNullCheck(cond)) |nc| {
+        if (nc.then_narrowed == want_then) try out.append(nc.name);
+    }
+}
+
+fn core_applyNarrowings(self: *TypeChecker, scope: *Scope, local: *Scope, names: []const []const u8) !bool {
+    var any = false;
+    for (names) |nm| {
+        if (try self.narrowedBinding(scope, nm)) |narrowed| {
+            try self.defineNarrowed(local, nm, narrowed);
+            any = true;
+        }
+    }
+    return any;
+}
+
 pub const ModuleRegistry = struct {
     allocator: std.mem.Allocator,
     modules: std.StringHashMap(ModuleState),
@@ -119,6 +149,7 @@ pub const TypeChecker = struct {
     pub const reportError = core_reportError;
     pub const reportWarning = core_reportWarning;
     pub const defineNarrowed = core_defineNarrowed;
+    pub const applyNarrowings = core_applyNarrowings;
     pub const narrowedBinding = core_narrowedBinding;
     pub const resolveTypeRef = core_resolveTypeRef;
     pub const cloneTypeRef = @import("clone.zig").cloneTypeRef;

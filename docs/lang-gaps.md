@@ -63,6 +63,22 @@ as regression record with the version that fixed them.
 ### 8. SHA-1 / standard base64 missing (WebSocket handshake)
 - Status: FIXED in crypto lib — `sha1Base64`, `base64`, `randomBase64`.
 
+### 9. Inconsistent narrowing on `||`/`&&` and member-access chains
+- Status: FIXED — `&&` right-side/then narrowing + `||` else/early-return
+  narrowing in the checker (`collectThenNarrowings`/`collectElseNarrowings`
+  in `src/core/type_checker/core.zig`; staged `inferLogicExpr` in
+  `infer_expr.zig`; multi-fact branch scopes + `stmtDiverges`
+  (`return`/`throw`/`leave`) in `infer_stmt.zig`; same branch rules in the
+  ternary). `if (cdpId == null || bind(..)) { return }` now leaves `String`
+  below; `if (s != null && s.length > 0)` narrows the right side and the
+  `then` branch. Member chains stay explicit-bind by design (impure
+  re-evaluation): `val v = this.values.get(..)` first.
+- Coverage: `samples/tests/smartcast_logic_test.ei` (10 tests); full suite
+  green + `zig build test` green; revealed-redundant `?.`/`!!` cleaned in
+  `src/std/ulid.ei` (`Ulid.parse`).
+- Still open by design: `var` (needs mutation analysis), heap-boxed
+  scalars, `while` conditions, member chains.
+
 ## Known limitations, no action
 
 - `std.http` server is a correct HTTP/1.1 subset (Content-Length bodies,
@@ -70,9 +86,8 @@ as regression record with the version that fixed them.
   Sufficient for REST (arest); WS upgrade stays at raw-socket level.
 
 ## Checker notes (work as documented, no change requested)
-- `val` narrows after early-return null checks on simple calls, but NOT
-  on member-access chains (`this.values.get(..)`) and NOT through `||`
-  chains — `!!` after explicit guards is the working pattern.
+- `val` narrows after early-return null checks, including through `&&`/`||`
+  chains (see Fixed #9); member chains still need an explicit `val` bind.
 - Unused imports are hard errors (keep imports minimal).
 - Single-file `eiwa test file.ei` does not resolve package dependencies;
   full `eiwa test` does.

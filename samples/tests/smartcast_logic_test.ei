@@ -1,0 +1,119 @@
+// Smartcast over `&&` / `||` chains + `leave` as early exit (lang-gaps #9).
+fun orEarly(cdpId: String?, flag: Bool): String {
+    if (cdpId == null || flag) {
+        return "early"
+    }
+    return cdpId.length.toString()
+}
+
+fun andRight(s: String?): Int {
+    if (s != null && s.length > 0) {
+        return s.length
+    }
+    return -1
+}
+
+fun andTwo(a: String?, b: String?): Int {
+    if (a != null && b != null) {
+        return a.length + b.length
+    }
+    return -1
+}
+
+fun orElse(s: String?, flag: Bool): Int {
+    if (s == null || flag) {
+        return -1
+    } else {
+        return s.length
+    }
+}
+
+fun andElseDiv(s: String?, flag: Bool): Int {
+    if (s != null && flag) {
+        return s.length
+    } else {
+        return -1
+    }
+}
+
+fun orTwoEarly(a: String?, b: String?): Int {
+    if (a == null || b == null) {
+        return -1
+    }
+    return a.length + b.length
+}
+
+fun leaveLoop(items: List<String?>, flag: Bool): Int {
+    var total = 0
+    for (items) { s ->
+        if (s == null || flag) {
+            leave
+        }
+        total = total + s.length
+    }
+    return total
+}
+
+fun leaveWhile(s: String?): Int {
+    var n = 0
+    while (n < 1) {
+        if (s == null) {
+            leave
+        }
+        n = n + s.length
+    }
+    return n
+}
+
+test "or early-return narrows flow after if" {
+    assert(orEarly("hello", false) == "5")
+    assert(orEarly(null, false) == "early")
+    assert(orEarly("hello", true) == "early")
+}
+
+test "and right-side narrows inside condition" {
+    assert(andRight("hello") == 5)
+    assert(andRight(null) == -1)
+}
+
+test "and then-branch narrows both operands" {
+    assert(andTwo("hi", "hey") == 5)
+    assert(andTwo(null, "hey") == -1)
+}
+
+test "or else-branch narrows" {
+    assert(orElse("hello", false) == 5)
+    assert(orElse(null, false) == -1)
+}
+
+test "and diverging else narrows flow after if" {
+    assert(andElseDiv("hello", true) == 5)
+    assert(andElseDiv(null, true) == -1)
+}
+
+test "or early-return narrows both names" {
+    assert(orTwoEarly("hi", "hey") == 5)
+    assert(orTwoEarly(null, "hey") == -1)
+}
+
+test "leave in loop narrows after guard" {
+    assert(leaveLoop(["hi", "hey"], false) == 5)
+    assert(leaveLoop(["hi", null], false) == 2)
+}
+
+test "leave bare narrows in while" {
+    assert(leaveWhile("hey") == 3)
+    assert(leaveWhile(null) == 0)
+}
+
+test "and in ternary narrows then-branch" {
+    val s: String? = "hello"
+    val n: Int = (s != null && s.length > 0) ? s.length : -1
+    assert(n == 5)
+}
+
+test "or in ternary narrows else-branch" {
+    val s: String? = "hello"
+    val n: Int = (s == null || s.length == 0) ? -1 : s.length
+    assert(n == 5)
+}

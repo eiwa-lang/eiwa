@@ -149,10 +149,10 @@ type Ulid(val bytes: List<Int>) : Identifier {
             return null
         }
         val b = decodeCrockford(str)
-        if (b == null || b?.size() != 16) {
+        if (b == null || b.size() != 16) {
             return null
         }
-        return Ulid(b!!.freeze())
+        return Ulid(b.freeze())
     }
 }
 

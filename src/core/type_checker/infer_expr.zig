@@ -159,6 +159,9 @@ pub fn inferUnaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 
 pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const b = node.data.binary_expr;
+    if (b.op == .and_and or b.op == .or_or) {
+        return try inferLogicExpr(self, node, scope, t);
+    }
     // The elvis LHS counts as a value (a trailing `if`/`when`/`try` yields
     // instead of staying `Void`). Only turns prior errors into values.
     if (b.op == .elvis) markTrailingValue(b.left, true);
@@ -274,7 +277,7 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                 try inferCallExpr(self, node, scope, t);
             }
         },
-        .eq_eq, .bang_eq, .less, .greater, .less_eq, .greater_eq, .and_and, .or_or => {
+        .eq_eq, .bang_eq, .less, .greater, .less_eq, .greater_eq => {
             t.* = .Bool;
         },
         .kw_of => {
@@ -294,6 +297,33 @@ pub fn inferBinaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         },
         else => return error.TypeError,
     }
+}
+
+fn inferLogicExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
+    const b = node.data.binary_expr;
+    const left_type = try self.inferNode(b.left, scope);
+    _ = left_type;
+    var names = ArrayList([]const u8).init(self.allocator);
+    defer names.deinit();
+    if (b.op == .and_and) {
+        try core.collectThenNarrowings(b.left, &names);
+    } else {
+        try core.collectElseNarrowings(b.left, &names);
+    }
+    var local: Scope = undefined;
+    var has_local = false;
+    if (names.items.len > 0) {
+        local = Scope.init(self.allocator, scope);
+        if (try self.applyNarrowings(scope, &local, names.items)) {
+            has_local = true;
+        } else {
+            local.deinit();
+        }
+    }
+    const right_type = try self.inferNode(b.right, if (has_local) &local else scope);
+    _ = right_type;
+    if (has_local) local.deinit();
+    t.* = .Bool;
 }
 
 pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
@@ -494,26 +524,34 @@ pub fn inferTernaryExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *E
         return error.TypeError;
     }
     
-    // Narrow the branch matching the null check.
     var local_then_scope: Scope = undefined;
     var local_else_scope: Scope = undefined;
     var has_then_narrow = false;
     var has_else_narrow = false;
     var then_scope: *Scope = scope;
     var else_scope: *Scope = scope;
-    if (core.matchNullCheck(ternary_node.condition)) |nc| {
-        if (try self.narrowedBinding(scope, nc.name)) |narrowed| {
-            if (nc.then_narrowed) {
-                local_then_scope = Scope.init(self.allocator, scope);
-                try self.defineNarrowed(&local_then_scope, nc.name, narrowed);
-                then_scope = &local_then_scope;
-                has_then_narrow = true;
-            } else {
-                local_else_scope = Scope.init(self.allocator, scope);
-                try self.defineNarrowed(&local_else_scope, nc.name, narrowed);
-                else_scope = &local_else_scope;
-                has_else_narrow = true;
-            }
+    var then_names = ArrayList([]const u8).init(self.allocator);
+    defer then_names.deinit();
+    var else_names = ArrayList([]const u8).init(self.allocator);
+    defer else_names.deinit();
+    try core.collectThenNarrowings(ternary_node.condition, &then_names);
+    try core.collectElseNarrowings(ternary_node.condition, &else_names);
+    if (then_names.items.len > 0) {
+        local_then_scope = Scope.init(self.allocator, scope);
+        if (try self.applyNarrowings(scope, &local_then_scope, then_names.items)) {
+            then_scope = &local_then_scope;
+            has_then_narrow = true;
+        } else {
+            local_then_scope.deinit();
+        }
+    }
+    if (else_names.items.len > 0) {
+        local_else_scope = Scope.init(self.allocator, scope);
+        if (try self.applyNarrowings(scope, &local_else_scope, else_names.items)) {
+            else_scope = &local_else_scope;
+            has_else_narrow = true;
+        } else {
+            local_else_scope.deinit();
         }
     }
 

@@ -25,8 +25,10 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
     var has_smart_cast = false;
     var has_then_narrow = false;
     var has_else_narrow = false;
-    var null_check: ?core.NullCheck = null;
-    var narrowed_type: ?*const EiwaType = null;
+    var then_names = ArrayList([]const u8).init(self.allocator);
+    defer then_names.deinit();
+    var else_names = ArrayList([]const u8).init(self.allocator);
+    defer else_names.deinit();
 
     if (i.condition.data == .is_expr) {
         const is_e = i.condition.data.is_expr;
@@ -39,20 +41,25 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
             then_scope = &local_then_scope;
             has_smart_cast = true;
         }
-    } else if (core.matchNullCheck(i.condition)) |nc| {
-        if (try self.narrowedBinding(scope, nc.name)) |narrowed| {
-            narrowed_type = narrowed;
-            null_check = nc;
-            if (nc.then_narrowed) {
-                local_then_scope = Scope.init(self.allocator, scope);
-                try self.defineNarrowed(&local_then_scope, nc.name, narrowed);
+    } else {
+        try core.collectThenNarrowings(i.condition, &then_names);
+        try core.collectElseNarrowings(i.condition, &else_names);
+        if (then_names.items.len > 0) {
+            local_then_scope = Scope.init(self.allocator, scope);
+            if (try self.applyNarrowings(scope, &local_then_scope, then_names.items)) {
                 then_scope = &local_then_scope;
                 has_then_narrow = true;
             } else {
-                local_else_scope = Scope.init(self.allocator, scope);
-                try self.defineNarrowed(&local_else_scope, nc.name, narrowed);
+                local_then_scope.deinit();
+            }
+        }
+        if (else_names.items.len > 0) {
+            local_else_scope = Scope.init(self.allocator, scope);
+            if (try self.applyNarrowings(scope, &local_else_scope, else_names.items)) {
                 else_scope = &local_else_scope;
                 has_else_narrow = true;
+            } else {
+                local_else_scope.deinit();
             }
         }
     }
@@ -75,13 +82,17 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
         if (has_else_narrow) {
             local_else_scope.deinit();
         }
-        // A diverging branch narrows the flow after the `if`.
-        if (null_check) |nc| {
-            if (narrowed_type) |nt| {
-                if (!nc.then_narrowed and stmtGuaranteesReturn(i.then_branch)) {
-                    try self.defineNarrowed(scope, nc.name, nt);
-                } else if (nc.then_narrowed and stmtGuaranteesReturn(else_b)) {
-                    try self.defineNarrowed(scope, nc.name, nt);
+        if (stmtDiverges(i.then_branch)) {
+            for (else_names.items) |nm| {
+                if (try self.narrowedBinding(scope, nm)) |nt| {
+                    try self.defineNarrowed(scope, nm, nt);
+                }
+            }
+        }
+        if (stmtDiverges(else_b)) {
+            for (then_names.items) |nm| {
+                if (try self.narrowedBinding(scope, nm)) |nt| {
+                    try self.defineNarrowed(scope, nm, nt);
                 }
             }
         }
@@ -129,10 +140,10 @@ pub fn inferIfExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTy
             t.* = .Void;
         }
     } else {
-        if (null_check) |nc| {
-            if (narrowed_type) |nt| {
-                if (!nc.then_narrowed and stmtGuaranteesReturn(i.then_branch)) {
-                    try self.defineNarrowed(scope, nc.name, nt);
+        if (stmtDiverges(i.then_branch)) {
+            for (else_names.items) |nm| {
+                if (try self.narrowedBinding(scope, nm)) |nt| {
+                    try self.defineNarrowed(scope, nm, nt);
                 }
             }
         }
@@ -800,22 +811,33 @@ pub fn bodyGuaranteesReturn(node: *ASTNode) bool {
 }
 
 fn stmtGuaranteesReturn(node: *ASTNode) bool {
+    return stmtTerminates(node, false);
+}
+
+/// `leave` exits loops/lambdas without returning: it diverges linear flow
+/// (narrowing) but must NOT count as function return.
+fn stmtDiverges(node: *ASTNode) bool {
+    return stmtTerminates(node, true);
+}
+
+fn stmtTerminates(node: *ASTNode, count_leave: bool) bool {
     switch (node.data) {
         .return_stmt => return true,
         .throw_stmt => return true,
+        .break_stmt => return count_leave,
         .block => |b| {
             if (b.statements.len == 0) return false;
-            return stmtGuaranteesReturn(b.statements[b.statements.len - 1]);
+            return stmtTerminates(b.statements[b.statements.len - 1], count_leave);
         },
         .if_expr => |i| {
             const e = i.else_branch orelse return false;
-            return stmtGuaranteesReturn(i.then_branch) and stmtGuaranteesReturn(e);
+            return stmtTerminates(i.then_branch, count_leave) and stmtTerminates(e, count_leave);
         },
         .when_expr => |w| {
             var has_else = false;
             for (w.cases) |c| {
                 if (c.is_else) has_else = true;
-                if (!stmtGuaranteesReturn(c.body)) return false;
+                if (!stmtTerminates(c.body, count_leave)) return false;
             }
             return has_else;
         },
@@ -823,9 +845,9 @@ fn stmtGuaranteesReturn(node: *ASTNode) bool {
             // Normal completion follows the body; exceptional completion
             // follows a catch (or propagates when uncaught, which also never
             // falls through). Zero catches is vacuously covered.
-            if (!stmtGuaranteesReturn(t.body)) return false;
+            if (!stmtTerminates(t.body, count_leave)) return false;
             for (t.catches) |c| {
-                if (!stmtGuaranteesReturn(c.body)) return false;
+                if (!stmtTerminates(c.body, count_leave)) return false;
             }
             return true;
         },
