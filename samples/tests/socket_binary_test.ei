@@ -1,12 +1,14 @@
 import { assert } from "std.core"
 import { NativeMemory } from "std.core"
-import { SocketClient, TCPServer } from "std.net"
-import { sleepMs } from "std.time"
+import { Socket, SocketClient, TCPServer } from "std.net"
+import { sleepMs } from "std.system"
 
 // TDD: socket reads must preserve bytes after the first NUL ([65,0,66]
 // arrived as [65,0,0] via strncpy-style copy). Bind happens synchronously
 // in the test thread (no bind/connect race); a small port range absorbs
-// anything else on the runner.
+// anything else on the runner. Accept retries like coop_io_test: CI runs
+// one test child per core (each compiling LLVM), so a single 250ms accept
+// window can be missed on loaded/slow runners (darwin-x86).
 
 fun pickPort(): Int {
     var p = 19884
@@ -22,11 +24,17 @@ fun pickPort(): Int {
 }
 
 fun serveNulOnce(server: TCPServer): String {
-    val conn = server.accept()
+    var conn: Socket? = null
+    var acceptAttempts = 0
+    while (conn == null && acceptAttempts < 20) {
+        conn = server.accept()
+        acceptAttempts = acceptAttempts + 1
+    }
     if (conn == null) {
         server.close()
         return "accept-fail"
     }
+    val liveConn: Socket = conn!!
     val buf = Standard.gcMalloc(4)
     NativeMemory.writeByte(buf, 0, 65)
     NativeMemory.writeByte(buf, 1, 0)
@@ -35,15 +43,15 @@ fun serveNulOnce(server: TCPServer): String {
     val data = String(buf, 3)
     var sent = 0
     while (sent < data.length) {
-        val n = conn.write(data.substring(sent, data.length))
+        val n = liveConn.write(data.substring(sent, data.length))
         if (n <= 0) {
-            conn.close()
+            liveConn.close()
             server.close()
             return "write-fail"
         }
         sent = sent + n
     }
-    conn.close()
+    liveConn.close()
     server.close()
     return "ok"
 }
@@ -85,13 +93,19 @@ test "socket: client connects to the server" {
 }
 
 test "socket: read length survives NUL" {
-    val r1 = readNul()!!
-    assert(r1.length == 3)
+    val r1 = readNul()
+    assert(r1 != null)
+    if (r1 != null) {
+        assert(r1.length == 3)
+    }
 }
 
 test "socket: byte after NUL survives" {
-    val r1 = readNul()!!
-    assert(NativeMemory.readByte(r1.ptr!!, 0) == 65)
-    assert(NativeMemory.readByte(r1.ptr!!, 1) == 0)
-    assert(NativeMemory.readByte(r1.ptr!!, 2) == 66)
+    val r1 = readNul()
+    assert(r1 != null)
+    if (r1 != null) {
+        assert(NativeMemory.readByte(r1.ptr, 0) == 65)
+        assert(NativeMemory.readByte(r1.ptr, 1) == 0)
+        assert(NativeMemory.readByte(r1.ptr, 2) == 66)
+    }
 }
