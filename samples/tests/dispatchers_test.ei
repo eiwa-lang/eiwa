@@ -1,7 +1,6 @@
 import { assert } from "std.core"
-import { Thread, Threads } from "std.thread"
 import { AtomicInt } from "std.atomic"
-import { Dispatchers, Dispatcher } from "std.coroutines"
+import { Dispatchers } from "std.coroutines"
 
 test "should execute tasks in parallel on Dispatchers.Default" {
     val counter = AtomicInt.create(0)

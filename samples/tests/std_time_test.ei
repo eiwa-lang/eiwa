@@ -1,4 +1,4 @@
-import { daysInMonth, hours, minutes, seconds, date, Time, Duration } from "std.time"
+import { daysInMonth, hours, minutes, seconds, date, Time } from "std.time"
 import { mod } from "std.math"
 import { Exception } from "std.exceptions"
 

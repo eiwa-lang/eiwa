@@ -1302,6 +1302,184 @@ fn core_resolveImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
     self.status = .resolved_imports;
 }
 
+fn collectUsedNames(self: *TypeChecker, node: *ASTNode, used: *std.StringHashMap(void)) anyerror!void {
+    var member_uses = std.StringHashMap(void).init(self.allocator);
+    defer member_uses.deinit();
+    try collectUsedNamesInner(self, node, used, &member_uses);
+    var it = member_uses.iterator();
+    while (it.next()) |entry| {
+        if (self.imported_extension_names.contains(entry.key_ptr.*)) {
+            try used.put(entry.key_ptr.*, {});
+        }
+    }
+}
+
+fn collectUsedNamesInner(self: *TypeChecker, node: *ASTNode, used: *std.StringHashMap(void), member_uses: *std.StringHashMap(void)) anyerror!void {
+    switch (node.data) {
+        .program => |p| for (p.statements) |s| try collectUsedNamesInner(self, s, used, member_uses),
+        .import_stmt => {},
+        .identifier => |id| try used.put(id.name, {}),
+        .assignment => |a| {
+            try used.put(a.name, {});
+            try collectUsedNamesInner(self, a.value, used, member_uses);
+        },
+        .binary_expr => |b| {
+            try collectUsedNamesInner(self, b.left, used, member_uses);
+            try collectUsedNamesInner(self, b.right, used, member_uses);
+        },
+        .unary_expr => |u| try collectUsedNamesInner(self, u.operand, used, member_uses),
+        .call_expr => |c| {
+            try collectUsedNamesInner(self, c.callee, used, member_uses);
+            for (c.arguments) |arg| try collectUsedNamesInner(self, arg, used, member_uses);
+            for (c.type_args) |ta| try collectUsedTypeRef(ta, used);
+        },
+        .named_arg => |na| try collectUsedNamesInner(self, na.value, used, member_uses),
+        .get_expr => |g| {
+            try member_uses.put(g.name, {});
+            try collectUsedNamesInner(self, g.object, used, member_uses);
+        },
+        .set_expr => |s| {
+            try member_uses.put(s.name, {});
+            try collectUsedNamesInner(self, s.object, used, member_uses);
+            try collectUsedNamesInner(self, s.value, used, member_uses);
+        },
+        .index_expr => |i| {
+            try collectUsedNamesInner(self, i.object, used, member_uses);
+            try collectUsedNamesInner(self, i.index, used, member_uses);
+        },
+        .index_set_expr => |i| {
+            try collectUsedNamesInner(self, i.object, used, member_uses);
+            try collectUsedNamesInner(self, i.index, used, member_uses);
+            try collectUsedNamesInner(self, i.value, used, member_uses);
+        },
+        .if_expr => |i| {
+            try collectUsedNamesInner(self, i.condition, used, member_uses);
+            try collectUsedNamesInner(self, i.then_branch, used, member_uses);
+            if (i.else_branch) |e| try collectUsedNamesInner(self, e, used, member_uses);
+        },
+        .ternary_expr => |t| {
+            try collectUsedNamesInner(self, t.condition, used, member_uses);
+            try collectUsedNamesInner(self, t.then_branch, used, member_uses);
+            if (t.else_branch) |e| try collectUsedNamesInner(self, e, used, member_uses);
+        },
+        .while_stmt => |w| {
+            try collectUsedNamesInner(self, w.condition, used, member_uses);
+            try collectUsedNamesInner(self, w.body, used, member_uses);
+        },
+        .for_stmt => |f| {
+            try collectUsedNamesInner(self, f.iterable, used, member_uses);
+            try collectUsedNamesInner(self, f.body, used, member_uses);
+        },
+        .block => |b| for (b.statements) |s| try collectUsedNamesInner(self, s, used, member_uses),
+        .return_stmt => |r| if (r.value) |v| try collectUsedNamesInner(self, v, used, member_uses),
+        .break_stmt => |b| if (b.value) |v| try collectUsedNamesInner(self, v, used, member_uses),
+        .throw_stmt => |t| try collectUsedNamesInner(self, t.expr, used, member_uses),
+        .try_stmt => |t| {
+            try collectUsedNamesInner(self, t.body, used, member_uses);
+            for (t.catches) |c| {
+                for (c.types) |ty| try collectUsedTypeRef(ty, used);
+                try collectUsedNamesInner(self, c.body, used, member_uses);
+            }
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| try collectUsedNamesInner(self, s, used, member_uses);
+            for (w.cases) |c| {
+                for (c.conds) |cond| try collectUsedNamesInner(self, cond, used, member_uses);
+                try collectUsedNamesInner(self, c.body, used, member_uses);
+            }
+        },
+        .lambda_expr => |l| {
+            for (l.params) |p| {
+                if (p.type_ref) |tr| try collectUsedTypeRef(tr, used);
+                if (p.initializer) |init| try collectUsedNamesInner(self, init, used, member_uses);
+            }
+            for (l.body) |s| try collectUsedNamesInner(self, s, used, member_uses);
+        },
+        .var_decl => |v| {
+            if (v.type_ref) |tr| try collectUsedTypeRef(tr, used);
+            if (v.initializer) |init| try collectUsedNamesInner(self, init, used, member_uses);
+        },
+        .fun_decl => |f| {
+            for (f.params) |p| {
+                if (p.type_ref) |tr| try collectUsedTypeRef(tr, used);
+                if (p.initializer) |init| try collectUsedNamesInner(self, init, used, member_uses);
+            }
+            if (f.type_ref) |tr| try collectUsedTypeRef(tr, used);
+            if (f.receiver_type) |rt| try collectUsedTypeRef(rt, used);
+            try collectUsedNamesInner(self, f.body, used, member_uses);
+        },
+        .type_decl => |t| {
+            for (t.contracts) |c| try used.put(c, {});
+            for (t.skills) |s| try used.put(s, {});
+            for (t.primary_constructor) |prop| {
+                try collectUsedTypeRef(prop.type_ref, used);
+                if (prop.initializer) |init| try collectUsedNamesInner(self, init, used, member_uses);
+            }
+            for (t.body_fields) |prop| {
+                try collectUsedTypeRef(prop.type_ref, used);
+                if (prop.initializer) |init| try collectUsedNamesInner(self, init, used, member_uses);
+            }
+            for (t.methods) |m| try collectUsedNamesInner(self, m, used, member_uses);
+        },
+        .contract_decl => |c| for (c.methods) |m| try collectUsedNamesInner(self, m, used, member_uses),
+        .skill_decl => |s| {
+            for (s.required_contracts) |c| try used.put(c, {});
+            for (s.methods) |m| try collectUsedNamesInner(self, m, used, member_uses);
+        },
+        .object_decl => |o| {
+            for (o.contracts) |c| try used.put(c, {});
+            for (o.skills) |s| try used.put(s, {});
+            for (o.members) |m| try collectUsedNamesInner(self, m, used, member_uses);
+        },
+        .enum_decl => {},
+        .lib_decl => |l| for (l.functions) |f| try collectUsedNamesInner(self, f, used, member_uses),
+        .test_decl => |t| try collectUsedNamesInner(self, t.body, used, member_uses),
+        .as_expr => |a| {
+            try collectUsedNamesInner(self, a.value, used, member_uses);
+            try collectUsedTypeRef(a.type_ref, used);
+        },
+        .is_expr => |i| {
+            try collectUsedNamesInner(self, i.value, used, member_uses);
+            try collectUsedTypeRef(i.type_ref, used);
+        },
+        .is_type_cond => |i| try collectUsedTypeRef(i.type_ref, used),
+        .string_template => |s| for (s.parts) |p| try collectUsedNamesInner(self, p, used, member_uses),
+        .array_literal => |a| for (a.elements) |e| try collectUsedNamesInner(self, e, used, member_uses),
+        .map_literal => |m| for (m.elements) |e| try collectUsedNamesInner(self, e, used, member_uses),
+        .int_literal, .double_literal, .string_literal, .bool_literal, .null_literal => {},
+    }
+}
+
+fn collectUsedTypeRef(ref: *const ast.ASTTypeRef, used: *std.StringHashMap(void)) anyerror!void {
+    try used.put(ref.name, {});
+    for (ref.generic_args) |arg| try collectUsedTypeRef(arg, used);
+    for (ref.union_types) |u| try collectUsedTypeRef(u, used);
+    if (ref.receiver_type) |rt| try collectUsedTypeRef(rt, used);
+    if (ref.return_type) |rt| try collectUsedTypeRef(rt, used);
+}
+
+fn checkUnusedImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
+    if (node.data != .program) return;
+    const basename = std.fs.path.basename(self.filename);
+    if (infer_decl_mod.std_modules.get(basename) != null) return;
+    var used = std.StringHashMap(void).init(self.allocator);
+    defer used.deinit();
+    for (node.data.program.statements) |stmt| {
+        if (stmt.data == .import_stmt) continue;
+        try collectUsedNames(self, stmt, &used);
+    }
+    for (node.data.program.statements) |stmt| {
+        if (stmt.data != .import_stmt) continue;
+        const imp = stmt.data.import_stmt;
+        if (imp.destructured.len == 0) continue;
+        if (stmt.line == 0) continue;
+        for (imp.destructured) |sym| {
+            if (used.contains(sym)) continue;
+            self.reportWarning(stmt.line, stmt.column, "Unused import '{s}' from '{s}'. Remove it to keep imports minimal.", .{ sym, imp.module_path });
+        }
+    }
+}
+
 fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
     if (self.status == .validating or self.status == .validated) return;
 
@@ -1319,6 +1497,8 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
 
     self.status = .validating;
     self.pass = .validation;
+    // Before inference: later passes rewrite expressions in place, hiding uses.
+    try checkUnusedImports(self, node);
     _ = try self.inferNode(node, &self.global_scope);
 
     // Validate all dynamically monomorphized nodes

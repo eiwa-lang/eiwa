@@ -1,4 +1,3 @@
-import { print } from "std.core"
 import { assert } from "std.exceptions"
 import { Math } from "std.math"
 

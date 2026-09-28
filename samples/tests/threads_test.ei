@@ -1,5 +1,5 @@
 import { assert } from "std.core"
-import { Thread, RawMutex, Mutex, CondVar, Threads } from "std.thread"
+import { RawMutex, Mutex, CondVar, Threads } from "std.thread"
 
 object ThreadCounter {
     var counter: Int = 0

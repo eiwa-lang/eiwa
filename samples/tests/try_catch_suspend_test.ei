@@ -1,6 +1,5 @@
 import { assert } from "std.core"
 import { Exception } from "std.exceptions"
-import { List, MutableList } from "std.collections"
 
 test "try catch with sleepMs inside task - exception thrown after sleep" {
     val t = task {

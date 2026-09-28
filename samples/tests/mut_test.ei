@@ -1,5 +1,5 @@
 import { assert } from "std.core"
-import { List, MutableList, Map, MutableMap, Set, MutableSet } from "std.collections"
+import { MutableSet } from "std.collections"
 
 test "List.mut() should return MutableList" {
     val list = [10, 20]

@@ -1,4 +1,4 @@
-import { brl, usd, eur, jpy, cad, mxn, ars, clp, cop, pen, uyu, chf, aud, cny, krw, inr, Currencies, Money, Currency } from "std.money"
+import { brl, usd, jpy, cad, mxn, ars, clp, chf, aud, cny, krw, inr } from "std.money"
 
 test "should create and format money in different currencies" {
     val m1 = brl(1050)

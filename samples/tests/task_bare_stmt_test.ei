@@ -1,4 +1,4 @@
-import { Scheduler, Dispatchers } from "std.coroutines"
+import { Dispatchers } from "std.coroutines"
 import { AtomicBool } from "std.atomic"
 
 test "bare task statement is scheduled and runs" {

@@ -1,5 +1,5 @@
 import { assert } from "std.core"
-import { List, MutableList } from "std.collections"
+import { MutableList } from "std.collections"
 
 test "for loop with implicit it" {
     val numbers = [10, 20, 30]

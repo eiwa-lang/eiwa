@@ -1,4 +1,4 @@
-import { List, MutableList } from "std.collections"
+import { MutableList } from "std.collections"
 
 test "for loop with sleepMs suspension and implicit it inside task" {
     val t = task {

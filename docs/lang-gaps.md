@@ -88,6 +88,6 @@ as regression record with the version that fixed them.
 ## Checker notes (work as documented, no change requested)
 - `val` narrows after early-return null checks, including through `&&`/`||`
   chains (see Fixed #9); member chains still need an explicit `val` bind.
-- Unused imports are hard errors (keep imports minimal).
+- Unused destructured imports emit a warning (never an error; keep imports minimal).
 - Single-file `eiwa test file.ei` does not resolve package dependencies;
   full `eiwa test` does.

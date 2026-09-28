@@ -1,4 +1,3 @@
-import { print } from "std.core"
 import { assert } from "std.exceptions"
 
 // TDD (RED) para https://github.com/eiwa-lang/eiwa/issues/5

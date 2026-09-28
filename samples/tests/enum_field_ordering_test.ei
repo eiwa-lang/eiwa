@@ -3,7 +3,7 @@
 // `unknown type name '<Module>_<Enum>'` when the module also uses generic
 // collections. The shared module is `samples/payload.ei`.
 import { Payload, PayloadKind, payloadString, payloadObject } from ".samples.payload"
-import { MutableMap, List } from "std.collections"
+import { MutableMap } from "std.collections"
 import { assert } from "std.exceptions"
 
 test "enum type field on cross-module type with collections compiles" {

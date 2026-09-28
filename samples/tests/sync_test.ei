@@ -1,5 +1,5 @@
 import { assert } from "std.core"
-import { Thread, Threads, RawMutex, Mutex, sync } from "std.thread"
+import { Threads, Mutex, sync } from "std.thread"
 
 test "should return value from sync { }" {
     val result = sync {

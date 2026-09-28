@@ -1,7 +1,6 @@
 // Tests for std.json JsonValue + parser (Part 1: promote arest parser to std).
-import { parseJson, JsonValue, jsonObject, jsonArray, jsonString, jsonNumber, jsonBool, jsonNull, JsonKind } from "std.json"
+import { parseJson, jsonString, jsonNull, JsonKind } from "std.json"
 import { assert } from "std.exceptions"
-import { List } from "std.collections"
 
 test "json parser round-trips primitives" {
     val s = parseJson("\"hi\"")

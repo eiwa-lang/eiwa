@@ -1,5 +1,4 @@
 import { assert } from "std.core"
-import { EventLoop } from "std.coroutines"
 import { TCPServer, Socket, SocketClient } from "std.net"
 
 test "cooperative non-blocking TCP server accept and client communication" {

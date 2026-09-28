@@ -1,6 +1,5 @@
 import { assert } from "std.core"
 import { MutableList, MutableMap, Node, MutableSet, List, Map, Set } from "std.collections"
-import { Json } from "std.json"
 
 test "should add and read from MutableList" {
     val items: List<Int> = [10]

@@ -1,5 +1,5 @@
 import { assert } from "std.core"
-import { Regex, MatchResult } from "std.regex"
+import { Regex } from "std.regex"
 
 test "regex: literal match" {
     assert(Regex("abc").matches("abc"), "abc should match abc")
