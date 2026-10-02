@@ -26,10 +26,13 @@ lib NativeSched {
     fun schedYield(): Int
 }
 
-@Header("<poll.h>")
+@Header("<poll.h>", "src/runtime/third_party/eiwa_poll/poll_helpers.h")
+@Source("src/runtime/third_party/eiwa_poll/poll_helpers.c")
 lib("posix") PosixPoll {
     @Alias("poll")
     fun poll(fds: Pointer, nfds: Int, timeout: Int): Int
+    @Alias("eiwa_poll_retry")
+    fun pollRetry(fds: Pointer, nfds: Int, timeout: Int): Int
 }
 
 @Header("<winsock2.h>")
@@ -60,21 +63,9 @@ object("posix") PollLayout : PollLayoutContract {
     implement fun pollOutLow(): Int = 4
     implement fun pollOutHigh(): Int = 0
     implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
-        // Bounded retry with yields: runtimes that suspend threads with
-        // signals can interrupt poll() repeatedly during bursts, and an
-        // instant retry loop would burn through every attempt inside the
-        // same burst. Yielding lets the storm pass; persistent errors
-        // still fail fast right after.
-        var attempt = 0
-        while (attempt < 20) {
-            val r = PosixPoll.poll(fds, nfds, timeout)
-            if (r >= 0) {
-                return r
-            }
-            attempt = attempt + 1
-            NativeSched.schedYield()
-        }
-        return PosixPoll.poll(fds, nfds, timeout)
+        // EINTR-precise retry lives in C (only signal interrupts loop);
+        // every other outcome returns untouched, no heuristic bound.
+        return PosixPoll.pollRetry(fds, nfds, timeout)
     }
 }
 
@@ -88,15 +79,6 @@ object("windows") PollLayout : PollLayoutContract {
     implement fun pollOutLow(): Int = 16
     implement fun pollOutHigh(): Int = 0
     implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
-        var attempt = 0
-        while (attempt < 20) {
-            val r = Win32Poll.poll(fds, nfds, timeout)
-            if (r >= 0) {
-                return r
-            }
-            attempt = attempt + 1
-            NativeSched.schedYield()
-        }
         return Win32Poll.poll(fds, nfds, timeout)
     }
 }

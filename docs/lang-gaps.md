@@ -25,3 +25,10 @@ history. Each entry: status, repro, impact.
   compile as expected). Contract: `samples/tests/smartcast_var_xfail_test.ei`
   (v1 `val`-only rule); baseline `samples/tests/smartcast_logic_test.ei`
   (10 tests, green).
+
+### 3. Agnostic yield (idea, not scheduled)
+- A single `yield` that suspends inside coroutines and yields the OS
+  thread outside them. Needs compiler cooperation or a thread-local
+  current-coroutine check, and must document the weak guarantee (may
+  migrate threads). Low-level scheduler paths would still need the
+  explicit thread primitive to preserve invariants (see `pollIoLocked`).
