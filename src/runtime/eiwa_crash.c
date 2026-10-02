@@ -289,6 +289,7 @@ static void eiwa_crash_handler(int sig, siginfo_t *info, void *ctx) {
 }
 
 void eiwa_install_crash_handler(void) {
+    signal(SIGPIPE, SIG_IGN);
     struct sigaction act;
     memset(&act, 0, sizeof(act));
     act.sa_sigaction = eiwa_crash_handler;

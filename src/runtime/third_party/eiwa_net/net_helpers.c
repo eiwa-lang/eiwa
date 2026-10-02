@@ -107,6 +107,7 @@ void eiwa_socket_close(int64_t fd) {
 #include <fcntl.h>
 #include <poll.h>
 #include <string.h>
+#include <errno.h>
 
 int64_t eiwa_tcp_bind(int64_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -145,7 +146,11 @@ int64_t eiwa_tcp_connect(const char* host, int64_t port) {
         close(fd);
         return -1;
     }
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    int cr;
+    do {
+        cr = connect(fd, (struct sockaddr*)&addr, sizeof(addr));
+    } while (cr < 0 && errno == EINTR);
+    if (cr < 0) {
         close(fd);
         return -1;
     }
@@ -155,12 +160,18 @@ int64_t eiwa_tcp_connect(const char* host, int64_t port) {
 int64_t eiwa_tcp_accept(int64_t fd) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
-    int client_fd = accept((int)fd, (struct sockaddr*)&addr, &addr_len);
+    int client_fd;
+    do {
+        client_fd = accept((int)fd, (struct sockaddr*)&addr, &addr_len);
+    } while (client_fd < 0 && errno == EINTR);
     return (int64_t)client_fd;
 }
 
 int64_t eiwa_socket_read(int64_t fd, char* buf, int64_t max_len) {
-    ssize_t n = read((int)fd, buf, (size_t)max_len);
+    ssize_t n;
+    do {
+        n = read((int)fd, buf, (size_t)max_len);
+    } while (n < 0 && errno == EINTR);
     return (int64_t)n;
 }
 
@@ -171,9 +182,15 @@ int64_t eiwa_socket_write(int64_t fd, const char* data, int64_t len) {
         pfd.fd = (int)fd;
         pfd.events = POLLOUT;
         pfd.revents = 0;
-        int pr = poll(&pfd, 1, -1);
+        int pr;
+        do {
+            pr = poll(&pfd, 1, -1);
+        } while (pr < 0 && errno == EINTR);
         if (pr < 0) return -1;
-        ssize_t n = write((int)fd, data + total, (size_t)(len - total));
+        ssize_t n;
+        do {
+            n = write((int)fd, data + total, (size_t)(len - total));
+        } while (n < 0 && errno == EINTR);
         if (n <= 0) return (total > 0) ? total : (int64_t)n;
         total += (int64_t)n;
     }

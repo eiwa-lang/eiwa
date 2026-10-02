@@ -1,0 +1,82 @@
+import { assert } from "std.core"
+import { TCPServer, Socket, SocketClient } from "std.net"
+import { sleepMs } from "std.system"
+
+// TDD: a blocking socket read must not return prematurely when the
+// runtime suspends threads with signals (Boehm GC stop-the-world
+// SIGPWR/SIGXCPU on Linux interrupts poll() with EINTR). The writer
+// delivers 400ms after connect while another task churns the allocator
+// to force collections mid-wait: the read must block and deliver.
+// Passes trivially where no such signals exist (macOS); guards the
+// Linux behavior that once broke multi-task socket tests in Docker.
+
+fun pickEintrPort(): Int {
+    var p = 19750
+    while (p < 19760) {
+        val probe = TCPServer()
+        if (probe.bind(p)) {
+            probe.close()
+            return p
+        }
+        p = p + 1
+    }
+    return -1
+}
+
+fun churnAlloc(): String {
+    var s = ""
+    var i = 0
+    while (i < 300) {
+        var j = 0
+        var chunk = ""
+        while (j < 200) {
+            chunk = chunk + "abcdefghij"
+            j = j + 1
+        }
+        s = s + chunk
+        i = i + 1
+        if (i % 50 == 0) {
+            sleepMs(10)
+        }
+    }
+    return s.length.toString()
+}
+
+fun delayedWriter(port: Int): String {
+    val c = SocketClient.connect("127.0.0.1", port)
+    if (c == null) {
+        return "no-conn"
+    }
+    sleepMs(400)
+    c.write("delayed-hello")
+    sleepMs(100)
+    c.close()
+    return "wrote"
+}
+
+test "socket read survives gc pressure" {
+    val port = pickEintrPort()
+    assert(port > 0, "no free port")
+    val server = TCPServer()
+    assert(server.bind(port))
+    val w = task {
+        delayedWriter(port)
+    }
+    val churner = task {
+        churnAlloc()
+    }
+    var conn: Socket? = null
+    var acceptAttempts = 0
+    while (conn == null && acceptAttempts < 20) {
+        conn = server.accept()
+        acceptAttempts = acceptAttempts + 1
+    }
+    assert(conn != null, "accept failed")
+    val liveConn: Socket = conn!!
+    val got = liveConn.read(256)
+    assert(got == "delayed-hello", "got=" + got)
+    assert(w.await() == "wrote")
+    churner.await()
+    liveConn.close()
+    server.close()
+}

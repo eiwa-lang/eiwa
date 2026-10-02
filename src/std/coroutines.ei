@@ -231,6 +231,17 @@ type TaskScheduler(
         if (n <= 0 || this.ioHead == null) {
             return false
         }
+
+        var freshCount = 0
+        var freshScan = this.ioHead
+        while (freshScan != null) {
+            freshCount = freshCount + 1
+            freshScan = freshScan!!.next
+        }
+        if (freshCount != count) {
+            return false
+        }
+
         var fired = false
         var prev: IoWaiterNode? = null
         cur = this.ioHead

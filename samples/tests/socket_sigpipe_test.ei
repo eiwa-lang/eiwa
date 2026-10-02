@@ -1,0 +1,73 @@
+import { assert } from "std.core"
+import { TCPServer, Socket, SocketClient } from "std.net"
+import { sleepMs } from "std.system"
+
+// TDD: writing to a peer that already went away must surface as a
+// failed write, never kill the process. POSIX raises SIGPIPE on such
+// writes; the runtime ignores it at startup so servers outlive peers.
+// Without that, any write-after-close terminates the whole program
+// with no output and no handler trace.
+
+fun pickPipePort(): Int {
+    var p = 19760
+    while (p < 19770) {
+        val probe = TCPServer()
+        if (probe.bind(p)) {
+            probe.close()
+            return p
+        }
+        p = p + 1
+    }
+    return -1
+}
+
+fun closerSide(server: TCPServer): String {
+    var conn: Socket? = null
+    var acceptAttempts = 0
+    while (conn == null && acceptAttempts < 20) {
+        conn = server.accept()
+        acceptAttempts = acceptAttempts + 1
+    }
+    if (conn == null) {
+        server.close()
+        return "accept-fail"
+    }
+    conn!!.close()
+    server.close()
+    return "closed"
+}
+
+fun bigPayload(): String {    var s = ""
+    var i = 0
+    while (i < 1024) {
+        s = s + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        i = i + 1
+    }
+    return s
+}
+
+test "socket write after close survives" {
+    val port = pickPipePort()
+    assert(port > 0, "no free port")
+    val server = TCPServer()
+    assert(server.bind(port))
+    val closer = task {
+        closerSide(server)
+    }
+    val c = SocketClient.connect("127.0.0.1", port)
+    assert(c != null, "no-conn")
+    sleepMs(300)
+    val chunk = bigPayload()
+    var failed = false
+    var i = 0
+    while (i < 20 && failed == false) {
+        if (c!!.write(chunk) <= 0) {
+            failed = true
+        }
+        i = i + 1
+    }
+    assert(failed, "write should fail on reset peer")
+    c!!.close()
+    val cres = closer.await()
+    assert(cres == "closed", "closer=" + cres)
+}
