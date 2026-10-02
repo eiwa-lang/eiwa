@@ -66,8 +66,8 @@ test "socket write after close survives" {
         }
         i = i + 1
     }
-    assert(failed, "write should fail on reset peer")
     c!!.close()
     val cres = closer.await()
+    assert(failed, "write should fail on reset peer")
     assert(cres == "closed", "closer=" + cres)
 }

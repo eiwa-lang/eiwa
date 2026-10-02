@@ -74,9 +74,10 @@ test "socket read survives gc pressure" {
     assert(conn != null, "accept failed")
     val liveConn: Socket = conn!!
     val got = liveConn.read(256)
-    assert(got == "delayed-hello", "got=" + got)
-    assert(w.await() == "wrote")
+    val wres = w.await()
     churner.await()
     liveConn.close()
     server.close()
+    assert(wres == "wrote", "writer=" + wres)
+    assert(got == "delayed-hello", "got=" + got)
 }

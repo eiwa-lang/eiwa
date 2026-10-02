@@ -60,6 +60,17 @@ object("posix") PollLayout : PollLayoutContract {
     implement fun pollOutLow(): Int = 4
     implement fun pollOutHigh(): Int = 0
     implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
+        // Bounded retry: runtimes that suspend threads with signals can
+        // interrupt poll() (EINTR) with no fd ready. Without errno access
+        // here, retry a few times; persistent errors fail fast right after.
+        var attempt = 0
+        while (attempt < 5) {
+            val r = PosixPoll.poll(fds, nfds, timeout)
+            if (r >= 0) {
+                return r
+            }
+            attempt = attempt + 1
+        }
         return PosixPoll.poll(fds, nfds, timeout)
     }
 }
@@ -74,6 +85,14 @@ object("windows") PollLayout : PollLayoutContract {
     implement fun pollOutLow(): Int = 16
     implement fun pollOutHigh(): Int = 0
     implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
+        var attempt = 0
+        while (attempt < 5) {
+            val r = Win32Poll.poll(fds, nfds, timeout)
+            if (r >= 0) {
+                return r
+            }
+            attempt = attempt + 1
+        }
         return Win32Poll.poll(fds, nfds, timeout)
     }
 }
