@@ -1518,14 +1518,16 @@ pub const LLVMEmitter = struct {
                         _ = llvm.LLVMBuildStore(self.builder, nv, stack_global);
                     }
                     const fat_type_rt = types_mapping.getFatPointerType(self.context);
-                    _ = llvm.LLVMBuildLoad2(self.builder, fat_type_rt, active_global, "exc_obj");
+                    const exc_val = llvm.LLVMBuildLoad2(self.builder, fat_type_rt, active_global, "exc_obj");
                     _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstNull(fat_type_rt), active_global);
                     const failed_prev = llvm.LLVMBuildLoad2(self.builder, i32_type, failed_var, "failed_prev");
                     const failed_inc = llvm.LLVMBuildAdd(self.builder, failed_prev, llvm.LLVMConstInt(i32_type, 1, 0), "failed_inc");
                     _ = llvm.LLVMBuildStore(self.builder, failed_inc, failed_var);
-                    // Print `[FAIL] {name}: {message}`. The message is read from
+                    // Print `[FAIL] {name}: Assertion failed`. The message is read from
                     // field 0 of the thrown object: Eiwa exceptions are
                     // `type X(val text: String)` → `{ ptr }`, and String is a
+                    // `{ ptr, len }` struct inline at offset 0, so the first
+                    // pointer-sized slot IS the message char*.
                     const fail_fmt_s = try std.fmt.allocPrint(self.allocator, "*[FAIL] {s}: Assertion failed", .{test_names_list.items[i]});
                     defer self.allocator.free(fail_fmt_s);
                     const fail_fmt = try self.allocator.dupeZ(u8, fail_fmt_s);
@@ -1536,6 +1538,22 @@ pub const LLVMEmitter = struct {
                     if (fflush_fn_opt != null) {
                         var null_arg = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(ptr_type_rt)};
                         _ = llvm.LLVMBuildCall2(self.builder, fflush_ft_opt.?, fflush_fn_opt.?, &null_arg, 1, "");
+                    }
+                    // Print the carried message on the next line. String values
+                    // are heap-boxed (`{ ptr, len }` structs), so the field
+                    // needs two loads: object -> String struct -> char*.
+                    // Guarded: a null object falls back instead of crashing.
+                    const exc_data = llvm.LLVMBuildExtractValue(self.builder, exc_val, 0, "exc_data");
+                    const exc_is_null = llvm.LLVMBuildIsNull(self.builder, exc_data, "exc_is_null");
+                    const exc_str_ptr = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, exc_data, "exc_str_ptr");
+                    const exc_msg_ptr = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, exc_str_ptr, "exc_msg_ptr");
+                    const exc_fallback = llvm.LLVMBuildGlobalStringPtr(self.builder, "<no message>", "exc_fallback");
+                    const exc_to_print = llvm.LLVMBuildSelect(self.builder, exc_is_null, exc_fallback, exc_msg_ptr, "exc_to_print");
+                    var exc_args = [_]llvm.LLVMValueRef{exc_to_print};
+                    _ = llvm.LLVMBuildCall2(self.builder, puts_call_type, puts_fn, &exc_args, 1, "");
+                    if (fflush_fn_opt != null) {
+                        var null_arg2 = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(ptr_type_rt)};
+                        _ = llvm.LLVMBuildCall2(self.builder, fflush_ft_opt.?, fflush_fn_opt.?, &null_arg2, 1, "");
                     }
                     if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(self.builder)) == null) {
                         _ = llvm.LLVMBuildBr(self.builder, after_bb);
