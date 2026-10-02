@@ -1,6 +1,7 @@
 import { assert } from "std.core"
 import { TCPServer, Socket, SocketClient } from "std.net"
 import { sleepMs } from "std.system"
+import { nowMillis } from "std.time"
 
 // TDD: a blocking socket read must not return prematurely when the
 // runtime suspends threads with signals (Boehm GC stop-the-world
@@ -48,9 +49,23 @@ fun delayedWriter(port: Int): String {
         return "no-conn"
     }
     sleepMs(400)
-    c.write("delayed-hello")
+    var sent = 0
+    val msg = "delayed-hello"
+    var tries = 0
+    while (sent < msg.length && tries < 20) {
+        val n = c.write(msg.substring(sent, msg.length))
+        if (n <= 0) {
+            tries = tries + 1
+            sleepMs(10)
+        } else {
+            sent = sent + n
+        }
+    }
     sleepMs(100)
     c.close()
+    if (sent < msg.length) {
+        return "write-fail"
+    }
     return "wrote"
 }
 
@@ -73,11 +88,13 @@ test "socket read survives gc pressure" {
     }
     assert(conn != null, "accept failed")
     val liveConn: Socket = conn!!
+    val t0 = nowMillis()
     val got = liveConn.read(256)
+    val dt = nowMillis() - t0
     val wres = w.await()
     churner.await()
     liveConn.close()
     server.close()
-    assert(wres == "wrote", "writer=" + wres)
-    assert(got == "delayed-hello", "got=" + got)
+    assert(wres == "wrote", "writer=" + wres + " dt=" + dt.toString())
+    assert(got == "delayed-hello", "got=" + got + " dt=" + dt.toString())
 }
