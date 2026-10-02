@@ -27,16 +27,16 @@ fun pickEintrPort(): Int {
 fun churnAlloc(): String {
     var s = ""
     var i = 0
-    while (i < 300) {
+    while (i < 80) {
         var j = 0
         var chunk = ""
-        while (j < 200) {
+        while (j < 60) {
             chunk = chunk + "abcdefghij"
             j = j + 1
         }
         s = s + chunk
         i = i + 1
-        if (i % 50 == 0) {
+        if (i % 20 == 0) {
             sleepMs(10)
         }
     }
