@@ -837,7 +837,7 @@ fun parseDepSpec(rawSpec: String, explicitName: String?): Dependency {
     }
 
     if (explicitName != null && explicitName != "") {
-        depName = explicitName!!
+        depName = explicitName
     }
 
     val dep = Dependency(depName, github, gitlab, gitUrl, pathUrl)

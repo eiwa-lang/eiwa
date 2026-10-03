@@ -44,9 +44,9 @@ test "indentOf: counts leading spaces" {
 test "parseTopField: reads top-level manifest fields" {
     val manifest = sampleManifest()
     val name = parseTopField(manifest, "name")
-    assert(name != null && name!! == "app")
+    assert(name != null && name == "app")
     val output = parseTopField(manifest, "output")
-    assert(output != null && output!! == "bin/app")
+    assert(output != null && output == "bin/app")
     val missing = parseTopField(manifest, "nope")
     assert(missing == null)
 }

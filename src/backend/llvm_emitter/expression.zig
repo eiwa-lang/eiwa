@@ -3547,7 +3547,9 @@ fn emitExpressionRaw(
             _ = llvm.LLVMBuildCondBr(builder, cond_val, then_bb, else_bb orelse merge_bb);
 
             llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+            const narrow_r = try fattenNarrowedIfNeeded(ctx, mod, builder, scope, structs, libs, i.condition);
             try emitBlockOrExpr(ctx, mod, builder, func_val, scope, structs, libs, i.then_branch, res_ptr, node.resolved_type);
+            restoreNarrowed(scope, narrow_r);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
             }
@@ -5523,6 +5525,57 @@ pub fn coerceToContract(
     fat_val = llvm.LLVMBuildInsertValue(builder, fat_val, vtable_ptr, 1, "fat_vtable");
 
     return fat_val;
+}
+
+/// Narrow-to-contract fattening for `if (x is C)` branches.
+/// `is`-narrowing changes the static type but leaves a thin value,
+/// which contract dispatch misreads as a fat pointer. When x is
+/// statically concrete, materialize the fat pointer and rebind x for
+/// the branch duration. Anything unclear returns inactive (prior
+/// behavior is preserved).
+pub const NarrowRestore = struct {
+    active: bool = false,
+    name: []const u8 = "",
+    old: ?llvm.LLVMValueRef = null,
+};
+
+pub fn restoreNarrowed(scope: *std.StringHashMap(llvm.LLVMValueRef), r: NarrowRestore) void {
+    if (!r.active) return;
+    if (r.old) |ov| {
+        scope.put(r.name, ov) catch {};
+    } else {
+        _ = scope.remove(r.name);
+    }
+}
+
+pub fn fattenNarrowedIfNeeded(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    cond_node: *ast.ASTNode,
+) !NarrowRestore {
+    if (cond_node.data != .is_expr) return .{};
+    const is_e = cond_node.data.is_expr;
+    if (is_e.is_not or is_e.value.data != .identifier) return .{};
+    const iname = is_e.value.data.identifier.name;
+    const vrt = is_e.value.resolved_type orelse return .{};
+    if (ts.extractBaseType(vrt).* != .Custom) return .{};
+    const concrete_c_name: []const u8 = ts.extractBaseType(vrt).Custom;
+    const trt = is_e.type_ref.resolved_type orelse return .{};
+    if (ts.extractBaseType(trt).* != .Custom) return .{};
+    if (!types_mapping.isContractType(trt.*, global_contracts_ast_ptr)) return .{};
+    const contract_c_name: []const u8 = ts.extractBaseType(trt).Custom;
+    const thin_val = try emitExpression(ctx, mod, builder, scope, structs, libs, is_e.value);
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(thin_val)) != llvm.LLVMPointerTypeKind) return .{};
+    const fat_val = coerceToContractChecked(ctx, mod, builder, thin_val, concrete_c_name, contract_c_name) catch return .{};
+    const fat_alloca = llvm.LLVMBuildAlloca(builder, types_mapping.getFatPointerType(ctx), "narrow_fat");
+    _ = llvm.LLVMBuildStore(builder, fat_val, fat_alloca);
+    const old = scope.get(iname);
+    scope.put(iname, fat_alloca) catch return .{};
+    return .{ .active = true, .name = iname, .old = old };
 }
 
 /// Like `coerceToContract`, but fails when no real (non-stub) vtable exists for

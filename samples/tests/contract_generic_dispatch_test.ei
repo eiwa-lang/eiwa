@@ -1,0 +1,24 @@
+import { assert } from "std.core"
+import { Closeable } from "std.core"
+
+// TDD: calling a contract method on a generic-typed receiver must
+// dynamically dispatch to the implementation. `is` already narrows
+// correctly; the call itself silently did nothing.
+
+type Box(var shut: Bool = false) : Closeable {
+    implement fun close(): Void {
+        this.shut = true
+    }
+}
+
+fun closeIt<T>(receiver: T): Void {
+    if (receiver is Closeable) {
+        receiver.close()
+    }
+}
+
+test "contract dispatch on generic receiver" {
+    val b = Box()
+    closeIt(b)
+    assert(b.shut)
+}

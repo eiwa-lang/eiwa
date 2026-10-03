@@ -699,7 +699,9 @@ pub fn emitStatement(
 
             // Emit then branch
             llvm.LLVMPositionBuilderAtEnd(builder, then_bb);
+            const narrow_r = try expression.fattenNarrowedIfNeeded(ctx, mod, builder, scope, structs, libs, if_node.condition);
             try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, if_node.then_branch, declared_ret);
+            expression.restoreNarrowed(scope, narrow_r);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                 _ = llvm.LLVMBuildBr(builder, merge_bb);
             }
