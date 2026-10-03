@@ -1,0 +1,28 @@
+import { assert } from "std.core"
+import { List, MutableMap } from "std.collections"
+
+// TDD: explicitly typed body fields initialized with constructor calls
+// that take arguments must resolve like the same calls in function
+// bodies. Generic instantiations used to resolve to monomorphized
+// symbols that were never declared in the using module
+// (`VariableNotFound` at emit time).
+
+type Counted(val items: List<String>, val seen: MutableMap<String, String> = MutableMap<String, String>()) {
+    fun pick(): String? {
+        if (this.items.size() == 0) {
+            return null
+        }
+        return this.items.get(0)
+    }
+}
+
+type Holder(val names: List<String>) {
+    val box: Counted = Counted(names)
+    val index: MutableMap<String, String> = MutableMap<String, String>()
+}
+
+test "body fields accept constructor calls with arguments" {
+    val h = Holder(["a"])
+    assert(h.box.pick() == "a")
+    assert(h.index.size() == 0)
+}

@@ -531,8 +531,8 @@ fun printHelp() {
 }
 
 fun enterProjectDir(arg: String?) {
-    if (arg != null && Process.chdir(arg!!) == false) {
-        println("Error: cannot enter directory: " + arg!!)
+    if (arg != null && Process.chdir(arg) == false) {
+        println("Error: cannot enter directory: " + arg)
         exit(1)
     }
 }

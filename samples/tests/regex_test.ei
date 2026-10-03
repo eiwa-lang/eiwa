@@ -108,7 +108,7 @@ test "regex: string shortcuts" {
     assert(!"hello".matchesRegex("[0-9]+"), "matchesRegex rejects")
     assert("a1b2".replaceRegex("[0-9]", "#") == "a#b#", "replaceRegex shortcut")
     val m = "abc123".findRegex("[0-9]+")
-    assert(m != null && m!!.value == "123", "findRegex shortcut")
+    assert(m != null && m.value == "123", "findRegex shortcut")
 }
 
 test "regex: reusable compiled pattern" {

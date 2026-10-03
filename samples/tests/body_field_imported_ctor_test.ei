@@ -1,0 +1,18 @@
+import { assert } from "std.core"
+import { CounterBox } from ".samples.bodyctor.helper"
+
+// TDD: a body-field initializer calling an imported type's constructor
+// must resolve like the same call in a function body. Constructor
+// bodies used to emit during type declaration (Pass 1a), before the
+// callee's module was declared, so the lookup failed with
+// VariableNotFound; bodies now emit after every type is declared.
+
+type Holder() {
+    val box: CounterBox = CounterBox()
+}
+
+test "body field calls imported constructor" {
+    val h = Holder()
+    assert(h.box.bump() == 1)
+    assert(h.box.bump() == 2)
+}

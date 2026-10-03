@@ -585,6 +585,21 @@ body in value position is a compile-time error; `try` with `catch` in value
 position and `try`-as-value inside `task {}` are rejected (synchronous code
 only, for now). As a statement, `try` stays `Void` with zero behavior change.
 
+### 6.5 Resource Management with `use`
+The stdlib `use(receiver) { ... }` helper runs a block and closes the
+receiver afterwards — the native substitute for try-with-resources. If
+the receiver implements the `Closeable` contract (`fun close()`), it
+is closed on both the success path and when the block throws (the
+original exception is rethrown after closing):
+```kotlin
+use(openFile("data.txt")) { file ->
+    print(file.read())
+}
+// closed here, even on exception
+```
+Any type with a `close()` method can implement `Closeable` to take
+part; receivers without it simply run the block with no cleanup.
+
 ---
 
 ## 7. Collections (List, Map, Set)

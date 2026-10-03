@@ -709,6 +709,8 @@ pub const LLVMEmitter = struct {
         // first declaration wins (same semantics as the existing function).
         var defined_types = std.StringHashMap(void).init(self.allocator);
         defer defined_types.deinit();
+        // Pass 1a-1: declare every type across all modules first, so no
+        // constructor body observes a missing callee regardless of order.
         for (modules.items) |m| {
             if (m.data != .program) continue;
             const own = self.unitOwns(m);
@@ -716,13 +718,13 @@ pub const LLVMEmitter = struct {
                 if (stmt.data == .type_decl) {
                     const t = stmt.data.type_decl;
                     const t_c_name = t.resolved_c_name orelse t.name;
+                    // First declaration wins (monomorphized clones can appear
+                    // in several modules; matches split-mode semantics).
+                    if (defined_types.contains(t_c_name)) continue;
                     const dep_owned = split and is_entry and dep_owned_types.contains(t_c_name);
                     const should_define = own and !dep_owned;
-                    if (split) {
-                        if (defined_types.contains(t_c_name)) continue;
-                        if (should_define) try defined_types.put(t_c_name, {});
-                    }
-                    try self.declareType(mod, stmt, should_define);
+                    if (should_define) try defined_types.put(t_c_name, {});
+                    try self.declareType(mod, stmt);
                 } else if (stmt.data == .enum_decl) {
                     try self.declareEnum(mod, stmt, own);
                 }
@@ -735,13 +737,49 @@ pub const LLVMEmitter = struct {
                 if (c_node.data == .type_decl) {
                     const t = c_node.data.type_decl;
                     const t_c_name = t.resolved_c_name orelse t.name;
+                    if (defined_types.contains(t_c_name)) continue;
+                    const dep_owned2 = split and is_entry and dep_owned_types.contains(t_c_name);
+                    const should_define2 = (!split or is_entry) and !dep_owned2;
+                    if (should_define2) try defined_types.put(t_c_name, {});
+                    try self.declareType(mod, c_node);
+                }
+            }
+        }
+
+        // Pass 1a-2: emit constructor bodies; every callee is declared.
+        var defined_bodies = std.StringHashMap(void).init(self.allocator);
+        defer defined_bodies.deinit();
+        for (modules.items) |m| {
+            if (m.data != .program) continue;
+            const own2 = self.unitOwns(m);
+            for (m.data.program.statements) |stmt| {
+                if (stmt.data == .type_decl) {
+                    const t = stmt.data.type_decl;
+                    const t_c_name = t.resolved_c_name orelse t.name;
+                    if (defined_bodies.contains(t_c_name)) continue;
+                    const dep_owned = split and is_entry and dep_owned_types.contains(t_c_name);
+                    const should_define = own2 and !dep_owned;
+                    if (should_define) {
+                        try defined_bodies.put(t_c_name, {});
+                        try self.emitCtorBody(mod, stmt);
+                    }
+                }
+            }
+        }
+        if (self.classes_ast) |ca2| {
+            var c_it2 = ca2.iterator();
+            while (c_it2.next()) |entry| {
+                const c_node = entry.value_ptr.*;
+                if (c_node.data == .type_decl) {
+                    const t = c_node.data.type_decl;
+                    const t_c_name = t.resolved_c_name orelse t.name;
+                    if (defined_bodies.contains(t_c_name)) continue;
                     const dep_owned = split and is_entry and dep_owned_types.contains(t_c_name);
                     const should_define = (!split or is_entry) and !dep_owned;
-                    if (split) {
-                        if (defined_types.contains(t_c_name)) continue;
-                        if (should_define) try defined_types.put(t_c_name, {});
+                    if (should_define) {
+                        try defined_bodies.put(t_c_name, {});
+                        try self.emitCtorBody(mod, c_node);
                     }
-                    try self.declareType(mod, c_node, should_define);
                 }
             }
         }
@@ -3843,7 +3881,92 @@ pub const LLVMEmitter = struct {
         _ = struct_name;
     }
 
-    fn declareType(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, type_node: *ast.ASTNode, define_body: bool) !void {
+    /// Emits a type's constructor body. Declaration must have run first
+    /// via declareType, so bodies never observe missing callees.
+    fn emitCtorBody(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, type_node: *ast.ASTNode) !void {
+        const t = type_node.data.type_decl;
+        const name = if (t.resolved_c_name) |rcn| (if (rcn.len > 0) rcn else t.name) else t.name;
+        const info = self.structs.get(name) orelse return error.StructNotDeclared;
+        const struct_type = info.struct_type;
+        const field_types_owned = info.field_types;
+        const struct_name_z = try self.allocator.dupeZ(u8, name);
+        defer self.allocator.free(struct_name_z);
+        const ctor_val = llvm.LLVMGetNamedFunction(mod, struct_name_z.ptr) orelse return error.CtorNotDeclared;
+        const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+        const ctor_param_count = t.primary_constructor.len;
+        // Emit constructor body
+        const entry_block = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_val, "entry");
+        llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);
+
+        // Allocate the instance via the active heap allocator (GC_malloc when
+        // prefer_gc_alloc, malloc otherwise) sized to the struct's actual byte size.
+        const gc_func = getHeapAllocFn(mod);
+        const gc_func_type = llvm.LLVMGlobalGetValueType(gc_func);
+        const size_val = llvm.LLVMSizeOf(struct_type);
+        var gc_args = [_]llvm.LLVMValueRef{size_val};
+        const raw_ptr = llvm.LLVMBuildCall2(self.builder, gc_func_type, gc_func, &gc_args, 1, "raw_inst");
+
+        // Store constructor parameters into struct fields
+        for (0..ctor_param_count) |idx| {
+            var param_val = llvm.LLVMGetParam(ctor_val, @intCast(idx));
+            if (idx < field_types_owned.len) {
+                const field_type = field_types_owned[idx];
+                const p_type = llvm.LLVMTypeOf(param_val);
+                if (llvm.LLVMGetTypeKind(p_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(field_type) == llvm.LLVMIntegerTypeKind) {
+                    const p_bits = llvm.LLVMGetIntTypeWidth(p_type);
+                    const f_bits = llvm.LLVMGetIntTypeWidth(field_type);
+                    if (p_bits < f_bits) {
+                        param_val = llvm.LLVMBuildZExt(self.builder, param_val, field_type, "zext_ctor_param");
+                    } else if (p_bits > f_bits) {
+                        param_val = llvm.LLVMBuildTrunc(self.builder, param_val, field_type, "trunc_ctor_param");
+                    }
+                }
+            }
+            const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(idx), "field_gep");
+            _ = llvm.LLVMBuildStore(self.builder, param_val, field_ptr);
+        }
+
+        // Evaluate body-field initializers in declaration order with `this`
+        // bound to the freshly allocated instance, storing into each field.
+        // Constructor fields are also bound (by their names) so an initializer
+        // can reference ctor params/properties, Kotlin-style.
+        if (t.body_fields.len > 0) {
+            var this_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
+            defer this_scope.deinit();
+            const this_z = try self.allocator.dupeZ(u8, "this");
+            defer self.allocator.free(this_z);
+            const this_alloca = llvm.LLVMBuildAlloca(self.builder, ptr_type, this_z.ptr);
+            _ = llvm.LLVMBuildStore(self.builder, raw_ptr, this_alloca);
+            try this_scope.put("this", this_alloca);
+
+            for (t.primary_constructor, 0..) |prop, i| {
+                const p_name_z = try self.allocator.dupeZ(u8, prop.name);
+                defer self.allocator.free(p_name_z);
+                const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(i), p_name_z.ptr);
+                const field_t = field_types_owned[i];
+                const val = llvm.LLVMBuildLoad2(self.builder, field_t, field_ptr, "ctor_field_load");
+                const alloca_ptr = llvm.LLVMBuildAlloca(self.builder, field_t, p_name_z.ptr);
+                _ = llvm.LLVMBuildStore(self.builder, val, alloca_ptr);
+                try this_scope.put(prop.name, alloca_ptr);
+            }
+
+            for (t.body_fields, 0..) |prop, i| {
+                const init_node = prop.initializer orelse continue;
+                const field_idx = ctor_param_count + i;
+                const field_type = field_types_owned[field_idx];
+                var init_val = try expression.emitExpression(self.context, mod, self.builder, &this_scope, &self.structs, &self.libs, init_node);
+                if (llvm.LLVMTypeOf(init_val) != field_type) {
+                    init_val = expression.coerceArg(self.builder, init_val, field_type);
+                }
+                const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(field_idx), "bfield_gep");
+                _ = llvm.LLVMBuildStore(self.builder, init_val, field_ptr);
+            }
+        }
+
+        _ = llvm.LLVMBuildRet(self.builder, raw_ptr);
+    }
+
+    fn declareType(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, type_node: *ast.ASTNode) !void {
         const t = type_node.data.type_decl;
         const name = if (t.resolved_c_name) |rcn| (if (rcn.len > 0) rcn else t.name) else t.name;
 
@@ -3924,80 +4047,8 @@ pub const LLVMEmitter = struct {
         const ctor_val = llvm.LLVMGetNamedFunction(mod, struct_name_z.ptr) orelse llvm.LLVMAddFunction(mod, struct_name_z.ptr, ctor_type);
         try self.functions.put(name, ctor_val);
 
-        // Split mode: the constructor body is a definition — only the owning
-        // unit emits it; other units keep the extern declaration.
-if (define_body) {
-        // Emit constructor body
-            const entry_block = llvm.LLVMAppendBasicBlockInContext(self.context, ctor_val, "entry");
-            llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);
-
-            // Allocate the instance via the active heap allocator (GC_malloc when
-            // prefer_gc_alloc, malloc otherwise) sized to the struct's actual byte size.
-            const gc_func = getHeapAllocFn(mod);
-            const gc_func_type = llvm.LLVMGlobalGetValueType(gc_func);
-            const size_val = llvm.LLVMSizeOf(struct_type);
-            var gc_args = [_]llvm.LLVMValueRef{size_val};
-            const raw_ptr = llvm.LLVMBuildCall2(self.builder, gc_func_type, gc_func, &gc_args, 1, "raw_inst");
-
-            // Store constructor parameters into struct fields
-            for (0..ctor_param_count) |idx| {
-                var param_val = llvm.LLVMGetParam(ctor_val, @intCast(idx));
-                if (idx < field_types_owned.len) {
-                    const field_type = field_types_owned[idx];
-                    const p_type = llvm.LLVMTypeOf(param_val);
-                    if (llvm.LLVMGetTypeKind(p_type) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(field_type) == llvm.LLVMIntegerTypeKind) {
-                        const p_bits = llvm.LLVMGetIntTypeWidth(p_type);
-                        const f_bits = llvm.LLVMGetIntTypeWidth(field_type);
-                        if (p_bits < f_bits) {
-                            param_val = llvm.LLVMBuildZExt(self.builder, param_val, field_type, "zext_ctor_param");
-                        } else if (p_bits > f_bits) {
-                            param_val = llvm.LLVMBuildTrunc(self.builder, param_val, field_type, "trunc_ctor_param");
-                        }
-                    }
-                }
-                const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(idx), "field_gep");
-                _ = llvm.LLVMBuildStore(self.builder, param_val, field_ptr);
-            }
-
-            // Evaluate body-field initializers in declaration order with `this`
-            // bound to the freshly allocated instance, storing into each field.
-            // Constructor fields are also bound (by their names) so an initializer
-            // can reference ctor params/properties, Kotlin-style.
-            if (t.body_fields.len > 0) {
-                var this_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
-                defer this_scope.deinit();
-                const this_z = try self.allocator.dupeZ(u8, "this");
-                defer self.allocator.free(this_z);
-                const this_alloca = llvm.LLVMBuildAlloca(self.builder, ptr_type, this_z.ptr);
-                _ = llvm.LLVMBuildStore(self.builder, raw_ptr, this_alloca);
-                try this_scope.put("this", this_alloca);
-
-                for (t.primary_constructor, 0..) |prop, i| {
-                    const p_name_z = try self.allocator.dupeZ(u8, prop.name);
-                    defer self.allocator.free(p_name_z);
-                    const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(i), p_name_z.ptr);
-                    const field_t = field_types_owned[i];
-                    const val = llvm.LLVMBuildLoad2(self.builder, field_t, field_ptr, "ctor_field_load");
-                    const alloca_ptr = llvm.LLVMBuildAlloca(self.builder, field_t, p_name_z.ptr);
-                    _ = llvm.LLVMBuildStore(self.builder, val, alloca_ptr);
-                    try this_scope.put(prop.name, alloca_ptr);
-                }
-
-                for (t.body_fields, 0..) |prop, i| {
-                    const init_node = prop.initializer orelse continue;
-                    const field_idx = ctor_param_count + i;
-                    const field_type = field_types_owned[field_idx];
-                    var init_val = try expression.emitExpression(self.context, mod, self.builder, &this_scope, &self.structs, &self.libs, init_node);
-                    if (llvm.LLVMTypeOf(init_val) != field_type) {
-                        init_val = expression.coerceArg(self.builder, init_val, field_type);
-                    }
-                    const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(field_idx), "bfield_gep");
-                    _ = llvm.LLVMBuildStore(self.builder, init_val, field_ptr);
-                }
-            }
-
-            _ = llvm.LLVMBuildRet(self.builder, raw_ptr);
-        } // if (define_body)
+        // Constructor bodies emit separately (see emitCtorBody),
+        // after every type in every module is declared.
 
         // Pass 1a2: Emit member methods inside type
         for (t.methods) |m_node| {

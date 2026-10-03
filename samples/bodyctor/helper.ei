@@ -1,0 +1,8 @@
+type CounterBox() {
+    var total: Int = 0
+
+    fun bump(): Int {
+        this.total = this.total + 1
+        return this.total
+    }
+}
