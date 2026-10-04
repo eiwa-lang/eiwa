@@ -1,0 +1,9 @@
+import { assert } from "std.core"
+import { useA, evaluateCmd } from ".samples.fxcollide.cmd_a"
+import { Eng, Conn } from ".samples.fxcollide.eng"
+
+test "import: transitive collision keeps explicit method import working" {
+    assert(useA() == 1)
+    assert(evaluateCmd(9, "t") == "A")
+    assert(Eng(Conn()).go() == "B")
+}

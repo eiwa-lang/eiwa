@@ -1,0 +1,7 @@
+fun collide(): String {
+    return "B"
+}
+
+fun pullB(): Int {
+    return 2
+}

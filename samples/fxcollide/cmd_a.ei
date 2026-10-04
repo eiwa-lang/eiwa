@@ -1,0 +1,7 @@
+fun evaluateCmd(id: Int, target: String): String {
+    return "A"
+}
+
+fun useA(): Int {
+    return 1
+}

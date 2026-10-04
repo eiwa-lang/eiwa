@@ -5,6 +5,7 @@ const ast = @import("../ast.zig");
 const parser_mod = @import("../../frontend/parser/core.zig");
 const case_checker = @import("../case_checker.zig");
 const core = @import("core.zig");
+const type_system = @import("../type_system.zig");
 const infer_stmt_mod = @import("infer_stmt.zig");
 
 const ASTNode = core.ASTNode;
@@ -51,8 +52,49 @@ pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "excepti
 pub const auto_injected_contracts = &[_][]const u8{ "Stringable", "Equatable", "Hashable" };
 pub const auto_injected_skills = &[_][]const u8{"Echoable"};
 
-pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
-    _ = scope;
+// Explicit imports displace transitive same-signature overloads from
+// other modules; genuine overloads still coexist.
+fn defineImportedOverload(self: *TypeChecker, sym: []const u8, overload: *const EiwaType, line: usize, column: usize) !void {
+    if (self.global_scope.symbols.getPtr(sym)) |sym_ptr| {
+        if (sym_ptr.*.overloads) |*list| {
+            var i: usize = 0;
+            while (i < list.items.len) {
+                const existing = list.items[i];
+                if (existing.* == .Function and overload.* == .Function and
+                    self.isCompatible(existing, overload) and
+                    !std.mem.eql(u8, existing.Function.c_name, overload.Function.c_name))
+                {
+                    self.reportWarning(line, column, "Import '{s}' shadows same-signature '{s}' from another module.", .{ sym, existing.Function.c_name });
+                    _ = list.unmanaged.orderedRemove(i);
+                    list.items = list.unmanaged.items;
+                } else {
+                    i += 1;
+                }
+            }
+            for (list.items) |existing| {
+                if (self.isCompatible(existing, overload)) return;
+            }
+            try list.append(overload);
+            return;
+        }
+    }
+    try self.global_scope.define(sym, overload, false, true);
+}
+
+// Scope entries are owned per checker; never alias another checker's
+// *Symbol, or overload-list mutations leak across modules.
+fn copySymbol(self: *TypeChecker, src: *const type_system.Symbol) !*type_system.Symbol {
+    const out = try self.allocator.create(type_system.Symbol);
+    out.* = src.*;
+    if (src.overloads) |list| {
+        var fresh = ArrayList(*const EiwaType).init(self.allocator);
+        try fresh.appendSlice(list.items);
+        out.overloads = fresh;
+    }
+    return out;
+}
+
+pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {    _ = scope;
     if (self.pass == .validation) {
         t.* = .Void;
         return;
@@ -150,7 +192,7 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         var it = tc.global_scope.symbols.iterator();
         while (it.next()) |entry| {
             if (!tc.local_symbols.contains(entry.key_ptr.*)) continue;
-            try self.global_scope.symbols.put(entry.key_ptr.*, entry.value_ptr.*);
+            try self.global_scope.symbols.put(entry.key_ptr.*, try copySymbol(self, entry.value_ptr.*));
         }
         var alias_it = tc.alias_map.iterator();
         while (alias_it.next()) |entry| {
@@ -199,7 +241,7 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
             if (tc.global_scope.lookupFunctions(sym)) |overloads| {
                 for (overloads) |overload| {
-                    try self.global_scope.define(sym, overload, false, true);
+                    try defineImportedOverload(self, sym, overload, node.line, node.column);
                 }
                 found = true;
             } else if (tc.global_scope.lookupVariable(sym)) |variable| {
@@ -403,7 +445,7 @@ pub fn inferImportStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         var sym_it = tc.global_scope.symbols.iterator();
         while (sym_it.next()) |entry| {
             if (!self.global_scope.symbols.contains(entry.key_ptr.*)) {
-                try self.global_scope.symbols.put(entry.key_ptr.*, entry.value_ptr.*);
+                try self.global_scope.symbols.put(entry.key_ptr.*, try copySymbol(self, entry.value_ptr.*));
             }
         }
     }

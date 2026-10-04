@@ -1,0 +1,8 @@
+import { assert } from "std.core"
+import { pullB } from ".samples.funcollide.mod_b"
+import { collide } from ".samples.funcollide.mod_a"
+
+test "import: explicit import wins over transitive same-name fun" {
+    assert(pullB() == 2)
+    assert(collide() == "A")
+}

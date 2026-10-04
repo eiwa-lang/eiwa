@@ -1,0 +1,13 @@
+import { evaluateCmd } from ".samples.fxcollide.cmd_b"
+
+type Conn {
+    fun call(f: (Int) -> String): String {
+        return f(1)
+    }
+}
+
+type Eng(val conn: Conn, val tag: Int = 0) {
+    fun go(): String {
+        return this.conn.call({ i -> evaluateCmd(i, "s") })
+    }
+}
