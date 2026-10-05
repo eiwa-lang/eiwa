@@ -1,0 +1,32 @@
+import { assert } from "std.core"
+import { TCPServer, SocketClient } from "std.net"
+import { sleepMs } from "std.system"
+
+// TDD: eiwa_tcp_connect resolved only literal IPs (inet_pton) —
+// hostnames failed. The runtime must resolve via getaddrinfo so
+// "localhost" (and any DNS name) connects like a literal IP.
+// Loopback only: deterministic on Linux/macOS/Windows, no network.
+
+fun acceptOne(server: TCPServer): String {
+    val conn = server.accept()
+    if (conn == null) {
+        server.close()
+        return "accept-fail"
+    }
+    conn.close()
+    server.close()
+    return "ok"
+}
+
+test "net: connect resolves localhost like a literal ip" {
+    val server = TCPServer()
+    assert(server.bind(19790), "bind")
+    val worker = task {
+        acceptOne(server)
+    }
+    sleepMs(150)
+    val sock = SocketClient.connect("localhost", 19790)
+    assert(sock != null, "localhost-connect")
+    sock!!.close()
+    assert(worker.await() == "ok", "accepted")
+}

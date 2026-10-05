@@ -42,20 +42,28 @@ int64_t eiwa_tcp_bind(int64_t port) {
 
 int64_t eiwa_tcp_connect(const char* host, int64_t port) {
     ensure_winsock_initialized();
-    SOCKET fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    char port_str[16];
+    _snprintf(port_str, sizeof(port_str), "%lld", (long long)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    struct addrinfo* list = NULL;
+    if (getaddrinfo(host, port_str, &hints, &list) != 0 || list == NULL) {
+        if (list != NULL) freeaddrinfo(list);
+        return -1;
+    }
+    SOCKET fd = INVALID_SOCKET;
+    for (struct addrinfo* ai = list; ai != NULL; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == INVALID_SOCKET) continue;
+        if (connect(fd, ai->ai_addr, (int)ai->ai_addrlen) != SOCKET_ERROR) break;
+        closesocket(fd);
+        fd = INVALID_SOCKET;
+    }
+    freeaddrinfo(list);
     if (fd == INVALID_SOCKET) return -1;
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
-        closesocket(fd);
-        return -1;
-    }
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        closesocket(fd);
-        return -1;
-    }
     return (int64_t)fd;
 }
 
@@ -100,14 +108,17 @@ void eiwa_socket_close(int64_t fd) {
 
 #else
 
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <string.h>
 #include <errno.h>
+#include <stdio.h>
 
 int64_t eiwa_tcp_bind(int64_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -136,24 +147,31 @@ int64_t eiwa_tcp_bind(int64_t port) {
 }
 
 int64_t eiwa_tcp_connect(const char* host, int64_t port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%lld", (long long)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* list = NULL;
+    if (getaddrinfo(host, port_str, &hints, &list) != 0 || list == NULL) {
+        if (list != NULL) freeaddrinfo(list);
+        return -1;
+    }
+    int fd = -1;
+    for (struct addrinfo* ai = list; ai != NULL; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        int cr;
+        do {
+            cr = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        } while (cr < 0 && errno == EINTR);
+        if (cr == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(list);
     if (fd < 0) return -1;
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
-        close(fd);
-        return -1;
-    }
-    int cr;
-    do {
-        cr = connect(fd, (struct sockaddr*)&addr, sizeof(addr));
-    } while (cr < 0 && errno == EINTR);
-    if (cr < 0) {
-        close(fd);
-        return -1;
-    }
     return (int64_t)fd;
 }
 
