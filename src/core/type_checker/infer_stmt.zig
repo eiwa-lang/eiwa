@@ -275,9 +275,9 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             is_list = true;
         }
     } else if (iter_type.* == .Custom) {
-        if (std.mem.indexOf(u8, iter_type.Custom, "MutableList") != null) {
+        if (customIsBase(self, "MutableList", iter_type.Custom)) {
             is_mutable_list = true;
-        } else if (std.mem.indexOf(u8, iter_type.Custom, "List") != null) {
+        } else if (customIsBase(self, "List", iter_type.Custom)) {
             is_list = true;
         }
     }
@@ -305,7 +305,7 @@ pub fn inferForStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
     
     if (iter_type.* != .Array) {
         // Value-collecting over Map is not supported yet.
-        if (f.collect and mapForKind(iter_type) != null) {
+        if (f.collect and mapForKind(self, iter_type) != null) {
             self.reportError(node.line, node.column, "TypeError: for used as a value over Map is not supported yet.", .{});
             return error.TypeError;
         }
@@ -423,13 +423,18 @@ fn checkForBreakValues(self: *TypeChecker, node: *ASTNode, accept: *const EiwaTy
     }
 }
 
-/// Projection of the loop item for map-like iterables (Phase 75).
-/// `.map` binds the whole `Node<K, V>`; `.keys`/`.values` bind `.key`/`.value`.
+fn customIsBase(self: *TypeChecker, src_base: []const u8, n: []const u8) bool {
+    const bases = [_][]const u8{ self.alias_map.get(src_base) orelse src_base, src_base };
+    for (bases) |base| {
+        if (std.mem.eql(u8, n, base)) return true;
+        if (n.len > base.len and std.mem.startsWith(u8, n, base) and n[base.len] == '_') return true;
+    }
+    return false;
+}
+
 const MapForKind = enum { map, keys, values };
 
-/// Detects `Map`/`MutableMap` (whole entry) and the lazy views
-/// `MapKeys`/`MapValues` (key/value projection). Returns null otherwise.
-fn mapForKind(iter_type: *const EiwaType) ?MapForKind {
+fn mapForKind(self: *TypeChecker, iter_type: *const EiwaType) ?MapForKind {
     if (iter_type.* == .GenericInstance) {
         const bn = iter_type.GenericInstance.base_name;
         if (std.mem.eql(u8, bn, "Map") or std.mem.eql(u8, bn, "MutableMap")) return .map;
@@ -438,10 +443,10 @@ fn mapForKind(iter_type: *const EiwaType) ?MapForKind {
         return null;
     } else if (iter_type.* == .Custom) {
         const n = iter_type.Custom;
-        if (std.mem.indexOf(u8, n, "_MapKeys_") != null) return .keys;
-        if (std.mem.indexOf(u8, n, "_MapValues_") != null) return .values;
-        if (std.mem.indexOf(u8, n, "_MutableMap_") != null) return .map;
-        if (std.mem.indexOf(u8, n, "_Map_") != null) return .map;
+        if (customIsBase(self, "MapKeys", n)) return .keys;
+        if (customIsBase(self, "MapValues", n)) return .values;
+        if (customIsBase(self, "MutableMap", n)) return .map;
+        if (customIsBase(self, "Map", n)) return .map;
         return null;
     }
     return null;
@@ -532,7 +537,7 @@ fn wrapMapForBreaks(allocator: std.mem.Allocator, node: *ASTNode, brk_name: []co
 /// so no emitter or transform changes are needed. Returns true when the
 /// iterable was map-like (node rewritten to `.block` and inferred).
 fn desugarMapFor(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType, iter_type: *const EiwaType) anyerror!bool {
-    const kind = mapForKind(iter_type) orelse return false;
+    const kind = mapForKind(self, iter_type) orelse return false;
     const f = node.data.for_stmt;
     const line = node.line;
     const col = node.column;

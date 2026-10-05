@@ -1103,7 +1103,8 @@ Semântica alvo:
 - [x] **Task 75.7:** `implement` explícito de `toString`/`hashCode` sobrevive à monomorfização (`src/core/type_checker/monomorphize.zig`): o filtro por nome da Phase 50 (intenção: só os auto-gerados) descartava também os explícitos — como templates genéricos retornam antes da síntese, só os explícitos eram atingidos e a síntese gerava o default por cima (ex.: `Node.toString` ignorado, saía `collections_Node_...(key=..., next=null)`). Agora o explícito é clonado e a síntese (`generateDefault*`) o respeita. Exceção: instanciações zumbi com type args não substituídos (`Node<T, Bool>` de defaults `= MutableMap()` em contexto genérico, detectados via `typeContainsGenericParam`: `GenericParam`/`Unknown`/`Custom` irresolvível) mantêm o strip antigo + default null-safe, pois seus corpos com `T` aberto quebram o emissor. Cobertura: `collections_test.ei` (formato exato, generics invertidos, cadeia via `next!!`) + `for_map_test.ei` (`entry.toString()`).
 - [ ] **Task 75.8 (limpeza futura):** Fix raiz do `get` sobre `!!` na transform de corrotinas — `curr!!.next` com `curr` sendo `var` boxeada falha na re-inferência do estado resumido (`TypeError` em `inferGetExpr`), o que hoje exige o `val __node` intermediário no desugar do `for-map` (Task 75.3). Quando corrigido, simplificar o desugar (remover `__node`, avançar com `__curr!!.next`).
 - [ ] **Task 75.9 (limpeza futura):** Não monomorfizar defaults com type params abertos — `= MutableMap()` dentro de `type MutableSet<T>` gera instanciações zumbi (`Node<T, Bool>`, `MapKeys<T, Bool>`, …) que hoje só sobrevivem via strip + default null-safe da Task 75.7. Quando a criação for suprimida/adiada, remover o `typeContainsGenericParam` e o caminho de exceção no `monomorphizeClass`.
-- [x] **Verify:** `for_map_test.ei` verde (13/13) + `collections_test.ei` (16/16) + suíte completa (`eiwac test samples/tests`, 436 PASSED) e `zig build test` verdes sem regressão em `for_lambda_test` / `for_index_test` / `arrays_and_loops_test`.
+- [x] **Task 75.10 (DONE 2026-10-05, lang-gaps #1):** `for` sobre Map com valor genérico (`MutableMap<String, MutableList<String>>`): o `indexOf("MutableList")` no `Custom` casava o argumento genérico *aninhado* e o `for` era tratado como `MutableList` (`Unresolved property 'list'`); o `indexOf("_MutableMap_")` do `mapForKind` também perdia nomes sem prefixo de módulo. Troca por match ancorado na posição 0 contra a base mangled do `alias_map` (`customIsBase`: exata ou `base_`-aplicada) — aninhado nunca casa. Cobertura: `samples/tests/for_map_generic_value_test.ei` (3 testes: iteração, key+value com `.size()`, índice+entry).
+- [x] **Verify:** `for_map_test.ei` verde (13/13) + `for_map_generic_value_test.ei` (3/3) + `collections_test.ei` (16/16) + suíte completa (`eiwac test samples/tests`, 436 PASSED) e `zig build test` verdes sem regressão em `for_lambda_test` / `for_index_test` / `arrays_and_loops_test`.
 ---
 ### Phase 76: `for` como expressão (`List<T>`, estilo `.map`) (COMPLETED)
 > **Status:** GREEN. Plano em `docs/plan_phase76_forvalue.md`, decisão em ADR 65,
@@ -1772,6 +1773,45 @@ Semântica alvo:
 > **Bug pré-existente encontrado e corrigido (exigido pela cobertura contract):** `val c: Drawable? = Circle(1)` armazenava vtable nula — o `var_decl` do emissor LLVM só anexava vtable com `res_type` `Custom` direto (`isContractType` enxerga através de Union mas o nome vinha vazio). Agora alvos `Union` usam a variante stripada + rebuild sobre null-fill prematuro (`statement.zig` `var_decl`). Cobertura pelo teste contract da 91.5 (antes: `?.` retornava null silencioso / dispatch direto dava NPE).
 >
 > **Fora de escopo (futuro):** `var` com análise de atribuição (invalidação por mutação/captura em lambda — modelo Kotlin), `?.let`-style, estreitamento de `get_expr` (`this.field != null`), ramos `null` múltiplos com `|` no `when`.
+
+### Phase 92: `leave`-as-break em blocos `@Leaveable` via `throw Leave()` (COMPLETED)
+> **Status:** COMPLETED (GREEN, 2026-10-05, tag `v0.0.78`). Bare `leave` mirando
+> bloco `@Leaveable` (`repeat`/`loop`/`retry` do std + helpers do usuário que
+> optarem) desuga para `throw Leave()`, pego internamente pelo driver — break
+> de verdade. Antes: `leave` só saía da lambda (continue) e `loop { leave }`
+> travava em loop infinito.
+>
+> **Semântica:**
+> - Helpers continuam lambdas; só `leave` pelado que mira direto o bloco
+>   converte (`leave v`, `leave throw E`, `leave` em `for`/`while`/lambda
+>   aninhados, `return` em lambda — tudo intacto).
+> - `Leave : ControlFlow` (contrato novo em `std.exceptions`, não `Throwable`):
+>   handlers genéricos (`catch {}`, `catch (e: Throwable)`, `try` pelado/valor)
+>   nunca o observam — só `catch (e: Leave)` / `catch (e: ControlFlow)` explícito.
+> - `while`/`for` seguem `br` local (custo zero); `retry` com `leave` aborta
+>   quieto (descarta `err` pendente); demais HOFs mantêm `leave`-sai-do-bloco.
+>
+> **Implementação:**
+> - Parser/AST: `Param.annotations` + `@X` antes do nome do param
+>   (`funDeclaration` — vale p/ fun/método/extensão).
+> - Checker: reescrita em `resolveCallArguments` (params alinhados — cobre free
+>   functions, métodos e extensões), com stop em loop/lambda/fun aninhados;
+>   idempotente + re-inferência (limpa `resolved_type`); `@Leaveable` exige tipo
+>   função explícito (`inferFunDecl`); `throw`/`catch` aceitam `ControlFlow`.
+> - Emissor (`statement.zig`): `throw` coage p/ vtable `ControlFlow` em tipos
+>   puros; dispatch com gate de kind (`take = matched AND kind-agrees`,
+>   `*_ControlFlow_vtable` por scan de sufixo — futuros `type X : ControlFlow`
+>   ganham o bypass sem mudar o emissor); `try` pelado propaga em vez de
+>   engolir; `checkVtableMatch` com fallback; `emitRethrowException` extraído.
+> - Std: `catch (e: Leave)` interno em `repeat`/`loop`/`retry` (`system.ei`).
+> - Docs: tour §3 (sem `continue` em destaque) + §3.4 (`leave`/helpers custom).
+
+- [x] **Task 92.1:** Std (`ControlFlow` + `Leave(val code: Int = 0)`, `catch` interno, `@Leaveable` nos 3 helpers).
+- [x] **Task 92.2:** Parser/AST (anotações em params de função).
+- [x] **Task 92.3:** Checker (desugar + validação da definição + `ControlFlow` em `throw`/`catch`).
+- [x] **Task 92.4:** Emissor (kind-gate, `try` pelado, rethrow compartilhado).
+- [x] **Task 92.5:** Docs (tour + MCP em `example/home/src/mcp`).
+- [x] **Verify:** cenários (repeat/loop/retry/nested/custom/catch-all/task/plain + erros preservados de `return`/`leave v`) + suíte completa **752/752** + `zig build test` verdes, sem regressão.
 
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`

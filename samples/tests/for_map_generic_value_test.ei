@@ -1,17 +1,47 @@
-// import { assert } from "std.core"
-// import { MutableList, MutableMap } from "std.collections"
-
-// TDD RED: `for` over a Map whose value type is generic must iterate
-// entries like Map<String, Int> does (see for_map_test.ei).
+import { assert } from "std.core"
+import { MutableMap, MutableList } from "std.collections"
 
 test "for over Map with generic value type iterates entries" {
-    // val m: MutableMap<String, MutableList<String>> = MutableMap<String, MutableList<String>>()
-    // val inner: MutableList<String> = MutableList<String>()
-    // inner.add("x")
-    // m.put("a", inner)
-    // var n = 0
-    // for (m) { entry ->
-    //     n = n + 1
-    // }
-    // assert(n == 1)
+    val m: MutableMap<String, MutableList<String>> = MutableMap<String, MutableList<String>>()
+    val inner: MutableList<String> = MutableList<String>()
+    inner.add("x")
+    m.put("a", inner)
+
+    var n = 0
+    for (m) { entry ->
+        n = n + 1
+    }
+    assert(n == 1)
+}
+
+test "for over Map with generic value reads key and value" {
+    val m: MutableMap<String, MutableList<String>> = MutableMap<String, MutableList<String>>()
+    val inner: MutableList<String> = MutableList<String>()
+    inner.add("x")
+    inner.add("y")
+    m.put("a", inner)
+    m.put("b", inner)
+
+    var count = 0
+    var total = 0
+    for (m) { entry ->
+        count = count + 1
+        total = total + entry.value.size()
+    }
+    assert(count == 2)
+    assert(total == 4)
+}
+
+test "for over Map with generic value supports index and entry" {
+    val m: MutableMap<String, MutableList<String>> = MutableMap<String, MutableList<String>>()
+    val inner: MutableList<String> = MutableList<String>()
+    inner.add("x")
+    m.put("a", inner)
+    m.put("b", inner)
+
+    var keys = ""
+    for (m) { i, entry ->
+        keys = keys + i.toString() + entry.key
+    }
+    assert(keys == "0a1b")
 }

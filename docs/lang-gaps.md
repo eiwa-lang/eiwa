@@ -6,13 +6,7 @@ history. Each entry: status, repro, impact.
 
 ## Open
 
-### 1. `for` over Map with generic value type fails to compile
-- Status: OPEN — RED test `samples/tests/for_map_generic_value_test.ei` (XFAIL: fails to compile as expected)
-- Error: `Unresolved property 'list' on type MutableMap_String_...`
-- `for` over `MutableMap<String, Int>` works; `MutableMap<String, MutableList<String>>` does not.
-- Impact: `PluginRegistry` keeps a parallel names list instead of iterating.
-
-### 2. Narrowing futures: `var`, heap-boxed scalars, `while` conditions
+### 1. Narrowing futures: `var`, heap-boxed scalars, `while` conditions
 - Status: OPEN, deferred by design — `val` narrows after early-return null
   checks through `&&`/`||` chains, but these do not: `var` (needs mutation
   analysis), heap-boxed scalars (`Int?`/`Bool?`/`Double?` need unbox
@@ -26,7 +20,7 @@ history. Each entry: status, repro, impact.
   (v1 `val`-only rule); baseline `samples/tests/smartcast_logic_test.ei`
   (10 tests, green).
 
-### 3. Agnostic yield (idea, not scheduled)
+### 2. Agnostic yield (idea, not scheduled)
 - A single `yield` that suspends inside coroutines and yields the OS
   thread outside them. Needs compiler cooperation or a thread-local
   current-coroutine check, and must document the weak guarantee (may
