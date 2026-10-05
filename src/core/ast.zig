@@ -355,6 +355,7 @@ pub const ASTNodeType = union(enum) {
     },
     block: struct {
         statements: []const *ASTNode,
+        is_value: bool = false,
     },
     while_stmt: struct {
         condition: *ASTNode,

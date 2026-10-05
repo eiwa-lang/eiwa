@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("../compat.zig");
 const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
+const infer_stmt_mod = @import("infer_stmt.zig");
 const core = @import("core.zig");
 const type_system = @import("../type_system.zig");
 
@@ -1304,7 +1305,8 @@ fn paramIsLeaveable(p: ast.Param) bool {
 }
 
 /// Rewrites `leave` to `throw Leave()` in lambdas passed to `@Leaveable`
-/// params (aligned). Clears the lambda type when converted so it re-infers.
+/// params (aligned). Skips lambdas holding `leave v` (value-form territory).
+/// Clears the lambda type when converted so it re-infers.
 fn rewriteLeaveableBlockLeaves(self: *TypeChecker, params: []const ast.Param, args: []const *ASTNode) anyerror!void {
     const n = @min(params.len, args.len);
     var i: usize = 0;
@@ -1313,6 +1315,10 @@ fn rewriteLeaveableBlockLeaves(self: *TypeChecker, params: []const ast.Param, ar
         const arg = args[i];
         const lam = if (arg.data == .named_arg) arg.data.named_arg.value else arg;
         if (lam.data != .lambda_expr) continue;
+        var probe = ArrayList(*ASTNode).init(self.allocator);
+        defer probe.deinit();
+        for (lam.data.lambda_expr.body) |stmt| try collectValuedLeaves(stmt, &probe);
+        if (probe.items.len > 0) continue;
         var converted: usize = 0;
         for (lam.data.lambda_expr.body) |stmt| {
             converted += try rewriteLeavesInNode(self, stmt);
@@ -1364,6 +1370,279 @@ fn rewriteLeavesInNode(self: *TypeChecker, node: *ASTNode) anyerror!usize {
             return 0;
         },
         else => return 0,
+    }
+}
+
+/// `return` outside nested lambdas/functions (loops don't trap it).
+fn bodyHasDirectReturn(node: *ASTNode) bool {
+    switch (node.data) {
+        .return_stmt => return true,
+        .block => |b| {
+            for (b.statements) |s| if (bodyHasDirectReturn(s)) return true;
+            return false;
+        },
+        .if_expr => |i| {
+            if (bodyHasDirectReturn(i.then_branch)) return true;
+            if (i.else_branch) |e| if (bodyHasDirectReturn(e)) return true;
+            return false;
+        },
+        .try_stmt => |ts| {
+            if (bodyHasDirectReturn(ts.body)) return true;
+            for (ts.catches) |cb| if (bodyHasDirectReturn(cb.body)) return true;
+            return false;
+        },
+        .when_expr => |w| {
+            for (w.cases) |c| if (bodyHasDirectReturn(c.body)) return true;
+            return false;
+        },
+        .while_stmt => |w| return bodyHasDirectReturn(w.body),
+        .for_stmt => |f| return bodyHasDirectReturn(f.body),
+        .lambda_expr, .fun_decl => return false,
+        else => return false,
+    }
+}
+
+/// Collects `leave v` values (non-throw), stopping at nested loops/lambdas/functions.
+fn collectValuedLeaves(node: *ASTNode, out: *ArrayList(*ASTNode)) anyerror!void {
+    switch (node.data) {
+        .block => |b| for (b.statements) |s| try collectValuedLeaves(s, out),
+        .if_expr => |i| {
+            try collectValuedLeaves(i.then_branch, out);
+            if (i.else_branch) |e| try collectValuedLeaves(e, out);
+        },
+        .try_stmt => |ts| {
+            try collectValuedLeaves(ts.body, out);
+            for (ts.catches) |cb| try collectValuedLeaves(cb.body, out);
+        },
+        .when_expr => |w| for (w.cases) |c| try collectValuedLeaves(c.body, out),
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
+        .break_stmt => |b| {
+            if (b.value) |v| {
+                if (v.data != .throw_stmt) try out.append(v);
+            }
+        },
+        else => {},
+    }
+}
+
+/// Source-level `TypeRef` for an inferred type (synthesized `var __out: T?`).
+fn eiwaTypeToRef(self: *TypeChecker, t: *const EiwaType, nullable: bool, line: usize, col: usize) anyerror!*const ast.ASTTypeRef {
+    const tr = try self.allocator.create(ast.ASTTypeRef);
+    switch (t.*) {
+        .Int => tr.* = .{ .name = "Int", .generic_args = &.{}, .is_array = false, .is_nullable = nullable },
+        .Bool => tr.* = .{ .name = "Bool", .generic_args = &.{}, .is_array = false, .is_nullable = nullable },
+        .Double => tr.* = .{ .name = "Double", .generic_args = &.{}, .is_array = false, .is_nullable = nullable },
+        .String => tr.* = .{ .name = "String", .generic_args = &.{}, .is_array = false, .is_nullable = nullable },
+        .Null => tr.* = .{ .name = "Null", .generic_args = &.{}, .is_array = false, .is_nullable = true },
+        .Custom => |n| tr.* = .{ .name = n, .generic_args = &.{}, .is_array = false, .is_nullable = nullable },
+        .GenericInstance => |gi| {
+            var args = try self.allocator.alloc(*const ast.ASTTypeRef, gi.type_args.len);
+            for (gi.type_args, 0..) |a, i| args[i] = try eiwaTypeToRef(self, a, false, line, col);
+            tr.* = .{ .name = gi.base_name, .generic_args = args, .is_array = false, .is_nullable = nullable };
+        },
+        .Array => |elem| {
+            const inner = try eiwaTypeToRef(self, elem, false, line, col);
+            const g_args = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
+            g_args[0] = inner;
+            tr.* = .{ .name = "", .generic_args = g_args, .is_array = true, .is_nullable = nullable };
+        },
+        else => {
+            self.reportError(line, col, "TypeError: 'leave' value of this type cannot be delivered by 'repeat'/'loop'.", .{});
+            return error.TypeError;
+        },
+    }
+    return tr;
+}
+
+fn mkRVNode(self: *TypeChecker, line: usize, col: usize, data: ast.ASTNodeType) anyerror!*ASTNode {
+    const n = try self.allocator.create(ASTNode);
+    n.* = .{ .line = line, .column = col, .resolved_type = null, .data = data };
+    return n;
+}
+
+/// Value-form loop drivers: `leave v` delivers `v` (`T?`, `null` when no
+/// `leave` fires). Only `@LoopDriver` functions desugar (1 param = loop
+/// shape, 2 params = counted shape); other `@Leaveable` drivers reject
+/// valued leaves. No valued leaves: false. Inlines to a loop over `__out:
+/// T?`, no exception payload needed.
+fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, params: []const ast.Param, annotations: []const ast.Annotation, t: *EiwaType) anyerror!bool {
+    var lam: ?*ASTNode = null;
+    const nargs = node.data.call_expr.arguments.len;
+    for (params, 0..) |p, pi| {
+        if (pi >= nargs or !paramIsLeaveable(p)) continue;
+        const a = node.data.call_expr.arguments[pi];
+        const l = if (a.data == .named_arg) a.data.named_arg.value else a;
+        if (l.data == .lambda_expr) {
+            lam = l;
+            break;
+        }
+    }
+    const block_lam = lam orelse return false;
+    var valued = ArrayList(*ASTNode).init(self.allocator);
+    defer valued.deinit();
+    for (block_lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &valued);
+    if (valued.items.len == 0) return false;
+    var is_driver = false;
+    for (annotations) |ann| {
+        if (std.mem.eql(u8, ann.name, "LoopDriver")) {
+            is_driver = true;
+            break;
+        }
+    }
+    if (!is_driver) {
+        self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported in 'repeat'/'loop' blocks.", .{});
+        return error.TypeError;
+    }
+    const is_repeat = params.len == 2;
+    const is_loop = params.len == 1;
+    if (!is_repeat and !is_loop) {
+        self.reportError(node.line, node.column, "TypeError: '@LoopDriver' functions take 1 block parameter (`loop` shape) or a count plus block (`repeat` shape).", .{});
+        return error.TypeError;
+    }
+    for (block_lam.data.lambda_expr.body) |s| {
+        if (bodyHasDirectReturn(s)) {
+            self.reportError(node.line, node.column, "TypeError: 'return' is not allowed inside a 'repeat'/'loop' block. Use `leave value` to exit with a value.", .{});
+            return error.TypeError;
+        }
+    }
+    const line = node.line;
+    const col = node.column;
+    const tag = try std.fmt.allocPrint(self.allocator, "__rep_{d}_{d}", .{ line, col });
+    const n_name = try std.fmt.allocPrint(self.allocator, "{s}_n", .{tag});
+    const i_name = try std.fmt.allocPrint(self.allocator, "{s}_i", .{tag});
+    const out_name = try std.fmt.allocPrint(self.allocator, "{s}_out", .{tag});
+    var pname: []const u8 = "it";
+    var tmp_scope = Scope.init(self.allocator, scope);
+    defer tmp_scope.deinit();
+    if (is_repeat) {
+        const lparams = block_lam.data.lambda_expr.params;
+        var ptype: *const EiwaType = undefined;
+        if (lparams.len > 0) {
+            pname = lparams[0].name;
+            if (lparams[0].type_ref) |tr| {
+                ptype = try self.resolveTypeRef(tr);
+            } else {
+                const it = try self.allocator.create(EiwaType);
+                it.* = .Int;
+                ptype = it;
+            }
+        } else {
+            const it = try self.allocator.create(EiwaType);
+            it.* = .Int;
+            ptype = it;
+        }
+        try tmp_scope.define(pname, ptype, false, false);
+    }
+    var deliver_t: ?*const EiwaType = null;
+    for (valued.items) |v| {
+        const vt = try self.inferNode(v, &tmp_scope);
+        if (vt.* == .Void) {
+            self.reportError(v.line, v.column, "TypeError: 'leave' value cannot be Void. Use bare 'leave' to exit.", .{});
+            return error.TypeError;
+        }
+        if (deliver_t) |dt| {
+            if (!self.isCompatible(dt, vt) and !self.isCompatible(vt, dt)) {
+                self.reportError(v.line, v.column, "TypeError: 'leave' values have incompatible types {f} and {f}.", .{ dt.*, vt.* });
+                return error.TypeError;
+            }
+        } else {
+            deliver_t = vt;
+        }
+    }
+    const out_ref = try eiwaTypeToRef(self, deliver_t.?, true, line, col);
+    infer_stmt_mod.warnDeadCode(self, block_lam.data.lambda_expr.body);
+    for (block_lam.data.lambda_expr.body) |s| try convertLeavesToDeliver(self, s, out_name);
+    const null_lit = try mkRVNode(self, line, col, .{ .null_literal = {} });
+    const var_out = try mkRVNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = out_name, .type_ref = out_ref, .initializer = null_lit } });
+    const out_ident = try mkRVNode(self, line, col, .{ .identifier = .{ .name = out_name, .resolved_c_name = null } });
+    var loop_body = ArrayList(*ASTNode).init(self.allocator);
+    if (is_repeat) {
+        const i_ident = try mkRVNode(self, line, col, .{ .identifier = .{ .name = i_name, .resolved_c_name = null } });
+        const val_p = try mkRVNode(self, line, col, .{ .var_decl = .{ .is_mut = false, .name = pname, .type_ref = null, .initializer = i_ident } });
+        try loop_body.append(val_p);
+    }
+    for (block_lam.data.lambda_expr.body) |s| try loop_body.append(s);
+    if (is_repeat) {
+        const i_lhs = try mkRVNode(self, line, col, .{ .identifier = .{ .name = i_name, .resolved_c_name = null } });
+        const one = try mkRVNode(self, line, col, .{ .int_literal = 1 });
+        const incr = try mkRVNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .plus, .right = one } });
+        try loop_body.append(try mkRVNode(self, line, col, .{ .assignment = .{ .name = i_name, .value = incr } }));
+    }
+    const loop_body_node = try mkRVNode(self, line, col, .{ .block = .{ .statements = try loop_body.toOwnedSlice() } });
+    var cond: *ASTNode = undefined;
+    if (is_repeat) {
+        const i_lhs = try mkRVNode(self, line, col, .{ .identifier = .{ .name = i_name, .resolved_c_name = null } });
+        const n_rhs = try mkRVNode(self, line, col, .{ .identifier = .{ .name = n_name, .resolved_c_name = null } });
+        cond = try mkRVNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .less, .right = n_rhs } });
+    } else {
+        cond = try mkRVNode(self, line, col, .{ .bool_literal = true });
+    }
+    const while_node = try mkRVNode(self, line, col, .{ .while_stmt = .{ .condition = cond, .body = loop_body_node } });
+    var stmts = ArrayList(*ASTNode).init(self.allocator);
+    if (is_repeat) {
+        var count_arg: ?*ASTNode = null;
+        for (params, 0..) |p, idx| {
+            if (paramIsLeaveable(p)) continue;
+            if (idx < nargs) {
+                count_arg = node.data.call_expr.arguments[idx];
+                break;
+            }
+        }
+        const ca = count_arg orelse {
+            self.reportError(node.line, node.column, "TypeError: 'repeat' requires a count argument.", .{});
+            return error.TypeError;
+        };
+        try stmts.append(try mkRVNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = n_name, .type_ref = null, .initializer = ca } }));
+        const zero = try mkRVNode(self, line, col, .{ .int_literal = 0 });
+        try stmts.append(try mkRVNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = i_name, .type_ref = null, .initializer = zero } }));
+    }
+    try stmts.append(var_out);
+    try stmts.append(while_node);
+    try stmts.append(out_ident);
+    node.data = .{ .block = .{ .statements = try stmts.toOwnedSlice(), .is_value = true } };
+    self.synthetic_depth += 1;
+    defer self.synthetic_depth -= 1;
+    const bt = try infer_stmt_mod.inferBlockAsExpression(self, node, scope);
+    if (bt) |rt| {
+        if (node.expected_type) |exp_t| {
+            if (!self.isCompatible(exp_t, rt)) {
+                self.reportError(node.line, node.column, "TypeError: 'repeat'/'loop' yields {f} but expected {f}.", .{ rt.*, exp_t.* });
+                return error.TypeError;
+            }
+        }
+        t.* = rt.*;
+    } else {
+        t.* = .Void;
+    }
+    return true;
+}
+
+/// `leave v` becomes `{ __out = v; leave }`. Same stops as the other walkers.
+fn convertLeavesToDeliver(self: *TypeChecker, node: *ASTNode, out_name: []const u8) anyerror!void {
+    switch (node.data) {
+        .block => |b| for (b.statements) |s| try convertLeavesToDeliver(self, s, out_name),
+        .if_expr => |i| {
+            try convertLeavesToDeliver(self, i.then_branch, out_name);
+            if (i.else_branch) |e| try convertLeavesToDeliver(self, e, out_name);
+        },
+        .try_stmt => |ts| {
+            try convertLeavesToDeliver(self, ts.body, out_name);
+            for (ts.catches) |cb| try convertLeavesToDeliver(self, cb.body, out_name);
+        },
+        .when_expr => |w| for (w.cases) |c| try convertLeavesToDeliver(self, c.body, out_name),
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
+        .break_stmt => |b| {
+            if (b.value) |v| {
+                if (v.data == .throw_stmt) return;
+                const set_out = try mkRVNode(self, node.line, node.column, .{ .assignment = .{ .name = out_name, .value = v } });
+                const brk = try mkRVNode(self, node.line, node.column, .{ .break_stmt = .{ .value = null } });
+                var pair = try self.allocator.alloc(*ASTNode, 2);
+                pair[0] = set_out;
+                pair[1] = brk;
+                node.data = .{ .block = .{ .statements = pair } };
+            }
+        },
+        else => {},
     }
 }
 
@@ -1513,6 +1792,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             const fun_decl = func_node.data.fun_decl;
             
             try resolveCallArguments(self, node, fun_decl.params, scope);
+
+            // Value-form loop drivers; node replaced when handled.
+            if (try desugarRepeatLoopValue(self, node, scope, fun_decl.params, fun_decl.annotations, t)) return;
             
             // Set expected types for all arguments (for C transpiler boxing)
             for (c.arguments, 0..) |arg, arg_i| {
@@ -1691,6 +1973,8 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 const ret_type = func_node.resolved_type.?.Function.return_type;
 
                 try resolveCallArguments(self, node, func_decl.params, scope);
+
+                if (try desugarRepeatLoopValue(self, node, scope, func_decl.params, func_decl.annotations, t)) return;
 
                 for (c.arguments, 0..) |arg, arg_i| {
                     if (arg_i < func_decl.params.len) {

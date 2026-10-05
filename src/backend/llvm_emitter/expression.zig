@@ -4316,6 +4316,22 @@ fn emitExpressionRaw(
             llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
             return llvm.LLVMBuildLoad2(builder, ret_type, res_ptr, "expr_try_res_load");
         },
+        .block => |b| {
+            // Checker-built value blocks only: effects, then trailing yields.
+            if (b.statements.len == 0) {
+                return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+            }
+            const cur_blk_bb = llvm.LLVMGetInsertBlock(builder);
+            const cur_blk_fn = llvm.LLVMGetBasicBlockParent(cur_blk_bb);
+            for (b.statements[0 .. b.statements.len - 1]) |stmt| {
+                if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) != null) break;
+                try statement.emitStatement(ctx, mod, builder, cur_blk_fn, scope, structs, libs, stmt, null);
+            }
+            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) != null) {
+                return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+            }
+            return try emitExpression(ctx, mod, builder, scope, structs, libs, b.statements[b.statements.len - 1]);
+        },
         .for_stmt => |f| {
             // A collecting `for` builds a List; a statement one runs for
             // effects with a dummy value.

@@ -1,0 +1,20 @@
+import { assert } from "std.core"
+
+@Embed
+fun runOnce(block: () -> Void) {
+    block()
+}
+
+fun pickIt(c: Bool): Int {
+    runOnce {
+        if (c) {
+            return 7
+        }
+    }
+    return 9
+}
+
+test "@Embed block return exits method" {
+    assert(pickIt(true) == 7)
+    assert(pickIt(false) == 9)
+}

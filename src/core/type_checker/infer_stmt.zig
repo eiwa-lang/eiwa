@@ -810,7 +810,7 @@ pub fn checkBlock(self: *TypeChecker, block: []const *ASTNode, parent_scope: *Sc
     return t;
 }
 
-fn warnDeadCode(self: *TypeChecker, block: []const *ASTNode) void {
+pub fn warnDeadCode(self: *TypeChecker, block: []const *ASTNode) void {
     if (self.synthetic_depth > 0) return;
     var i: usize = 0;
     while (i < block.len) : (i += 1) {

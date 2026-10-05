@@ -1,0 +1,142 @@
+import { assert } from "std.core"
+
+@LoopDriver
+fun upto(n: Int, @Leaveable block: (Int) -> Void) {
+    try {
+        var i = 0
+        while (i < n) {
+            block(i)
+            i = i + 1
+        }
+    } catch (e: Leave) {}
+}
+
+@LoopDriver
+fun uptoD(n: Int = 5, @Leaveable block: (Int) -> Void) {
+    try {
+        var i = 0
+        while (i < n) {
+            block(i)
+            i = i + 1
+        }
+    } catch (e: Leave) {}
+}
+
+fun withVal(x: Int, block: (Int) -> Void) {
+    block(x)
+    block(x + 1)
+}
+
+test "repeat break ends loop" {
+    var count = 0
+    repeat(10) { i ->
+        if (i == 3) {
+            leave
+        }
+        count = count + 1
+    }
+    assert(count == 3)
+}
+
+test "loop break exits" {
+    var j = 0
+    loop {
+        j = j + 1
+        if (j >= 3) {
+            leave
+        }
+    }
+    assert(j == 3)
+}
+
+test "custom driver break" {
+    var c = 0
+    upto(10) { i ->
+        if (i == 4) {
+            leave
+        }
+        c = c + 1
+    }
+    assert(c == 4)
+}
+
+test "repeat returning value" {
+    val x = repeat(5) { i ->
+        if (i == 3)
+            leave "Get it!"
+    }
+    assert(x == "Get it!")
+}
+
+test "repeat completing delivers null" {
+    val d: String? = repeat(2) { i ->
+        if (i == 9) {
+            leave "x"
+        }
+    }
+    assert(d == null)
+}
+
+test "loop delivers leave value" {
+    val c = loop {
+        leave 42
+    }
+    assert((c ?: -1) == 42)
+}
+
+test "custom driver delivers leave value" {
+    val x = upto(10) { i ->
+        if (i == 4) {
+            leave i * 100
+        }
+    }
+    assert((x ?: -1) == 400)
+}
+
+test "plain higher-order keeps block-exit" {
+    var c = 0
+    withVal(0) { i ->
+        if (i == 0) {
+            leave
+        }
+        c = c + 1
+    }
+    assert(c == 1)
+}
+
+test "named args through driver" {
+    var c = 0
+    uptoD(n = 3) { i ->
+        if (i == 1) {
+            leave
+        }
+        c = c + 1
+    }
+    assert(c == 1)
+}
+
+test "nested drivers break innermost" {
+    var m = 0
+    repeat(3) { i ->
+        repeat(5) { j ->
+            if (j == 1) {
+                leave
+            }
+            m = m + 1
+        }
+    }
+    assert(m == 3)
+}
+
+test "nested value repeats deliver innermost" {
+    var total = 0
+    repeat(2) { i ->
+        val y = repeat(3) { j ->
+            if (j == 1) {
+                leave i * 10 + j
+            }
+        }
+        total = total + (y ?: -1)
+    }
+    assert(total == 12)
+}

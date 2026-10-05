@@ -1602,7 +1602,17 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .break_stmt => try infer_stmt_mod.inferBreakStmt(self, node, scope, t),
         .try_stmt => try infer_stmt_mod.inferTryStmt(self, node, scope, t),
         .throw_stmt => try infer_stmt_mod.inferThrowStmt(self, node, scope, t),
-        .block => return try self.checkBlock(node.data.block.statements, scope),
+        .block => {
+            if (node.data.block.is_value) {
+                if (try infer_stmt_mod.inferBlockAsExpression(self, node, scope)) |rt| {
+                    t.* = rt.*;
+                } else {
+                    t.* = .Void;
+                }
+            } else {
+                return try self.checkBlock(node.data.block.statements, scope);
+            }
+        },
         .is_type_cond => t.* = .Bool,
         .when_expr => try infer_when_mod.inferWhenExpr(self, node, scope, t),
         .lambda_expr => try infer_expr_mod.inferLambdaExpr(self, node, scope, t),
