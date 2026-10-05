@@ -2,12 +2,22 @@ contract Throwable {
     fun message(): String
 }
 
+/// Bypassed by generic handlers; only explicit `Leave`/`ControlFlow` catches observe it.
+contract ControlFlow {
+    fun message(): String
+}
+
 type AssertionException(val text: String) : Throwable {
     implement fun message() = this.text
 }
 
 type Exception(val text: String) : Throwable {
     implement fun message() = this.text
+}
+
+/// Break signal for `@Leaveable` blocks; caught internally by the driver.
+type Leave(val code: Int = 0) : ControlFlow {
+    implement fun message() = "leave"
 }
 
 fun error(msg: String): Void {

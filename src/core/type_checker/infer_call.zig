@@ -447,7 +447,11 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
     const has_varargs = params.len > 0 and params[params.len - 1].is_varargs;
     const varargs_idx: ?usize = if (has_varargs) params.len - 1 else null;
 
-    if (!has_named and c.arguments.len == params.len and !has_varargs) return;
+    if (!has_named and c.arguments.len == params.len and !has_varargs) {
+        // Positional fast path: params/args already aligned.
+        try rewriteLeaveableBlockLeaves(self, params, c.arguments);
+        return;
+    }
 
     var new_args = try self.allocator.alloc(?*ASTNode, params.len);
     for (new_args) |*slot| {
@@ -596,6 +600,9 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
     for (new_args, 0..) |opt_arg, i| {
         final_args[i] = opt_arg.?;
     }
+
+    // Aligned with params now (defaults filled, named reordered).
+    try rewriteLeaveableBlockLeaves(self, params, final_args);
 
     c.arguments = final_args;
 }
@@ -1288,6 +1295,78 @@ fn inferImplicitThisOrObjectCall(self: *TypeChecker, node: *ASTNode, scope: *Sco
     return false;
 }
 
+/// `@Leaveable` block parameter: `leave` in the passed lambda becomes `throw Leave()`.
+fn paramIsLeaveable(p: ast.Param) bool {
+    for (p.annotations) |ann| {
+        if (std.mem.eql(u8, ann.name, "Leaveable")) return true;
+    }
+    return false;
+}
+
+/// Rewrites `leave` to `throw Leave()` in lambdas passed to `@Leaveable`
+/// params (aligned). Clears the lambda type when converted so it re-infers.
+fn rewriteLeaveableBlockLeaves(self: *TypeChecker, params: []const ast.Param, args: []const *ASTNode) anyerror!void {
+    const n = @min(params.len, args.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        if (!paramIsLeaveable(params[i])) continue;
+        const arg = args[i];
+        const lam = if (arg.data == .named_arg) arg.data.named_arg.value else arg;
+        if (lam.data != .lambda_expr) continue;
+        var converted: usize = 0;
+        for (lam.data.lambda_expr.body) |stmt| {
+            converted += try rewriteLeavesInNode(self, stmt);
+        }
+        if (converted > 0) lam.resolved_type = null;
+    }
+}
+
+/// Rewrites bare `leave` to `throw Leave()`, stopping at nested
+/// loop/lambda/function boundaries. Returns the conversion count.
+fn rewriteLeavesInNode(self: *TypeChecker, node: *ASTNode) anyerror!usize {
+    switch (node.data) {
+        .block => |b| {
+            var n: usize = 0;
+            for (b.statements) |s| n += try rewriteLeavesInNode(self, s);
+            return n;
+        },
+        .if_expr => |i| {
+            var n = try rewriteLeavesInNode(self, i.then_branch);
+            if (i.else_branch) |e| n += try rewriteLeavesInNode(self, e);
+            return n;
+        },
+        .try_stmt => |ts| {
+            var n = try rewriteLeavesInNode(self, ts.body);
+            for (ts.catches) |cb| n += try rewriteLeavesInNode(self, cb.body);
+            return n;
+        },
+        .when_expr => |w| {
+            var n: usize = 0;
+            for (w.cases) |case| n += try rewriteLeavesInNode(self, case.body);
+            return n;
+        },
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => return 0,
+        .break_stmt => |b| {
+            if (b.value == null) {
+                const ident = try self.allocator.create(ASTNode);
+                ident.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .identifier = .{
+                    .name = "Leave",
+                    .resolved_c_name = null,
+                } } };
+                const ctor = try self.allocator.create(ASTNode);
+                ctor.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .call_expr = .{
+                    .callee = ident,
+                    .arguments = &.{},
+                } } };
+                node.data = .{ .throw_stmt = .{ .expr = ctor } };
+                return 1;
+            }
+            return 0;
+        },
+        else => return 0,
+    }
+}
+
 pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var c = &node.data.call_expr;
 
@@ -1297,6 +1376,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         if (try inferFunPointer(self, node, scope, t)) return;
     }
 
+    // `@Leaveable` desugaring runs in `resolveCallArguments` (params aligned).
     prePropagateExpectedTypes(self, node, scope);
 
     // 1. Infer all arguments that are NOT lambdas

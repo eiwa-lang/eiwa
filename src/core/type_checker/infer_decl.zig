@@ -1105,6 +1105,28 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         t.* = .Void;
         return;
     }
+    // `@Leaveable` requires an explicit function type.
+    for (f.params) |p| {
+        var saw_leaveable = false;
+        for (p.annotations) |ann| {
+            if (std.mem.eql(u8, ann.name, "Leaveable")) {
+                saw_leaveable = true;
+            } else {
+                self.reportError(node.line, node.column, "TypeError: Unknown parameter annotation '@{s}' on '{s}'. Did you mean '@Leaveable'?", .{ ann.name, p.name });
+                return error.TypeError;
+            }
+        }
+        if (saw_leaveable) {
+            const tr = p.type_ref orelse {
+                self.reportError(node.line, node.column, "TypeError: '@Leaveable' parameter '{s}' requires an explicit function type (e.g. `block: (Int) -> Void`).", .{p.name});
+                return error.TypeError;
+            };
+            if (!tr.is_function) {
+                self.reportError(node.line, node.column, "TypeError: '@Leaveable' can only annotate block parameters with function type, found on '{s}'.", .{p.name});
+                return error.TypeError;
+            }
+        }
+    }
     var param_types = ArrayList(*const EiwaType).init(self.allocator);
     var mangled_name = ArrayList(u8).init(self.allocator);
     var receiver_type: ?*const EiwaType = null;

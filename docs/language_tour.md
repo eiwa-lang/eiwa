@@ -87,6 +87,8 @@ Imported files must be "passive libraries", meaning they should only **declare**
 
 Eiwa features a native type system for dynamic arrays and full-featured generic **collections**, along with ergonomic `for` and `while` loops.
 
+> **No `continue`:** Eiwa has no `continue` statement. `leave` always exits the loop entirely — to skip the rest of an iteration, guard it with `if`/`else`.
+
 ### 3.1 Collections and `for` Loops
 
 The `[Type]` syntax is syntactic sugar for an immutable **`List<T>`**. Read elements with `[index]` or `.get(index)`, and check size with `.size()`. For mutation, call `.mut()` on any collection to get a `MutableList<T>` (see [Section 7.5](#75-mutability-conversion----mut-and-freeze)).
@@ -249,6 +251,60 @@ fun main() {
     }
 }
 ```
+
+#### `leave` inside `repeat` / `loop` / `retry` (break, not skip)
+
+The block parameter of these helpers is `@Leaveable`: a bare `leave`
+targeting the block **ends the whole loop** (like `leave` in `for`/`while`),
+it does not skip to the next iteration:
+
+```kotlin
+repeat(10) { i ->
+    if (i == 3) {
+        leave // stops repeat entirely (runs 0, 1, 2)
+    }
+}
+
+loop {
+    if (done()) {
+        leave // exits the infinite loop
+    }
+}
+
+retry(5) { attempt ->
+    if (giveUp()) {
+        leave // aborts retries quietly (past failures are discarded)
+    }
+}
+```
+
+Mechanics: `leave` desugars to `throw Leave()`, caught internally by the
+helper. `Leave` implements the `ControlFlow` contract (not `Throwable`), so
+generic handlers never observe it — bare `catch {}`, `catch (e: Throwable)`
+and bare `try {}` let it through; only an explicit `catch (e: Leave)` or
+`catch (e: ControlFlow)` intercepts it. `return` inside these blocks is still
+rejected, and `leave` inside a nested `for`/`while`/lambda still targets the
+innermost construct.
+
+#### Custom `@Leaveable` helpers
+
+Your own loop drivers can opt into the same semantics by annotating the block
+parameter — the function must catch `Leave` around the block invocation:
+
+```kotlin
+fun myEach(n: Int, @Leaveable block: (Int) -> Void) {
+    try {
+        var i = 0
+        while (i < n) {
+            block(i)
+            i = i + 1
+        }
+    } catch (e: Leave) {}
+}
+```
+
+`@Leaveable` requires an explicit function type. Any other higher-order
+function keeps plain lambda semantics (`leave` just exits the block).
 
 ---
 

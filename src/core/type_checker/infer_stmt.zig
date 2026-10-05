@@ -904,15 +904,23 @@ pub fn inferThrowStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         self.reportError(node.line, node.column, "TypeError: Contract 'Throwable' must be declared in std.core.", .{});
         return error.TypeError;
     };
+    // ControlFlow exceptions are throwable too.
+    const control_type = self.resolveTypeName("ControlFlow", false) catch null;
 
     const expr_base = core.extractBaseType(expr_type);
     var conforms = false;
     if (expr_base.* == .Custom) {
         const throwable_base = core.extractBaseType(throwable_type);
         conforms = self.conformsTo(expr_base.Custom, throwable_base.Custom);
+        if (!conforms) {
+            if (control_type) |ct| {
+                const control_base = core.extractBaseType(ct);
+                conforms = self.conformsTo(expr_base.Custom, control_base.Custom);
+            }
+        }
     }
     if (!conforms) {
-        self.reportError(node.line, node.column, "TypeError: Can only throw values of types implementing the 'Throwable' contract, found {f}.", .{expr_type.*});
+        self.reportError(node.line, node.column, "TypeError: Can only throw values of types implementing the 'Throwable' or 'ControlFlow' contract, found {f}.", .{expr_type.*});
         return error.TypeError;
     }
 
@@ -944,6 +952,8 @@ fn prepareCatchScope(self: *TypeChecker, node: *ASTNode, c: ast.CatchBlock, catc
         return error.TypeError;
     };
     const throwable_base = core.extractBaseType(throwable_type);
+    const control_type = self.resolveTypeName("ControlFlow", false) catch null;
+    const control_base = if (control_type) |ct| core.extractBaseType(ct) else null;
 
     if (c.var_name) |var_name| {
         var var_type: *const EiwaType = throwable_type;
@@ -957,8 +967,15 @@ fn prepareCatchScope(self: *TypeChecker, node: *ASTNode, c: ast.CatchBlock, catc
             const target_base = core.extractBaseType(target_t);
             if (target_base.* == .Custom) {
                 const is_contract = self.contracts_ast.contains(target_base.Custom);
-                if (!is_contract and !self.conformsTo(target_base.Custom, throwable_base.Custom)) {
-                    self.reportError(node.line, node.column, "TypeError: Catch block type must be a contract or a type implementing 'Throwable', found {f}.", .{target_t.*});
+                var ok = is_contract;
+                if (!ok) ok = self.conformsTo(target_base.Custom, throwable_base.Custom);
+                if (!ok) {
+                    if (control_base) |cb| {
+                        if (cb.* == .Custom) ok = self.conformsTo(target_base.Custom, cb.Custom);
+                    }
+                }
+                if (!ok) {
+                    self.reportError(node.line, node.column, "TypeError: Catch block type must be a contract or a type implementing 'Throwable'/'ControlFlow', found {f}.", .{target_t.*});
                     return error.TypeError;
                 }
             }

@@ -299,6 +299,7 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
     
     if (!self.check(.r_paren)) {
         while (true) {
+            const param_annotations = try self.parseAnnotations();
             try self.consume(.identifier, "Expected parameter name.");
             const param_name = self.previous.lexeme;
             const parsed_type = try self.parseTypeAnnotation();
@@ -327,6 +328,7 @@ pub fn funDeclaration(self: *Parser, annotations: []const ast.Annotation, modifi
                 .type_ref = parsed_type,
                 .initializer = initializer,
                 .is_varargs = is_varargs,
+                .annotations = param_annotations,
             });
 
             if (!self.match(.comma)) break;

@@ -114,6 +114,8 @@ pub const Param = struct {
     /// Varargs parameter (`name: T...`): accepts N trailing call arguments,
     /// exposed as `List<T>` inside the body (Phase 66).
     is_varargs: bool = false,
+    /// Parameter annotations (e.g. `@Leaveable`).
+    annotations: []const Annotation = &.{},
 };
 
 pub const ClassProp = struct {

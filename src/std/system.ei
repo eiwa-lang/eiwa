@@ -1,21 +1,26 @@
 import { Coroutine } from "std.coroutines"
+import { Leave } from "std.exceptions"
 
-fun loop(block: () -> Void) {
-    while (true) {
-        block()
-    }
+fun loop(@Leaveable block: () -> Void) {
+    try {
+        while (true) {
+            block()
+        }
+    } catch (e: Leave) {}
 }
 
-fun repeat(count: Int, block: (Int) -> Void) {
-    var i = 0
+fun repeat(count: Int, @Leaveable block: (Int) -> Void) {
+    try {
+        var i = 0
 
-    while (i < count) {
-        block(i)
-        i = i + 1
-    }
+        while (i < count) {
+            block(i)
+            i = i + 1
+        }
+    } catch (e: Leave) {}
 }
 
-fun retry(times: Int, block: (Int) -> Void) {
+fun retry(times: Int, @Leaveable block: (Int) -> Void) {
     var err: Throwable | Null = null
     var attempt = 0
 
@@ -23,6 +28,9 @@ fun retry(times: Int, block: (Int) -> Void) {
         try {
             block(attempt)
             return
+        } catch (e: Leave) {
+            err = null
+            leave
         } catch (e: Throwable) {
             err = e
             attempt = attempt + 1
