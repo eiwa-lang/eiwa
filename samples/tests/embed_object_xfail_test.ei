@@ -1,0 +1,10 @@
+object Calc {
+    @Embed
+    fun add(a: Int, b: Int): Int {
+        return a + b
+    }
+}
+
+test "@Embed on object member is rejected" {
+    assert(Calc.add(1, 2) == 3)
+}

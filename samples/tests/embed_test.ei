@@ -140,3 +140,12 @@ test "nested value repeats deliver innermost" {
     }
     assert(total == 12)
 }
+
+@Embed
+fun doubleIt(x: Int): Int {
+    return x * 2
+}
+
+test "@Embed free function calls normally" {
+    assert(doubleIt(21) == 42)
+}

@@ -1,0 +1,8 @@
+@Embed
+fun Int.triple(): Int {
+    return this * 3
+}
+
+test "@Embed on extension is rejected" {
+    assert(7.triple() == 21)
+}

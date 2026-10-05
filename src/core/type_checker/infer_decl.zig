@@ -1077,6 +1077,14 @@ pub fn inferSkillDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
 
 pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var f = &node.data.fun_decl;
+    for (f.annotations) |ann| {
+        if (!std.mem.eql(u8, ann.name, "Embed")) continue;
+        // v1: free functions only (no receiver, no enclosing type/object).
+        if (f.receiver_type != null or scope.lookupVariable("this") != null or self.current_class_name != null) {
+            self.reportError(node.line, node.column, "TypeError: '@Embed' is only supported on free functions.", .{});
+            return error.TypeError;
+        }
+    }
     if (f.generic_params.len > 0) {
         var my_list = self.generic_functions_ast.getPtr(f.name);
         if (my_list == null) {

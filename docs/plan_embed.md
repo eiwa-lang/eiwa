@@ -59,8 +59,11 @@
 
 ## 4. Phases
 
-- **P0 (plumbing):** parse/validate `@Embed` (free-only, recursion guard),
-  no inlining yet (calls behave as today) + tests. Isolates plumbing risk.
+- **P0 (plumbing, DONE 2026-10-05):** parse/validate `@Embed` (free-only;
+  method/receiver/object-member = `TypeError`), no inlining yet (calls
+  behave as today). Tests: green `@Embed`-free-call in `embed_test.ei`;
+  `embed_method/object/extension_xfail_test.ei` lock the rejection.
+  (Recursion negatives need the P1 inline stack — land there.)
 - **P1 (core + std migration):** substitutor + hygiene + block pasting;
   `repeat`/`loop`/`retry` → `@Embed`; delete throw-path, `Leave`, std
   catches; suite green.
