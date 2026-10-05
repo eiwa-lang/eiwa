@@ -239,15 +239,11 @@ type String(val ptr: Pointer, val length: Int = NativeString.strlen(ptr)) : Stri
     // half the stdlib needs them import-free. Higher-level String
     // utilities (checks, case, replace, trim) live in std.string.
 
-    fun indexOf(needle: String): Int {
-        val match = NativeString.strstr(this.ptr, needle.ptr)
-        if (match == null) { return -1 }
-        return match - this.ptr
-    }
-
-    fun indexOfFrom(needle: String, fromIndex: Int): Int {
+    fun indexOf(needle: String, fromIndex: Int = 0): Int {
         if (fromIndex <= 0) {
-            return this.indexOf(needle)
+            val match = NativeString.strstr(this.ptr, needle.ptr)
+            if (match == null) { return -1 }
+            return match - this.ptr
         }
         if (fromIndex >= this.length) {
             return -1

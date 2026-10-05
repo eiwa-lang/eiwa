@@ -1,0 +1,22 @@
+import { assert } from "std.core"
+
+// RED (TDD): String methods with defaulted trailing params must
+// accept an explicit positional (and named) argument for that param.
+// Free functions and user-type methods already do; String method
+// resolution rejects them ("Too many positional arguments" /
+// "Unknown parameter"). Keep failing until green.
+
+type XfailBox(val n: Int) {
+    fun find(s: String, k: Int = 0): Int {
+        return k
+    }
+}
+
+test "defaulted trailing param accepts positional on user types" {
+    assert(XfailBox(1).find("b", 2) == 2)
+}
+
+test "String.indexOf accepts explicit fromIndex" {
+    val s = "abcabc"
+    assert(s.indexOf("b", 2) == 4)
+}

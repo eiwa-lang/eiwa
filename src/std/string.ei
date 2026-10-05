@@ -15,11 +15,11 @@ fun String.split(delimiter: String): List<String> {
         return parts.freeze()
     }
     var start = 0
-    var idx = this.indexOfFrom(delimiter, 0)
+    var idx = this.indexOf(delimiter, 0)
     while (idx >= 0) {
         parts.add(this.substring(start, idx))
         start = idx + delimiter.length
-        idx = this.indexOfFrom(delimiter, start)
+        idx = this.indexOf(delimiter, start)
     }
     parts.add(this.substring(start, this.length))
     return parts.freeze()
