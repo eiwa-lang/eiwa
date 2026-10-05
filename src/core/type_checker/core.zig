@@ -144,6 +144,8 @@ pub const TypeChecker = struct {
     status: enum { unvisited, declaring_types, declared_types, declaring_signatures, declared_signatures, resolving_imports, resolved_imports, validating, validated } = .unvisited,
     /// While > 0, stylistic warnings stay silent (clones misattribute positions).
     monomorph_depth: usize = 0,
+    /// While > 0, unreachable-code warnings stay silent (not user mistake).
+    synthetic_depth: usize = 0,
 
     pub const inferNode = core_inferNode;
     pub const reportError = core_reportError;

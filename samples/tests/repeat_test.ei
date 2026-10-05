@@ -1,0 +1,14 @@
+test "repeat not returning value" {
+    repeat(5) { i ->
+        if (i == 3) 
+            leave
+    }
+}
+
+test "repeat returning value" {
+    val x = repeat(5) { i ->
+        if (i == 3) 
+            leave "Get it!"
+    }
+    assert(x == "Get it!")
+}

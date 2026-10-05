@@ -504,7 +504,10 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
             try self.consume(.r_brace, "Expected '}'.");
             then_branch = try self.createNode(.{ .block = .{ .statements = try stmts.toOwnedSlice() } });
         } else {
-            then_branch = try self.expression();
+            const stmt = try self.declaration();
+            const stmts = try self.allocator.alloc(*ASTNode, 1);
+            stmts[0] = stmt;
+            then_branch = try self.createNode(.{ .block = .{ .statements = stmts } });
         }
         
         var else_branch: ?*ASTNode = null;
@@ -517,7 +520,10 @@ pub fn primary(self: *Parser) anyerror!*ASTNode {
                 try self.consume(.r_brace, "Expected '}'.");
                 else_branch = try self.createNode(.{ .block = .{ .statements = try stmts.toOwnedSlice() } });
             } else {
-                else_branch = try self.expression();
+                const stmt = try self.declaration();
+                const stmts = try self.allocator.alloc(*ASTNode, 1);
+                stmts[0] = stmt;
+                else_branch = try self.createNode(.{ .block = .{ .statements = stmts } });
             }
         }
         return try self.createNodeAt(.{ .if_expr = .{ .condition = condition, .then_branch = then_branch, .else_branch = else_branch } }, line, col);

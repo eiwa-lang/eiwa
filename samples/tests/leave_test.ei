@@ -153,3 +153,42 @@ test "hard break: break is a valid identifier again" {
     val break = 1
     assert(break == 1)
 }
+
+test "braceless if branch takes leave" {
+    var total = 0
+    var i = 0
+    while (i < 5) {
+        if (i == 3)
+            leave
+        total = total + i
+        i = i + 1
+    }
+    assert(total == 3)
+}
+
+test "braceless if else with leave and assignment" {
+    var t = 0
+    for ([1, 2, 3]) { n ->
+        if (n == 2) leave else t = t + n
+    }
+    assert(t == 1)
+}
+
+test "braceless if with early return" {
+    assert(earlyRet(null) == -1)
+    assert(earlyRet("hi") == 2)
+}
+
+fun earlyRet(s: String?): Int {
+    if (s == null) return -1
+    return s.length
+}
+
+test "bare leave mid-block does not consume next statement" {
+    var n = 0
+    while (true) {
+        leave
+        n = n + 1
+    }
+    assert(n == 0)
+}

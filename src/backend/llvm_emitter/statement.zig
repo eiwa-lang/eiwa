@@ -914,11 +914,13 @@ pub fn emitStatement(
         },
         .block => |blk| {
             for (blk.statements) |stmt| {
+                if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) != null) break;
                 try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, stmt, declared_ret);
             }
         },
         .program => |prog| {
             for (prog.statements) |stmt| {
+                if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) != null) break;
                 try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, stmt, declared_ret);
             }
         },

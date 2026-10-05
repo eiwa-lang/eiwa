@@ -665,6 +665,8 @@ fn desugarMapFor(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType
     const stmts = try outer.toOwnedSlice();
 
     node.data = .{ .block = .{ .statements = stmts } };
+    self.synthetic_depth += 1;
+    defer self.synthetic_depth -= 1;
     const bt = try self.checkBlock(stmts, scope);
     t.* = bt.*;
     return true;
@@ -801,10 +803,23 @@ pub fn checkBlock(self: *TypeChecker, block: []const *ASTNode, parent_scope: *Sc
     for (block) |stmt| {
         _ = try self.inferNode(stmt, &local_scope);
     }
+    warnDeadCode(self, block);
 
     const t = try self.allocator.create(EiwaType);
     t.* = .Void;
     return t;
+}
+
+fn warnDeadCode(self: *TypeChecker, block: []const *ASTNode) void {
+    if (self.synthetic_depth > 0) return;
+    var i: usize = 0;
+    while (i < block.len) : (i += 1) {
+        if (stmtDiverges(block[i])) break;
+    }
+    if (i + 1 < block.len) {
+        const dead = block[i + 1];
+        self.reportWarning(dead.line, dead.column, "Unreachable code after diverging statement.", .{});
+    }
 }
 
 /// Definite-return analysis for block-bodied functions with a declared return type
@@ -883,6 +898,7 @@ pub fn inferBlockAsExpression(self: *TypeChecker, block_node: *ASTNode, scope: *
         last = stmt;
         last_type = try self.inferNode(stmt, &local_scope);
     }
+    warnDeadCode(self, b.statements);
 
     const t = try self.allocator.create(EiwaType);
     if (last) |l| {
