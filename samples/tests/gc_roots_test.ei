@@ -1,0 +1,811 @@
+// Regression: modules with thousands of globals must not exhaust
+// Boehm root sets ("Too many root sets" abort). JIT globals are
+// coalesced into address runs before GC_add_roots.
+import { assert } from "std.core"
+
+type GcRootProbe0000(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0001(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0002(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0003(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0004(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0005(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0006(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0007(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0008(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0009(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0010(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0011(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0012(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0013(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0014(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0015(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0016(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0017(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0018(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0019(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0020(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0021(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0022(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0023(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0024(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0025(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0026(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0027(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0028(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0029(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0030(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0031(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0032(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0033(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0034(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0035(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0036(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0037(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0038(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0039(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0040(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0041(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0042(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0043(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0044(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0045(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0046(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0047(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0048(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0049(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0050(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0051(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0052(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0053(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0054(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0055(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0056(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0057(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0058(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0059(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0060(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0061(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0062(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0063(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0064(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0065(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0066(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0067(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0068(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0069(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0070(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0071(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0072(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0073(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0074(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0075(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0076(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0077(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0078(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0079(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0080(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0081(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0082(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0083(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0084(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0085(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0086(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0087(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0088(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0089(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0090(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0091(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0092(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0093(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0094(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0095(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0096(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0097(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0098(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0099(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0100(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0101(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0102(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0103(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0104(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0105(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0106(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0107(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0108(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0109(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0110(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0111(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0112(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0113(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0114(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0115(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0116(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0117(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0118(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0119(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0120(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0121(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0122(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0123(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0124(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0125(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0126(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0127(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0128(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0129(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0130(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0131(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0132(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0133(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0134(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0135(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0136(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0137(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0138(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0139(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0140(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0141(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0142(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0143(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0144(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0145(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0146(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0147(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0148(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0149(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0150(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0151(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0152(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0153(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0154(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0155(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0156(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0157(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0158(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0159(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0160(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0161(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0162(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0163(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0164(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0165(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0166(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0167(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0168(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0169(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0170(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0171(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0172(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0173(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0174(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0175(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0176(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0177(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0178(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0179(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0180(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0181(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0182(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0183(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0184(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0185(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0186(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0187(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0188(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0189(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0190(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0191(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0192(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0193(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0194(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0195(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0196(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0197(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0198(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0199(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0200(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0201(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0202(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0203(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0204(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0205(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0206(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0207(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0208(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0209(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0210(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0211(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0212(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0213(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0214(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0215(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0216(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0217(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0218(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0219(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0220(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0221(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0222(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0223(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0224(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0225(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0226(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0227(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0228(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0229(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0230(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0231(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0232(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0233(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0234(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0235(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0236(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0237(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0238(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0239(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0240(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0241(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0242(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0243(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0244(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0245(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0246(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0247(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0248(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0249(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0250(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0251(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0252(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0253(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0254(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0255(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0256(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0257(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0258(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0259(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0260(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0261(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0262(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0263(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0264(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0265(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0266(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0267(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0268(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0269(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0270(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0271(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0272(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0273(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0274(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0275(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0276(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0277(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0278(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0279(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0280(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0281(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0282(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0283(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0284(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0285(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0286(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0287(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0288(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0289(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0290(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0291(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0292(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0293(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0294(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0295(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0296(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0297(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0298(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0299(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0300(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0301(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0302(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0303(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0304(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0305(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0306(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0307(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0308(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0309(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0310(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0311(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0312(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0313(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0314(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0315(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0316(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0317(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0318(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0319(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0320(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0321(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0322(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0323(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0324(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0325(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0326(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0327(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0328(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0329(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0330(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0331(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0332(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0333(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0334(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0335(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0336(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0337(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0338(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0339(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0340(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0341(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0342(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0343(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0344(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0345(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0346(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0347(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0348(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0349(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0350(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0351(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0352(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0353(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0354(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0355(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0356(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0357(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0358(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0359(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0360(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0361(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0362(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0363(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0364(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0365(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0366(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0367(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0368(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0369(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0370(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0371(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0372(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0373(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0374(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0375(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0376(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0377(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0378(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0379(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0380(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0381(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0382(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0383(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0384(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0385(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0386(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0387(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0388(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0389(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0390(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0391(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0392(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0393(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0394(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0395(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0396(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0397(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0398(val a: Int, val b: String, val c: Bool)
+type GcRootProbe0399(val a: Int, val b: String, val c: Bool)
+
+test "gc: thousands of nominal types register as few root sets" {
+    val all = [
+        GcRootProbe0000(0, "s", true), 
+        GcRootProbe0001(1, "s", true), 
+        GcRootProbe0002(2, "s", true), 
+        GcRootProbe0003(3, "s", true), 
+        GcRootProbe0004(4, "s", true), 
+        GcRootProbe0005(5, "s", true), 
+        GcRootProbe0006(6, "s", true), 
+        GcRootProbe0007(7, "s", true), 
+        GcRootProbe0008(8, "s", true), 
+        GcRootProbe0009(9, "s", true), 
+        GcRootProbe0010(10, "s", true), 
+        GcRootProbe0011(11, "s", true), 
+        GcRootProbe0012(12, "s", true), 
+        GcRootProbe0013(13, "s", true), 
+        GcRootProbe0014(14, "s", true), 
+        GcRootProbe0015(15, "s", true), 
+        GcRootProbe0016(16, "s", true), 
+        GcRootProbe0017(17, "s", true), 
+        GcRootProbe0018(18, "s", true), 
+        GcRootProbe0019(19, "s", true), 
+        GcRootProbe0020(20, "s", true), 
+        GcRootProbe0021(21, "s", true), 
+        GcRootProbe0022(22, "s", true), 
+        GcRootProbe0023(23, "s", true), 
+        GcRootProbe0024(24, "s", true), 
+        GcRootProbe0025(25, "s", true), 
+        GcRootProbe0026(26, "s", true), 
+        GcRootProbe0027(27, "s", true), 
+        GcRootProbe0028(28, "s", true), 
+        GcRootProbe0029(29, "s", true), 
+        GcRootProbe0030(30, "s", true), 
+        GcRootProbe0031(31, "s", true), 
+        GcRootProbe0032(32, "s", true), 
+        GcRootProbe0033(33, "s", true), 
+        GcRootProbe0034(34, "s", true), 
+        GcRootProbe0035(35, "s", true), 
+        GcRootProbe0036(36, "s", true), 
+        GcRootProbe0037(37, "s", true), 
+        GcRootProbe0038(38, "s", true), 
+        GcRootProbe0039(39, "s", true), 
+        GcRootProbe0040(40, "s", true), 
+        GcRootProbe0041(41, "s", true), 
+        GcRootProbe0042(42, "s", true), 
+        GcRootProbe0043(43, "s", true), 
+        GcRootProbe0044(44, "s", true), 
+        GcRootProbe0045(45, "s", true), 
+        GcRootProbe0046(46, "s", true), 
+        GcRootProbe0047(47, "s", true), 
+        GcRootProbe0048(48, "s", true), 
+        GcRootProbe0049(49, "s", true), 
+        GcRootProbe0050(50, "s", true), 
+        GcRootProbe0051(51, "s", true), 
+        GcRootProbe0052(52, "s", true), 
+        GcRootProbe0053(53, "s", true), 
+        GcRootProbe0054(54, "s", true), 
+        GcRootProbe0055(55, "s", true), 
+        GcRootProbe0056(56, "s", true), 
+        GcRootProbe0057(57, "s", true), 
+        GcRootProbe0058(58, "s", true), 
+        GcRootProbe0059(59, "s", true), 
+        GcRootProbe0060(60, "s", true), 
+        GcRootProbe0061(61, "s", true), 
+        GcRootProbe0062(62, "s", true), 
+        GcRootProbe0063(63, "s", true), 
+        GcRootProbe0064(64, "s", true), 
+        GcRootProbe0065(65, "s", true), 
+        GcRootProbe0066(66, "s", true), 
+        GcRootProbe0067(67, "s", true), 
+        GcRootProbe0068(68, "s", true), 
+        GcRootProbe0069(69, "s", true), 
+        GcRootProbe0070(70, "s", true), 
+        GcRootProbe0071(71, "s", true), 
+        GcRootProbe0072(72, "s", true), 
+        GcRootProbe0073(73, "s", true), 
+        GcRootProbe0074(74, "s", true), 
+        GcRootProbe0075(75, "s", true), 
+        GcRootProbe0076(76, "s", true), 
+        GcRootProbe0077(77, "s", true), 
+        GcRootProbe0078(78, "s", true), 
+        GcRootProbe0079(79, "s", true), 
+        GcRootProbe0080(80, "s", true), 
+        GcRootProbe0081(81, "s", true), 
+        GcRootProbe0082(82, "s", true), 
+        GcRootProbe0083(83, "s", true), 
+        GcRootProbe0084(84, "s", true), 
+        GcRootProbe0085(85, "s", true), 
+        GcRootProbe0086(86, "s", true), 
+        GcRootProbe0087(87, "s", true), 
+        GcRootProbe0088(88, "s", true), 
+        GcRootProbe0089(89, "s", true), 
+        GcRootProbe0090(90, "s", true), 
+        GcRootProbe0091(91, "s", true), 
+        GcRootProbe0092(92, "s", true), 
+        GcRootProbe0093(93, "s", true), 
+        GcRootProbe0094(94, "s", true), 
+        GcRootProbe0095(95, "s", true), 
+        GcRootProbe0096(96, "s", true), 
+        GcRootProbe0097(97, "s", true), 
+        GcRootProbe0098(98, "s", true), 
+        GcRootProbe0099(99, "s", true), 
+        GcRootProbe0100(100, "s", true), 
+        GcRootProbe0101(101, "s", true), 
+        GcRootProbe0102(102, "s", true), 
+        GcRootProbe0103(103, "s", true), 
+        GcRootProbe0104(104, "s", true), 
+        GcRootProbe0105(105, "s", true), 
+        GcRootProbe0106(106, "s", true), 
+        GcRootProbe0107(107, "s", true), 
+        GcRootProbe0108(108, "s", true), 
+        GcRootProbe0109(109, "s", true), 
+        GcRootProbe0110(110, "s", true), 
+        GcRootProbe0111(111, "s", true), 
+        GcRootProbe0112(112, "s", true), 
+        GcRootProbe0113(113, "s", true), 
+        GcRootProbe0114(114, "s", true), 
+        GcRootProbe0115(115, "s", true), 
+        GcRootProbe0116(116, "s", true), 
+        GcRootProbe0117(117, "s", true), 
+        GcRootProbe0118(118, "s", true), 
+        GcRootProbe0119(119, "s", true), 
+        GcRootProbe0120(120, "s", true), 
+        GcRootProbe0121(121, "s", true), 
+        GcRootProbe0122(122, "s", true), 
+        GcRootProbe0123(123, "s", true), 
+        GcRootProbe0124(124, "s", true), 
+        GcRootProbe0125(125, "s", true), 
+        GcRootProbe0126(126, "s", true), 
+        GcRootProbe0127(127, "s", true), 
+        GcRootProbe0128(128, "s", true), 
+        GcRootProbe0129(129, "s", true), 
+        GcRootProbe0130(130, "s", true), 
+        GcRootProbe0131(131, "s", true), 
+        GcRootProbe0132(132, "s", true), 
+        GcRootProbe0133(133, "s", true), 
+        GcRootProbe0134(134, "s", true), 
+        GcRootProbe0135(135, "s", true), 
+        GcRootProbe0136(136, "s", true), 
+        GcRootProbe0137(137, "s", true), 
+        GcRootProbe0138(138, "s", true), 
+        GcRootProbe0139(139, "s", true), 
+        GcRootProbe0140(140, "s", true), 
+        GcRootProbe0141(141, "s", true), 
+        GcRootProbe0142(142, "s", true), 
+        GcRootProbe0143(143, "s", true), 
+        GcRootProbe0144(144, "s", true), 
+        GcRootProbe0145(145, "s", true), 
+        GcRootProbe0146(146, "s", true), 
+        GcRootProbe0147(147, "s", true), 
+        GcRootProbe0148(148, "s", true), 
+        GcRootProbe0149(149, "s", true), 
+        GcRootProbe0150(150, "s", true), 
+        GcRootProbe0151(151, "s", true), 
+        GcRootProbe0152(152, "s", true), 
+        GcRootProbe0153(153, "s", true), 
+        GcRootProbe0154(154, "s", true), 
+        GcRootProbe0155(155, "s", true), 
+        GcRootProbe0156(156, "s", true), 
+        GcRootProbe0157(157, "s", true), 
+        GcRootProbe0158(158, "s", true), 
+        GcRootProbe0159(159, "s", true), 
+        GcRootProbe0160(160, "s", true), 
+        GcRootProbe0161(161, "s", true), 
+        GcRootProbe0162(162, "s", true), 
+        GcRootProbe0163(163, "s", true), 
+        GcRootProbe0164(164, "s", true), 
+        GcRootProbe0165(165, "s", true), 
+        GcRootProbe0166(166, "s", true), 
+        GcRootProbe0167(167, "s", true), 
+        GcRootProbe0168(168, "s", true), 
+        GcRootProbe0169(169, "s", true), 
+        GcRootProbe0170(170, "s", true), 
+        GcRootProbe0171(171, "s", true), 
+        GcRootProbe0172(172, "s", true), 
+        GcRootProbe0173(173, "s", true), 
+        GcRootProbe0174(174, "s", true), 
+        GcRootProbe0175(175, "s", true), 
+        GcRootProbe0176(176, "s", true), 
+        GcRootProbe0177(177, "s", true), 
+        GcRootProbe0178(178, "s", true), 
+        GcRootProbe0179(179, "s", true), 
+        GcRootProbe0180(180, "s", true), 
+        GcRootProbe0181(181, "s", true), 
+        GcRootProbe0182(182, "s", true), 
+        GcRootProbe0183(183, "s", true), 
+        GcRootProbe0184(184, "s", true), 
+        GcRootProbe0185(185, "s", true), 
+        GcRootProbe0186(186, "s", true), 
+        GcRootProbe0187(187, "s", true), 
+        GcRootProbe0188(188, "s", true), 
+        GcRootProbe0189(189, "s", true), 
+        GcRootProbe0190(190, "s", true), 
+        GcRootProbe0191(191, "s", true), 
+        GcRootProbe0192(192, "s", true), 
+        GcRootProbe0193(193, "s", true), 
+        GcRootProbe0194(194, "s", true), 
+        GcRootProbe0195(195, "s", true), 
+        GcRootProbe0196(196, "s", true), 
+        GcRootProbe0197(197, "s", true), 
+        GcRootProbe0198(198, "s", true), 
+        GcRootProbe0199(199, "s", true), 
+        GcRootProbe0200(200, "s", true), 
+        GcRootProbe0201(201, "s", true), 
+        GcRootProbe0202(202, "s", true), 
+        GcRootProbe0203(203, "s", true), 
+        GcRootProbe0204(204, "s", true), 
+        GcRootProbe0205(205, "s", true), 
+        GcRootProbe0206(206, "s", true), 
+        GcRootProbe0207(207, "s", true), 
+        GcRootProbe0208(208, "s", true), 
+        GcRootProbe0209(209, "s", true), 
+        GcRootProbe0210(210, "s", true), 
+        GcRootProbe0211(211, "s", true), 
+        GcRootProbe0212(212, "s", true), 
+        GcRootProbe0213(213, "s", true), 
+        GcRootProbe0214(214, "s", true), 
+        GcRootProbe0215(215, "s", true), 
+        GcRootProbe0216(216, "s", true), 
+        GcRootProbe0217(217, "s", true), 
+        GcRootProbe0218(218, "s", true), 
+        GcRootProbe0219(219, "s", true), 
+        GcRootProbe0220(220, "s", true), 
+        GcRootProbe0221(221, "s", true), 
+        GcRootProbe0222(222, "s", true), 
+        GcRootProbe0223(223, "s", true), 
+        GcRootProbe0224(224, "s", true), 
+        GcRootProbe0225(225, "s", true), 
+        GcRootProbe0226(226, "s", true), 
+        GcRootProbe0227(227, "s", true), 
+        GcRootProbe0228(228, "s", true), 
+        GcRootProbe0229(229, "s", true), 
+        GcRootProbe0230(230, "s", true), 
+        GcRootProbe0231(231, "s", true), 
+        GcRootProbe0232(232, "s", true), 
+        GcRootProbe0233(233, "s", true), 
+        GcRootProbe0234(234, "s", true), 
+        GcRootProbe0235(235, "s", true), 
+        GcRootProbe0236(236, "s", true), 
+        GcRootProbe0237(237, "s", true), 
+        GcRootProbe0238(238, "s", true), 
+        GcRootProbe0239(239, "s", true), 
+        GcRootProbe0240(240, "s", true), 
+        GcRootProbe0241(241, "s", true), 
+        GcRootProbe0242(242, "s", true), 
+        GcRootProbe0243(243, "s", true), 
+        GcRootProbe0244(244, "s", true), 
+        GcRootProbe0245(245, "s", true), 
+        GcRootProbe0246(246, "s", true), 
+        GcRootProbe0247(247, "s", true), 
+        GcRootProbe0248(248, "s", true), 
+        GcRootProbe0249(249, "s", true), 
+        GcRootProbe0250(250, "s", true), 
+        GcRootProbe0251(251, "s", true), 
+        GcRootProbe0252(252, "s", true), 
+        GcRootProbe0253(253, "s", true), 
+        GcRootProbe0254(254, "s", true), 
+        GcRootProbe0255(255, "s", true), 
+        GcRootProbe0256(256, "s", true), 
+        GcRootProbe0257(257, "s", true), 
+        GcRootProbe0258(258, "s", true), 
+        GcRootProbe0259(259, "s", true), 
+        GcRootProbe0260(260, "s", true), 
+        GcRootProbe0261(261, "s", true), 
+        GcRootProbe0262(262, "s", true), 
+        GcRootProbe0263(263, "s", true), 
+        GcRootProbe0264(264, "s", true), 
+        GcRootProbe0265(265, "s", true), 
+        GcRootProbe0266(266, "s", true), 
+        GcRootProbe0267(267, "s", true), 
+        GcRootProbe0268(268, "s", true), 
+        GcRootProbe0269(269, "s", true), 
+        GcRootProbe0270(270, "s", true), 
+        GcRootProbe0271(271, "s", true), 
+        GcRootProbe0272(272, "s", true), 
+        GcRootProbe0273(273, "s", true), 
+        GcRootProbe0274(274, "s", true), 
+        GcRootProbe0275(275, "s", true), 
+        GcRootProbe0276(276, "s", true), 
+        GcRootProbe0277(277, "s", true), 
+        GcRootProbe0278(278, "s", true), 
+        GcRootProbe0279(279, "s", true), 
+        GcRootProbe0280(280, "s", true), 
+        GcRootProbe0281(281, "s", true), 
+        GcRootProbe0282(282, "s", true), 
+        GcRootProbe0283(283, "s", true), 
+        GcRootProbe0284(284, "s", true), 
+        GcRootProbe0285(285, "s", true), 
+        GcRootProbe0286(286, "s", true), 
+        GcRootProbe0287(287, "s", true), 
+        GcRootProbe0288(288, "s", true), 
+        GcRootProbe0289(289, "s", true), 
+        GcRootProbe0290(290, "s", true), 
+        GcRootProbe0291(291, "s", true), 
+        GcRootProbe0292(292, "s", true), 
+        GcRootProbe0293(293, "s", true), 
+        GcRootProbe0294(294, "s", true), 
+        GcRootProbe0295(295, "s", true), 
+        GcRootProbe0296(296, "s", true), 
+        GcRootProbe0297(297, "s", true), 
+        GcRootProbe0298(298, "s", true), 
+        GcRootProbe0299(299, "s", true), 
+        GcRootProbe0300(300, "s", true), 
+        GcRootProbe0301(301, "s", true), 
+        GcRootProbe0302(302, "s", true), 
+        GcRootProbe0303(303, "s", true), 
+        GcRootProbe0304(304, "s", true), 
+        GcRootProbe0305(305, "s", true), 
+        GcRootProbe0306(306, "s", true), 
+        GcRootProbe0307(307, "s", true), 
+        GcRootProbe0308(308, "s", true), 
+        GcRootProbe0309(309, "s", true), 
+        GcRootProbe0310(310, "s", true), 
+        GcRootProbe0311(311, "s", true), 
+        GcRootProbe0312(312, "s", true), 
+        GcRootProbe0313(313, "s", true), 
+        GcRootProbe0314(314, "s", true), 
+        GcRootProbe0315(315, "s", true), 
+        GcRootProbe0316(316, "s", true), 
+        GcRootProbe0317(317, "s", true), 
+        GcRootProbe0318(318, "s", true), 
+        GcRootProbe0319(319, "s", true), 
+        GcRootProbe0320(320, "s", true), 
+        GcRootProbe0321(321, "s", true), 
+        GcRootProbe0322(322, "s", true), 
+        GcRootProbe0323(323, "s", true), 
+        GcRootProbe0324(324, "s", true), 
+        GcRootProbe0325(325, "s", true), 
+        GcRootProbe0326(326, "s", true), 
+        GcRootProbe0327(327, "s", true), 
+        GcRootProbe0328(328, "s", true), 
+        GcRootProbe0329(329, "s", true), 
+        GcRootProbe0330(330, "s", true), 
+        GcRootProbe0331(331, "s", true), 
+        GcRootProbe0332(332, "s", true), 
+        GcRootProbe0333(333, "s", true), 
+        GcRootProbe0334(334, "s", true), 
+        GcRootProbe0335(335, "s", true), 
+        GcRootProbe0336(336, "s", true), 
+        GcRootProbe0337(337, "s", true), 
+        GcRootProbe0338(338, "s", true), 
+        GcRootProbe0339(339, "s", true), 
+        GcRootProbe0340(340, "s", true), 
+        GcRootProbe0341(341, "s", true), 
+        GcRootProbe0342(342, "s", true), 
+        GcRootProbe0343(343, "s", true), 
+        GcRootProbe0344(344, "s", true), 
+        GcRootProbe0345(345, "s", true), 
+        GcRootProbe0346(346, "s", true), 
+        GcRootProbe0347(347, "s", true), 
+        GcRootProbe0348(348, "s", true), 
+        GcRootProbe0349(349, "s", true), 
+        GcRootProbe0350(350, "s", true), 
+        GcRootProbe0351(351, "s", true), 
+        GcRootProbe0352(352, "s", true), 
+        GcRootProbe0353(353, "s", true), 
+        GcRootProbe0354(354, "s", true), 
+        GcRootProbe0355(355, "s", true), 
+        GcRootProbe0356(356, "s", true), 
+        GcRootProbe0357(357, "s", true), 
+        GcRootProbe0358(358, "s", true), 
+        GcRootProbe0359(359, "s", true), 
+        GcRootProbe0360(360, "s", true), 
+        GcRootProbe0361(361, "s", true), 
+        GcRootProbe0362(362, "s", true), 
+        GcRootProbe0363(363, "s", true), 
+        GcRootProbe0364(364, "s", true), 
+        GcRootProbe0365(365, "s", true), 
+        GcRootProbe0366(366, "s", true), 
+        GcRootProbe0367(367, "s", true), 
+        GcRootProbe0368(368, "s", true), 
+        GcRootProbe0369(369, "s", true), 
+        GcRootProbe0370(370, "s", true), 
+        GcRootProbe0371(371, "s", true), 
+        GcRootProbe0372(372, "s", true), 
+        GcRootProbe0373(373, "s", true), 
+        GcRootProbe0374(374, "s", true), 
+        GcRootProbe0375(375, "s", true), 
+        GcRootProbe0376(376, "s", true), 
+        GcRootProbe0377(377, "s", true), 
+        GcRootProbe0378(378, "s", true), 
+        GcRootProbe0379(379, "s", true), 
+        GcRootProbe0380(380, "s", true), 
+        GcRootProbe0381(381, "s", true), 
+        GcRootProbe0382(382, "s", true), 
+        GcRootProbe0383(383, "s", true), 
+        GcRootProbe0384(384, "s", true), 
+        GcRootProbe0385(385, "s", true), 
+        GcRootProbe0386(386, "s", true), 
+        GcRootProbe0387(387, "s", true), 
+        GcRootProbe0388(388, "s", true), 
+        GcRootProbe0389(389, "s", true), 
+        GcRootProbe0390(390, "s", true), 
+        GcRootProbe0391(391, "s", true), 
+        GcRootProbe0392(392, "s", true), 
+        GcRootProbe0393(393, "s", true), 
+        GcRootProbe0394(394, "s", true), 
+        GcRootProbe0395(395, "s", true), 
+        GcRootProbe0396(396, "s", true), 
+        GcRootProbe0397(397, "s", true), 
+        GcRootProbe0398(398, "s", true), 
+        GcRootProbe0399(399, "s", true)
+    ]
+    assert(all.size() == 400)
+}

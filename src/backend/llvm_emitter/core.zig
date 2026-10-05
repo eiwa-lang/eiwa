@@ -5150,41 +5150,100 @@ pub const LLVMEmitter = struct {
         }
     }
 
-    /// Registers every JIT'd module global as a Boehm GC root segment.
+    /// Registers JIT'd module globals as Boehm GC root segments.
     /// JIT globals live in MCJIT-mmap'd memory, which the
     /// collector does NOT scan by default — unlike a native binary's
     /// .data/.bss. Without this, objects only reachable from globals
     /// (object/enum singletons, eiwa_exception_stack, eiwa_active_exception)
     /// could be collected while still alive. Must run after engine creation
     /// (so global addresses are materialized) and before main runs.
+    ///
+    /// Globals are coalesced into address runs and each run is registered
+    /// with a single GC_add_roots call. Registering every global
+    /// separately exhausts Boehm's root-set table ("Too many root sets",
+    /// 2048 entries by default) on modules with thousands of globals
+    /// (type descriptors, enum values, vtables). A run absorbs the next
+    /// global while the gap is under a megabyte AND every page in between
+    /// probes resident via mincore. Merging is safe: resident pages are
+    /// mapped, and JIT mappings are never unmapped (the execution engine
+    /// is intentionally never disposed, see executeJIT below), so a page
+    /// resident now is still mapped when the collector scans it. Doubt
+    /// splits the run instead (more sets, always correct), so the worst
+    /// case degrades to one set per global, never a crash. Windows keeps
+    /// per-global registration (no mincore in msvcrt).
     fn registerJITGlobalsAsRoots(engine: llvm.LLVMExecutionEngineRef, mod: llvm.LLVMModuleRef) void {
         const tm = llvm.LLVMGetExecutionEngineTargetMachine(engine);
         const td = llvm.LLVMCreateTargetDataLayout(tm);
         defer llvm.LLVMDisposeTargetData(td);
 
+        const Span = struct { base: usize, end: usize };
+        var spans = ArrayList(Span).init(std.heap.page_allocator);
+        defer spans.deinit();
         var glob_it = llvm.LLVMGetFirstGlobal(mod);
         while (glob_it) |glob| : (glob_it = llvm.LLVMGetNextGlobal(glob)) {
             if (llvm.LLVMIsDeclaration(glob) != 0) continue;
             const addr = llvm.LLVMGetPointerToGlobal(engine, glob) orelse continue;
             const size = llvm.LLVMABISizeOfType(td, llvm.LLVMGlobalGetValueType(glob));
             if (size == 0) continue;
-            const base: [*]u8 = @ptrCast(addr);
-            // Roots stay registered until process exit: the execution engine
-            // is intentionally never disposed (see executeJIT below), so the
-            // segments remain valid for the whole program lifetime.
-            gc.GC_add_roots(base, base + @as(usize, @intCast(size)));
+            const base: usize = @intFromPtr(addr);
+            spans.append(.{ .base = base, .end = base + @as(usize, @intCast(size)) }) catch continue;
         }
+        if (spans.items.len == 0) return;
+        std.mem.sort(Span, spans.items, {}, struct {
+            fn lessThan(_: void, a: Span, b: Span) bool {
+                return a.base < b.base;
+            }
+        }.lessThan);
+        const probe_pages = builtin.os.tag != .windows;
+        var run_base = spans.items[0].base;
+        var run_end = spans.items[0].end;
+        for (spans.items[1..]) |sp| {
+            if (probe_pages and absorbSpan(run_end, sp.base, sp.end)) {
+                if (sp.end > run_end) run_end = sp.end;
+            } else {
+                gc.GC_add_roots(@ptrFromInt(run_base), @ptrFromInt(run_end));
+                run_base = sp.base;
+                run_end = sp.end;
+            }
+        }
+        gc.GC_add_roots(@ptrFromInt(run_base), @ptrFromInt(run_end));
+    }
+
+    fn absorbSpan(run_end: usize, base: usize, end: usize) bool {
+        if (base <= run_end) return true;
+        const gap = base - run_end;
+        if (gap >= 1048576) return false;
+        return gapResident(run_end, end);
+    }
+
+    fn gapResident(from: usize, to: usize) bool {
+        const page_size = hostPageSize();
+        if (page_size == 0) return false;
+        const aligned = from - (from % page_size);
+        const cover = (to - aligned + page_size - 1) / page_size;
+        if (cover == 0 or cover > 256) return false;
+        var vec: [256]u8 = undefined;
+        if (mincore(@ptrFromInt(aligned), cover * page_size, &vec) != 0) return false;
+        var i: usize = 0;
+        while (i < cover) : (i += 1) {
+            if (vec[i] & 1 == 0) return false;
+        }
+        return true;
+    }
+
+    extern "c" fn mincore(addr: *const anyopaque, length: usize, vec: [*c]u8) c_int;
+    extern "c" fn getpagesize() c_int;
+
+    fn hostPageSize() usize {
+        const ps = getpagesize();
+        if (ps <= 0) return 0;
+        return @intCast(ps);
     }
 
     fn eiwa_noop_crash_install() callconv(.c) void {}
 
-    /// Executes the in-memory LLVM module via JIT (for `eiwa run --backend=llvm`).
     pub fn executeJIT(self: *LLVMEmitter, io: std.Io) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
-        // Initialize the Boehm GC before any JIT'd code can call
-        // GC_malloc. executeJIT is the sole GC_init caller for programs
-        // without neco, so GC_malloc would SIGABRT without it. Idempotent.
-        // has_gc is comptime: hosts without libgc compile this out entirely.
         if (has_gc) {
             gc.GC_init();
             gc.GC_allow_register_threads();
