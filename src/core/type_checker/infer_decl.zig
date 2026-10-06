@@ -1623,8 +1623,41 @@ fn serdeBoxFn(kind: SerdePrimitive, nullable: bool) []const u8 {
     };
 }
 
-fn serdeDeserializePrimitive(self: *TypeChecker, line: usize, col: usize, obj_ident: *ASTNode, key_lit: *ASTNode, kind: SerdePrimitive, nullable: bool) anyerror!*ASTNode {
-    if (nullable) {
+fn serdeArgWithDefault(self: *TypeChecker, node: *ASTNode, prop: *const ast.ClassProp, conv: *ASTNode) anyerror!*ASTNode {
+    const init_expr = prop.initializer orelse return conv;
+    const cond_obj = try makeIdent(self, node.line, node.column, "obj");
+    const cond_key = try makeStringLiteral(self, node.line, node.column, serdeWireName(prop));
+    const cond_get_args = try self.allocator.alloc(*ASTNode, 1);
+    cond_get_args[0] = cond_key;
+    const cond_get = try makeObjMethodCall(self, node.line, node.column, cond_obj, "get", cond_get_args);
+    const null_lit = try self.allocator.create(ASTNode);
+    null_lit.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .null_literal,
+    };
+    const cond = try makeBinaryOp(self, node.line, node.column, .eq_eq, cond_get, null_lit);
+    const if_node = try self.allocator.create(ASTNode);
+    if_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .if_expr = .{
+                .condition = cond,
+                .then_branch = init_expr,
+                .else_branch = conv,
+                .is_value = true,
+            },
+        },
+    };
+    return if_node;
+}
+
+fn serdeDeserializePrimitive(self: *TypeChecker, line: usize, col: usize, obj_ident: *ASTNode, key_lit: *ASTNode, kind: SerdePrimitive, nullable: bool) anyerror!*ASTNode {    if (nullable) {
         const conv_fn: []const u8 = switch (kind) {
             .int => "asNullableInt",
             .double => "asNullableDouble",
@@ -2932,7 +2965,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
 
         if (serdePrimitiveKind(name)) |kind| {
             const call_val = try serdeDeserializePrimitive(self, node.line, node.column, obj_ident, str_lit, kind, prop.type_ref.is_nullable);
-            try ctor_args.append(call_val);
+            try ctor_args.append(try serdeArgWithDefault(self, node, &prop, call_val));
         } else if (prop.type_ref.generic_args.len == 0 and self.implementsContract(name, "Serializable")) {
             // Child.deserialize(asSerdeObject(obj.get("child")))
             const get_args = try self.allocator.alloc(*ASTNode, 1);
@@ -2947,7 +2980,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
             const des_args = try self.allocator.alloc(*ASTNode, 1);
             des_args[0] = as_child_call;
             const child_call = try makeObjMethodCall(self, node.line, node.column, child_ident, "deserialize", des_args);
-            try ctor_args.append(child_call);
+            try ctor_args.append(try serdeArgWithDefault(self, node, &prop, child_call));
         } else if (std.mem.eql(u8, name, "List") and prop.type_ref.generic_args.len == 1) {
             const elem_tr = prop.type_ref.generic_args[0];
             const elem_name = elem_tr.name;
@@ -3022,7 +3055,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
                 t_args[0] = elem_tr;
 
                 const call_val = try makeCall(self, node.line, node.column, "deserializeList", des_list_args, t_args);
-                try ctor_args.append(call_val);
+                try ctor_args.append(try serdeArgWithDefault(self, node, &prop, call_val));
             } else if (prop.initializer) |init_expr| {
                 try ctor_args.append(init_expr);
             } else {

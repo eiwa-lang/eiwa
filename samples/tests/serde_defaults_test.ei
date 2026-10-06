@@ -1,0 +1,23 @@
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson } from "std.json"
+
+// RED (TDD): generated deserialize must honor constructor defaults
+// for missing keys. Today missing keys yield ""/0 (getString/getInt
+// fallbacks) and declared defaults never apply.
+
+type JobRed(val connector: String, val url: String, val kind: String = "page", val maxAttempts: Int = 3) : Serializable
+
+test "serde: missing keys fall back to constructor defaults" {
+    val job = fromJson<JobRed>("{\"connector\": \"quotes\", \"url\": \"https://example.com/\"}")
+    assert(job.connector == "quotes")
+    assert(job.url == "https://example.com/")
+    assert(job.kind == "page")
+    assert(job.maxAttempts == 3)
+}
+
+test "serde: present keys still win over defaults" {
+    val job = fromJson<JobRed>("{\"connector\": \"quotes\", \"url\": \"https://example.com/\", \"kind\": \"feed\", \"maxAttempts\": 5}")
+    assert(job.kind == "feed")
+    assert(job.maxAttempts == 5)
+}
