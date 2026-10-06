@@ -18,3 +18,33 @@ test "@Embed block return exits method" {
     assert(pickIt(true) == 7)
     assert(pickIt(false) == 9)
 }
+
+fun pickRepeat(c: Bool): Int {
+    repeat(3) { i ->
+        if (c) {
+            return 7
+        }
+    }
+    return 9
+}
+
+test "repeat block return exits caller" {
+    assert(pickRepeat(true) == 7)
+    assert(pickRepeat(false) == 9)
+}
+
+fun countOrAbort(c: Bool): Int {
+    var n = 0
+    repeat(5) { i ->
+        n = n + 1
+        if (c && i == 1) {
+            return -1
+        }
+    }
+    return n
+}
+
+test "repeat block bare return exits caller" {
+    assert(countOrAbort(true) == -1)
+    assert(countOrAbort(false) == 5)
+}

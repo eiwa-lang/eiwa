@@ -282,7 +282,8 @@ site, so `leave` binds textually to the pasted loop (Kotlin-style).
 Region exit rides the `ControlFlow` contract (not `Throwable`), so generic
 handlers never observe it — bare `catch {}`, `catch (e: Throwable)` and
 bare `try {}` let it through; only an explicit `catch (e: ControlFlow)`
-intercepts it. `return` inside these blocks is still rejected, and `leave`
+intercepts it. `return` inside these blocks is non-local (it returns from
+the enclosing function, with a value if one is given), and `leave`
 inside a nested `for`/`while`/lambda still targets the innermost construct.
 
 #### Custom loop drivers via `@Embed`
