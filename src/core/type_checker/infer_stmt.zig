@@ -729,29 +729,27 @@ pub fn inferReturnStmt(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     }
 }
 
-/// Verifies lambda-targeting `break`s against the lambda return type:
-/// valued breaks must be compatible, bare breaks require a `Void` lambda.
-pub fn checkLambdaBreaks(self: *TypeChecker, stmts: []const *ASTNode, body_type: *const EiwaType) anyerror!void {
+pub fn checkLambdaBreaks(self: *TypeChecker, stmts: []const *ASTNode, body_type: *const EiwaType, expected_ret: ?*const EiwaType) anyerror!void {
     for (stmts) |stmt| {
-        try checkLambdaBreakNode(self, stmt, body_type);
+        try checkLambdaBreakNode(self, stmt, body_type, expected_ret);
     }
 }
 
-fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const EiwaType) anyerror!void {
+fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const EiwaType, expected_ret: ?*const EiwaType) anyerror!void {
     switch (node.data) {
         .block => |b| {
-            for (b.statements) |s| try checkLambdaBreakNode(self, s, body_type);
+            for (b.statements) |s| try checkLambdaBreakNode(self, s, body_type, expected_ret);
         },
         .if_expr => |i| {
-            try checkLambdaBreakNode(self, i.then_branch, body_type);
-            if (i.else_branch) |e| try checkLambdaBreakNode(self, e, body_type);
+            try checkLambdaBreakNode(self, i.then_branch, body_type, expected_ret);
+            if (i.else_branch) |e| try checkLambdaBreakNode(self, e, body_type, expected_ret);
         },
         .try_stmt => |ts| {
-            try checkLambdaBreakNode(self, ts.body, body_type);
-            for (ts.catches) |c| try checkLambdaBreakNode(self, c.body, body_type);
+            try checkLambdaBreakNode(self, ts.body, body_type, expected_ret);
+            for (ts.catches) |c| try checkLambdaBreakNode(self, c.body, body_type, expected_ret);
         },
         .when_expr => |w| {
-            for (w.cases) |c| try checkLambdaBreakNode(self, c.body, body_type);
+            for (w.cases) |c| try checkLambdaBreakNode(self, c.body, body_type, expected_ret);
         },
         .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
         .break_stmt => |b| {
@@ -759,8 +757,12 @@ fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const Ei
             if (b.value) |v| {
                 if (v.data == .throw_stmt) return;
                 const vt = v.resolved_type orelse return;
-                if (!self.isCompatible(body_type, vt) and !self.isCompatible(vt, body_type)) {
-                    self.reportError(node.line, node.column, "TypeError: leave value type {f} is incompatible with lambda return type {f}.", .{ vt.*, body_type.* });
+                const exp = expected_ret orelse {
+                    self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported inside '@Embed' function blocks (e.g. 'repeat'/'loop').", .{});
+                    return error.TypeError;
+                };
+                if (exp.* == .Void or (!self.isCompatible(exp, vt) and !self.isCompatible(vt, exp))) {
+                    self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported inside '@Embed' function blocks (e.g. 'repeat'/'loop').", .{});
                     return error.TypeError;
                 }
             } else {

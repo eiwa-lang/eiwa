@@ -1206,3 +1206,43 @@ nova para código existente). Validação: `ffi_int_sign_test.ei` 3/3 +
 XFAIL comportando-se como XFAIL + suíte completa **720 PASSED, 1 FAILED**
 (só o RED de `time` ainda aberto) + `zig build test` verde + `crypto`
 8/8 + webclient 43/43.
+
+## ADR 71: `@Embed` — inlining geral + `return` não-local + delivery `LeaveValue<T>`
+**Status:** Aprovado (testes)
+**Data:** Outubro 2026
+
+**Contexto:**
+1. Phase 92 deu `leave`-as-break via `throw Leave()` + `@Leaveable`, mas a
+   forma-valor (`val x = repeat(n) { leave v }`) vivia num desugar separado
+   (`desugarRepeatLoopValue` + `@LoopDriver` + `is_value`), e `return`
+   não-local seguia proibido em lambdas (ADR 53).
+2. As duas máquinas (throw-desugar p/ bare + inline-desugar p/ valor)
+   divergiam em casos reais: bloco avulso com `leave v` era aceito em
+   silêncio, forward de bloco como valor dava "Undeclared variable", e
+   recursão via inline dava segfault em `cloneNode`.
+3. Kotlin resolve o mesmo espaço com `inline` + `return` não-local textual.
+
+**Decisão:**
+1. `@Embed` em free functions (método/extensão = `TypeError`): a chamada
+   cola o corpo no call site (higiene via `__emb_<linha>_<col>_<nome>`).
+   `repeat`/`loop` viram `@Embed`; `retry` segue chamada normal.
+2. `return [v]` no código colado retorna do CHAMADOR (não-local); `leave`
+   liga textualmente ao loop mais interno (incluindo loops do chamador).
+3. `leave v` vira `throw LeaveValue<T>()` (`LeaveValue<T> : ControlFlow`,
+   `T` unificado dos leaves, tipos mistos = `TypeError`), pego por `catch`
+   por expansão sobre `var __out: T?` (null sem disparo). Qualquer `@Embed`
+   entrega (`@LoopDriver` aposentado, inerte); fora do inline, `leave` com
+   valor é `TypeError` explícito — inclusive em closure avulsa sem retorno
+   esperado (mas `leave v` contra retorno declarado não-`Void` segue
+   early-return da lambda, semântica pré-existente preservada).
+4. Blocos `@Embed` só invocados direto (`block(...)`): forward como valor
+   é `TypeError` na definição; recursão via inline é `TypeError` (ciclo
+   detectado por marca `from_embed_body`, não pelo cap de 64 — que fica
+   como backstop); bloco como valor no chamador = chamada normal opaca.
+5. `ControlFlow` + bypass do emissor ficam (canal do `LeaveValue`); resto
+   (`@LoopDriver`, desugar de valor) removido quando superado. Bloat por
+   expansão documentado (mesmo trade-off do `inline` do Kotlin).
+
+**Validação:** `embed_test` 14/14 + `embed_inline/return/valued/harden`
+verdes, 8 negativos xfail comportando-se como xfail + suíte completa
+verde + `zig build test` verde, sem regressão.

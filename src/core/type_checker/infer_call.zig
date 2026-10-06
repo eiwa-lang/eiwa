@@ -1912,9 +1912,10 @@ fn substituteEmbedParam(self: *TypeChecker, node: *ASTNode, param_name: []const 
     }
 }
 
-/// Clears inference state that doesn't survive cross-scope pasting (fresh
-/// inference recomputes the rest). Without this, stale flags miscompile.
+/// Clears inference state that doesn't survive cross-scope pasting (fresh inference recomputes the rest). Without this, stale flags miscompile.
 fn clearEmbedState(node: *ASTNode) void {
+    // Every node in a callee-body clone is definition-derived (see `from_embed_body`): user-written code pasted later keeps `false`.
+    node.from_embed_body = true;
     switch (node.data) {
         .identifier => |*id| {
             id.resolved_c_name = null;
@@ -2279,13 +2280,133 @@ fn renameEmbedNames(self: *TypeChecker, node: *ASTNode, map: *std.StringHashMap(
     }
 }
 
+/// Definition-time `@Embed` check: block-typed params must be invoked
+/// directly (`block(...)`). Any other use (forwarded as an argument,
+/// stored, assigned) would dangle after textual expansion, surfacing as
+/// a confusing "Undeclared variable" at each call site. Skipped when the
+/// body rebinds a block name anywhere (those calls bail to normal closure
+/// semantics, where forwarding works).
+pub fn checkEmbedBlockUses(self: *TypeChecker, params: []const ast.Param, body: *ASTNode) anyerror!void {
+    var blocks = ArrayList([]const u8).init(self.allocator);
+    defer blocks.deinit();
+    for (params) |p| {
+        const tr = p.type_ref orelse continue;
+        if (!tr.is_function) continue;
+        try blocks.append(p.name);
+    }
+    if (blocks.items.len == 0) return;
+    var bound = std.StringHashMap(void).init(self.allocator);
+    defer bound.deinit();
+    try collectBoundNames(body, &bound);
+    for (blocks.items) |b| {
+        if (bound.contains(b)) return;
+    }
+    for (blocks.items) |b| {
+        try checkEmbedBlockNode(self, body, b);
+    }
+}
+
+fn checkEmbedBlockNode(self: *TypeChecker, node: *ASTNode, block_name: []const u8) anyerror!void {
+    switch (node.data) {
+        .identifier => |id| {
+            if (std.mem.eql(u8, id.name, block_name)) {
+                self.reportError(node.line, node.column, "TypeError: cannot pass '@Embed' block '{s}' as a value; invoke it directly as '{s}(...)'.", .{ block_name, block_name });
+                return error.TypeError;
+            }
+        },
+        .call_expr => |c| {
+            if (c.callee.data == .identifier and std.mem.eql(u8, c.callee.data.identifier.name, block_name)) {
+                for (c.arguments) |a| try checkEmbedBlockNode(self, a, block_name);
+            } else {
+                try checkEmbedBlockNode(self, c.callee, block_name);
+                for (c.arguments) |a| try checkEmbedBlockNode(self, a, block_name);
+            }
+        },
+        .assignment => |a| {
+            if (std.mem.eql(u8, a.name, block_name)) {
+                self.reportError(node.line, node.column, "TypeError: cannot assign to '@Embed' block '{s}'; invoke it directly as '{s}(...)'.", .{ block_name, block_name });
+                return error.TypeError;
+            }
+            try checkEmbedBlockNode(self, a.value, block_name);
+        },
+        .block => |b| for (b.statements) |s| try checkEmbedBlockNode(self, s, block_name),
+        .var_decl => |v| {
+            if (v.initializer) |init| try checkEmbedBlockNode(self, init, block_name);
+        },
+        .if_expr => |i| {
+            try checkEmbedBlockNode(self, i.condition, block_name);
+            try checkEmbedBlockNode(self, i.then_branch, block_name);
+            if (i.else_branch) |e| try checkEmbedBlockNode(self, e, block_name);
+        },
+        .while_stmt => |w| {
+            try checkEmbedBlockNode(self, w.condition, block_name);
+            try checkEmbedBlockNode(self, w.body, block_name);
+        },
+        .for_stmt => |f| {
+            try checkEmbedBlockNode(self, f.iterable, block_name);
+            try checkEmbedBlockNode(self, f.body, block_name);
+        },
+        .try_stmt => |ts| {
+            try checkEmbedBlockNode(self, ts.body, block_name);
+            for (ts.catches) |cb| try checkEmbedBlockNode(self, cb.body, block_name);
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| try checkEmbedBlockNode(self, s, block_name);
+            for (w.cases) |c| {
+                for (c.conds) |cond| try checkEmbedBlockNode(self, cond, block_name);
+                try checkEmbedBlockNode(self, c.body, block_name);
+            }
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| try checkEmbedBlockNode(self, v, block_name);
+        },
+        .throw_stmt => |t| try checkEmbedBlockNode(self, t.expr, block_name),
+        .break_stmt => |b| {
+            if (b.value) |v| try checkEmbedBlockNode(self, v, block_name);
+        },
+        .lambda_expr => |l| for (l.body) |s| try checkEmbedBlockNode(self, s, block_name),
+        .fun_decl => |f| try checkEmbedBlockNode(self, f.body, block_name),
+        .binary_expr => |b| {
+            try checkEmbedBlockNode(self, b.left, block_name);
+            try checkEmbedBlockNode(self, b.right, block_name);
+        },
+        .unary_expr => |u| try checkEmbedBlockNode(self, u.operand, block_name),
+        .ternary_expr => |t| {
+            try checkEmbedBlockNode(self, t.condition, block_name);
+            try checkEmbedBlockNode(self, t.then_branch, block_name);
+            if (t.else_branch) |e| try checkEmbedBlockNode(self, e, block_name);
+        },
+        .index_expr => |ix| {
+            try checkEmbedBlockNode(self, ix.object, block_name);
+            try checkEmbedBlockNode(self, ix.index, block_name);
+        },
+        .index_set_expr => |s| {
+            try checkEmbedBlockNode(self, s.object, block_name);
+            try checkEmbedBlockNode(self, s.index, block_name);
+            try checkEmbedBlockNode(self, s.value, block_name);
+        },
+        .get_expr => |g| try checkEmbedBlockNode(self, g.object, block_name),
+        .set_expr => |s| {
+            try checkEmbedBlockNode(self, s.object, block_name);
+            try checkEmbedBlockNode(self, s.value, block_name);
+        },
+        .as_expr => |a| try checkEmbedBlockNode(self, a.value, block_name),
+        .is_expr => |ix| try checkEmbedBlockNode(self, ix.value, block_name),
+        .array_literal => |a| for (a.elements) |e| try checkEmbedBlockNode(self, e, block_name),
+        .map_literal => |m| for (m.elements) |e| try checkEmbedBlockNode(self, e, block_name),
+        .string_template => |st| for (st.parts) |p| try checkEmbedBlockNode(self, p, block_name),
+        .named_arg => |na| try checkEmbedBlockNode(self, na.value, block_name),
+        else => {},
+    }
+}
+
 /// Inlines an `@Embed` call: clones the callee body, binds value params to
 /// fresh holders, pastes block invocations, and infers the expansion as a
 /// statement block. Falls back to a normal call (false) unless every
 /// precondition holds; recursion is a hard error.
 fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: anytype, c_name: []const u8, ret_type: *const EiwaType, t: *EiwaType) anyerror!bool {
     if (!funIsEmbed(fun_decl.annotations)) return false;
-    // Termination guard: each expansion pastes a finite body, so only an
+    // Termination backstop: each expansion pastes a finite body, so only an
     // unbounded path (recursion through inlining) can hit the cap. Same
     // function nested in source (e.g. `repeat` in `repeat`) is finite.
     if (self.embed_stack.items.len >= 64) {
@@ -2303,6 +2424,20 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
         const lam = if (a.data == .named_arg) a.data.named_arg.value else a;
         if (lam.data != .lambda_expr) return false;
         try blocks.append(.{ .name = p.name, .lam = lam });
+    }
+    // Inline cycle: a definition-derived call with literal blocks, to a
+    // function already being expanded, would paste forever (each expansion
+    // re-creates the call). Non-literal args bail below to a normal call
+    // and terminate, so the check runs here — after the literal gate.
+    // User-written nested calls (`repeat` in `repeat`) are not marked and
+    // stay finite, so only genuine cycles trip this.
+    if (node.from_embed_body) {
+        for (self.embed_stack.items) |active| {
+            if (std.mem.eql(u8, active, c_name)) {
+                self.reportError(node.line, node.column, "TypeError: recursive '@Embed' call to '{s}' cannot be inlined.", .{fun_decl.name});
+                return error.TypeError;
+            }
+        }
     }
     var valued = ArrayList(*ASTNode).init(self.allocator);
     defer valued.deinit();

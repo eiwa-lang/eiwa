@@ -1813,6 +1813,27 @@ Semântica alvo:
 - [x] **Task 92.5:** Docs (tour + MCP em `example/home/src/mcp`).
 - [x] **Verify:** cenários (repeat/loop/retry/nested/custom/catch-all/task/plain + erros preservados de `return`/`leave v`) + suíte completa **752/752** + `zig build test` verdes, sem regressão.
 
+### Phase 93: `@Embed` — inlining geral + forma-valor via `LeaveValue<T>` (COMPLETED)
+> **Status:** COMPLETED (GREEN, 2026-10-06, branch `feat/embed`). Substitui
+> a pilha `@Leaveable`/`@LoopDriver`/throw-desugar por um mecanismo geral
+> (ADR 71): `repeat`/`loop` viram `@Embed`, `leave v` entrega via
+> `throw LeaveValue<T>()` pego por expansão, `return` não-local em blocos
+> inlineados (reversão pontual do ADR 53), `@LoopDriver` aposentado, `retry`
+> segue chamada normal. Endurecimento P3: `leave v` em closure opaca sempre
+> `TypeError` (early-return com retorno declarado preservado), forward de
+> bloco como valor rejeitado na definição, recursão via inline vira erro
+> limpo (era segfault), `from_embed_body` distingue ciclo real de aninhamento
+> fonte-a-fonte; named/defaults/varargs, function-value, embeds aninhados,
+> `task`+`sleep` verificados em `embed_harden_test.ei`.
+
+- [x] **Task 93.1 (P0):** parse/validação `@Embed` (só free functions).
+- [x] **Task 93.2 (P1a):** núcleo do inline (paste textual + higiene).
+- [x] **Task 93.3 (P1b):** `return` próprio do callee via `EmbedReturn` + `retry` como `@Embed` (depois revertido p/ chamada normal no P2).
+- [x] **Task 93.4 (P2):** delivery `LeaveValue<T>` + catch por site; remove desugar de valor + `@LoopDriver`; `retry` de-`@Embed`ed; `rejectValuedLeaves`.
+- [x] **Task 93.5 (P3):** endurecimento (H1/H2/ciclo) + `embed_harden_test.ei` (5) + 3 xfail novos (`forward`, `detached`, `recursive`).
+- [x] **Task 93.6:** Docs (tour §3/§3.4 valor + `@Embed`, ADR 71, `plan_embed.md`, MCP) + merge em `main`.
+- [x] **Verify:** snippet `val x = repeat(5) { leave "Get it!" }`, matriz completa (statement/valor/custom/plain/named/nested/task/suspend + 8 negativos xfail) + suíte completa verde + `zig build test` verde, sem regressão.
+
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
   (Pointer) direto para `tolower(c: Int)`/`toupper(c: Int)` do `<ctype.h>`, que

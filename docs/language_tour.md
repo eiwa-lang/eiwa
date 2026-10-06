@@ -306,6 +306,60 @@ fun myEach(n: Int, @Leaveable block: (Int) -> Void) {
 `@Leaveable` requires an explicit function type. Any other higher-order
 function keeps plain lambda semantics (`leave` just exits the block).
 
+#### `repeat` / `loop` as expressions (`leave v`)
+
+`repeat` and `loop` also yield a value: `leave v` delivers `v` as the call's
+result (`T?`, `null` when the loop completes without `leave`):
+
+```kotlin
+val found = repeat(files.size) { i ->
+    if (files[i].endsWith(".ei")) {
+        leave files[i]
+    }
+}
+// found: String? — null when no .ei file exists
+
+val answer = loop {
+    leave 42
+}
+```
+
+Mixed `leave` value types are a `TypeError`, and `leave v` outside these
+drivers (plain higher-order functions, `retry`, detached closures) is
+rejected — only `repeat`/`loop` (and custom `@Embed` drivers, below) deliver.
+
+#### `@Embed`: inlining + custom drivers
+
+Marking a free function `@Embed` pastes its body at each call site
+(Kotlin-`inline` style, no runtime closure). Custom loop drivers get
+`leave`/`leave v` support with zero compiler changes:
+
+```kotlin
+@Embed
+fun upto(n: Int, block: (Int) -> Void) {
+    var i = 0
+    while (i < n) {
+        block(i)
+        i = i + 1
+    }
+}
+
+val x = upto(10) { i ->
+    if (i == 4) {
+        leave i * 100   // delivers 400
+    }
+}
+```
+
+Rules: free functions only (methods/extensions are rejected); block
+parameters must be invoked directly as `block(...)` — forwarding one as a
+value is a `TypeError`; a recursive `@Embed` call cannot be inlined.
+Pasted blocks see the caller's scope: `return` inside one returns from the
+caller (non-local return), and `leave` binds to the innermost enclosing loop
+including caller loops. Inlining is textual, so suspension points
+(`sleep`/`yield`) and `task` bodies compose naturally. Each expansion
+duplicates the body (same code-bloat trade-off as Kotlin `inline`).
+
 ---
 
 ## 4. String Escape Sequences

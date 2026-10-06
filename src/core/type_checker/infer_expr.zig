@@ -771,7 +771,7 @@ pub fn inferLambdaExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         }
     }
     
-    try checkLambdaBreaks(self, l.body, body_type);
+    try checkLambdaBreaks(self, l.body, body_type, expected_return);
 
     if (expected_return) |exp_ret| {
         if (exp_ret.* != .Void and !self.isCompatible(exp_ret, body_type)) {

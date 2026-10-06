@@ -7,6 +7,7 @@ const case_checker = @import("../case_checker.zig");
 const core = @import("core.zig");
 const type_system = @import("../type_system.zig");
 const infer_stmt_mod = @import("infer_stmt.zig");
+const infer_call_mod = @import("infer_call.zig");
 
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
@@ -1084,6 +1085,8 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             self.reportError(node.line, node.column, "TypeError: '@Embed' is only supported on free functions.", .{});
             return error.TypeError;
         }
+
+        try infer_call_mod.checkEmbedBlockUses(self, f.params, f.body);
     }
     if (f.generic_params.len > 0) {
         var my_list = self.generic_functions_ast.getPtr(f.name);

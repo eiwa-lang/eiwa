@@ -84,10 +84,15 @@
   confusion); custom `@Embed`-only driver promoted
   (`embed_valued_test.ei`); snippet
   `val x = repeat(5) { leave "Get it!" }` + all negatives green.
-- **P3 (harden):** named/defaults/varargs, function-value args, method
-  rejection, nested embeds, suspend interplay, bloat notes; docs (tour
-  replaces `@Leaveable` sections, new ADR, roadmap Phase 93, MCP) + full
-  suite.
+- **P3 (harden, DONE 2026-10-06):** valued `leave` in opaque closures is
+  always a `TypeError` (declared non-`Void` early-return preserved);
+  block-forwarded-as-value rejected at definition (`checkEmbedBlockUses`);
+  inline recursion is a clean error via `from_embed_body` origin marking
+  (was a `cloneNode` segfault; 64-cap stays as backstop); named/defaults/
+  varargs, function-value fallback, nested embeds, `task` + `sleep`
+  interplay locked in `embed_harden_test.ei` (5 green); 3 new xfails
+  (`forward`, `detached`, `recursive`); docs (tour value + `@Embed`, ADR
+  71, roadmap Phase 93) + merge to `main`.
 
 ## 5. No hardcoded loop helpers
 

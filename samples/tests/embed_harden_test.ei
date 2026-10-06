@@ -1,0 +1,98 @@
+import { assert } from "std.core"
+import { task } from "std.coroutines"
+import { sleepMs } from "std.time"
+
+@Embed
+fun innerH(n: Int, block: (Int) -> Void) {
+    block(n * 2)
+}
+
+@Embed
+fun outerH(n: Int, block: (Int) -> Void) {
+    innerH(n + 1) { k ->
+        block(k)
+    }
+}
+
+test "nested @Embed drivers compose" {
+    var total = 0
+    outerH(5) { k ->
+        total = total + k
+    }
+    assert(total == 12)
+}
+
+@Embed
+fun evar(block: (Int) -> Void, ns: Int...) {
+    for (ns) { n ->
+        block(n)
+    }
+}
+
+test "@Embed with varargs tail" {
+    var total = 0
+    evar({ k ->
+        total = total + k
+    }, 1, 2, 3)
+    assert(total == 6)
+}
+
+test "block passed as a value falls back to a normal call" {
+    var total = 0
+    val blk = { k: Int ->
+        total = total + k
+    }
+    repeat(3, blk)
+    assert(total == 3)
+}
+
+test "@Embed drivers work inside task bodies" {
+    val t = task {
+        var total = 0
+        repeat(10) { i ->
+            if (i == 3) {
+                leave
+            }
+            total = total + 1
+        }
+        total
+    }
+    assert(t.await() == 3)
+}
+
+@Embed
+fun pollTwice(block: (Int) -> Void) {
+    block(1)
+    sleepMs(5)
+    block(2)
+}
+
+test "suspend calls inside @Embed helpers suspend in task" {
+    val t = task {
+        var total = 0
+        pollTwice { k ->
+            total = total + k
+        }
+        total
+    }
+    assert(t.await() == 3)
+}
+
+@Embed
+fun twiceG<T>(x: T, block: (T) -> Void) {
+    block(x)
+    block(x)
+}
+
+test "generic @Embed drivers inline the monomorphized body" {
+    var total = 0
+    twiceG(21) { k ->
+        total = total + k
+    }
+    assert(total == 42)
+    var s = ""
+    twiceG("ab") { k ->
+        s = s + k
+    }
+    assert(s == "abab")
+}
