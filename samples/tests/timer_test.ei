@@ -1,0 +1,58 @@
+import { assert } from "std.core"
+import { nowMillis } from "std.time"
+
+test "every with limit ticks with indices" {
+    val seen = MutableList<Int>()
+    every(10, 3) { i ->
+        seen.add(i)
+    }
+    assert(seen.size() == 3)
+    assert(seen.get(0) == 0)
+    assert(seen.get(1) == 1)
+    assert(seen.get(2) == 2)
+}
+
+test "every waits between ticks" {
+    val start = nowMillis()
+    every(50, 3) { i ->
+    }
+    val elapsed = nowMillis() - start
+    assert(elapsed >= 100)
+}
+
+test "every with zero limit never ticks" {
+    var n = 0
+    every(10, 0) { i ->
+        n = n + 1
+    }
+    assert(n == 0)
+}
+
+test "leave stops every early" {
+    var n = 0
+    every(10) { i ->
+        if (i == 2) {
+            leave
+        }
+        n = n + 1
+    }
+    assert(n == 2)
+}
+
+test "leave value delivers every result" {
+    val x = every(10) { i ->
+        if (i == 2) {
+            leave "third"
+        }
+    }
+    assert(x == "third")
+}
+
+test "every completing delivers null" {
+    val d: String? = every(10, 2) { i ->
+        if (i == 9) {
+            leave "x"
+        }
+    }
+    assert(d == null)
+}

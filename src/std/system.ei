@@ -17,6 +17,23 @@ fun repeat(count: Int, block: (Int) -> Void) {
     }
 }
 
+/// Interval ticker: runs `block` immediately, then every `intervalMs`
+/// milliseconds. `limit < 0` (the default) ticks forever; otherwise stops
+/// after `limit` ticks. Bare `leave` stops early, `leave v` delivers the
+/// call value — same semantics as `repeat`/`loop`, since this is a plain
+/// `@Embed` loop driver. Outside `task {}` the waits block the thread;
+/// inside a task body they suspend cooperatively.
+@Embed
+fun every(intervalMs: Int, limit: Int = -1, block: (Int) -> Void) {
+    var i = 0
+
+    while (limit < 0 || i < limit) {
+        block(i)
+        sleepMs(intervalMs)
+        i = i + 1
+    }
+}
+
 /// Plain (non-inlined) call: `leave` in the block finishes the attempt
 /// (lambda-local exit, then success return). Past `Throwable` failures
 /// before a later success are discarded with the normal return.

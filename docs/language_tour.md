@@ -252,6 +252,27 @@ fun main() {
 }
 ```
 
+#### `every(intervalMs[, limit]) { ... }`
+Interval ticker: runs the block immediately, then every `intervalMs`
+milliseconds. Without `limit` it ticks forever; `leave` stops it early:
+
+```kotlin
+every(1000) { i ->
+    println("tick " + i.toString())
+    if (i >= 4) {
+        leave // stops after 5 ticks
+    }
+}
+
+every(100, 3) { i ->
+    println("bounded tick " + i.toString())
+}
+```
+
+Like `repeat`/`loop`, `every` is an `@Embed` loop driver: `leave v`
+delivers the call value, and the waits block the thread outside `task {}`
+but suspend cooperatively inside a task body.
+
 #### `leave` inside `repeat` / `loop` / `retry` (break, not skip)
 
 A bare `leave` targeting one of these blocks **ends the whole loop**
