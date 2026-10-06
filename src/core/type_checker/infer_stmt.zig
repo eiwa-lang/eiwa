@@ -736,43 +736,38 @@ pub fn checkLambdaBreaks(self: *TypeChecker, stmts: []const *ASTNode, body_type:
 }
 
 fn checkLambdaBreakNode(self: *TypeChecker, node: *ASTNode, body_type: *const EiwaType, expected_ret: ?*const EiwaType) anyerror!void {
+    const ctx = BreakCheckCtx{ .tc = self, .body_type = body_type, .expected_ret = expected_ret };
+    _ = try core.visitEachNode(node, ctx, checkLambdaBreakEnter);
+}
+
+const BreakCheckCtx = struct { tc: *TypeChecker, body_type: *const EiwaType, expected_ret: ?*const EiwaType };
+
+fn checkLambdaBreakEnter(ctx: BreakCheckCtx, node: *ASTNode) anyerror!core.VisitAction {
     switch (node.data) {
-        .block => |b| {
-            for (b.statements) |s| try checkLambdaBreakNode(self, s, body_type, expected_ret);
-        },
-        .if_expr => |i| {
-            try checkLambdaBreakNode(self, i.then_branch, body_type, expected_ret);
-            if (i.else_branch) |e| try checkLambdaBreakNode(self, e, body_type, expected_ret);
-        },
-        .try_stmt => |ts| {
-            try checkLambdaBreakNode(self, ts.body, body_type, expected_ret);
-            for (ts.catches) |c| try checkLambdaBreakNode(self, c.body, body_type, expected_ret);
-        },
-        .when_expr => |w| {
-            for (w.cases) |c| try checkLambdaBreakNode(self, c.body, body_type, expected_ret);
-        },
-        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => return .prune,
         .break_stmt => |b| {
-            if (!b.is_lambda_break) return;
+            if (!b.is_lambda_break) return .prune;
             if (b.value) |v| {
-                if (v.data == .throw_stmt) return;
-                const vt = v.resolved_type orelse return;
-                const exp = expected_ret orelse {
-                    self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported inside '@Embed' function blocks (e.g. 'repeat'/'loop').", .{});
+                if (v.data == .throw_stmt) return .prune;
+                const vt = v.resolved_type orelse return .prune;
+                const exp = ctx.expected_ret orelse {
+                    ctx.tc.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported inside '@Embed' function blocks (e.g. 'repeat'/'loop').", .{});
                     return error.TypeError;
                 };
-                if (exp.* == .Void or (!self.isCompatible(exp, vt) and !self.isCompatible(vt, exp))) {
-                    self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported inside '@Embed' function blocks (e.g. 'repeat'/'loop').", .{});
+                if (exp.* == .Void or (!ctx.tc.isCompatible(exp, vt) and !ctx.tc.isCompatible(vt, exp))) {
+                    ctx.tc.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported inside '@Embed' function blocks (e.g. 'repeat'/'loop').", .{});
                     return error.TypeError;
                 }
+                return .prune;
             } else {
-                if (body_type.* != .Void) {
-                    self.reportError(node.line, node.column, "TypeError: bare 'leave' in lambda requires a Void lambda; use 'leave value' to return a value.", .{});
+                if (ctx.body_type.* != .Void) {
+                    ctx.tc.reportError(node.line, node.column, "TypeError: bare 'leave' in lambda requires a Void lambda; use 'leave value' to return a value.", .{});
                     return error.TypeError;
                 }
+                return .prune;
             }
         },
-        else => {},
+        else => return .recurse,
     }
 }
 

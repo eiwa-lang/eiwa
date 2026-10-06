@@ -53,6 +53,136 @@ pub fn collectElseNarrowings(cond: *ASTNode, out: *ArrayList([]const u8)) !void 
     return collectChainNarrowings(cond, out, .or_or, false);
 }
 
+/// Pre-order AST traversal shared by all checker walkers. `enter` runs on
+/// every node (root included); returning `.recurse` auto-visits children,
+/// `.prune` skips the subtree, `.stop` unwinds the whole walk (returned as
+/// `true`). Child enumeration lives here exactly once and is EXHAUSTIVE
+/// (no `else`): adding an `ASTNodeType` variant breaks this switch and
+/// forces every analysis to consider it, instead of being silently skipped
+/// by a dozen copy-pasted `else => {}` arms.
+pub const VisitAction = enum { recurse, prune, stop };
+
+pub fn visitEachNode(node: *ASTNode, ctx: anytype, comptime enter: fn (@TypeOf(ctx), *ASTNode) anyerror!VisitAction) anyerror!bool {
+    const action = try enter(ctx, node);
+    if (action != .recurse) return action == .stop;
+    switch (node.data) {
+        .program => |p| for (p.statements) |s| {
+            if (try visitEachNode(s, ctx, enter)) return true;
+        },
+        .import_stmt => |i| {
+            if (i.module_ast) |m| if (try visitEachNode(m, ctx, enter)) return true;
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| if (try visitEachNode(init, ctx, enter)) return true;
+        },
+        .fun_decl => |f| if (try visitEachNode(f.body, ctx, enter)) return true,
+        .type_decl => |t| for (t.methods) |m| {
+            if (try visitEachNode(m, ctx, enter)) return true;
+        },
+        .contract_decl => |c| for (c.methods) |m| {
+            if (try visitEachNode(m, ctx, enter)) return true;
+        },
+        .skill_decl => |s| for (s.methods) |m| {
+            if (try visitEachNode(m, ctx, enter)) return true;
+        },
+        .test_decl => |t| if (try visitEachNode(t.body, ctx, enter)) return true,
+        .lib_decl => |l| for (l.functions) |f| {
+            if (try visitEachNode(f, ctx, enter)) return true;
+        },
+        .object_decl => |o| for (o.members) |m| {
+            if (try visitEachNode(m, ctx, enter)) return true;
+        },
+        .enum_decl => {},
+        .int_literal, .double_literal, .string_literal, .bool_literal, .null_literal, .identifier => {},
+        .string_template => |st| for (st.parts) |p| {
+            if (try visitEachNode(p, ctx, enter)) return true;
+        },
+        .array_literal => |a| for (a.elements) |e| {
+            if (try visitEachNode(e, ctx, enter)) return true;
+        },
+        .map_literal => |m| for (m.elements) |e| {
+            if (try visitEachNode(e, ctx, enter)) return true;
+        },
+        .unary_expr => |u| if (try visitEachNode(u.operand, ctx, enter)) return true,
+        .binary_expr => |b| {
+            if (try visitEachNode(b.left, ctx, enter)) return true;
+            if (try visitEachNode(b.right, ctx, enter)) return true;
+        },
+        .call_expr => |c| {
+            if (try visitEachNode(c.callee, ctx, enter)) return true;
+            for (c.arguments) |a| {
+                if (try visitEachNode(a, ctx, enter)) return true;
+            }
+        },
+        .named_arg => |na| if (try visitEachNode(na.value, ctx, enter)) return true,
+        .if_expr => |i| {
+            if (try visitEachNode(i.condition, ctx, enter)) return true;
+            if (try visitEachNode(i.then_branch, ctx, enter)) return true;
+            if (i.else_branch) |e| if (try visitEachNode(e, ctx, enter)) return true;
+        },
+        .index_expr => |ix| {
+            if (try visitEachNode(ix.object, ctx, enter)) return true;
+            if (try visitEachNode(ix.index, ctx, enter)) return true;
+        },
+        .index_set_expr => |s| {
+            if (try visitEachNode(s.object, ctx, enter)) return true;
+            if (try visitEachNode(s.index, ctx, enter)) return true;
+            if (try visitEachNode(s.value, ctx, enter)) return true;
+        },
+        .assignment => |a| if (try visitEachNode(a.value, ctx, enter)) return true,
+        .get_expr => |g| if (try visitEachNode(g.object, ctx, enter)) return true,
+        .set_expr => |s| {
+            if (try visitEachNode(s.object, ctx, enter)) return true;
+            if (try visitEachNode(s.value, ctx, enter)) return true;
+        },
+        .block => |b| for (b.statements) |s| {
+            if (try visitEachNode(s, ctx, enter)) return true;
+        },
+        .while_stmt => |w| {
+            if (try visitEachNode(w.condition, ctx, enter)) return true;
+            if (try visitEachNode(w.body, ctx, enter)) return true;
+        },
+        .for_stmt => |f| {
+            if (try visitEachNode(f.iterable, ctx, enter)) return true;
+            if (try visitEachNode(f.body, ctx, enter)) return true;
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| if (try visitEachNode(v, ctx, enter)) return true;
+        },
+        .break_stmt => |b| {
+            if (b.value) |v| if (try visitEachNode(v, ctx, enter)) return true;
+        },
+        .ternary_expr => |t| {
+            if (try visitEachNode(t.condition, ctx, enter)) return true;
+            if (try visitEachNode(t.then_branch, ctx, enter)) return true;
+            if (t.else_branch) |e| if (try visitEachNode(e, ctx, enter)) return true;
+        },
+        .as_expr => |a| if (try visitEachNode(a.value, ctx, enter)) return true,
+        .is_expr => |ix| if (try visitEachNode(ix.value, ctx, enter)) return true,
+        .try_stmt => |ts| {
+            if (try visitEachNode(ts.body, ctx, enter)) return true;
+            for (ts.catches) |cb| {
+                if (try visitEachNode(cb.body, ctx, enter)) return true;
+            }
+        },
+        .throw_stmt => |t| if (try visitEachNode(t.expr, ctx, enter)) return true,
+        .is_type_cond => {},
+        .when_expr => |w| {
+            if (w.subject) |s| if (try visitEachNode(s, ctx, enter)) return true;
+            for (w.cases) |c| {
+                for (c.conds) |cond| {
+                    if (try visitEachNode(cond, ctx, enter)) return true;
+                }
+                if (try visitEachNode(c.body, ctx, enter)) return true;
+            }
+        },
+        .lambda_expr => |l| for (l.body) |s| {
+            if (try visitEachNode(s, ctx, enter)) return true;
+        },
+    }
+    return false;
+}
+
 fn collectChainNarrowings(cond: *ASTNode, out: *ArrayList([]const u8), chain_op: ast.TokenType, want_then: bool) !void {
     if (cond.data == .binary_expr and cond.data.binary_expr.op == chain_op) {
         try collectChainNarrowings(cond.data.binary_expr.left, out, chain_op, want_then);
