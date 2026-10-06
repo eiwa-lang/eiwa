@@ -1842,126 +1842,46 @@ fn checkEmbedBlockEnter(ctx: BlockUseCtx, node: *ASTNode) anyerror!core.VisitAct
     }
 }
 
-/// True when the callee body invokes one of its block params from inside a
-/// loop: the structural "loop driver" shape, no annotation needed. Only
-/// then do block-direct bare `leave`s exit the driver (via the region-exit
-/// channel); otherwise pasting stays purely textual (`leave` binds caller
-/// loops or errors when unbound). Deferred invocations inside nested
-/// lambdas/functions don't count.
-///
-/// NOTE: intentionally NOT migrated to `core.visitEachNode`: the `in_loop`
-/// path state cannot thread through a pre-order enter callback without
-/// manual recursion inside it, which would be cleverer — not clearer —
-/// than this switch. Keep it explicit.
-fn driverLoopsAroundBlock(node: *ASTNode, blocks: []const BlockArg) bool {
-    return driverLoopNode(node, blocks, false);
+/// Structural loop-driver shape, computed once at `@Embed` definition
+/// validation and stored on `fun_decl.is_loop_driver` (monomorphized clones
+/// preserve it): true when the body invokes a block param from inside a
+/// loop. The inliner reads the flag instead of re-walking the body per
+/// call site. Loop bodies thread `in_loop` via manual recursion; the
+/// enumerator traverses everything else.
+pub fn funBodyLoopsAroundBlocks(body: *ASTNode, block_names: []const []const u8) bool {
+    if (block_names.len == 0) return false;
+    const ctx = LoopShapeCtx{ .block_names = block_names, .in_loop = false };
+    return core.visitEachNode(body, ctx, loopShapeEnter) catch false;
 }
 
-fn driverLoopNode(node: *ASTNode, blocks: []const BlockArg, in_loop: bool) bool {
+const LoopShapeCtx = struct { block_names: []const []const u8, in_loop: bool };
+
+fn loopShapeEnter(ctx: LoopShapeCtx, node: *ASTNode) anyerror!core.VisitAction {
     switch (node.data) {
         .call_expr => |c| {
-            if (in_loop and c.callee.data == .identifier) {
-                for (blocks) |b| {
-                    if (std.mem.eql(u8, c.callee.data.identifier.name, b.name)) return true;
+            if (ctx.in_loop and c.callee.data == .identifier) {
+                for (ctx.block_names) |b| {
+                    if (std.mem.eql(u8, c.callee.data.identifier.name, b)) return .stop;
                 }
             }
-            if (driverLoopNode(c.callee, blocks, in_loop)) return true;
-            for (c.arguments) |a| {
-                if (driverLoopNode(a, blocks, in_loop)) return true;
-            }
-            return false;
+            return .recurse;
         },
         .while_stmt => |w| {
-            if (driverLoopNode(w.condition, blocks, in_loop)) return true;
-            return driverLoopNode(w.body, blocks, true);
+            if (try core.visitEachNode(w.condition, ctx, loopShapeEnter)) return .stop;
+            var nested = ctx;
+            nested.in_loop = true;
+            if (try core.visitEachNode(w.body, nested, loopShapeEnter)) return .stop;
+            return .prune;
         },
         .for_stmt => |f| {
-            if (driverLoopNode(f.iterable, blocks, in_loop)) return true;
-            return driverLoopNode(f.body, blocks, true);
+            if (try core.visitEachNode(f.iterable, ctx, loopShapeEnter)) return .stop;
+            var nested = ctx;
+            nested.in_loop = true;
+            if (try core.visitEachNode(f.body, nested, loopShapeEnter)) return .stop;
+            return .prune;
         },
-        .lambda_expr, .fun_decl => return false,
-        .block => |b| {
-            for (b.statements) |s| {
-                if (driverLoopNode(s, blocks, in_loop)) return true;
-            }
-            return false;
-        },
-        .var_decl => |v| {
-            if (v.initializer) |init| return driverLoopNode(init, blocks, in_loop);
-            return false;
-        },
-        .if_expr => |i| {
-            if (driverLoopNode(i.condition, blocks, in_loop)) return true;
-            if (driverLoopNode(i.then_branch, blocks, in_loop)) return true;
-            if (i.else_branch) |e| return driverLoopNode(e, blocks, in_loop);
-            return false;
-        },
-        .try_stmt => |ts| {
-            if (driverLoopNode(ts.body, blocks, in_loop)) return true;
-            for (ts.catches) |cb| {
-                if (driverLoopNode(cb.body, blocks, in_loop)) return true;
-            }
-            return false;
-        },
-        .when_expr => |w| {
-            if (w.subject) |s| if (driverLoopNode(s, blocks, in_loop)) return true;
-            for (w.cases) |c| {
-                for (c.conds) |cond| if (driverLoopNode(cond, blocks, in_loop)) return true;
-                if (driverLoopNode(c.body, blocks, in_loop)) return true;
-            }
-            return false;
-        },
-        .return_stmt => |r| {
-            if (r.value) |v| return driverLoopNode(v, blocks, in_loop);
-            return false;
-        },
-        .throw_stmt => |t| return driverLoopNode(t.expr, blocks, in_loop),
-        .break_stmt => |b| {
-            if (b.value) |v| return driverLoopNode(v, blocks, in_loop);
-            return false;
-        },
-        .assignment => |a| return driverLoopNode(a.value, blocks, in_loop),
-        .binary_expr => |b| {
-            if (driverLoopNode(b.left, blocks, in_loop)) return true;
-            return driverLoopNode(b.right, blocks, in_loop);
-        },
-        .unary_expr => |u| return driverLoopNode(u.operand, blocks, in_loop),
-        .ternary_expr => |t| {
-            if (driverLoopNode(t.condition, blocks, in_loop)) return true;
-            if (driverLoopNode(t.then_branch, blocks, in_loop)) return true;
-            if (t.else_branch) |e| return driverLoopNode(e, blocks, in_loop);
-            return false;
-        },
-        .index_expr => |ix| {
-            if (driverLoopNode(ix.object, blocks, in_loop)) return true;
-            return driverLoopNode(ix.index, blocks, in_loop);
-        },
-        .index_set_expr => |s| {
-            if (driverLoopNode(s.object, blocks, in_loop)) return true;
-            if (driverLoopNode(s.index, blocks, in_loop)) return true;
-            return driverLoopNode(s.value, blocks, in_loop);
-        },
-        .get_expr => |g| return driverLoopNode(g.object, blocks, in_loop),
-        .set_expr => |s| {
-            if (driverLoopNode(s.object, blocks, in_loop)) return true;
-            return driverLoopNode(s.value, blocks, in_loop);
-        },
-        .as_expr => |a| return driverLoopNode(a.value, blocks, in_loop),
-        .is_expr => |ix| return driverLoopNode(ix.value, blocks, in_loop),
-        .array_literal => |a| {
-            for (a.elements) |e| if (driverLoopNode(e, blocks, in_loop)) return true;
-            return false;
-        },
-        .map_literal => |m| {
-            for (m.elements) |e| if (driverLoopNode(e, blocks, in_loop)) return true;
-            return false;
-        },
-        .string_template => |st| {
-            for (st.parts) |p| if (driverLoopNode(p, blocks, in_loop)) return true;
-            return false;
-        },
-        .named_arg => |na| return driverLoopNode(na.value, blocks, in_loop),
-        else => return false,
+        .lambda_expr, .fun_decl => return .prune,
+        else => return .recurse,
     }
 }
 
@@ -2096,14 +2016,15 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
             out_name = vd.out_name;
         }
     }
-    // Loop-driver bare breaks: when the callee body loops around a block
-    // invocation, block-direct bare `leave`s exit the whole driver, so
-    // they ride the same region-exit channel as callee-own `return`s
-    // (`throw EmbedReturn()`, caught per expansion). Non-loop drivers
-    // (e.g. `runOnce`) stay purely textual: `leave` binds to caller loops
-    // or errors when unbound. Nested loops/lambdas keep their own target.
+    // Loop-driver bare breaks: when the callee loops around a block
+    // invocation (`is_loop_driver`, computed at definition), block-direct
+    // bare `leave`s exit the whole driver, so they ride the same
+    // region-exit channel as callee-own `return`s (`throw EmbedReturn()`,
+    // caught per expansion). Non-loop drivers (e.g. `runOnce`) stay purely
+    // textual: `leave` binds to caller loops or errors when unbound.
+    // Nested loops/lambdas keep their own target.
     var driver_exits: usize = 0;
-    if (driverLoopsAroundBlock(body_clone, blocks.items)) {
+    if (fun_decl.is_loop_driver) {
         for (blocks.items) |b| {
             for (b.lam.data.lambda_expr.body) |s| {
                 driver_exits += try convertBareLeavesToRegionExit(self, s);

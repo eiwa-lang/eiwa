@@ -198,6 +198,11 @@ pub const ASTNodeType = union(enum) {
         /// True when the function (transitively) contains a call to an `@Suspend`
         /// function (detected by the coroutine pass, not by the parser).
         is_suspend: bool = false,
+        /// True when an `@Embed` callee body invokes a block param from
+        /// inside a loop (structural loop-driver shape, computed once at
+        /// definition validation). The inliner reads this instead of
+        /// re-walking the body per call site.
+        is_loop_driver: bool = false,
         receiver_type: ?*const ASTTypeRef = null,
     },
     type_decl: struct {

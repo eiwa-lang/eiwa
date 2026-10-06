@@ -1087,6 +1087,15 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         }
 
         try infer_call_mod.checkEmbedBlockUses(self, f.params, f.body);
+        // Loop-driver shape once per definition (the inliner reads the flag).
+        var shape_names = ArrayList([]const u8).init(self.allocator);
+        defer shape_names.deinit();
+        for (f.params) |pm| {
+            const tr = pm.type_ref orelse continue;
+            if (!tr.is_function) continue;
+            try shape_names.append(pm.name);
+        }
+        f.is_loop_driver = infer_call_mod.funBodyLoopsAroundBlocks(f.body, shape_names.items);
     }
     if (f.generic_params.len > 0) {
         var my_list = self.generic_functions_ast.getPtr(f.name);
