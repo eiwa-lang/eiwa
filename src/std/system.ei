@@ -2,6 +2,7 @@ import { Coroutine } from "std.coroutines"
 import { Leave } from "std.exceptions"
 
 @LoopDriver
+@Embed
 fun loop(@Leaveable block: () -> Void) {
     try {
         while (true) {
@@ -11,6 +12,7 @@ fun loop(@Leaveable block: () -> Void) {
 }
 
 @LoopDriver
+@Embed
 fun repeat(count: Int, @Leaveable block: (Int) -> Void) {
     try {
         var i = 0

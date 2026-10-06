@@ -1646,6 +1646,740 @@ fn convertLeavesToDeliver(self: *TypeChecker, node: *ASTNode, out_name: []const 
     }
 }
 
+/// True when the subtree declares a nested type-like entity (type, object,
+/// contract, skill, enum, lib, test). Those keep definition-site identity;
+/// pasting them per call site risks duplicate emission: normal call instead.
+fn bodyHasNestedDecl(node: *ASTNode) bool {
+    switch (node.data) {
+        .type_decl, .object_decl, .contract_decl, .skill_decl, .enum_decl, .lib_decl, .test_decl => return true,
+        .block => |b| {
+            for (b.statements) |s| if (bodyHasNestedDecl(s)) return true;
+            return false;
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| return bodyHasNestedDecl(init);
+            return false;
+        },
+        .if_expr => |i| {
+            if (bodyHasNestedDecl(i.condition)) return true;
+            if (bodyHasNestedDecl(i.then_branch)) return true;
+            if (i.else_branch) |e| return bodyHasNestedDecl(e);
+            return false;
+        },
+        .while_stmt => |w| return bodyHasNestedDecl(w.condition) or bodyHasNestedDecl(w.body),
+        .for_stmt => |f| return bodyHasNestedDecl(f.iterable) or bodyHasNestedDecl(f.body),
+        .try_stmt => |ts| {
+            if (bodyHasNestedDecl(ts.body)) return true;
+            for (ts.catches) |cb| if (bodyHasNestedDecl(cb.body)) return true;
+            return false;
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| if (bodyHasNestedDecl(s)) return true;
+            for (w.cases) |c| {
+                for (c.conds) |cond| if (bodyHasNestedDecl(cond)) return true;
+                if (bodyHasNestedDecl(c.body)) return true;
+            }
+            return false;
+        },
+        .return_stmt => |r| return if (r.value) |v| bodyHasNestedDecl(v) else false,
+        .throw_stmt => |t| return bodyHasNestedDecl(t.expr),
+        .break_stmt => |b| return if (b.value) |v| bodyHasNestedDecl(v) else false,
+        .assignment => |a| return bodyHasNestedDecl(a.value),
+        .call_expr => |c| {
+            if (bodyHasNestedDecl(c.callee)) return true;
+            for (c.arguments) |a| if (bodyHasNestedDecl(a)) return true;
+            return false;
+        },
+        .lambda_expr => |l| {
+            for (l.body) |s| if (bodyHasNestedDecl(s)) return true;
+            return false;
+        },
+        .fun_decl => return true,
+        .binary_expr => |b| return bodyHasNestedDecl(b.left) or bodyHasNestedDecl(b.right),
+        .unary_expr => |u| return bodyHasNestedDecl(u.operand),
+        .ternary_expr => |t| {
+            if (bodyHasNestedDecl(t.condition)) return true;
+            if (bodyHasNestedDecl(t.then_branch)) return true;
+            if (t.else_branch) |e| return bodyHasNestedDecl(e);
+            return false;
+        },
+        .index_expr => |ix| return bodyHasNestedDecl(ix.object) or bodyHasNestedDecl(ix.index),
+        .index_set_expr => |s| return bodyHasNestedDecl(s.object) or bodyHasNestedDecl(s.index) or bodyHasNestedDecl(s.value),
+        .get_expr => |g| return bodyHasNestedDecl(g.object),
+        .set_expr => |s| return bodyHasNestedDecl(s.object) or bodyHasNestedDecl(s.value),
+        .as_expr => |a| return bodyHasNestedDecl(a.value),
+        .is_expr => |ix| return bodyHasNestedDecl(ix.value),
+        .array_literal => |a| {
+            for (a.elements) |e| if (bodyHasNestedDecl(e)) return true;
+            return false;
+        },
+        .map_literal => |m| {
+            for (m.elements) |e| if (bodyHasNestedDecl(e)) return true;
+            return false;
+        },
+        .string_template => |st| {
+            for (st.parts) |p| if (bodyHasNestedDecl(p)) return true;
+            return false;
+        },
+        .named_arg => |na| return bodyHasNestedDecl(na.value),
+        else => return false,
+    }
+}
+
+/// `@Embed` on the declaration (function-level annotation).
+fn funIsEmbed(annotations: []const ast.Annotation) bool {
+    for (annotations) |ann| {
+        if (std.mem.eql(u8, ann.name, "Embed")) return true;
+    }
+    return false;
+}
+
+/// Bound names bound anywhere in a subtree (for value-param shadow bail).
+/// Skips nothing: shadowing is detected, not resolved, here.
+fn collectBoundNames(node: *ASTNode, names: *std.StringHashMap(void)) anyerror!void {
+    switch (node.data) {
+        .block => |b| for (b.statements) |s| try collectBoundNames(s, names),
+        .var_decl => |v| {
+            try names.put(v.name, {});
+            if (v.initializer) |init| try collectBoundNames(init, names);
+        },
+        .if_expr => |i| {
+            try collectBoundNames(i.condition, names);
+            try collectBoundNames(i.then_branch, names);
+            if (i.else_branch) |e| try collectBoundNames(e, names);
+        },
+        .while_stmt => |w| {
+            try collectBoundNames(w.condition, names);
+            try collectBoundNames(w.body, names);
+        },
+        .for_stmt => |f| {
+            try collectBoundNames(f.iterable, names);
+            try names.put(f.index_name orelse "it", {});
+            try names.put(f.item_name, {});
+            try collectBoundNames(f.body, names);
+        },
+        .try_stmt => |ts| {
+            try collectBoundNames(ts.body, names);
+            for (ts.catches) |cb| {
+                if (cb.var_name) |vn| try names.put(vn, {});
+                try collectBoundNames(cb.body, names);
+            }
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| try collectBoundNames(s, names);
+            for (w.cases) |c| {
+                for (c.conds) |cond| try collectBoundNames(cond, names);
+                try collectBoundNames(c.body, names);
+            }
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| try collectBoundNames(v, names);
+        },
+        .throw_stmt => |t| try collectBoundNames(t.expr, names),
+        .break_stmt => |b| {
+            if (b.value) |v| try collectBoundNames(v, names);
+        },
+        .assignment => |a| try collectBoundNames(a.value, names),
+        .call_expr => |c| {
+            try collectBoundNames(c.callee, names);
+            for (c.arguments) |a| try collectBoundNames(a, names);
+        },
+        .lambda_expr => |l| {
+            for (l.params) |p| try names.put(p.name, {});
+            for (l.body) |s| try collectBoundNames(s, names);
+        },
+        .fun_decl => |f| {
+            try names.put(f.name, {});
+            for (f.params) |p| try names.put(p.name, {});
+            try collectBoundNames(f.body, names);
+        },
+        .binary_expr => |b| {
+            try collectBoundNames(b.left, names);
+            try collectBoundNames(b.right, names);
+        },
+        .unary_expr => |u| try collectBoundNames(u.operand, names),
+        .ternary_expr => |t| {
+            try collectBoundNames(t.condition, names);
+            try collectBoundNames(t.then_branch, names);
+            if (t.else_branch) |e| try collectBoundNames(e, names);
+        },
+        .index_expr => |ix| {
+            try collectBoundNames(ix.object, names);
+            try collectBoundNames(ix.index, names);
+        },
+        .index_set_expr => |s| {
+            try collectBoundNames(s.object, names);
+            try collectBoundNames(s.index, names);
+            try collectBoundNames(s.value, names);
+        },
+        .get_expr => |g| try collectBoundNames(g.object, names),
+        .set_expr => |s| {
+            try collectBoundNames(s.object, names);
+            try collectBoundNames(s.value, names);
+        },
+        .as_expr => |a| try collectBoundNames(a.value, names),
+        .is_expr => |ix| try collectBoundNames(ix.value, names),
+        .array_literal => |a| for (a.elements) |e| try collectBoundNames(e, names),
+        .map_literal => |m| for (m.elements) |e| try collectBoundNames(e, names),
+        .string_template => |st| for (st.parts) |p| try collectBoundNames(p, names),
+        .named_arg => |na| try collectBoundNames(na.value, names),
+        else => {},
+    }
+}
+
+/// Textual value-param substitution into fresh holders. Exact: any body
+/// binding of a value-param name bails to a normal call first. Flags
+/// callee-position use (would build an IIFE shape).
+fn substituteEmbedParam(self: *TypeChecker, node: *ASTNode, param_name: []const u8, fresh: []const u8, bailed: *bool) anyerror!void {
+    switch (node.data) {
+        .identifier => |id| {
+            if (std.mem.eql(u8, id.name, param_name)) {
+                const renamed = try self.allocator.dupe(u8, fresh);
+                node.data.identifier.name = renamed;
+            }
+        },
+        .block => |b| for (b.statements) |s| try substituteEmbedParam(self, s, param_name, fresh, bailed),
+        .var_decl => |v| {
+            if (v.initializer) |init| try substituteEmbedParam(self, init, param_name, fresh, bailed);
+        },
+        .if_expr => |i| {
+            try substituteEmbedParam(self, i.condition, param_name, fresh, bailed);
+            try substituteEmbedParam(self, i.then_branch, param_name, fresh, bailed);
+            if (i.else_branch) |e| try substituteEmbedParam(self, e, param_name, fresh, bailed);
+        },
+        .while_stmt => |w| {
+            try substituteEmbedParam(self, w.condition, param_name, fresh, bailed);
+            try substituteEmbedParam(self, w.body, param_name, fresh, bailed);
+        },
+        .for_stmt => |f| {
+            try substituteEmbedParam(self, f.iterable, param_name, fresh, bailed);
+            try substituteEmbedParam(self, f.body, param_name, fresh, bailed);
+        },
+        .try_stmt => |ts| {
+            try substituteEmbedParam(self, ts.body, param_name, fresh, bailed);
+            for (ts.catches) |cb| try substituteEmbedParam(self, cb.body, param_name, fresh, bailed);
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| try substituteEmbedParam(self, s, param_name, fresh, bailed);
+            for (w.cases) |c| {
+                for (c.conds) |cond| try substituteEmbedParam(self, cond, param_name, fresh, bailed);
+                try substituteEmbedParam(self, c.body, param_name, fresh, bailed);
+            }
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| try substituteEmbedParam(self, v, param_name, fresh, bailed);
+        },
+        .throw_stmt => |t| try substituteEmbedParam(self, t.expr, param_name, fresh, bailed),
+        .break_stmt => |b| {
+            if (b.value) |v| try substituteEmbedParam(self, v, param_name, fresh, bailed);
+        },
+        .assignment => |a| try substituteEmbedParam(self, a.value, param_name, fresh, bailed),
+        .call_expr => |c| {
+            if (c.callee.data == .identifier and std.mem.eql(u8, c.callee.data.identifier.name, param_name)) {
+                bailed.* = true;
+                return;
+            }
+            try substituteEmbedParam(self, c.callee, param_name, fresh, bailed);
+            for (c.arguments) |a| try substituteEmbedParam(self, a, param_name, fresh, bailed);
+        },
+        .lambda_expr => |l| {
+            for (l.body) |s| try substituteEmbedParam(self, s, param_name, fresh, bailed);
+        },
+        .fun_decl => |f| try substituteEmbedParam(self, f.body, param_name, fresh, bailed),
+        .binary_expr => |b| {
+            try substituteEmbedParam(self, b.left, param_name, fresh, bailed);
+            try substituteEmbedParam(self, b.right, param_name, fresh, bailed);
+        },
+        .unary_expr => |u| try substituteEmbedParam(self, u.operand, param_name, fresh, bailed),
+        .ternary_expr => |t| {
+            try substituteEmbedParam(self, t.condition, param_name, fresh, bailed);
+            try substituteEmbedParam(self, t.then_branch, param_name, fresh, bailed);
+            if (t.else_branch) |e| try substituteEmbedParam(self, e, param_name, fresh, bailed);
+        },
+        .index_expr => |ix| {
+            try substituteEmbedParam(self, ix.object, param_name, fresh, bailed);
+            try substituteEmbedParam(self, ix.index, param_name, fresh, bailed);
+        },
+        .index_set_expr => |s| {
+            try substituteEmbedParam(self, s.object, param_name, fresh, bailed);
+            try substituteEmbedParam(self, s.index, param_name, fresh, bailed);
+            try substituteEmbedParam(self, s.value, param_name, fresh, bailed);
+        },
+        .get_expr => |g| try substituteEmbedParam(self, g.object, param_name, fresh, bailed),
+        .set_expr => |s| {
+            try substituteEmbedParam(self, s.object, param_name, fresh, bailed);
+            try substituteEmbedParam(self, s.value, param_name, fresh, bailed);
+        },
+        .as_expr => |a| try substituteEmbedParam(self, a.value, param_name, fresh, bailed),
+        .is_expr => |ix| try substituteEmbedParam(self, ix.value, param_name, fresh, bailed),
+        .array_literal => |a| for (a.elements) |e| try substituteEmbedParam(self, e, param_name, fresh, bailed),
+        .map_literal => |m| for (m.elements) |e| try substituteEmbedParam(self, e, param_name, fresh, bailed),
+        .string_template => |st| for (st.parts) |p| try substituteEmbedParam(self, p, param_name, fresh, bailed),
+        .named_arg => |na| try substituteEmbedParam(self, na.value, param_name, fresh, bailed),
+        else => {},
+    }
+}
+
+/// Clears inference state that doesn't survive cross-scope pasting (fresh
+/// inference recomputes the rest). Without this, stale flags miscompile.
+fn clearEmbedState(node: *ASTNode) void {
+    switch (node.data) {
+        .identifier => |*id| {
+            id.resolved_c_name = null;
+            id.is_class_property = false;
+            id.is_boxed = false;
+            id.is_box_ref = false;
+            id.owner_type_c_name = null;
+        },
+        .break_stmt => |*b| {
+            b.is_lambda_break = false;
+        },
+        else => {},
+    }
+    node.expected_type = null;
+    node.box_nullable_scalar = false;
+    switch (node.data) {
+        .block => |b| for (b.statements) |s| clearEmbedState(s),
+        .var_decl => |v| {
+            if (v.initializer) |init| clearEmbedState(init);
+        },
+        .if_expr => |i| {
+            clearEmbedState(i.condition);
+            clearEmbedState(i.then_branch);
+            if (i.else_branch) |e| clearEmbedState(e);
+        },
+        .while_stmt => |w| {
+            clearEmbedState(w.condition);
+            clearEmbedState(w.body);
+        },
+        .for_stmt => |f| {
+            clearEmbedState(f.iterable);
+            clearEmbedState(f.body);
+        },
+        .try_stmt => |ts| {
+            clearEmbedState(ts.body);
+            for (ts.catches) |cb| clearEmbedState(cb.body);
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| clearEmbedState(s);
+            for (w.cases) |c| {
+                for (c.conds) |cond| clearEmbedState(cond);
+                clearEmbedState(c.body);
+            }
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| clearEmbedState(v);
+        },
+        .throw_stmt => |t| clearEmbedState(t.expr),
+        .break_stmt => |b| {
+            if (b.value) |v| clearEmbedState(v);
+        },
+        .assignment => |a| clearEmbedState(a.value),
+        .call_expr => |c| {
+            clearEmbedState(c.callee);
+            for (c.arguments) |a| clearEmbedState(a);
+        },
+        .lambda_expr => |l| for (l.body) |s| clearEmbedState(s),
+        .fun_decl => |f| clearEmbedState(f.body),
+        .binary_expr => |b| {
+            clearEmbedState(b.left);
+            clearEmbedState(b.right);
+        },
+        .unary_expr => |u| clearEmbedState(u.operand),
+        .ternary_expr => |t| {
+            clearEmbedState(t.condition);
+            clearEmbedState(t.then_branch);
+            if (t.else_branch) |e| clearEmbedState(e);
+        },
+        .index_expr => |ix| {
+            clearEmbedState(ix.object);
+            clearEmbedState(ix.index);
+        },
+        .index_set_expr => |s| {
+            clearEmbedState(s.object);
+            clearEmbedState(s.index);
+            clearEmbedState(s.value);
+        },
+        .get_expr => |g| clearEmbedState(g.object),
+        .set_expr => |s| {
+            clearEmbedState(s.object);
+            clearEmbedState(s.value);
+        },
+        .as_expr => |a| clearEmbedState(a.value),
+        .is_expr => |ix| clearEmbedState(ix.value),
+        .array_literal => |a| for (a.elements) |e| clearEmbedState(e),
+        .map_literal => |m| for (m.elements) |e| clearEmbedState(e),
+        .string_template => |st| for (st.parts) |p| clearEmbedState(p),
+        .named_arg => |na| clearEmbedState(na.value),
+        else => {},
+    }
+}
+
+/// Replaces one block invocation `name(args)` with a value-block pasting a
+/// fresh clone of the lambda body (`val` bindings for the lambda params).
+/// Arity is checked; `it` is bound for single-arg calls to param-less lambdas.
+fn pasteEmbedBlock(self: *TypeChecker, callnode: *ASTNode, lam: *ASTNode, line: usize, col: usize) anyerror!void {
+    const callargs = callnode.data.call_expr.arguments;
+    const lparams = lam.data.lambda_expr.params;
+    var bindings = ArrayList(*ASTNode).init(self.allocator);
+    if (lparams.len == 0) {
+        if (callargs.len == 1) {
+            const val_it = try self.allocator.create(ASTNode);
+            val_it.* = .{ .line = line, .column = col, .resolved_type = null, .data = .{ .var_decl = .{ .is_mut = false, .name = "it", .type_ref = null, .initializer = callargs[0] } } };
+            try bindings.append(val_it);
+        } else if (callargs.len != 0) {
+            self.reportError(line, col, "TypeError: block takes no parameters but got {} arguments.", .{callargs.len});
+            return error.TypeError;
+        }
+    } else {
+        if (callargs.len != lparams.len) {
+            self.reportError(line, col, "TypeError: block takes {} parameters but got {} arguments.", .{ lparams.len, callargs.len });
+            return error.TypeError;
+        }
+        for (lparams, 0..) |p, i| {
+            const val_p = try self.allocator.create(ASTNode);
+            val_p.* = .{ .line = line, .column = col, .resolved_type = null, .data = .{ .var_decl = .{ .is_mut = false, .name = p.name, .type_ref = null, .initializer = callargs[i] } } };
+            try bindings.append(val_p);
+        }
+    }
+    for (lam.data.lambda_expr.body) |s| {
+        try bindings.append(try self.cloneNode(s));
+    }
+    callnode.data = .{ .block = .{ .statements = try bindings.toOwnedSlice(), .is_value = true } };
+}
+
+/// Recursively pastes block invocations in an inlined tree.
+fn pasteEmbedBlocks(self: *TypeChecker, node: *ASTNode, blocks: []const BlockArg, line: usize, col: usize) anyerror!void {
+    switch (node.data) {
+        .block => |b| for (b.statements) |s| try pasteEmbedBlocks(self, s, blocks, line, col),
+        .var_decl => |v| {
+            if (v.initializer) |init| try pasteEmbedBlocks(self, init, blocks, line, col);
+        },
+        .if_expr => |i| {
+            try pasteEmbedBlocks(self, i.condition, blocks, line, col);
+            try pasteEmbedBlocks(self, i.then_branch, blocks, line, col);
+            if (i.else_branch) |e| try pasteEmbedBlocks(self, e, blocks, line, col);
+        },
+        .while_stmt => |w| {
+            try pasteEmbedBlocks(self, w.condition, blocks, line, col);
+            try pasteEmbedBlocks(self, w.body, blocks, line, col);
+        },
+        .for_stmt => |f| {
+            try pasteEmbedBlocks(self, f.iterable, blocks, line, col);
+            try pasteEmbedBlocks(self, f.body, blocks, line, col);
+        },
+        .try_stmt => |ts| {
+            try pasteEmbedBlocks(self, ts.body, blocks, line, col);
+            for (ts.catches) |cb| try pasteEmbedBlocks(self, cb.body, blocks, line, col);
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| try pasteEmbedBlocks(self, s, blocks, line, col);
+            for (w.cases) |c| {
+                for (c.conds) |cond| try pasteEmbedBlocks(self, cond, blocks, line, col);
+                try pasteEmbedBlocks(self, c.body, blocks, line, col);
+            }
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| try pasteEmbedBlocks(self, v, blocks, line, col);
+        },
+        .throw_stmt => |t| try pasteEmbedBlocks(self, t.expr, blocks, line, col),
+        .break_stmt => |b| {
+            if (b.value) |v| try pasteEmbedBlocks(self, v, blocks, line, col);
+        },
+        .assignment => |a| try pasteEmbedBlocks(self, a.value, blocks, line, col),
+        .call_expr => |c| {
+            if (c.callee.data == .identifier) {
+                for (blocks) |b| {
+                    if (std.mem.eql(u8, c.callee.data.identifier.name, b.name)) {
+                        try pasteEmbedBlock(self, node, b.lam, line, col);
+                        return;
+                    }
+                }
+            }
+            try pasteEmbedBlocks(self, c.callee, blocks, line, col);
+            for (c.arguments) |a| try pasteEmbedBlocks(self, a, blocks, line, col);
+        },
+        .lambda_expr => |l| for (l.body) |s| try pasteEmbedBlocks(self, s, blocks, line, col),
+        .fun_decl => |f| try pasteEmbedBlocks(self, f.body, blocks, line, col),
+        .binary_expr => |b| {
+            try pasteEmbedBlocks(self, b.left, blocks, line, col);
+            try pasteEmbedBlocks(self, b.right, blocks, line, col);
+        },
+        .unary_expr => |u| try pasteEmbedBlocks(self, u.operand, blocks, line, col),
+        .ternary_expr => |t| {
+            try pasteEmbedBlocks(self, t.condition, blocks, line, col);
+            try pasteEmbedBlocks(self, t.then_branch, blocks, line, col);
+            if (t.else_branch) |e| try pasteEmbedBlocks(self, e, blocks, line, col);
+        },
+        .index_expr => |ix| {
+            try pasteEmbedBlocks(self, ix.object, blocks, line, col);
+            try pasteEmbedBlocks(self, ix.index, blocks, line, col);
+        },
+        .index_set_expr => |s| {
+            try pasteEmbedBlocks(self, s.object, blocks, line, col);
+            try pasteEmbedBlocks(self, s.index, blocks, line, col);
+            try pasteEmbedBlocks(self, s.value, blocks, line, col);
+        },
+        .get_expr => |g| try pasteEmbedBlocks(self, g.object, blocks, line, col),
+        .set_expr => |s| {
+            try pasteEmbedBlocks(self, s.object, blocks, line, col);
+            try pasteEmbedBlocks(self, s.value, blocks, line, col);
+        },
+        .as_expr => |a| try pasteEmbedBlocks(self, a.value, blocks, line, col),
+        .is_expr => |ix| try pasteEmbedBlocks(self, ix.value, blocks, line, col),
+        .array_literal => |a| for (a.elements) |e| try pasteEmbedBlocks(self, e, blocks, line, col),
+        .map_literal => |m| for (m.elements) |e| try pasteEmbedBlocks(self, e, blocks, line, col),
+        .string_template => |st| for (st.parts) |p| try pasteEmbedBlocks(self, p, blocks, line, col),
+        .named_arg => |na| try pasteEmbedBlocks(self, na.value, blocks, line, col),
+        else => {},
+    }
+}
+
+const BlockArg = struct {
+    name: []const u8,
+    lam: *ASTNode,
+};
+
+/// Uniformly renames bound names to fresh ones (scope structure is
+/// preserved: shadowing survives relabeling). Skips `it` (implicit forms
+/// resolve in place) — value params are substituted, block markers matched
+/// structurally, so neither may be renamed.
+fn renameEmbedNames(self: *TypeChecker, node: *ASTNode, map: *std.StringHashMap([]const u8)) anyerror!void {
+    switch (node.data) {
+        .identifier => |*id| {
+            if (std.mem.eql(u8, id.name, "it")) return;
+            if (map.get(id.name)) |fresh| {
+                id.name = fresh;
+            }
+        },
+        .block => |b| for (b.statements) |s| try renameEmbedNames(self, s, map),
+        .var_decl => |*v| {
+            if (!std.mem.eql(u8, v.name, "it")) {
+                if (map.get(v.name)) |fresh| v.name = fresh;
+            }
+            if (v.initializer) |init| try renameEmbedNames(self, init, map);
+        },
+        .if_expr => |i| {
+            try renameEmbedNames(self, i.condition, map);
+            try renameEmbedNames(self, i.then_branch, map);
+            if (i.else_branch) |e| try renameEmbedNames(self, e, map);
+        },
+        .while_stmt => |w| {
+            try renameEmbedNames(self, w.condition, map);
+            try renameEmbedNames(self, w.body, map);
+        },
+        .for_stmt => |*f| {
+            try renameEmbedNames(self, f.iterable, map);
+            if (f.index_name) |idx| {
+                if (!std.mem.eql(u8, idx, "it")) {
+                    if (map.get(idx)) |fresh| f.index_name = fresh;
+                }
+            }
+            if (!std.mem.eql(u8, f.item_name, "it")) {
+                if (map.get(f.item_name)) |fresh| f.item_name = fresh;
+            }
+            try renameEmbedNames(self, f.body, map);
+        },
+        .try_stmt => |*ts| {
+            try renameEmbedNames(self, ts.body, map);
+            var renamed = false;
+            for (ts.catches) |cb| {
+                if (cb.var_name) |vn| {
+                    if (!std.mem.eql(u8, vn, "it") and map.get(vn) != null) renamed = true;
+                }
+                try renameEmbedNames(self, cb.body, map);
+            }
+            // CatchBlock is const: rebuild the slice when a var renames.
+            if (renamed) {
+                var new_catches = try self.allocator.alloc(ast.CatchBlock, ts.catches.len);
+                for (ts.catches, 0..) |cb, i| {
+                    new_catches[i] = cb;
+                    if (cb.var_name) |vn| {
+                        if (!std.mem.eql(u8, vn, "it")) {
+                            if (map.get(vn)) |fresh| new_catches[i].var_name = fresh;
+                        }
+                    }
+                }
+                ts.catches = new_catches;
+            }
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| try renameEmbedNames(self, s, map);
+            for (w.cases) |c| {
+                for (c.conds) |cond| try renameEmbedNames(self, cond, map);
+                try renameEmbedNames(self, c.body, map);
+            }
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| try renameEmbedNames(self, v, map);
+        },
+        .throw_stmt => |t| try renameEmbedNames(self, t.expr, map),
+        .break_stmt => |b| {
+            if (b.value) |v| try renameEmbedNames(self, v, map);
+        },
+        .assignment => |*a| {
+            if (!std.mem.eql(u8, a.name, "it")) {
+                if (map.get(a.name)) |fresh| a.name = fresh;
+            }
+            try renameEmbedNames(self, a.value, map);
+        },
+        .call_expr => |c| {
+            try renameEmbedNames(self, c.callee, map);
+            for (c.arguments) |a| try renameEmbedNames(self, a, map);
+        },
+        .lambda_expr => |*l| {
+            var renamed_params = false;
+            for (l.params) |p| {
+                if (!std.mem.eql(u8, p.name, "it") and map.get(p.name) != null) renamed_params = true;
+            }
+            if (renamed_params) {
+                var new_params = try self.allocator.alloc(ast.Param, l.params.len);
+                for (l.params, 0..) |p, i| {
+                    new_params[i] = p;
+                    if (!std.mem.eql(u8, p.name, "it")) {
+                        if (map.get(p.name)) |fresh| new_params[i].name = fresh;
+                    }
+                }
+                l.params = new_params;
+            }
+            for (l.body) |s| try renameEmbedNames(self, s, map);
+        },
+        .fun_decl => |*f| {
+            if (map.get(f.name)) |fresh| f.name = fresh;
+            for (f.params) |*p| {
+                if (!std.mem.eql(u8, p.name, "it")) {
+                    if (map.get(p.name)) |fresh| p.name = fresh;
+                }
+            }
+            try renameEmbedNames(self, f.body, map);
+        },
+        .binary_expr => |b| {
+            try renameEmbedNames(self, b.left, map);
+            try renameEmbedNames(self, b.right, map);
+        },
+        .unary_expr => |u| try renameEmbedNames(self, u.operand, map),
+        .ternary_expr => |t| {
+            try renameEmbedNames(self, t.condition, map);
+            try renameEmbedNames(self, t.then_branch, map);
+            if (t.else_branch) |e| try renameEmbedNames(self, e, map);
+        },
+        .index_expr => |ix| {
+            try renameEmbedNames(self, ix.object, map);
+            try renameEmbedNames(self, ix.index, map);
+        },
+        .index_set_expr => |s| {
+            try renameEmbedNames(self, s.object, map);
+            try renameEmbedNames(self, s.index, map);
+            try renameEmbedNames(self, s.value, map);
+        },
+        .get_expr => |g| try renameEmbedNames(self, g.object, map),
+        .set_expr => |s| {
+            try renameEmbedNames(self, s.object, map);
+            try renameEmbedNames(self, s.value, map);
+        },
+        .as_expr => |a| try renameEmbedNames(self, a.value, map),
+        .is_expr => |ix| try renameEmbedNames(self, ix.value, map),
+        .array_literal => |a| for (a.elements) |e| try renameEmbedNames(self, e, map),
+        .map_literal => |m| for (m.elements) |e| try renameEmbedNames(self, e, map),
+        .string_template => |st| for (st.parts) |p| try renameEmbedNames(self, p, map),
+        .named_arg => |na| try renameEmbedNames(self, na.value, map),
+        else => {},
+    }
+}
+
+/// Inlines an `@Embed` call: clones the callee body, binds value params to
+/// fresh holders, pastes block invocations, and infers the expansion as a
+/// statement block. Falls back to a normal call (false) unless every
+/// precondition holds; recursion is a hard error.
+fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: anytype, c_name: []const u8, ret_type: *const EiwaType, t: *EiwaType) anyerror!bool {
+    if (!funIsEmbed(fun_decl.annotations)) return false;
+    // Termination guard: each expansion pastes a finite body, so only an
+    // unbounded path (recursion through inlining) can hit the cap. Same
+    // function nested in source (e.g. `repeat` in `repeat`) is finite.
+    if (self.embed_stack.items.len >= 64) {
+        self.reportError(node.line, node.column, "TypeError: '@Embed' expansion too deep (recursive '@Embed' call to '{s}').", .{c_name});
+        return error.TypeError;
+    }
+    const c_args = node.data.call_expr.arguments;
+    var blocks = ArrayList(BlockArg).init(self.allocator);
+    defer blocks.deinit();
+    for (fun_decl.params, 0..) |p, pi| {
+        const is_fn = if (p.type_ref) |tr| tr.is_function else false;
+        if (!is_fn) continue;
+        if (pi >= c_args.len) return false;
+        const a = c_args[pi];
+        const lam = if (a.data == .named_arg) a.data.named_arg.value else a;
+        if (lam.data != .lambda_expr) return false;
+        var valued = ArrayList(*ASTNode).init(self.allocator);
+        defer valued.deinit();
+        for (lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &valued);
+        if (valued.items.len > 0) return false;
+        try blocks.append(.{ .name = p.name, .lam = lam });
+    }
+    if (bodyHasDirectReturn(fun_decl.body)) return false;
+    var bound = std.StringHashMap(void).init(self.allocator);
+    defer bound.deinit();
+    try collectBoundNames(fun_decl.body, &bound);
+    for (fun_decl.params) |p| {
+        if (std.mem.eql(u8, p.name, "it")) return false;
+        // Any body binding of a param name (value or block) breaks
+        // textual matching: shadowing stays on the normal-call path.
+        if (bound.contains(p.name)) return false;
+    }
+    const line = node.line;
+    const col = node.column;
+    const tag = try std.fmt.allocPrint(self.allocator, "__emb_{d}_{d}", .{ line, col });
+    var expansion = ArrayList(*ASTNode).init(self.allocator);
+    for (fun_decl.params, 0..) |p, pi| {
+        const is_fn = if (p.type_ref) |tr| tr.is_function else false;
+        if (is_fn) continue;
+        if (pi >= c_args.len) return false;
+        const holder = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ tag, p.name });
+        const holder_decl = try self.allocator.create(ASTNode);
+        holder_decl.* = .{ .line = line, .column = col, .resolved_type = null, .data = .{ .var_decl = .{ .is_mut = true, .name = holder, .type_ref = null, .initializer = c_args[pi] } } };
+        try expansion.append(holder_decl);
+    }
+    const body_clone = try self.cloneNode(fun_decl.body);
+    clearEmbedState(body_clone);
+    if (bodyHasNestedDecl(body_clone)) return false;
+    var renames = std.StringHashMap([]const u8).init(self.allocator);
+    defer renames.deinit();
+    var bit = bound.iterator();
+    while (bit.next()) |entry| {
+        const old = entry.key_ptr.*;
+        if (std.mem.eql(u8, old, "it")) continue;
+        var is_param = false;
+        for (fun_decl.params) |fp| {
+            if (std.mem.eql(u8, fp.name, old)) {
+                is_param = true;
+                break;
+            }
+        }
+        if (is_param) continue;
+        const fresh = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ tag, old });
+        try renames.put(old, fresh);
+    }
+    try renameEmbedNames(self, body_clone, &renames);
+    for (fun_decl.params) |p| {
+        const is_fn = if (p.type_ref) |tr| tr.is_function else false;
+        if (is_fn) continue;
+        const holder = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ tag, p.name });
+        var bailed = false;
+        try substituteEmbedParam(self, body_clone, p.name, holder, &bailed);
+        if (bailed) return false;
+    }
+    try pasteEmbedBlocks(self, body_clone, blocks.items, line, col);
+    if (body_clone.data != .block) return false;
+    for (body_clone.data.block.statements) |s| try expansion.append(s);
+    node.data = .{ .block = .{ .statements = try expansion.toOwnedSlice() } };
+    try self.embed_stack.append(c_name);
+    defer _ = self.embed_stack.pop();
+    const bt = try self.checkBlock(node.data.block.statements, scope);
+    t.* = ret_type.*;
+    _ = bt;
+    return true;
+}
+
 pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var c = &node.data.call_expr;
 
@@ -1795,6 +2529,9 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
             // Value-form loop drivers; node replaced when handled.
             if (try desugarRepeatLoopValue(self, node, scope, fun_decl.params, fun_decl.annotations, t)) return;
+
+            // `@Embed` inline; node replaced when handled.
+            if (try inlineEmbedCall(self, node, scope, fun_decl, f.c_name, f.return_type, t)) return;
             
             // Set expected types for all arguments (for C transpiler boxing)
             for (c.arguments, 0..) |arg, arg_i| {
@@ -1975,6 +2712,8 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                 try resolveCallArguments(self, node, func_decl.params, scope);
 
                 if (try desugarRepeatLoopValue(self, node, scope, func_decl.params, func_decl.annotations, t)) return;
+
+                if (try inlineEmbedCall(self, node, scope, func_decl, actual_c_name_2, ret_type, t)) return;
 
                 for (c.arguments, 0..) |arg, arg_i| {
                     if (arg_i < func_decl.params.len) {
