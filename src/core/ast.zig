@@ -161,6 +161,7 @@ pub const ASTNode = struct {
     /// that flow into a nullable-scalar slot (`Int?`/`Bool?`/`Double?`).
     /// The LLVM emitter heap-boxes these so zero stays distinct from null.
     box_nullable_scalar: bool = false,
+    from_embed_body: bool = false,
     data: ASTNodeType,
 };
 
@@ -355,6 +356,7 @@ pub const ASTNodeType = union(enum) {
     },
     block: struct {
         statements: []const *ASTNode,
+        is_value: bool = false,
     },
     while_stmt: struct {
         condition: *ASTNode,

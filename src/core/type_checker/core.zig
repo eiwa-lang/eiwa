@@ -146,6 +146,8 @@ pub const TypeChecker = struct {
     monomorph_depth: usize = 0,
     /// While > 0, unreachable-code warnings stay silent (not user mistake).
     synthetic_depth: usize = 0,
+    /// `@Embed` expansion stack: re-entry is recursion through inlining.
+    embed_stack: ArrayList([]const u8),
 
     pub const inferNode = core_inferNode;
     pub const reportError = core_reportError;
@@ -213,6 +215,7 @@ pub const TypeChecker = struct {
             .local_symbols = std.StringHashMap(void).init(allocator),
             .lib_symbols = std.StringHashMap(void).init(allocator),
             .monomorphized_nodes = ArrayList(*ASTNode).init(allocator),
+            .embed_stack = ArrayList([]const u8).init(allocator),
             .current_class_name = null,
             .registry = null,
             .target_info = null,
@@ -246,6 +249,7 @@ pub const TypeChecker = struct {
         self.local_symbols.deinit();
         self.lib_symbols.deinit();
         self.monomorphized_nodes.deinit();
+        self.embed_stack.deinit();
     }
 };
 
@@ -1602,7 +1606,17 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .break_stmt => try infer_stmt_mod.inferBreakStmt(self, node, scope, t),
         .try_stmt => try infer_stmt_mod.inferTryStmt(self, node, scope, t),
         .throw_stmt => try infer_stmt_mod.inferThrowStmt(self, node, scope, t),
-        .block => return try self.checkBlock(node.data.block.statements, scope),
+        .block => {
+            if (node.data.block.is_value) {
+                if (try infer_stmt_mod.inferBlockAsExpression(self, node, scope)) |rt| {
+                    t.* = rt.*;
+                } else {
+                    t.* = .Void;
+                }
+            } else {
+                return try self.checkBlock(node.data.block.statements, scope);
+            }
+        },
         .is_type_cond => t.* = .Bool,
         .when_expr => try infer_when_mod.inferWhenExpr(self, node, scope, t),
         .lambda_expr => try infer_expr_mod.inferLambdaExpr(self, node, scope, t),

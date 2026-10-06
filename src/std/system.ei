@@ -1,6 +1,7 @@
 import { Coroutine } from "std.coroutines"
 import { Leave } from "std.exceptions"
 
+@Embed
 fun loop(@Leaveable block: () -> Void) {
     try {
         while (true) {
@@ -9,6 +10,7 @@ fun loop(@Leaveable block: () -> Void) {
     } catch (e: Leave) {}
 }
 
+@Embed
 fun repeat(count: Int, @Leaveable block: (Int) -> Void) {
     try {
         var i = 0

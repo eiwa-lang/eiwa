@@ -44,10 +44,11 @@ test "StringBuilder grows past initial capacity" {
     assert(s.endsWith("ab") == true)
 }
 
-test "String indexOfFrom" {
-    assert("abcabc".indexOfFrom("b", 0) == 1)
-    assert("abcabc".indexOfFrom("b", 2) == 4)
-    assert("abcabc".indexOfFrom("z", 0) == -1)
-    assert("abc".indexOfFrom("a", 3) == -1)
-    assert("abc".indexOfFrom("a", 99) == -1)
+test "String indexOf" {
+    assert("abcabc".indexOf("b") == 1)
+    assert("abcabc".indexOf("b", 0) == 1)
+    assert("abcabc".indexOf("b", 2) == 4)
+    assert("abcabc".indexOf("z", 0) == -1)
+    assert("abc".indexOf("a", 3) == -1)
+    assert("abc".indexOf("a", 99) == -1)
 }

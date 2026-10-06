@@ -4316,6 +4316,36 @@ fn emitExpressionRaw(
             llvm.LLVMPositionBuilderAtEnd(builder, after_bb);
             return llvm.LLVMBuildLoad2(builder, ret_type, res_ptr, "expr_try_res_load");
         },
+        .block => |b| {
+            // Checker-built value blocks only: effects, then trailing yields.
+            if (b.statements.len == 0) {
+                return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+            }
+            const cur_blk_bb = llvm.LLVMGetInsertBlock(builder);
+            const cur_blk_fn = llvm.LLVMGetBasicBlockParent(cur_blk_bb);
+            for (b.statements[0 .. b.statements.len - 1]) |stmt| {
+                if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) != null) break;
+                try statement.emitStatement(ctx, mod, builder, cur_blk_fn, scope, structs, libs, stmt, null);
+            }
+            if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) != null) {
+                return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+            }
+            const last = b.statements[b.statements.len - 1];
+            switch (last.data) {
+                .while_stmt, .var_decl, .fun_decl, .test_decl, .type_decl, .contract_decl, .skill_decl, .object_decl, .enum_decl, .lib_decl, .import_stmt, .return_stmt, .throw_stmt, .break_stmt => {
+                    try statement.emitStatement(ctx, mod, builder, cur_blk_fn, scope, structs, libs, last, null);
+                    return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+                },
+                .for_stmt => |f| {
+                    if (!f.collect) {
+                        try statement.emitStatement(ctx, mod, builder, cur_blk_fn, scope, structs, libs, last, null);
+                        return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+                    }
+                    return try emitExpression(ctx, mod, builder, scope, structs, libs, last);
+                },
+                else => return try emitExpression(ctx, mod, builder, scope, structs, libs, last),
+            }
+        },
         .for_stmt => |f| {
             // A collecting `for` builds a List; a statement one runs for
             // effects with a dummy value.

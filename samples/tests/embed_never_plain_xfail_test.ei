@@ -1,0 +1,9 @@
+fun withVal(x: Int, block: (Int) -> Void) {
+    block(x)
+}
+
+test "valued leave in plain block is rejected" {
+    val x = withVal(1) { i ->
+        leave 2
+    }
+}

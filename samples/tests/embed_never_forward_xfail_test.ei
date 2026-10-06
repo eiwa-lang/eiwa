@@ -1,0 +1,17 @@
+import { assert } from "std.core"
+
+@Embed
+fun innerFw(n: Int, block: (Int) -> Void) {
+    block(n)
+}
+
+@Embed
+fun outerFw(n: Int, block: (Int) -> Void) {
+    innerFw(n, block)
+}
+
+test "forwarding an @Embed block as a value is rejected" {
+    outerFw(1) { k ->
+        assert(k == 1)
+    }
+}

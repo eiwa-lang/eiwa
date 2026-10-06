@@ -1,0 +1,5 @@
+test "valued leave in retry is rejected" {
+    val x = retry(3) { i ->
+        leave 1
+    }
+}

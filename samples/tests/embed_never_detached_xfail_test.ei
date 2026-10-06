@@ -1,0 +1,5 @@
+test "valued leave in a detached closure is rejected" {
+    val blk = { k: Int ->
+        leave 7
+    }
+}

@@ -1107,7 +1107,7 @@ fun compilerCommand(cmd: String) {
         var probe = finalOutput.indexOf("/")
         while (probe != -1) {
             slash = probe
-            probe = finalOutput.indexOfFrom("/", probe + 1)
+            probe = finalOutput.indexOf("/", probe + 1)
         }
         if (slash > 0) {
             Fs.mkdirP(finalOutput.substring(0, slash))

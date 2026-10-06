@@ -1,0 +1,19 @@
+import { assert } from "std.core"
+
+@Embed
+fun findFirst(n: Int, block: (Int) -> Void) {
+    var i = 0
+    while (i < n) {
+        block(i)
+        i = i + 1
+    }
+}
+
+test "@Embed custom driver delivers leave value" {
+    val x = findFirst(10) { i ->
+        if (i == 4) {
+            leave i * 10
+        }
+    }
+    assert((x ?: -1) == 40)
+}

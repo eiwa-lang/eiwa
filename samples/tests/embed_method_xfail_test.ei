@@ -1,0 +1,10 @@
+type Box(val n: Int) {
+    @Embed
+    fun get(): Int {
+        return this.n
+    }
+}
+
+test "@Embed on type method is rejected" {
+    assert(Box(1).get() == 1)
+}

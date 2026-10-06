@@ -1,0 +1,14 @@
+@Embed
+fun selfy(n: Int, block: (Int) -> Void) {
+    if (n > 0) {
+        selfy(n - 1) { k ->
+            block(k)
+        }
+    }
+}
+
+test "recursive @Embed calls are rejected" {
+    selfy(2) { k ->
+        print(k.toString())
+    }
+}

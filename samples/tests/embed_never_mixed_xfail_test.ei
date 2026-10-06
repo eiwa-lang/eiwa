@@ -1,0 +1,8 @@
+test "mixed leave values are rejected" {
+    val x = repeat(3) { i ->
+        if (i == 1) {
+            leave 1
+        }
+        leave "s"
+    }
+}

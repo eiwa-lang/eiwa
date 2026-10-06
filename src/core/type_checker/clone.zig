@@ -42,7 +42,7 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
             for (b.statements, 0..) |stmt, i| {
                 new_stmts[i] = try self.cloneNode(stmt);
             }
-            new_node.data = .{ .block = .{ .statements = new_stmts } };
+            new_node.data = .{ .block = .{ .statements = new_stmts, .is_value = b.is_value } };
         },
         .binary_expr => |b| {
             new_node.data = .{ .binary_expr = .{
@@ -232,6 +232,8 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
                     .name = p.name,
                     .type_ref = if (p.type_ref) |tr| try self.cloneTypeRef(tr) else null,
                     .initializer = if (p.initializer) |init| try self.cloneNode(init) else null,
+                    .is_varargs = p.is_varargs,
+                    .annotations = p.annotations,
                 };
             }
             var new_body = try self.allocator.alloc(*ASTNode, l.body.len);
@@ -265,6 +267,8 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
                     .name = p.name,
                     .type_ref = if (p.type_ref) |tr| try self.cloneTypeRef(tr) else null,
                     .initializer = if (p.initializer) |init| try self.cloneNode(init) else null,
+                    .is_varargs = p.is_varargs,
+                    .annotations = p.annotations,
                 };
             }
             new_node.data = .{ .fun_decl = .{
