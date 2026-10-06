@@ -1336,34 +1336,61 @@ fn bodyHasReturn(node: *ASTNode, valued_only: bool) bool {
 }
 
 /// Converts `leave v` to `throw LeaveValue(v)`. Same stops as collection.
-fn convertLeavesToThrow(self: *TypeChecker, node: *ASTNode, line: usize, col: usize) anyerror!void {
+/// Single traversal for valued `leave v` (non-throw) with the shared stops
+/// (nested loops/lambdas/functions keep their own target). The comptime
+/// `visit` runs on each valued-break node; returning true prunes the rest
+/// (early exit for probes).
+fn visitValuedLeaves(node: *ASTNode, ctx: anytype, comptime visit: fn (@TypeOf(ctx), *ASTNode) anyerror!bool) anyerror!bool {
     switch (node.data) {
-        .block => |b| for (b.statements) |s| try convertLeavesToThrow(self, s, line, col),
+        .block => |b| for (b.statements) |s| {
+            if (try visitValuedLeaves(s, ctx, visit)) return true;
+        },
         .if_expr => |i| {
-            try convertLeavesToThrow(self, i.then_branch, line, col);
-            if (i.else_branch) |e| try convertLeavesToThrow(self, e, line, col);
+            if (try visitValuedLeaves(i.then_branch, ctx, visit)) return true;
+            if (i.else_branch) |e| if (try visitValuedLeaves(e, ctx, visit)) return true;
         },
         .try_stmt => |ts| {
-            try convertLeavesToThrow(self, ts.body, line, col);
-            for (ts.catches) |cb| try convertLeavesToThrow(self, cb.body, line, col);
+            if (try visitValuedLeaves(ts.body, ctx, visit)) return true;
+            for (ts.catches) |cb| if (try visitValuedLeaves(cb.body, ctx, visit)) return true;
         },
-        .when_expr => |w| for (w.cases) |c| try convertLeavesToThrow(self, c.body, line, col),
+        .when_expr => |w| for (w.cases) |c| {
+            if (try visitValuedLeaves(c.body, ctx, visit)) return true;
+        },
         .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
         .break_stmt => |b| {
             if (b.value) |v| {
-                if (v.data == .throw_stmt) return;
-                const lv_ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, "LeaveValue");
-                const lv_arg = try self.allocator.alloc(*ASTNode, 1);
-                lv_arg[0] = v;
-                const lv_call = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .call_expr = .{
-                    .callee = lv_ident,
-                    .arguments = lv_arg,
-                } });
-                node.data = .{ .throw_stmt = .{ .expr = lv_call } };
+                if (v.data != .throw_stmt) return try visit(ctx, node);
             }
         },
         else => {},
     }
+    return false;
+}
+
+fn collectValuedVisit(out: *ArrayList(*ASTNode), node: *ASTNode) anyerror!bool {
+    const bv = node.data.break_stmt.value orelse return false;
+    try out.append(bv);
+    return false;
+}
+
+fn probeValuedVisit(found: *bool, node: *ASTNode) anyerror!bool {
+    _ = node;
+    found.* = true;
+    return true;
+}
+
+const ConvertValuedCtx = struct { tc: *TypeChecker, line: usize, col: usize };
+
+fn convertValuedVisit(ctx: ConvertValuedCtx, node: *ASTNode) anyerror!bool {
+    const lv_ident = try infer_stmt_mod.mkDesugarIdent(ctx.tc, ctx.line, ctx.col, "LeaveValue");
+    const lv_arg = try ctx.tc.allocator.alloc(*ASTNode, 1);
+    lv_arg[0] = node.data.break_stmt.value.?;
+    const lv_call = try infer_stmt_mod.mkDesugarNode(ctx.tc, ctx.line, ctx.col, .{ .call_expr = .{
+        .callee = lv_ident,
+        .arguments = lv_arg,
+    } });
+    node.data = .{ .throw_stmt = .{ .expr = lv_call } };
+    return false;
 }
 
 /// Value delivery setup for inlined (`@Embed`) calls: unifies delivered types
@@ -1376,7 +1403,9 @@ fn prepareValueDelivery(self: *TypeChecker, scope: *Scope, blocks: []const Block
     for (blocks) |b| {
         var bleaves = ArrayList(*ASTNode).init(self.allocator);
         defer bleaves.deinit();
-        for (b.lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &bleaves);
+        for (b.lam.data.lambda_expr.body) |s| {
+            _ = try visitValuedLeaves(s, &bleaves, collectValuedVisit);
+        }
         if (bleaves.items.len == 0) continue;
         // Declared block signature for param types.
         var sig_params: ?[]const *const EiwaType = null;
@@ -1426,73 +1455,17 @@ fn prepareValueDelivery(self: *TypeChecker, scope: *Scope, blocks: []const Block
                 deliver_t = vt;
             }
         }
-        for (b.lam.data.lambda_expr.body) |s| try convertLeavesToThrow(self, s, line, col);
+        const cvt = ConvertValuedCtx{ .tc = self, .line = line, .col = col };
+        for (b.lam.data.lambda_expr.body) |s| {
+            _ = try visitValuedLeaves(s, cvt, convertValuedVisit);
+        }
     }
     const dt = deliver_t orelse return null;
     const out_name = try std.fmt.allocPrint(self.allocator, "{s}_out", .{tag});
     return .{ .t = dt, .out_name = out_name };
 }
 
-fn collectValuedLeaves(node: *ASTNode, out: *ArrayList(*ASTNode)) anyerror!void {
-    switch (node.data) {
-        .block => |b| for (b.statements) |s| try collectValuedLeaves(s, out),
-        .if_expr => |i| {
-            try collectValuedLeaves(i.then_branch, out);
-            if (i.else_branch) |e| try collectValuedLeaves(e, out);
-        },
-        .try_stmt => |ts| {
-            try collectValuedLeaves(ts.body, out);
-            for (ts.catches) |cb| try collectValuedLeaves(cb.body, out);
-        },
-        .when_expr => |w| for (w.cases) |c| try collectValuedLeaves(c.body, out),
-        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
-        .break_stmt => |b| {
-            if (b.value) |v| {
-                if (v.data != .throw_stmt) try out.append(v);
-            }
-        },
-        else => {},
-    }
-}
 
-/// True when the subtree holds a `leave v` (non-throw), stopping at the
-/// same boundaries as collection (nested loops/lambdas/functions).
-/// Early-exit probe for the non-inlined call path.
-fn hasValuedLeave(node: *ASTNode) bool {
-    switch (node.data) {
-        .block => |b| {
-            for (b.statements) |s| {
-                if (hasValuedLeave(s)) return true;
-            }
-        },
-        .if_expr => |i| {
-            if (hasValuedLeave(i.then_branch)) return true;
-            if (i.else_branch) |e| {
-                if (hasValuedLeave(e)) return true;
-            }
-        },
-        .try_stmt => |ts| {
-            if (hasValuedLeave(ts.body)) return true;
-            for (ts.catches) |cb| {
-                if (hasValuedLeave(cb.body)) return true;
-            }
-        },
-        .when_expr => |w| {
-            for (w.cases) |c| {
-                if (hasValuedLeave(c.body)) return true;
-            }
-        },
-        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => return false,
-        .break_stmt => |b| {
-            if (b.value) |v| {
-                if (v.data != .throw_stmt) return true;
-            }
-            return false;
-        },
-        else => return false,
-    }
-    return false;
-}
 
 /// Valued `leave` only delivers through `@Embed` inlining (handled before
 /// this point): anywhere else it is a `TypeError` here instead of
@@ -1502,7 +1475,9 @@ fn rejectValuedLeaves(self: *TypeChecker, node: *ASTNode) anyerror!void {
         const lam = if (arg.data == .named_arg) arg.data.named_arg.value else arg;
         if (lam.data != .lambda_expr) continue;
         for (lam.data.lambda_expr.body) |s| {
-            if (hasValuedLeave(s)) {
+            var found = false;
+            _ = try visitValuedLeaves(s, &found, probeValuedVisit);
+            if (found) {
                 self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported inside '@Embed' function blocks (e.g. 'repeat'/'loop').", .{});
                 return error.TypeError;
             }
@@ -2530,7 +2505,9 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
     var valued = ArrayList(*ASTNode).init(self.allocator);
     defer valued.deinit();
     for (blocks.items) |b| {
-        for (b.lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &valued);
+        for (b.lam.data.lambda_expr.body) |s| {
+            _ = try visitValuedLeaves(s, &valued, collectValuedVisit);
+        }
     }
     if (bodyHasReturn(fun_decl.body, true)) return false;
     var bound = std.StringHashMap(void).init(self.allocator);
