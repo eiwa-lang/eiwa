@@ -1830,7 +1830,7 @@ Semântica alvo:
 - [x] **Task 93.2 (P1a):** núcleo do inline (paste textual + higiene).
 - [x] **Task 93.3 (P1b):** `return` próprio do callee via `EmbedReturn` + `retry` como `@Embed` (depois revertido p/ chamada normal no P2).
 - [x] **Task 93.4 (P2):** delivery `LeaveValue<T>` + catch por site; remove desugar de valor + `@LoopDriver`; `retry` de-`@Embed`ed; `rejectValuedLeaves`.
-- [x] **Task 93.5 (P3):** endurecimento (H1/H2/ciclo) + `embed_harden_test.ei` (5) + 3 xfail novos (`forward`, `detached`, `recursive`).
+- [x] **Task 93.5 (P3):** endurecimento (H1/H2/ciclo) + `embed_harden_test.ei` (7) + 3 xfail novos (`forward`, `detached`, `recursive`).
 - [x] **Task 93.6:** Docs (tour §3/§3.4 valor + `@Embed`, ADR 71, `plan_embed.md`, MCP) + merge em `main`.
 - [x] **Verify:** snippet `val x = repeat(5) { leave "Get it!" }`, matriz completa (statement/valor/custom/plain/named/nested/task/suspend + 8 negativos xfail) + suíte completa verde + `zig build test` verde, sem regressão.
 

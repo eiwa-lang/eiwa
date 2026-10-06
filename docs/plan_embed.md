@@ -1,7 +1,8 @@
 # Plan: `@Embed` — general inlining + non-local `return`
 
-> Status: PLANNED (approved 2026-10-05). Replaces the `@Leaveable` /
-> `@LoopDriver` / `throw`-desugar stack with one general mechanism.
+> Status: COMPLETED (2026-10-06, merged to `main` as `531d5cd`, ADR 71,
+> roadmap Phase 93). Replaced the `@LoopDriver` / value-desugar stack with
+> one general mechanism.
 > Decisions: non-local `return` allowed in inlined blocks (reverses ADR 53
 > for this case); `ControlFlow` contract + bypass stay (channel for
 > `LeaveValue<T>`); `return` outside inlining stays forbidden.
@@ -25,14 +26,23 @@
 - `retry` stays non-`@Embed`: `leave v` there keeps erroring (success-value
   semantics is a separate feature).
 
-## 2. Deletions (the cleanup)
+## 2. Deletions (the cleanup — as actually landed)
 
-- `@Leaveable` (param validation, `throw` rewrite + hooks).
-- `@LoopDriver` (superseded as trigger; shape rule moves into `@Embed` validation).
-- `Leave` + `catch (e: Leave)` in `std.system` + `try` wrappers (loops go
-  back to plain `while`).
-- Value-form desugar (`desugarRepeatLoopValue`, `eiwaTypeToRef`,
-  block `is_value` + checker/emitter/clone arms for it).
+- ~~`@Leaveable` (param validation, `throw` rewrite + hooks)~~ RETAINED:
+  still the bare-`leave` channel — `retry` (non-`@Embed`) needs the
+  `throw Leave()` rewrite for quiet-abort, and non-inlined calls
+  (function-value blocks) keep loop-break semantics through it.
+  `repeat`/`loop` carry both `@Embed` (inline + value delivery) and
+  `@Leaveable` (bare-break throw caught by the body wrapper); they compose.
+- `@LoopDriver` (superseded as trigger) — DELETED as planned: validation
+  removed, uses dropped from `std.system`/`embed_test`; the annotation
+  stays inert for backward compatibility.
+- ~~`Leave` + `catch (e: Leave)` in `std.system` + `try` wrappers (loops go
+  back to plain `while`)~~ RETAINED with the `@Leaveable` channel above.
+- Value-form desugar (`desugarRepeatLoopValue`) — DELETED as planned.
+  `eiwaTypeToRef` and block `is_value` + checker/emitter/clone arms stay:
+  the delivery path reuses them (`LeaveValue<T>` typeref, `var __out: T?`,
+  trailing read).
 - Keep: `ControlFlow` contract + emitter bypass (channel for `LeaveValue`;
   ~60 lines, zero cost when unused).
 
@@ -48,10 +58,15 @@
   references, respects shadowing) → per block-invocation site, paste body
   with args evaluated once into fresh `val`s (`it` synthesized for the
   single implicit param; arity checked) → `leave v` becomes
-  `{ __res = v; throw LeaveValue<T>() }` (T unified from `leave v` types,
-  same compatibility rule as today).
-- **Guards:** inline stack (direct/indirect recursion = error);
-  `@Embed` + `@Leaveable` on the same param is redundant (allowed, ignored).
+  `throw LeaveValue<T>()` (T unified from `leave v` types in
+  `prepareValueDelivery`, same compatibility rule as the old desugar),
+  caught per expansion with `var __out: T?` + trailing read yielding the
+  call value.
+- **Guards:** `from_embed_body` origin marking (definition-cloned nodes)
+  turns direct/indirect inline recursion into a clean `TypeError` at depth
+  2 — the 64-deep inline stack stays as backstop; `@Embed` + `@Leaveable`
+  on the same function compose (bare `leave` → `throw Leave()` caught by
+  the body wrapper; valued `leave` → `LeaveValue` delivery).
 - **Compatible by construction:** suspend/task (pasted points are textual —
   also fixes "sleep only directly in task body" for embed helpers);
   coroutine detection post-inference sees direct calls; `is_value` slots
@@ -90,45 +105,50 @@
   inline recursion is a clean error via `from_embed_body` origin marking
   (was a `cloneNode` segfault; 64-cap stays as backstop); named/defaults/
   varargs, function-value fallback, nested embeds, `task` + `sleep`
-  interplay locked in `embed_harden_test.ei` (5 green); 3 new xfails
-  (`forward`, `detached`, `recursive`); docs (tour value + `@Embed`, ADR
+  interplay, generic drivers, caller-loop `leave` binding locked in
+  `embed_harden_test.ei` (7 green); 3 new permanent xfails (`forward`,
+  `detached`, `recursive`); docs (tour value + `@Embed`, ADR
   71, roadmap Phase 93) + merge to `main`.
 
 ## 5. No hardcoded loop helpers
 
-Verified 2026-10-05: zero references to `repeat`/`loop`/`retry`
+Verified on merge: zero references to `repeat`/`loop`/`retry`
 (`system_repeat`, …) in Zig compiler code — only their declarations in
 `src/std/system.ei` (where they belong) plus one unrelated LLVM block
-label. Shape decisions read generic annotations (`@Embed`, `@Leaveable`)
-and arity (1 vs 2 params), never callee names. This invariant is part of
+label. Shape decisions read generic annotations (`@Embed`, `@Leaveable`),
+never callee names. This invariant is part of
 the design: new loop drivers work with zero compiler changes.
 
-## 6. TDD suite (RED now, promotes per phase)
+## 6. TDD suite (final state — all green / red-as-expected)
 
-- `embed_test.ei` (11 tests, green): migration locks that must stay green
-  — statement break (`repeat`/`loop`/custom `@LoopDriver`), value form
-  (snippet, null-completion, `loop`, custom, annotated), plain-HOF
-  block-exit, named/defaults, nested statement + nested value.
-- `embed_inline_xfail_test.ei` (2 runtime-RED → P1): custom `@Embed`
-  driver break count + caller/driver hygiene collision.
-- `embed_return_xfail_test.ei` (compile-RED → P1): non-local return.
-- `embed_valued_xfail_test.ei` (compile-RED → P2): custom `@Embed`
-  driver value delivery. NOTE: P2 desugar must find the block by function
-  type, not only `@Leaveable` (test drivers carry both, but `@Embed`
-  alone must work).
-- Permanent negatives (compile-error forever): `embed_never_retry_`,
-  `embed_never_plain_`, `embed_never_mixed_xfail_test.ei`.
-- P0 adds: `@Embed`-on-method and `@Embed`-recursion negatives (can't
-  land now — `@Embed` is inert metadata today, so they'd XPASS).
+- `embed_test.ei` (14 tests, green): migration locks — statement break
+  (`repeat`/`loop`/custom driver), value form (snippet, null-completion,
+  `loop`, custom, annotated), plain-HOF block-exit, named/defaults,
+  nested statement + nested value, `@Embed` free call, retry path,
+  callee region exit.
+- `embed_inline_test.ei` (2, green — promoted P1a): custom driver break
+  count + caller/driver hygiene collision.
+- `embed_return_test.ei` (1, green — promoted P1a): non-local return.
+- `embed_valued_test.ei` (1, green — promoted P2): `@Embed`-only custom
+  driver value delivery (no `@Leaveable`, no `@LoopDriver`).
+- `embed_harden_test.ei` (7, green — P3): nested drivers, varargs tail,
+  function-value fallback, task bodies, suspend-in-helper, generic
+  drivers, caller-loop `leave` binding.
+- Permanent negatives (compile-error forever, all verified): `embed_never_
+  retry/plain/mixed/forward/detached/recursive_xfail_test.ei` +
+  `embed_method/object/extension_xfail_test.ei`.
 - Rule: no unbounded-`loop{}` break expectations in xfail files (a
   continue-semantics run would hang the harness, not fail cleanly).
 
 ## 7. Risks
 - Hygiene walker is the highest-risk piece (missed capture = wrong program,
-  silent). Mitigation: dedicated unit tests (shadowing, nested lambdas,
-  boxed captures) before P1 lands.
+  silent). Mitigation as landed: `embed_inline_test.ei` hygiene-collision
+  lock + `checkEmbedBlockUses` definition check + full-suite green on
+  every commit (no dedicated Zig unit tests; the walker is exercised
+  through the `.ei` suite instead).
 - Non-local `return` reopens ADR 53 deliberately and only under `@Embed`;
   everywhere else the ban and its tests stand.
-- Code bloat per inlined call (documented, Kotlin has the same trade-off).
+- Code bloat per inlined call (documented in the tour, Kotlin has the same
+  trade-off).
 - Labeled break (G6) stays out: region exit goes through `LeaveValue` /
   textual loops, never needing labels.

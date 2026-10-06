@@ -96,3 +96,21 @@ test "generic @Embed drivers inline the monomorphized body" {
     }
     assert(s == "abab")
 }
+
+@Embed
+fun runOnceH(block: () -> Void) {
+    block()
+}
+
+test "leave binds textually to caller loops" {
+    var total = 0
+    for ([1, 2, 3, 4]) { n ->
+        runOnceH {
+            if (n == 3) {
+                leave
+            }
+            total = total + n
+        }
+    }
+    assert(total == 3)
+}
