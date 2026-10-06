@@ -254,9 +254,8 @@ fun main() {
 
 #### `leave` inside `repeat` / `loop` / `retry` (break, not skip)
 
-The block parameter of these helpers is `@Leaveable`: a bare `leave`
-targeting the block **ends the whole loop** (like `leave` in `for`/`while`),
-it does not skip to the next iteration:
+A bare `leave` targeting one of these blocks **ends the whole loop**
+(like `leave` in `for`/`while`), it does not skip to the next iteration:
 
 ```kotlin
 repeat(10) { i ->
@@ -273,38 +272,37 @@ loop {
 
 retry(5) { attempt ->
     if (giveUp()) {
-        leave // aborts retries quietly (past failures are discarded)
+        leave // finishes the attempt (past failures are discarded)
     }
 }
 ```
 
-Mechanics: `leave` desugars to `throw Leave()`, caught internally by the
-helper. `Leave` implements the `ControlFlow` contract (not `Throwable`), so
-generic handlers never observe it — bare `catch {}`, `catch (e: Throwable)`
-and bare `try {}` let it through; only an explicit `catch (e: Leave)` or
-`catch (e: ControlFlow)` intercepts it. `return` inside these blocks is still
-rejected, and `leave` inside a nested `for`/`while`/lambda still targets the
-innermost construct.
+Mechanics: `repeat`/`loop` are `@Embed` — the body is pasted at the call
+site, so `leave` binds textually to the pasted loop (Kotlin-style).
+Region exit rides the `ControlFlow` contract (not `Throwable`), so generic
+handlers never observe it — bare `catch {}`, `catch (e: Throwable)` and
+bare `try {}` let it through; only an explicit `catch (e: ControlFlow)`
+intercepts it. `return` inside these blocks is still rejected, and `leave`
+inside a nested `for`/`while`/lambda still targets the innermost construct.
 
-#### Custom `@Leaveable` helpers
+#### Custom loop drivers via `@Embed`
 
-Your own loop drivers can opt into the same semantics by annotating the block
-parameter — the function must catch `Leave` around the block invocation:
+Your own loop drivers get the same semantics by marking the function
+`@Embed` and invoking the block directly — no annotations, no wrappers:
 
 ```kotlin
-fun myEach(n: Int, @Leaveable block: (Int) -> Void) {
-    try {
-        var i = 0
-        while (i < n) {
-            block(i)
-            i = i + 1
-        }
-    } catch (e: Leave) {}
+@Embed
+fun myEach(n: Int, block: (Int) -> Void) {
+    var i = 0
+    while (i < n) {
+        block(i)
+        i = i + 1
+    }
 }
 ```
 
-`@Leaveable` requires an explicit function type. Any other higher-order
-function keeps plain lambda semantics (`leave` just exits the block).
+Any other higher-order function keeps plain lambda semantics (`leave`
+just exits the block).
 
 #### `repeat` / `loop` as expressions (`leave v`)
 
@@ -328,37 +326,20 @@ Mixed `leave` value types are a `TypeError`, and `leave v` outside these
 drivers (plain higher-order functions, `retry`, detached closures) is
 rejected — only `repeat`/`loop` (and custom `@Embed` drivers, below) deliver.
 
-#### `@Embed`: inlining + custom drivers
+#### `@Embed`: inlining + non-local `return`
 
 Marking a free function `@Embed` pastes its body at each call site
-(Kotlin-`inline` style, no runtime closure). Custom loop drivers get
-`leave`/`leave v` support with zero compiler changes:
-
-```kotlin
-@Embed
-fun upto(n: Int, block: (Int) -> Void) {
-    var i = 0
-    while (i < n) {
-        block(i)
-        i = i + 1
-    }
-}
-
-val x = upto(10) { i ->
-    if (i == 4) {
-        leave i * 100   // delivers 400
-    }
-}
-```
+(Kotlin-`inline` style, no runtime closure). Pasted blocks see the
+caller's scope: `return` inside one returns from the caller (non-local
+return), and `leave` binds to the innermost enclosing loop including
+caller loops.
 
 Rules: free functions only (methods/extensions are rejected); block
 parameters must be invoked directly as `block(...)` — forwarding one as a
 value is a `TypeError`; a recursive `@Embed` call cannot be inlined.
-Pasted blocks see the caller's scope: `return` inside one returns from the
-caller (non-local return), and `leave` binds to the innermost enclosing loop
-including caller loops. Inlining is textual, so suspension points
-(`sleep`/`yield`) and `task` bodies compose naturally. Each expansion
-duplicates the body (same code-bloat trade-off as Kotlin `inline`).
+Inlining is textual, so suspension points (`sleep`/`yield`) and `task`
+bodies compose naturally. Each expansion duplicates the body (same
+code-bloat trade-off as Kotlin `inline`).
 
 ---
 

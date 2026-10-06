@@ -2,7 +2,7 @@ contract Throwable {
     fun message(): String
 }
 
-/// Bypassed by generic handlers; only explicit `Leave`/`ControlFlow` catches observe it.
+/// Bypassed by generic handlers; only explicit `ControlFlow` catches observe it.
 contract ControlFlow {
     fun message(): String
 }
@@ -15,18 +15,15 @@ type Exception(val text: String) : Throwable {
     implement fun message() = this.text
 }
 
-/// Break signal for `@Leaveable` blocks; caught internally by the driver.
-type Leave(val code: Int = 0) : ControlFlow {
-    implement fun message() = "leave"
-}
-
 /// Value-delivery signal for inlined (`@Embed`) loop drivers: `leave v`
 /// becomes `throw LeaveValue(v)`, caught per expansion.
 type LeaveValue<T>(val value: T) : ControlFlow {
     implement fun message() = "leave value"
 }
 
-/// Region-exit signal for inlined (`@Embed`) bodies with early `return`.
+/// Region-exit signal for inlined (`@Embed`) loop drivers: block-direct
+/// bare `leave`s become `throw EmbedReturn()`, caught per expansion.
+/// (Also carries callee-own early `return`s out of the pasted region.)
 type EmbedReturn(val code: Int = 0) : ControlFlow {
     implement fun message() = "embed return"
 }

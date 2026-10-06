@@ -450,7 +450,6 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
 
     if (!has_named and c.arguments.len == params.len and !has_varargs) {
         // Positional fast path: params/args already aligned.
-        try rewriteLeaveableBlockLeaves(self, params, c.arguments);
         return;
     }
 
@@ -603,8 +602,6 @@ pub fn resolveCallArguments(self: *TypeChecker, node: *ASTNode, params: []const 
     }
 
     // Aligned with params now (defaults filled, named reordered).
-    try rewriteLeaveableBlockLeaves(self, params, final_args);
-
     c.arguments = final_args;
 }
 
@@ -1296,36 +1293,7 @@ fn inferImplicitThisOrObjectCall(self: *TypeChecker, node: *ASTNode, scope: *Sco
     return false;
 }
 
-/// `@Leaveable` block parameter: `leave` in the passed lambda becomes `throw Leave()`.
-fn paramIsLeaveable(p: ast.Param) bool {
-    for (p.annotations) |ann| {
-        if (std.mem.eql(u8, ann.name, "Leaveable")) return true;
-    }
-    return false;
-}
 
-/// Rewrites `leave` to `throw Leave()` in lambdas passed to `@Leaveable`
-/// params (aligned). Skips lambdas holding `leave v` (value-form territory).
-/// Clears the lambda type when converted so it re-infers.
-fn rewriteLeaveableBlockLeaves(self: *TypeChecker, params: []const ast.Param, args: []const *ASTNode) anyerror!void {
-    const n = @min(params.len, args.len);
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        if (!paramIsLeaveable(params[i])) continue;
-        const arg = args[i];
-        const lam = if (arg.data == .named_arg) arg.data.named_arg.value else arg;
-        if (lam.data != .lambda_expr) continue;
-        var probe = ArrayList(*ASTNode).init(self.allocator);
-        defer probe.deinit();
-        for (lam.data.lambda_expr.body) |stmt| try collectValuedLeaves(stmt, &probe);
-        if (probe.items.len > 0) continue;
-        var converted: usize = 0;
-        for (lam.data.lambda_expr.body) |stmt| {
-            converted += try rewriteLeavesInNode(self, stmt);
-        }
-        if (converted > 0) lam.resolved_type = null;
-    }
-}
 
 fn mkDesugarThrowIdent(self: *TypeChecker, line: usize, col: usize, name: []const u8) anyerror!*ASTNode {
     const ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, name);
@@ -1337,42 +1305,6 @@ fn mkDesugarThrowIdent(self: *TypeChecker, line: usize, col: usize, name: []cons
     const throw_node = try self.allocator.create(ASTNode);
     throw_node.* = .{ .line = line, .column = col, .resolved_type = null, .data = .{ .throw_stmt = .{ .expr = ctor } } };
     return throw_node;
-}
-
-/// Rewrites bare `leave` to `throw Leave()`, stopping at nested
-/// loop/lambda/function boundaries. Returns the conversion count.
-fn rewriteLeavesInNode(self: *TypeChecker, node: *ASTNode) anyerror!usize {
-    switch (node.data) {
-        .block => |b| {
-            var n: usize = 0;
-            for (b.statements) |s| n += try rewriteLeavesInNode(self, s);
-            return n;
-        },
-        .if_expr => |i| {
-            var n = try rewriteLeavesInNode(self, i.then_branch);
-            if (i.else_branch) |e| n += try rewriteLeavesInNode(self, e);
-            return n;
-        },
-        .try_stmt => |ts| {
-            var n = try rewriteLeavesInNode(self, ts.body);
-            for (ts.catches) |cb| n += try rewriteLeavesInNode(self, cb.body);
-            return n;
-        },
-        .when_expr => |w| {
-            var n: usize = 0;
-            for (w.cases) |case| n += try rewriteLeavesInNode(self, case.body);
-            return n;
-        },
-        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => return 0,
-        .break_stmt => |b| {
-            if (b.value == null) {
-                node.data = (try mkDesugarThrowIdent(self, node.line, node.column, "Leave")).data;
-                return 1;
-            }
-            return 0;
-        },
-        else => return 0,
-    }
 }
 
 fn bodyHasReturn(node: *ASTNode, valued_only: bool) bool {
@@ -2400,6 +2332,162 @@ fn checkEmbedBlockNode(self: *TypeChecker, node: *ASTNode, block_name: []const u
     }
 }
 
+/// True when the callee body invokes one of its block params from inside a
+/// loop: the structural "loop driver" shape, no annotation needed. Only
+/// then do block-direct bare `leave`s exit the driver (via the region-exit
+/// channel); otherwise pasting stays purely textual (`leave` binds caller
+/// loops or errors when unbound). Deferred invocations inside nested
+/// lambdas/functions don't count.
+fn driverLoopsAroundBlock(node: *ASTNode, blocks: []const BlockArg) bool {
+    return driverLoopNode(node, blocks, false);
+}
+
+fn driverLoopNode(node: *ASTNode, blocks: []const BlockArg, in_loop: bool) bool {
+    switch (node.data) {
+        .call_expr => |c| {
+            if (in_loop and c.callee.data == .identifier) {
+                for (blocks) |b| {
+                    if (std.mem.eql(u8, c.callee.data.identifier.name, b.name)) return true;
+                }
+            }
+            if (driverLoopNode(c.callee, blocks, in_loop)) return true;
+            for (c.arguments) |a| {
+                if (driverLoopNode(a, blocks, in_loop)) return true;
+            }
+            return false;
+        },
+        .while_stmt => |w| {
+            if (driverLoopNode(w.condition, blocks, in_loop)) return true;
+            return driverLoopNode(w.body, blocks, true);
+        },
+        .for_stmt => |f| {
+            if (driverLoopNode(f.iterable, blocks, in_loop)) return true;
+            return driverLoopNode(f.body, blocks, true);
+        },
+        .lambda_expr, .fun_decl => return false,
+        .block => |b| {
+            for (b.statements) |s| {
+                if (driverLoopNode(s, blocks, in_loop)) return true;
+            }
+            return false;
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| return driverLoopNode(init, blocks, in_loop);
+            return false;
+        },
+        .if_expr => |i| {
+            if (driverLoopNode(i.condition, blocks, in_loop)) return true;
+            if (driverLoopNode(i.then_branch, blocks, in_loop)) return true;
+            if (i.else_branch) |e| return driverLoopNode(e, blocks, in_loop);
+            return false;
+        },
+        .try_stmt => |ts| {
+            if (driverLoopNode(ts.body, blocks, in_loop)) return true;
+            for (ts.catches) |cb| {
+                if (driverLoopNode(cb.body, blocks, in_loop)) return true;
+            }
+            return false;
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| if (driverLoopNode(s, blocks, in_loop)) return true;
+            for (w.cases) |c| {
+                for (c.conds) |cond| if (driverLoopNode(cond, blocks, in_loop)) return true;
+                if (driverLoopNode(c.body, blocks, in_loop)) return true;
+            }
+            return false;
+        },
+        .return_stmt => |r| {
+            if (r.value) |v| return driverLoopNode(v, blocks, in_loop);
+            return false;
+        },
+        .throw_stmt => |t| return driverLoopNode(t.expr, blocks, in_loop),
+        .break_stmt => |b| {
+            if (b.value) |v| return driverLoopNode(v, blocks, in_loop);
+            return false;
+        },
+        .assignment => |a| return driverLoopNode(a.value, blocks, in_loop),
+        .binary_expr => |b| {
+            if (driverLoopNode(b.left, blocks, in_loop)) return true;
+            return driverLoopNode(b.right, blocks, in_loop);
+        },
+        .unary_expr => |u| return driverLoopNode(u.operand, blocks, in_loop),
+        .ternary_expr => |t| {
+            if (driverLoopNode(t.condition, blocks, in_loop)) return true;
+            if (driverLoopNode(t.then_branch, blocks, in_loop)) return true;
+            if (t.else_branch) |e| return driverLoopNode(e, blocks, in_loop);
+            return false;
+        },
+        .index_expr => |ix| {
+            if (driverLoopNode(ix.object, blocks, in_loop)) return true;
+            return driverLoopNode(ix.index, blocks, in_loop);
+        },
+        .index_set_expr => |s| {
+            if (driverLoopNode(s.object, blocks, in_loop)) return true;
+            if (driverLoopNode(s.index, blocks, in_loop)) return true;
+            return driverLoopNode(s.value, blocks, in_loop);
+        },
+        .get_expr => |g| return driverLoopNode(g.object, blocks, in_loop),
+        .set_expr => |s| {
+            if (driverLoopNode(s.object, blocks, in_loop)) return true;
+            return driverLoopNode(s.value, blocks, in_loop);
+        },
+        .as_expr => |a| return driverLoopNode(a.value, blocks, in_loop),
+        .is_expr => |ix| return driverLoopNode(ix.value, blocks, in_loop),
+        .array_literal => |a| {
+            for (a.elements) |e| if (driverLoopNode(e, blocks, in_loop)) return true;
+            return false;
+        },
+        .map_literal => |m| {
+            for (m.elements) |e| if (driverLoopNode(e, blocks, in_loop)) return true;
+            return false;
+        },
+        .string_template => |st| {
+            for (st.parts) |p| if (driverLoopNode(p, blocks, in_loop)) return true;
+            return false;
+        },
+        .named_arg => |na| return driverLoopNode(na.value, blocks, in_loop),
+        else => return false,
+    }
+}
+
+/// Converts block-direct bare `leave`s to `throw EmbedReturn()`, stopping
+/// at nested loop/lambda/function boundaries (those keep their own
+/// target). Valued leaves are skipped (delivery handles them separately).
+/// Returns the conversion count.
+fn convertBareLeavesToRegionExit(self: *TypeChecker, node: *ASTNode) anyerror!usize {
+    switch (node.data) {
+        .block => |b| {
+            var n: usize = 0;
+            for (b.statements) |s| n += try convertBareLeavesToRegionExit(self, s);
+            return n;
+        },
+        .if_expr => |i| {
+            var n = try convertBareLeavesToRegionExit(self, i.then_branch);
+            if (i.else_branch) |e| n += try convertBareLeavesToRegionExit(self, e);
+            return n;
+        },
+        .try_stmt => |ts| {
+            var n = try convertBareLeavesToRegionExit(self, ts.body);
+            for (ts.catches) |cb| n += try convertBareLeavesToRegionExit(self, cb.body);
+            return n;
+        },
+        .when_expr => |w| {
+            var n: usize = 0;
+            for (w.cases) |c| n += try convertBareLeavesToRegionExit(self, c.body);
+            return n;
+        },
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => return 0,
+        .break_stmt => |b| {
+            if (b.value == null) {
+                node.data = (try mkDesugarThrowIdent(self, node.line, node.column, "EmbedReturn")).data;
+                return 1;
+            }
+            return 0;
+        },
+        else => return 0,
+    }
+}
+
 /// Inlines an `@Embed` call: clones the callee body, binds value params to
 /// fresh holders, pastes block invocations, and infers the expansion as a
 /// statement block. Falls back to a normal call (false) unless every
@@ -2505,6 +2593,20 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
             out_name = vd.out_name;
         }
     }
+    // Loop-driver bare breaks: when the callee body loops around a block
+    // invocation, block-direct bare `leave`s exit the whole driver, so
+    // they ride the same region-exit channel as callee-own `return`s
+    // (`throw EmbedReturn()`, caught per expansion). Non-loop drivers
+    // (e.g. `runOnce`) stay purely textual: `leave` binds to caller loops
+    // or errors when unbound. Nested loops/lambdas keep their own target.
+    var driver_exits: usize = 0;
+    if (driverLoopsAroundBlock(body_clone, blocks.items)) {
+        for (blocks.items) |b| {
+            for (b.lam.data.lambda_expr.body) |s| {
+                driver_exits += try convertBareLeavesToRegionExit(self, s);
+            }
+        }
+    }
     // Callee-own bare `return`s exit the region (rewritten pre-paste so
     // user-block `return`s, pasted later, keep non-local semantics).
     var region_exits: usize = 0;
@@ -2514,9 +2616,10 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
     try pasteEmbedBlocks(self, body_clone, blocks.items, line, col);
     if (body_clone.data != .block) return false;
     // Region exits were counted pre-paste (user `return`s paste later, untouched).
+    // Converted driver bare breaks ride the same catch.
     // Valued delivery rides the same try with its own catch assigning `__out`.
     var catches = ArrayList(ast.CatchBlock).init(self.allocator);
-    if (region_exits > 0) {
+    if (region_exits + driver_exits > 0) {
         const er_ref = try self.allocator.create(ast.ASTTypeRef);
         er_ref.* = .{ .name = "EmbedReturn", .generic_args = &.{}, .is_array = false, .is_nullable = false };
         const er_refs = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
@@ -2587,7 +2690,6 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         if (try inferFunPointer(self, node, scope, t)) return;
     }
 
-    // `@Leaveable` desugaring runs in `resolveCallArguments` (params aligned).
     prePropagateExpectedTypes(self, node, scope);
 
     // 1. Infer all arguments that are NOT lambdas

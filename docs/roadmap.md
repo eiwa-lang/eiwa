@@ -1834,6 +1834,21 @@ Semântica alvo:
 - [x] **Task 93.6:** Docs (tour §3/§3.4 valor + `@Embed`, ADR 71, `plan_embed.md`, MCP) + merge em `main`.
 - [x] **Verify:** snippet `val x = repeat(5) { leave "Get it!" }`, matriz completa (statement/valor/custom/plain/named/nested/task/suspend + 8 negativos xfail) + suíte completa verde + `zig build test` verde, sem regressão.
 
+### Phase 94: remoção total de `@Leaveable` + `Leave()` (COMPLETED)
+> **Status:** COMPLETED (GREEN, 2026-10-06, em `main`). Limpeza final do
+> §2 do plano: `@Leaveable` deletado (validação, reescrita, hooks), `Leave`
+> deletado de `std.exceptions`, `repeat`/`loop` de volta a `while` puro sem
+> anotações, `retry` sem braço `Leave` (`leave` finaliza o attempt).
+> Bare-break de loop-drivers convertido para `throw EmbedReturn()` dentro
+> da expansão — com shape-gate estrutural (`driverLoopsAroundBlock`, sem
+> nomes); drivers sem loop seguem textuais. Travado por
+> `embed_never_leaveable_xfail_test.ei`.
+
+- [x] **Task 94.1:** Checker (deleta reescrita + validação + shape-gate + conversão p/ `EmbedReturn`).
+- [x] **Task 94.2:** Std (`system.ei` limpo, `Leave` deletado).
+- [x] **Task 94.3:** Docs (tour §3 mecânica textual, MCP, plano §2, ADR 71) + push em `main`.
+- [x] **Verify:** suíte completa **789/789** + `zig build test` verdes, 10 negativos xfail, sem regressão (incl. task+suspend).
+
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
   (Pointer) direto para `tolower(c: Int)`/`toupper(c: Int)` do `<ctype.h>`, que

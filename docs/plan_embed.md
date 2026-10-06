@@ -1,11 +1,11 @@
 # Plan: `@Embed` — general inlining + non-local `return`
 
 > Status: COMPLETED (2026-10-06, merged to `main` as `531d5cd`, ADR 71,
-> roadmap Phase 93). Replaced the `@LoopDriver` / value-desugar stack with
-> one general mechanism.
+> roadmap Phases 93–94). Replaced the `@Leaveable` / `@LoopDriver` /
+> `throw`-desugar stack with one general mechanism.
 > Decisions: non-local `return` allowed in inlined blocks (reverses ADR 53
 > for this case); `ControlFlow` contract + bypass stay (channel for
-> `LeaveValue<T>`); `return` outside inlining stays forbidden.
+> `LeaveValue<T>`/`EmbedReturn`); `return` outside inlining stays forbidden.
 
 ## 1. Semantics
 
@@ -26,25 +26,32 @@
 - `retry` stays non-`@Embed`: `leave v` there keeps erroring (success-value
   semantics is a separate feature).
 
-## 2. Deletions (the cleanup — as actually landed)
+## 2. Deletions (the cleanup — landed in full, Phase 94)
 
-- ~~`@Leaveable` (param validation, `throw` rewrite + hooks)~~ RETAINED:
-  still the bare-`leave` channel — `retry` (non-`@Embed`) needs the
-  `throw Leave()` rewrite for quiet-abort, and non-inlined calls
-  (function-value blocks) keep loop-break semantics through it.
-  `repeat`/`loop` carry both `@Embed` (inline + value delivery) and
-  `@Leaveable` (bare-break throw caught by the body wrapper); they compose.
-- `@LoopDriver` (superseded as trigger) — DELETED as planned: validation
-  removed, uses dropped from `std.system`/`embed_test`; the annotation
-  stays inert for backward compatibility.
-- ~~`Leave` + `catch (e: Leave)` in `std.system` + `try` wrappers (loops go
-  back to plain `while`)~~ RETAINED with the `@Leaveable` channel above.
-- Value-form desugar (`desugarRepeatLoopValue`) — DELETED as planned.
-  `eiwaTypeToRef` and block `is_value` + checker/emitter/clone arms stay:
-  the delivery path reuses them (`LeaveValue<T>` typeref, `var __out: T?`,
-  trailing read).
-- Keep: `ControlFlow` contract + emitter bypass (channel for `LeaveValue`;
-  ~60 lines, zero cost when unused).
+- `@Leaveable` (param validation, `throw` rewrite + hooks) — DELETED:
+  unknown parameter annotations are now a plain `TypeError` (locked by
+  `embed_never_leaveable_xfail_test.ei`).
+- `@LoopDriver` (superseded as trigger) — DELETED: validation removed,
+  uses dropped from `std.system`/`embed_test`; the annotation stays inert
+  for backward compatibility.
+- `Leave` + `catch (e: Leave)` in `std.system` + `try` wrappers — DELETED:
+  `repeat`/`loop` are back to plain `while` with zero annotations.
+- Value-form desugar (`desugarRepeatLoopValue`) — DELETED. `eiwaTypeToRef`
+  and block `is_value` + checker/emitter/clone arms stay: the delivery
+  path reuses them (`LeaveValue<T>` typeref, `var __out: T?`, trailing
+  read).
+- Where the bare-break channel went: loop-driver bare `leave`s are
+  converted to `throw EmbedReturn()` inside `@Embed` expansion, but ONLY
+  when the callee body structurally loops around a block invocation
+  (`driverLoopsAroundBlock` — the shape rule, no names). Non-loop drivers
+  stay purely textual (`leave` binds caller loops or errors when unbound);
+  non-inlined calls keep plan-specified opaque closure semantics. Tasks
+  keep working because the state machine already handles the throw/catch
+  exception path (raw `break` is what it bans). `retry` (non-`@Embed`)
+  drops quiet-abort: `leave` finishes the attempt (observably equivalent
+  — both discard pending `err` with a normal return).
+- Keep: `ControlFlow` contract + emitter bypass (channel for `LeaveValue`/
+  `EmbedReturn`; ~60 lines, zero cost when unused).
 
 ## 3. Architecture
 
