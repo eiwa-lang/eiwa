@@ -4330,7 +4330,21 @@ fn emitExpressionRaw(
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) != null) {
                 return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
             }
-            return try emitExpression(ctx, mod, builder, scope, structs, libs, b.statements[b.statements.len - 1]);
+            const last = b.statements[b.statements.len - 1];
+            switch (last.data) {
+                .while_stmt, .var_decl, .fun_decl, .test_decl, .type_decl, .contract_decl, .skill_decl, .object_decl, .enum_decl, .lib_decl, .import_stmt, .return_stmt, .throw_stmt, .break_stmt => {
+                    try statement.emitStatement(ctx, mod, builder, cur_blk_fn, scope, structs, libs, last, null);
+                    return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+                },
+                .for_stmt => |f| {
+                    if (!f.collect) {
+                        try statement.emitStatement(ctx, mod, builder, cur_blk_fn, scope, structs, libs, last, null);
+                        return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
+                    }
+                    return try emitExpression(ctx, mod, builder, scope, structs, libs, last);
+                },
+                else => return try emitExpression(ctx, mod, builder, scope, structs, libs, last),
+            }
         },
         .for_stmt => |f| {
             // A collecting `for` builds a List; a statement one runs for

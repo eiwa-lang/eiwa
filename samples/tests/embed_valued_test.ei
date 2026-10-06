@@ -1,7 +1,7 @@
 import { assert } from "std.core"
 
 @Embed
-fun findFirst(n: Int, @Leaveable block: (Int) -> Void) {
+fun findFirst(n: Int, block: (Int) -> Void) {
     var i = 0
     while (i < n) {
         block(i)

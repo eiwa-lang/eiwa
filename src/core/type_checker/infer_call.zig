@@ -1403,7 +1403,104 @@ fn bodyHasReturn(node: *ASTNode, valued_only: bool) bool {
     }
 }
 
-/// Collects `leave v` values (non-throw), stopping at nested loops/lambdas/functions.
+/// Converts `leave v` to `throw LeaveValue(v)`. Same stops as collection.
+fn convertLeavesToThrow(self: *TypeChecker, node: *ASTNode, line: usize, col: usize) anyerror!void {
+    switch (node.data) {
+        .block => |b| for (b.statements) |s| try convertLeavesToThrow(self, s, line, col),
+        .if_expr => |i| {
+            try convertLeavesToThrow(self, i.then_branch, line, col);
+            if (i.else_branch) |e| try convertLeavesToThrow(self, e, line, col);
+        },
+        .try_stmt => |ts| {
+            try convertLeavesToThrow(self, ts.body, line, col);
+            for (ts.catches) |cb| try convertLeavesToThrow(self, cb.body, line, col);
+        },
+        .when_expr => |w| for (w.cases) |c| try convertLeavesToThrow(self, c.body, line, col),
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
+        .break_stmt => |b| {
+            if (b.value) |v| {
+                if (v.data == .throw_stmt) return;
+                const lv_ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, "LeaveValue");
+                const lv_arg = try self.allocator.alloc(*ASTNode, 1);
+                lv_arg[0] = v;
+                const lv_call = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .call_expr = .{
+                    .callee = lv_ident,
+                    .arguments = lv_arg,
+                } });
+                node.data = .{ .throw_stmt = .{ .expr = lv_call } };
+            }
+        },
+        else => {},
+    }
+}
+
+/// Value delivery setup for inlined (`@Embed`) calls: unifies delivered types
+/// across blocks (temp scopes bind each block's params), converts `leave v`
+/// to `throw LeaveValue(v)`. Null when no valued leaves. The caller
+/// guarantees `@Embed` (inline entry checks); anything reaching the normal
+/// call path with valued leaves is rejected by `rejectValuedLeaves`.
+fn prepareValueDelivery(self: *TypeChecker, scope: *Scope, blocks: []const BlockArg, fun_decl: anytype, tag: []const u8, line: usize, col: usize) anyerror!?struct { t: *const EiwaType, out_name: []const u8 } {
+    var deliver_t: ?*const EiwaType = null;
+    for (blocks) |b| {
+        var bleaves = ArrayList(*ASTNode).init(self.allocator);
+        defer bleaves.deinit();
+        for (b.lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &bleaves);
+        if (bleaves.items.len == 0) continue;
+        // Declared block signature for param types.
+        var sig_params: ?[]const *const EiwaType = null;
+        for (fun_decl.params) |p| {
+            if (!std.mem.eql(u8, p.name, b.name)) continue;
+            if (p.type_ref) |tr| {
+                const ft = try self.resolveTypeRef(tr);
+                if (ft.* == .Function) sig_params = ft.Function.params;
+            }
+        }
+        var tmp = Scope.init(self.allocator, scope);
+        defer tmp.deinit();
+        const lparams = b.lam.data.lambda_expr.params;
+        if (lparams.len == 0) {
+            if (sig_params) |sp| {
+                if (sp.len == 1) try tmp.define("it", sp[0], false, false);
+            }
+        } else {
+            for (lparams, 0..) |lp, li| {
+                var pt: ?*const EiwaType = null;
+                if (lp.type_ref) |tr| pt = try self.resolveTypeRef(tr);
+                if (pt == null) {
+                    if (sig_params) |sp| {
+                        if (li < sp.len) pt = sp[li];
+                    }
+                }
+                if (pt) |t| {
+                    try tmp.define(lp.name, t, false, false);
+                } else {
+                    self.reportError(line, col, "TypeError: cannot infer block parameter type for value delivery.", .{});
+                    return error.TypeError;
+                }
+            }
+        }
+        for (bleaves.items) |v| {
+            const vt = try self.inferNode(v, &tmp);
+            if (vt.* == .Void) {
+                self.reportError(v.line, v.column, "TypeError: 'leave' value cannot be Void. Use bare 'leave' to exit.", .{});
+                return error.TypeError;
+            }
+            if (deliver_t) |dt| {
+                if (!self.isCompatible(dt, vt) and !self.isCompatible(vt, dt)) {
+                    self.reportError(v.line, v.column, "TypeError: 'leave' values have incompatible types {f} and {f}.", .{ dt.*, vt.* });
+                    return error.TypeError;
+                }
+            } else {
+                deliver_t = vt;
+            }
+        }
+        for (b.lam.data.lambda_expr.body) |s| try convertLeavesToThrow(self, s, line, col);
+    }
+    const dt = deliver_t orelse return null;
+    const out_name = try std.fmt.allocPrint(self.allocator, "{s}_out", .{tag});
+    return .{ .t = dt, .out_name = out_name };
+}
+
 fn collectValuedLeaves(node: *ASTNode, out: *ArrayList(*ASTNode)) anyerror!void {
     switch (node.data) {
         .block => |b| for (b.statements) |s| try collectValuedLeaves(s, out),
@@ -1423,6 +1520,61 @@ fn collectValuedLeaves(node: *ASTNode, out: *ArrayList(*ASTNode)) anyerror!void 
             }
         },
         else => {},
+    }
+}
+
+/// True when the subtree holds a `leave v` (non-throw), stopping at the
+/// same boundaries as collection (nested loops/lambdas/functions).
+/// Early-exit probe for the non-inlined call path.
+fn hasValuedLeave(node: *ASTNode) bool {
+    switch (node.data) {
+        .block => |b| {
+            for (b.statements) |s| {
+                if (hasValuedLeave(s)) return true;
+            }
+        },
+        .if_expr => |i| {
+            if (hasValuedLeave(i.then_branch)) return true;
+            if (i.else_branch) |e| {
+                if (hasValuedLeave(e)) return true;
+            }
+        },
+        .try_stmt => |ts| {
+            if (hasValuedLeave(ts.body)) return true;
+            for (ts.catches) |cb| {
+                if (hasValuedLeave(cb.body)) return true;
+            }
+        },
+        .when_expr => |w| {
+            for (w.cases) |c| {
+                if (hasValuedLeave(c.body)) return true;
+            }
+        },
+        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => return false,
+        .break_stmt => |b| {
+            if (b.value) |v| {
+                if (v.data != .throw_stmt) return true;
+            }
+            return false;
+        },
+        else => return false,
+    }
+    return false;
+}
+
+/// Valued `leave` only delivers through `@Embed` inlining (handled before
+/// this point): anywhere else it is a `TypeError` here instead of
+/// surfacing as a lambda return-type mismatch.
+fn rejectValuedLeaves(self: *TypeChecker, node: *ASTNode) anyerror!void {
+    for (node.data.call_expr.arguments) |arg| {
+        const lam = if (arg.data == .named_arg) arg.data.named_arg.value else arg;
+        if (lam.data != .lambda_expr) continue;
+        for (lam.data.lambda_expr.body) |s| {
+            if (hasValuedLeave(s)) {
+                self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported inside '@Embed' function blocks (e.g. 'repeat'/'loop').", .{});
+                return error.TypeError;
+            }
+        }
     }
 }
 
@@ -1453,193 +1605,6 @@ fn eiwaTypeToRef(self: *TypeChecker, t: *const EiwaType, nullable: bool, line: u
         },
     }
     return tr;
-}
-
-/// Value-form loop drivers: `leave v` delivers `v` (`T?`, `null` when no
-/// `leave` fires). Only `@LoopDriver` functions desugar (1 param = loop
-/// shape, 2 params = counted shape); other `@Leaveable` drivers reject
-/// valued leaves. No valued leaves: false. Inlines to a loop over `__out:
-/// T?`, no exception payload needed.
-fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, params: []const ast.Param, annotations: []const ast.Annotation, t: *EiwaType) anyerror!bool {
-    var lam: ?*ASTNode = null;
-    const nargs = node.data.call_expr.arguments.len;
-    for (params, 0..) |p, pi| {
-        if (pi >= nargs or !paramIsLeaveable(p)) continue;
-        const a = node.data.call_expr.arguments[pi];
-        const l = if (a.data == .named_arg) a.data.named_arg.value else a;
-        if (l.data == .lambda_expr) {
-            lam = l;
-            break;
-        }
-    }
-    const block_lam = lam orelse return false;
-    var is_driver = false;
-    for (annotations) |ann| {
-        if (std.mem.eql(u8, ann.name, "LoopDriver")) {
-            is_driver = true;
-            break;
-        }
-    }
-    var valued = ArrayList(*ASTNode).init(self.allocator);
-    defer valued.deinit();
-    if (!is_driver) {
-        for (block_lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &valued);
-        if (valued.items.len == 0) return false;
-        self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported in 'repeat'/'loop' blocks.", .{});
-        return error.TypeError;
-    }
-    const is_repeat = params.len == 2;
-    const is_loop = params.len == 1;
-    if (!is_repeat and !is_loop) {
-        self.reportError(node.line, node.column, "TypeError: '@LoopDriver' functions take 1 block parameter (`loop` shape) or a count plus block (`repeat` shape).", .{});
-        return error.TypeError;
-    }
-    for (block_lam.data.lambda_expr.body) |s| {
-        if (bodyHasReturn(s, false)) {
-            self.reportError(node.line, node.column, "TypeError: 'return' is not allowed inside a 'repeat'/'loop' block. Use `leave value` to exit with a value.", .{});
-            return error.TypeError;
-        }
-    }
-    const line = node.line;
-    const col = node.column;
-    const tag = try std.fmt.allocPrint(self.allocator, "__rep_{d}_{d}", .{ line, col });
-    const n_name = try std.fmt.allocPrint(self.allocator, "{s}_n", .{tag});
-    const i_name = try std.fmt.allocPrint(self.allocator, "{s}_i", .{tag});
-    const out_name = try std.fmt.allocPrint(self.allocator, "{s}_out", .{tag});
-    for (block_lam.data.lambda_expr.body) |s| try convertLeavesToDeliver(self, s, out_name, &valued);
-    if (valued.items.len == 0) return false;
-    var pname: []const u8 = "it";
-    var tmp_scope = Scope.init(self.allocator, scope);
-    defer tmp_scope.deinit();
-    if (is_repeat) {
-        const lparams = block_lam.data.lambda_expr.params;
-        var ptype: *const EiwaType = undefined;
-        if (lparams.len > 0) {
-            pname = lparams[0].name;
-            if (lparams[0].type_ref) |tr| {
-                ptype = try self.resolveTypeRef(tr);
-            } else {
-                const it = try self.allocator.create(EiwaType);
-                it.* = .Int;
-                ptype = it;
-            }
-        } else {
-            const it = try self.allocator.create(EiwaType);
-            it.* = .Int;
-            ptype = it;
-        }
-        try tmp_scope.define(pname, ptype, false, false);
-    }
-    var deliver_t: ?*const EiwaType = null;
-    for (valued.items) |v| {
-        const vt = try self.inferNode(v, &tmp_scope);
-        if (vt.* == .Void) {
-            self.reportError(v.line, v.column, "TypeError: 'leave' value cannot be Void. Use bare 'leave' to exit.", .{});
-            return error.TypeError;
-        }
-        if (deliver_t) |dt| {
-            if (!self.isCompatible(dt, vt) and !self.isCompatible(vt, dt)) {
-                self.reportError(v.line, v.column, "TypeError: 'leave' values have incompatible types {f} and {f}.", .{ dt.*, vt.* });
-                return error.TypeError;
-            }
-        } else {
-            deliver_t = vt;
-        }
-    }
-    const out_ref = try eiwaTypeToRef(self, deliver_t.?, true, line, col);
-    infer_stmt_mod.warnDeadCode(self, block_lam.data.lambda_expr.body);
-    const null_lit = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .null_literal = {} });
-    const var_out = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = out_name, .type_ref = out_ref, .initializer = null_lit } });
-    const out_ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, out_name);
-    var loop_body = ArrayList(*ASTNode).init(self.allocator);
-    if (is_repeat) {
-        const i_ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, i_name);
-        const val_p = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = false, .name = pname, .type_ref = null, .initializer = i_ident } });
-        try loop_body.append(val_p);
-    }
-    for (block_lam.data.lambda_expr.body) |s| try loop_body.append(s);
-    if (is_repeat) {
-        const i_lhs = try infer_stmt_mod.mkDesugarIdent(self, line, col, i_name);
-        const one = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .int_literal = 1 });
-        const incr = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .plus, .right = one } });
-        try loop_body.append(try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .assignment = .{ .name = i_name, .value = incr } }));
-    }
-    const loop_body_node = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .block = .{ .statements = try loop_body.toOwnedSlice() } });
-    var cond: *ASTNode = undefined;
-    if (is_repeat) {
-        const i_lhs = try infer_stmt_mod.mkDesugarIdent(self, line, col, i_name);
-        const n_rhs = try infer_stmt_mod.mkDesugarIdent(self, line, col, n_name);
-        cond = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .less, .right = n_rhs } });
-    } else {
-        cond = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .bool_literal = true });
-    }
-    const while_node = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .while_stmt = .{ .condition = cond, .body = loop_body_node } });
-    var stmts = ArrayList(*ASTNode).init(self.allocator);
-    if (is_repeat) {
-        var count_arg: ?*ASTNode = null;
-        for (params, 0..) |p, idx| {
-            if (paramIsLeaveable(p)) continue;
-            if (idx < nargs) {
-                count_arg = node.data.call_expr.arguments[idx];
-                break;
-            }
-        }
-        const ca = count_arg orelse {
-            self.reportError(node.line, node.column, "TypeError: 'repeat' requires a count argument.", .{});
-            return error.TypeError;
-        };
-        try stmts.append(try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = n_name, .type_ref = null, .initializer = ca } }));
-        const zero = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .int_literal = 0 });
-        try stmts.append(try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = i_name, .type_ref = null, .initializer = zero } }));
-    }
-    try stmts.append(var_out);
-    try stmts.append(while_node);
-    try stmts.append(out_ident);
-    node.data = .{ .block = .{ .statements = try stmts.toOwnedSlice(), .is_value = true } };
-    self.synthetic_depth += 1;
-    defer self.synthetic_depth -= 1;
-    const bt = try infer_stmt_mod.inferBlockAsExpression(self, node, scope);
-    if (bt) |rt| {
-        if (node.expected_type) |exp_t| {
-            if (!self.isCompatible(exp_t, rt)) {
-                self.reportError(node.line, node.column, "TypeError: 'repeat'/'loop' yields {f} but expected {f}.", .{ rt.*, exp_t.* });
-                return error.TypeError;
-            }
-        }
-        t.* = rt.*;
-    } else {
-        t.* = .Void;
-    }
-    return true;
-}
-
-fn convertLeavesToDeliver(self: *TypeChecker, node: *ASTNode, out_name: []const u8, out: *ArrayList(*ASTNode)) anyerror!void {
-    switch (node.data) {
-        .block => |b| for (b.statements) |s| try convertLeavesToDeliver(self, s, out_name, out),
-        .if_expr => |i| {
-            try convertLeavesToDeliver(self, i.then_branch, out_name, out);
-            if (i.else_branch) |e| try convertLeavesToDeliver(self, e, out_name, out);
-        },
-        .try_stmt => |ts| {
-            try convertLeavesToDeliver(self, ts.body, out_name, out);
-            for (ts.catches) |cb| try convertLeavesToDeliver(self, cb.body, out_name, out);
-        },
-        .when_expr => |w| for (w.cases) |c| try convertLeavesToDeliver(self, c.body, out_name, out),
-        .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
-        .break_stmt => |b| {
-            if (b.value) |v| {
-                if (v.data == .throw_stmt) return;
-                try out.append(v);
-                const set_out = try infer_stmt_mod.mkDesugarNode(self, node.line, node.column, .{ .assignment = .{ .name = out_name, .value = v } });
-                const brk = try infer_stmt_mod.mkDesugarNode(self, node.line, node.column, .{ .break_stmt = .{ .value = null } });
-                var pair = try self.allocator.alloc(*ASTNode, 2);
-                pair[0] = set_out;
-                pair[1] = brk;
-                node.data = .{ .block = .{ .statements = pair } };
-            }
-        },
-        else => {},
-    }
 }
 
 /// True when the subtree declares a nested type-like entity (type, object,
@@ -2337,11 +2302,12 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
         const a = c_args[pi];
         const lam = if (a.data == .named_arg) a.data.named_arg.value else a;
         if (lam.data != .lambda_expr) return false;
-        var valued = ArrayList(*ASTNode).init(self.allocator);
-        defer valued.deinit();
-        for (lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &valued);
-        if (valued.items.len > 0) return false;
         try blocks.append(.{ .name = p.name, .lam = lam });
+    }
+    var valued = ArrayList(*ASTNode).init(self.allocator);
+    defer valued.deinit();
+    for (blocks.items) |b| {
+        for (b.lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &valued);
     }
     if (bodyHasReturn(fun_decl.body, true)) return false;
     var bound = std.StringHashMap(void).init(self.allocator);
@@ -2395,6 +2361,15 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
         try substituteEmbedParam(self, body_clone, p.name, holder, &bailed);
         if (bailed) return false;
     }
+    // Value delivery via shared helper (unifies T, converts to throws).
+    var deliver_t: ?*const EiwaType = null;
+    var out_name: ?[]const u8 = null;
+    if (valued.items.len > 0) {
+        if (try prepareValueDelivery(self, scope, blocks.items, fun_decl, tag, line, col)) |vd| {
+            deliver_t = vd.t;
+            out_name = vd.out_name;
+        }
+    }
     // Callee-own bare `return`s exit the region (rewritten pre-paste so
     // user-block `return`s, pasted later, keep non-local semantics).
     var region_exits: usize = 0;
@@ -2404,27 +2379,67 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
     try pasteEmbedBlocks(self, body_clone, blocks.items, line, col);
     if (body_clone.data != .block) return false;
     // Region exits were counted pre-paste (user `return`s paste later, untouched).
+    // Valued delivery rides the same try with its own catch assigning `__out`.
+    var catches = ArrayList(ast.CatchBlock).init(self.allocator);
     if (region_exits > 0) {
-        // Callee-own bare `return` exits the expansion, not the caller:
-        // route through `throw EmbedReturn()`, caught right here.
         const er_ref = try self.allocator.create(ast.ASTTypeRef);
         er_ref.* = .{ .name = "EmbedReturn", .generic_args = &.{}, .is_array = false, .is_nullable = false };
         const er_refs = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
         er_refs[0] = er_ref;
         const empty_body = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .block = .{ .statements = &.{} } });
-        const catch_blocks = try self.allocator.alloc(ast.CatchBlock, 1);
-        catch_blocks[0] = .{ .var_name = "__emb_er", .types = er_refs, .body = empty_body };
-        const try_node = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .try_stmt = .{ .body = body_clone, .catches = catch_blocks, .is_value = false } });
+        try catches.append(.{ .var_name = "__emb_er", .types = er_refs, .body = empty_body });
+    }
+    if (out_name) |on| {
+        const dt = deliver_t.?;
+        const lv_arg = try eiwaTypeToRef(self, dt, false, line, col);
+        const lv_args = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
+        lv_args[0] = lv_arg;
+        const lv_ref = try self.allocator.create(ast.ASTTypeRef);
+        lv_ref.* = .{ .name = "LeaveValue", .generic_args = lv_args, .is_array = false, .is_nullable = false };
+        const lv_refs = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
+        lv_refs[0] = lv_ref;
+        const e_ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, "__emb_lv");
+        const e_value = try infer_stmt_mod.mkDesugarGet(self, line, col, e_ident, "value");
+        const set_out = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .assignment = .{ .name = on, .value = e_value } });
+        const catch_stmts = try self.allocator.alloc(*ASTNode, 1);
+        catch_stmts[0] = set_out;
+        const catch_body = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .block = .{ .statements = catch_stmts } });
+        try catches.append(.{ .var_name = "__emb_lv", .types = lv_refs, .body = catch_body });
+        const null_lit = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .null_literal = {} });
+        const out_ref = try eiwaTypeToRef(self, dt, true, line, col);
+        const var_out = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = on, .type_ref = out_ref, .initializer = null_lit } });
+        try expansion.append(var_out);
+    }
+    if (catches.items.len > 0) {
+        const try_node = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .try_stmt = .{ .body = body_clone, .catches = try catches.toOwnedSlice(), .is_value = false } });
         try expansion.append(try_node);
     } else {
         for (body_clone.data.block.statements) |s| try expansion.append(s);
     }
-    node.data = .{ .block = .{ .statements = try expansion.toOwnedSlice() } };
+    if (out_name) |on| {
+        try expansion.append(try infer_stmt_mod.mkDesugarIdent(self, line, col, on));
+    }
+    node.data = .{ .block = .{ .statements = try expansion.toOwnedSlice(), .is_value = out_name != null } };
     try self.embed_stack.append(c_name);
     defer _ = self.embed_stack.pop();
-    const bt = try self.checkBlock(node.data.block.statements, scope);
-    t.* = ret_type.*;
-    _ = bt;
+    if (out_name != null) {
+        const bt = try infer_stmt_mod.inferBlockAsExpression(self, node, scope);
+        if (bt) |rt| {
+            if (node.expected_type) |exp_t| {
+                if (!self.isCompatible(exp_t, rt)) {
+                    self.reportError(node.line, node.column, "TypeError: '@Embed' call yields {f} but expected {f}.", .{ rt.*, exp_t.* });
+                    return error.TypeError;
+                }
+            }
+            t.* = rt.*;
+        } else {
+            t.* = .Void;
+        }
+    } else {
+        const bt = try self.checkBlock(node.data.block.statements, scope);
+        t.* = ret_type.*;
+        _ = bt;
+    }
     return true;
 }
 
@@ -2575,11 +2590,11 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             
             try resolveCallArguments(self, node, fun_decl.params, scope);
 
-            // Value-form loop drivers; node replaced when handled.
-            if (try desugarRepeatLoopValue(self, node, scope, fun_decl.params, fun_decl.annotations, t)) return;
-
-            // `@Embed` inline; node replaced when handled.
+            // `@Embed` inline (statement + value delivery); node replaced when handled.
             if (try inlineEmbedCall(self, node, scope, fun_decl, f.c_name, f.return_type, t)) return;
+
+            // Valued `leave` without inlining has no delivery channel.
+            try rejectValuedLeaves(self, node);
             
             // Set expected types for all arguments (for C transpiler boxing)
             for (c.arguments, 0..) |arg, arg_i| {
@@ -2759,9 +2774,10 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
                 try resolveCallArguments(self, node, func_decl.params, scope);
 
-                if (try desugarRepeatLoopValue(self, node, scope, func_decl.params, func_decl.annotations, t)) return;
-
                 if (try inlineEmbedCall(self, node, scope, func_decl, actual_c_name_2, ret_type, t)) return;
+
+                // Valued `leave` without inlining has no delivery channel.
+                try rejectValuedLeaves(self, node);
 
                 for (c.arguments, 0..) |arg, arg_i| {
                     if (arg_i < func_decl.params.len) {

@@ -1,25 +1,21 @@
 import { assert } from "std.core"
 
-@LoopDriver
-fun upto(n: Int, @Leaveable block: (Int) -> Void) {
-    try {
-        var i = 0
-        while (i < n) {
-            block(i)
-            i = i + 1
-        }
-    } catch (e: Leave) {}
+@Embed
+fun upto(n: Int, block: (Int) -> Void) {
+    var i = 0
+    while (i < n) {
+        block(i)
+        i = i + 1
+    }
 }
 
-@LoopDriver
-fun uptoD(n: Int = 5, @Leaveable block: (Int) -> Void) {
-    try {
-        var i = 0
-        while (i < n) {
-            block(i)
-            i = i + 1
-        }
-    } catch (e: Leave) {}
+@Embed
+fun uptoD(n: Int = 5, block: (Int) -> Void) {
+    var i = 0
+    while (i < n) {
+        block(i)
+        i = i + 1
+    }
 }
 
 fun withVal(x: Int, block: (Int) -> Void) {

@@ -1114,7 +1114,6 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
         return;
     }
     // `@Leaveable` requires an explicit function type.
-    var leaveable_count: usize = 0;
     for (f.params) |p| {
         var saw_leaveable = false;
         for (p.annotations) |ann| {
@@ -1126,7 +1125,6 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             }
         }
         if (saw_leaveable) {
-            leaveable_count += 1;
             const tr = p.type_ref orelse {
                 self.reportError(node.line, node.column, "TypeError: '@Leaveable' parameter '{s}' requires an explicit function type (e.g. `block: (Int) -> Void`).", .{p.name});
                 return error.TypeError;
@@ -1137,13 +1135,8 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
             }
         }
     }
-    for (f.annotations) |ann| {
-        if (!std.mem.eql(u8, ann.name, "LoopDriver")) continue;
-        if (leaveable_count != 1 or f.params.len < 1 or f.params.len > 2) {
-            self.reportError(node.line, node.column, "TypeError: '@LoopDriver' functions take exactly one '@Leaveable' block plus at most a count parameter.", .{});
-            return error.TypeError;
-        }
-    }
+    // `@LoopDriver` is retired (P2): value delivery keys off `@Embed`
+    // alone. The annotation stays inert for backward compatibility.
     var param_types = ArrayList(*const EiwaType).init(self.allocator);
     var mangled_name = ArrayList(u8).init(self.allocator);
     var receiver_type: ?*const EiwaType = null;

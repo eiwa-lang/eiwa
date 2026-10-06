@@ -73,9 +73,17 @@
   callee returns keep bailing to normal calls; `retry` → `@Embed` (keeps
   `@Leaveable` + internal `Leave` catch: quiet-abort preserved).
   Tests: retry success path + custom region exit in `embed_test.ei`.
-- **P2 (value):** generic `LeaveValue<T> : ControlFlow` + per-site catch;
-  delete current value desugar + `is_value`; snippet
-  `val x = repeat(5) { leave "Get it!" }` + custom drivers.
+- **P2 (value, DONE 2026-10-06):** generic `LeaveValue<T> : ControlFlow` +
+  per-site catch inside `@Embed` expansion (`prepareValueDelivery` unifies
+  `T`, `leave v` becomes `throw LeaveValue(v)`, `var __out: T?` + trailing
+  read yields the call value); old value desugar deleted; delivery keys off
+  `@Embed` alone (`@LoopDriver` retired: validation removed, uses dropped
+  from `std.system`/`embed_test`, stays inert); `retry` de-`@Embed`ed
+  (normal call, valued `leave` rejected); non-inlined valued `leave`
+  rejected explicitly by `rejectValuedLeaves` (no more lambda-mismatch
+  confusion); custom `@Embed`-only driver promoted
+  (`embed_valued_test.ei`); snippet
+  `val x = repeat(5) { leave "Get it!" }` + all negatives green.
 - **P3 (harden):** named/defaults/varargs, function-value args, method
   rejection, nested embeds, suspend interplay, bloat notes; docs (tour
   replaces `@Leaveable` sections, new ADR, roadmap Phase 93, MCP) + full
