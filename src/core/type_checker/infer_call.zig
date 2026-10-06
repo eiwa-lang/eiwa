@@ -1327,6 +1327,18 @@ fn rewriteLeaveableBlockLeaves(self: *TypeChecker, params: []const ast.Param, ar
     }
 }
 
+fn mkDesugarThrowIdent(self: *TypeChecker, line: usize, col: usize, name: []const u8) anyerror!*ASTNode {
+    const ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, name);
+    const ctor = try self.allocator.create(ASTNode);
+    ctor.* = .{ .line = line, .column = col, .resolved_type = null, .data = .{ .call_expr = .{
+        .callee = ident,
+        .arguments = &.{},
+    } } };
+    const throw_node = try self.allocator.create(ASTNode);
+    throw_node.* = .{ .line = line, .column = col, .resolved_type = null, .data = .{ .throw_stmt = .{ .expr = ctor } } };
+    return throw_node;
+}
+
 /// Rewrites bare `leave` to `throw Leave()`, stopping at nested
 /// loop/lambda/function boundaries. Returns the conversion count.
 fn rewriteLeavesInNode(self: *TypeChecker, node: *ASTNode) anyerror!usize {
@@ -1354,17 +1366,7 @@ fn rewriteLeavesInNode(self: *TypeChecker, node: *ASTNode) anyerror!usize {
         .while_stmt, .for_stmt, .lambda_expr, .fun_decl => return 0,
         .break_stmt => |b| {
             if (b.value == null) {
-                const ident = try self.allocator.create(ASTNode);
-                ident.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .identifier = .{
-                    .name = "Leave",
-                    .resolved_c_name = null,
-                } } };
-                const ctor = try self.allocator.create(ASTNode);
-                ctor.* = .{ .line = node.line, .column = node.column, .resolved_type = null, .data = .{ .call_expr = .{
-                    .callee = ident,
-                    .arguments = &.{},
-                } } };
-                node.data = .{ .throw_stmt = .{ .expr = ctor } };
+                node.data = (try mkDesugarThrowIdent(self, node.line, node.column, "Leave")).data;
                 return 1;
             }
             return 0;
@@ -1373,30 +1375,29 @@ fn rewriteLeavesInNode(self: *TypeChecker, node: *ASTNode) anyerror!usize {
     }
 }
 
-/// `return` outside nested lambdas/functions (loops don't trap it).
-fn bodyHasDirectReturn(node: *ASTNode) bool {
+fn bodyHasReturn(node: *ASTNode, valued_only: bool) bool {
     switch (node.data) {
-        .return_stmt => return true,
+        .return_stmt => |r| return if (valued_only) r.value != null else true,
         .block => |b| {
-            for (b.statements) |s| if (bodyHasDirectReturn(s)) return true;
+            for (b.statements) |s| if (bodyHasReturn(s, valued_only)) return true;
             return false;
         },
         .if_expr => |i| {
-            if (bodyHasDirectReturn(i.then_branch)) return true;
-            if (i.else_branch) |e| if (bodyHasDirectReturn(e)) return true;
+            if (bodyHasReturn(i.then_branch, valued_only)) return true;
+            if (i.else_branch) |e| if (bodyHasReturn(e, valued_only)) return true;
             return false;
         },
         .try_stmt => |ts| {
-            if (bodyHasDirectReturn(ts.body)) return true;
-            for (ts.catches) |cb| if (bodyHasDirectReturn(cb.body)) return true;
+            if (bodyHasReturn(ts.body, valued_only)) return true;
+            for (ts.catches) |cb| if (bodyHasReturn(cb.body, valued_only)) return true;
             return false;
         },
         .when_expr => |w| {
-            for (w.cases) |c| if (bodyHasDirectReturn(c.body)) return true;
+            for (w.cases) |c| if (bodyHasReturn(c.body, valued_only)) return true;
             return false;
         },
-        .while_stmt => |w| return bodyHasDirectReturn(w.body),
-        .for_stmt => |f| return bodyHasDirectReturn(f.body),
+        .while_stmt => |w| return bodyHasReturn(w.body, valued_only),
+        .for_stmt => |f| return bodyHasReturn(f.body, valued_only),
         .lambda_expr, .fun_decl => return false,
         else => return false,
     }
@@ -1454,12 +1455,6 @@ fn eiwaTypeToRef(self: *TypeChecker, t: *const EiwaType, nullable: bool, line: u
     return tr;
 }
 
-fn mkRVNode(self: *TypeChecker, line: usize, col: usize, data: ast.ASTNodeType) anyerror!*ASTNode {
-    const n = try self.allocator.create(ASTNode);
-    n.* = .{ .line = line, .column = col, .resolved_type = null, .data = data };
-    return n;
-}
-
 /// Value-form loop drivers: `leave v` delivers `v` (`T?`, `null` when no
 /// `leave` fires). Only `@LoopDriver` functions desugar (1 param = loop
 /// shape, 2 params = counted shape); other `@Leaveable` drivers reject
@@ -1478,10 +1473,6 @@ fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, par
         }
     }
     const block_lam = lam orelse return false;
-    var valued = ArrayList(*ASTNode).init(self.allocator);
-    defer valued.deinit();
-    for (block_lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &valued);
-    if (valued.items.len == 0) return false;
     var is_driver = false;
     for (annotations) |ann| {
         if (std.mem.eql(u8, ann.name, "LoopDriver")) {
@@ -1489,7 +1480,11 @@ fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, par
             break;
         }
     }
+    var valued = ArrayList(*ASTNode).init(self.allocator);
+    defer valued.deinit();
     if (!is_driver) {
+        for (block_lam.data.lambda_expr.body) |s| try collectValuedLeaves(s, &valued);
+        if (valued.items.len == 0) return false;
         self.reportError(node.line, node.column, "TypeError: 'leave' with a value is only supported in 'repeat'/'loop' blocks.", .{});
         return error.TypeError;
     }
@@ -1500,7 +1495,7 @@ fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, par
         return error.TypeError;
     }
     for (block_lam.data.lambda_expr.body) |s| {
-        if (bodyHasDirectReturn(s)) {
+        if (bodyHasReturn(s, false)) {
             self.reportError(node.line, node.column, "TypeError: 'return' is not allowed inside a 'repeat'/'loop' block. Use `leave value` to exit with a value.", .{});
             return error.TypeError;
         }
@@ -1511,6 +1506,8 @@ fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, par
     const n_name = try std.fmt.allocPrint(self.allocator, "{s}_n", .{tag});
     const i_name = try std.fmt.allocPrint(self.allocator, "{s}_i", .{tag});
     const out_name = try std.fmt.allocPrint(self.allocator, "{s}_out", .{tag});
+    for (block_lam.data.lambda_expr.body) |s| try convertLeavesToDeliver(self, s, out_name, &valued);
+    if (valued.items.len == 0) return false;
     var pname: []const u8 = "it";
     var tmp_scope = Scope.init(self.allocator, scope);
     defer tmp_scope.deinit();
@@ -1551,33 +1548,32 @@ fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, par
     }
     const out_ref = try eiwaTypeToRef(self, deliver_t.?, true, line, col);
     infer_stmt_mod.warnDeadCode(self, block_lam.data.lambda_expr.body);
-    for (block_lam.data.lambda_expr.body) |s| try convertLeavesToDeliver(self, s, out_name);
-    const null_lit = try mkRVNode(self, line, col, .{ .null_literal = {} });
-    const var_out = try mkRVNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = out_name, .type_ref = out_ref, .initializer = null_lit } });
-    const out_ident = try mkRVNode(self, line, col, .{ .identifier = .{ .name = out_name, .resolved_c_name = null } });
+    const null_lit = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .null_literal = {} });
+    const var_out = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = out_name, .type_ref = out_ref, .initializer = null_lit } });
+    const out_ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, out_name);
     var loop_body = ArrayList(*ASTNode).init(self.allocator);
     if (is_repeat) {
-        const i_ident = try mkRVNode(self, line, col, .{ .identifier = .{ .name = i_name, .resolved_c_name = null } });
-        const val_p = try mkRVNode(self, line, col, .{ .var_decl = .{ .is_mut = false, .name = pname, .type_ref = null, .initializer = i_ident } });
+        const i_ident = try infer_stmt_mod.mkDesugarIdent(self, line, col, i_name);
+        const val_p = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = false, .name = pname, .type_ref = null, .initializer = i_ident } });
         try loop_body.append(val_p);
     }
     for (block_lam.data.lambda_expr.body) |s| try loop_body.append(s);
     if (is_repeat) {
-        const i_lhs = try mkRVNode(self, line, col, .{ .identifier = .{ .name = i_name, .resolved_c_name = null } });
-        const one = try mkRVNode(self, line, col, .{ .int_literal = 1 });
-        const incr = try mkRVNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .plus, .right = one } });
-        try loop_body.append(try mkRVNode(self, line, col, .{ .assignment = .{ .name = i_name, .value = incr } }));
+        const i_lhs = try infer_stmt_mod.mkDesugarIdent(self, line, col, i_name);
+        const one = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .int_literal = 1 });
+        const incr = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .plus, .right = one } });
+        try loop_body.append(try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .assignment = .{ .name = i_name, .value = incr } }));
     }
-    const loop_body_node = try mkRVNode(self, line, col, .{ .block = .{ .statements = try loop_body.toOwnedSlice() } });
+    const loop_body_node = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .block = .{ .statements = try loop_body.toOwnedSlice() } });
     var cond: *ASTNode = undefined;
     if (is_repeat) {
-        const i_lhs = try mkRVNode(self, line, col, .{ .identifier = .{ .name = i_name, .resolved_c_name = null } });
-        const n_rhs = try mkRVNode(self, line, col, .{ .identifier = .{ .name = n_name, .resolved_c_name = null } });
-        cond = try mkRVNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .less, .right = n_rhs } });
+        const i_lhs = try infer_stmt_mod.mkDesugarIdent(self, line, col, i_name);
+        const n_rhs = try infer_stmt_mod.mkDesugarIdent(self, line, col, n_name);
+        cond = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .binary_expr = .{ .left = i_lhs, .op = .less, .right = n_rhs } });
     } else {
-        cond = try mkRVNode(self, line, col, .{ .bool_literal = true });
+        cond = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .bool_literal = true });
     }
-    const while_node = try mkRVNode(self, line, col, .{ .while_stmt = .{ .condition = cond, .body = loop_body_node } });
+    const while_node = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .while_stmt = .{ .condition = cond, .body = loop_body_node } });
     var stmts = ArrayList(*ASTNode).init(self.allocator);
     if (is_repeat) {
         var count_arg: ?*ASTNode = null;
@@ -1592,9 +1588,9 @@ fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, par
             self.reportError(node.line, node.column, "TypeError: 'repeat' requires a count argument.", .{});
             return error.TypeError;
         };
-        try stmts.append(try mkRVNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = n_name, .type_ref = null, .initializer = ca } }));
-        const zero = try mkRVNode(self, line, col, .{ .int_literal = 0 });
-        try stmts.append(try mkRVNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = i_name, .type_ref = null, .initializer = zero } }));
+        try stmts.append(try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = n_name, .type_ref = null, .initializer = ca } }));
+        const zero = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .int_literal = 0 });
+        try stmts.append(try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .var_decl = .{ .is_mut = true, .name = i_name, .type_ref = null, .initializer = zero } }));
     }
     try stmts.append(var_out);
     try stmts.append(while_node);
@@ -1617,25 +1613,25 @@ fn desugarRepeatLoopValue(self: *TypeChecker, node: *ASTNode, scope: *Scope, par
     return true;
 }
 
-/// `leave v` becomes `{ __out = v; leave }`. Same stops as the other walkers.
-fn convertLeavesToDeliver(self: *TypeChecker, node: *ASTNode, out_name: []const u8) anyerror!void {
+fn convertLeavesToDeliver(self: *TypeChecker, node: *ASTNode, out_name: []const u8, out: *ArrayList(*ASTNode)) anyerror!void {
     switch (node.data) {
-        .block => |b| for (b.statements) |s| try convertLeavesToDeliver(self, s, out_name),
+        .block => |b| for (b.statements) |s| try convertLeavesToDeliver(self, s, out_name, out),
         .if_expr => |i| {
-            try convertLeavesToDeliver(self, i.then_branch, out_name);
-            if (i.else_branch) |e| try convertLeavesToDeliver(self, e, out_name);
+            try convertLeavesToDeliver(self, i.then_branch, out_name, out);
+            if (i.else_branch) |e| try convertLeavesToDeliver(self, e, out_name, out);
         },
         .try_stmt => |ts| {
-            try convertLeavesToDeliver(self, ts.body, out_name);
-            for (ts.catches) |cb| try convertLeavesToDeliver(self, cb.body, out_name);
+            try convertLeavesToDeliver(self, ts.body, out_name, out);
+            for (ts.catches) |cb| try convertLeavesToDeliver(self, cb.body, out_name, out);
         },
-        .when_expr => |w| for (w.cases) |c| try convertLeavesToDeliver(self, c.body, out_name),
+        .when_expr => |w| for (w.cases) |c| try convertLeavesToDeliver(self, c.body, out_name, out),
         .while_stmt, .for_stmt, .lambda_expr, .fun_decl => {},
         .break_stmt => |b| {
             if (b.value) |v| {
                 if (v.data == .throw_stmt) return;
-                const set_out = try mkRVNode(self, node.line, node.column, .{ .assignment = .{ .name = out_name, .value = v } });
-                const brk = try mkRVNode(self, node.line, node.column, .{ .break_stmt = .{ .value = null } });
+                try out.append(v);
+                const set_out = try infer_stmt_mod.mkDesugarNode(self, node.line, node.column, .{ .assignment = .{ .name = out_name, .value = v } });
+                const brk = try infer_stmt_mod.mkDesugarNode(self, node.line, node.column, .{ .break_stmt = .{ .value = null } });
                 var pair = try self.allocator.alloc(*ASTNode, 2);
                 pair[0] = set_out;
                 pair[1] = brk;
@@ -1726,7 +1722,7 @@ fn bodyHasNestedDecl(node: *ASTNode) bool {
     }
 }
 
-/// `@Embed` on the declaration (function-level annotation).
+/// `@Embed` on the declaration.
 fn funIsEmbed(annotations: []const ast.Annotation) bool {
     for (annotations) |ann| {
         if (std.mem.eql(u8, ann.name, "Embed")) return true;
@@ -1734,8 +1730,42 @@ fn funIsEmbed(annotations: []const ast.Annotation) bool {
     return false;
 }
 
-/// Bound names bound anywhere in a subtree (for value-param shadow bail).
-/// Skips nothing: shadowing is detected, not resolved, here.
+fn rewriteEmbedReturns(self: *TypeChecker, node: *ASTNode) anyerror!usize {
+    switch (node.data) {
+        .return_stmt => |r| {
+            if (r.value != null) return 0;
+            node.data = (try mkDesugarThrowIdent(self, node.line, node.column, "EmbedReturn")).data;
+            return 1;
+        },
+        .block => |b| {
+            var n: usize = 0;
+            for (b.statements) |s| n += try rewriteEmbedReturns(self, s);
+            return n;
+        },
+        .if_expr => |i| {
+            var n = try rewriteEmbedReturns(self, i.then_branch);
+            if (i.else_branch) |e| n += try rewriteEmbedReturns(self, e);
+            return n;
+        },
+        .while_stmt => |w| return try rewriteEmbedReturns(self, w.body),
+        .for_stmt => |f| return try rewriteEmbedReturns(self, f.body),
+        .try_stmt => |ts| {
+            var n = try rewriteEmbedReturns(self, ts.body);
+            for (ts.catches) |cb| n += try rewriteEmbedReturns(self, cb.body);
+            return n;
+        },
+        .when_expr => |w| {
+            var n: usize = 0;
+            for (w.cases) |c| n += try rewriteEmbedReturns(self, c.body);
+            return n;
+        },
+        .lambda_expr, .fun_decl => return 0,
+        else => return 0,
+    }
+}
+
+
+/// Bound names in a subtree (shadow bail for substitution).
 fn collectBoundNames(node: *ASTNode, names: *std.StringHashMap(void)) anyerror!void {
     switch (node.data) {
         .block => |b| for (b.statements) |s| try collectBoundNames(s, names),
@@ -1827,9 +1857,6 @@ fn collectBoundNames(node: *ASTNode, names: *std.StringHashMap(void)) anyerror!v
     }
 }
 
-/// Textual value-param substitution into fresh holders. Exact: any body
-/// binding of a value-param name bails to a normal call first. Flags
-/// callee-position use (would build an IIFE shape).
 fn substituteEmbedParam(self: *TypeChecker, node: *ASTNode, param_name: []const u8, fresh: []const u8, bailed: *bool) anyerror!void {
     switch (node.data) {
         .identifier => |id| {
@@ -2316,7 +2343,7 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
         if (valued.items.len > 0) return false;
         try blocks.append(.{ .name = p.name, .lam = lam });
     }
-    if (bodyHasDirectReturn(fun_decl.body)) return false;
+    if (bodyHasReturn(fun_decl.body, true)) return false;
     var bound = std.StringHashMap(void).init(self.allocator);
     defer bound.deinit();
     try collectBoundNames(fun_decl.body, &bound);
@@ -2368,9 +2395,30 @@ fn inlineEmbedCall(self: *TypeChecker, node: *ASTNode, scope: *Scope, fun_decl: 
         try substituteEmbedParam(self, body_clone, p.name, holder, &bailed);
         if (bailed) return false;
     }
+    // Callee-own bare `return`s exit the region (rewritten pre-paste so
+    // user-block `return`s, pasted later, keep non-local semantics).
+    var region_exits: usize = 0;
+    if (body_clone.data == .block) {
+        for (body_clone.data.block.statements) |s| region_exits += try rewriteEmbedReturns(self, s);
+    }
     try pasteEmbedBlocks(self, body_clone, blocks.items, line, col);
     if (body_clone.data != .block) return false;
-    for (body_clone.data.block.statements) |s| try expansion.append(s);
+    // Region exits were counted pre-paste (user `return`s paste later, untouched).
+    if (region_exits > 0) {
+        // Callee-own bare `return` exits the expansion, not the caller:
+        // route through `throw EmbedReturn()`, caught right here.
+        const er_ref = try self.allocator.create(ast.ASTTypeRef);
+        er_ref.* = .{ .name = "EmbedReturn", .generic_args = &.{}, .is_array = false, .is_nullable = false };
+        const er_refs = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
+        er_refs[0] = er_ref;
+        const empty_body = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .block = .{ .statements = &.{} } });
+        const catch_blocks = try self.allocator.alloc(ast.CatchBlock, 1);
+        catch_blocks[0] = .{ .var_name = "__emb_er", .types = er_refs, .body = empty_body };
+        const try_node = try infer_stmt_mod.mkDesugarNode(self, line, col, .{ .try_stmt = .{ .body = body_clone, .catches = catch_blocks, .is_value = false } });
+        try expansion.append(try_node);
+    } else {
+        for (body_clone.data.block.statements) |s| try expansion.append(s);
+    }
     node.data = .{ .block = .{ .statements = try expansion.toOwnedSlice() } };
     try self.embed_stack.append(c_name);
     defer _ = self.embed_stack.pop();

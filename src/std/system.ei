@@ -24,6 +24,7 @@ fun repeat(count: Int, @Leaveable block: (Int) -> Void) {
     } catch (e: Leave) {}
 }
 
+@Embed
 fun retry(times: Int, @Leaveable block: (Int) -> Void) {
     var err: Throwable | Null = null
     var attempt = 0

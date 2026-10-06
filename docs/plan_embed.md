@@ -64,14 +64,15 @@
   behave as today). Tests: green `@Embed`-free-call in `embed_test.ei`;
   `embed_method/object/extension_xfail_test.ei` lock the rejection.
   (Recursion negatives need the P1 inline stack — land there.)
-- **P1 (core + std migration, IN PROGRESS):** substitutor + hygiene
-  (uniform rename, `it` never renamed) + block pasting as value-blocks;
-  `repeat`/`loop` → `@Embed` (keeping `@Leaveable`/`@LoopDriver`/catches
-  through P1a — pasted throws land in pasted catches); bail set =
-  non-literal block, valued leaves (value-desugar path), callee `return`,
-  param-name shadowing, `it`-named value params, nested decls, depth-64
-  recursion cap (nesting like `repeat`-in-`repeat` stays legal).
-  `retry` NOT `@Embed` yet (own `return` needs the P1b region wrapper).
+- **P1a (DONE 2026-10-06):** inline core as above; `repeat`/`loop` →
+  `@Embed`; `embed_inline/return_test.ei` promoted (break, hygiene,
+  non-local return fall out textually).
+- **P1b (DONE 2026-10-06):** callee-own bare `return` → `throw
+  EmbedReturn()` + per-expansion `catch (e: EmbedReturn)` (`std.exceptions`,
+  `ControlFlow`-only so the existing coerce/match picks it up); valued
+  callee returns keep bailing to normal calls; `retry` → `@Embed` (keeps
+  `@Leaveable` + internal `Leave` catch: quiet-abort preserved).
+  Tests: retry success path + custom region exit in `embed_test.ei`.
 - **P2 (value):** generic `LeaveValue<T> : ControlFlow` + per-site catch;
   delete current value desugar + `is_value`; snippet
   `val x = repeat(5) { leave "Get it!" }` + custom drivers.

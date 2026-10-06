@@ -20,6 +20,11 @@ type Leave(val code: Int = 0) : ControlFlow {
     implement fun message() = "leave"
 }
 
+/// Region-exit signal for inlined (`@Embed`) bodies with early `return`.
+type EmbedReturn(val code: Int = 0) : ControlFlow {
+    implement fun message() = "embed return"
+}
+
 fun error(msg: String): Void {
     throw Exception(msg)
 }

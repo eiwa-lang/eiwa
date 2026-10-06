@@ -452,17 +452,17 @@ fn mapForKind(self: *TypeChecker, iter_type: *const EiwaType) ?MapForKind {
     return null;
 }
 
-fn mkDesugarNode(self: *TypeChecker, line: usize, col: usize, data: ast.ASTNodeType) anyerror!*ASTNode {
+pub fn mkDesugarNode(self: *TypeChecker, line: usize, col: usize, data: ast.ASTNodeType) anyerror!*ASTNode {
     const n = try self.allocator.create(ASTNode);
     n.* = .{ .line = line, .column = col, .resolved_type = null, .data = data };
     return n;
 }
 
-fn mkDesugarIdent(self: *TypeChecker, line: usize, col: usize, name: []const u8) anyerror!*ASTNode {
+pub fn mkDesugarIdent(self: *TypeChecker, line: usize, col: usize, name: []const u8) anyerror!*ASTNode {
     return try mkDesugarNode(self, line, col, .{ .identifier = .{ .name = name, .resolved_c_name = null } });
 }
 
-fn mkDesugarGet(self: *TypeChecker, line: usize, col: usize, object: *ASTNode, name: []const u8) anyerror!*ASTNode {
+pub fn mkDesugarGet(self: *TypeChecker, line: usize, col: usize, object: *ASTNode, name: []const u8) anyerror!*ASTNode {
     return try mkDesugarNode(self, line, col, .{ .get_expr = .{ .object = object, .name = name, .is_safe = false } });
 }
 

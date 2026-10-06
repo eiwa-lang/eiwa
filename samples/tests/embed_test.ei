@@ -149,3 +149,28 @@ fun doubleIt(x: Int): Int {
 test "@Embed free function calls normally" {
     assert(doubleIt(21) == 42)
 }
+
+@Embed
+fun runOnce(block: () -> Void) {
+    block()
+    return
+}
+
+test "retry success returns immediately" {
+    var n = 0
+    retry(5) { attempt ->
+        n = n + 1
+    }
+    assert(n == 1)
+}
+
+test "callee early return exits region" {
+    var ran = 0
+    var after = 0
+    runOnce {
+        ran = ran + 1
+    }
+    after = 1
+    assert(ran == 1)
+    assert(after == 1)
+}
