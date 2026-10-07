@@ -1,0 +1,20 @@
+// Run: ./bin/eiwac test samples/tests/infer_empty_array_literal_test.ei
+//
+// RED (L4, compile error): `= []` as a default value for a declared
+// `List<T>` parameter fails with "Cannot infer type of empty array
+// literal" even though the declared type fully determines the element
+// type. Expected after fix: this file compiles and the test passes.
+// (Named normally, not xfail: the code SHOULD compile — the compile
+// error itself is the RED signal.)
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+
+type RedField(val name: String, val selector: String) : Serializable
+
+type RedStep(val kind: String, val fields: List<RedField> = []) : Serializable
+
+test "inference: empty array literal takes the declared element type" {
+    val s = RedStep("goto")
+    assert(s.kind == "goto")
+    assert(s.fields.size() == 0)
+}

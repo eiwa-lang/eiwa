@@ -1618,8 +1618,21 @@ fn serdeBoxFn(kind: SerdePrimitive, nullable: bool) []const u8 {
     };
 }
 
+fn serdeCloneDefault(self: *TypeChecker, prop: *const ast.ClassProp, init_orig: *ASTNode) anyerror!*ASTNode {
+    const cloned = try self.cloneNode(init_orig);
+    if (cloned.expected_type == null) {
+        if (prop.resolved_type) |rt| {
+            cloned.expected_type = rt;
+        } else if (self.resolveHintTypeRef(prop.type_ref)) |rt| {
+            cloned.expected_type = rt;
+        }
+    }
+    return cloned;
+}
+
 fn serdeArgWithDefault(self: *TypeChecker, node: *ASTNode, prop: *const ast.ClassProp, conv: *ASTNode) anyerror!*ASTNode {
-    const init_expr = prop.initializer orelse return conv;
+    const init_orig = prop.initializer orelse return conv;
+    const init_expr = try serdeCloneDefault(self, prop, init_orig);
     const cond_obj = try makeIdent(self, node.line, node.column, "obj");
     const cond_key = try makeStringLiteral(self, node.line, node.column, serdeWireName(prop));
     const cond_get_args = try self.allocator.alloc(*ASTNode, 1);
@@ -3051,8 +3064,8 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
 
                 const call_val = try makeCall(self, node.line, node.column, "deserializeList", des_list_args, t_args);
                 try ctor_args.append(try serdeArgWithDefault(self, node, &prop, call_val));
-            } else if (prop.initializer) |init_expr| {
-                try ctor_args.append(init_expr);
+            } else if (prop.initializer) |init_orig| {
+                try ctor_args.append(try serdeCloneDefault(self, &prop, init_orig));
             } else {
                 const arr_node = try self.allocator.create(ASTNode);
                 arr_node.* = .{
@@ -3069,8 +3082,8 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
                 try ctor_args.append(arr_node);
             }
         } else {
-            if (prop.initializer) |init_expr| {
-                try ctor_args.append(init_expr);
+            if (prop.initializer) |init_orig| {
+                try ctor_args.append(try serdeCloneDefault(self, &prop, init_orig));
             } else {
                 const null_lit = try self.allocator.create(ASTNode);
                 null_lit.* = .{
