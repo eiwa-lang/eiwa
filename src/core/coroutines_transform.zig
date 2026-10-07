@@ -44,7 +44,7 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
 
     for (module.data.program.statements) |stmt| {
         switch (stmt.data) {
-            .import_stmt, .fun_decl, .type_decl, .contract_decl, .skill_decl, .test_decl, .lib_decl, .object_decl, .enum_decl => {},
+            .import_stmt, .fun_decl, .type_decl, .contract_decl, .skill_decl, .test_decl, .lib_decl, .object_decl, .enum_decl, .union_decl => {},
             else => {
                 if (syn.hasTaskOrAwait(stmt)) {
                     checker.reportError(stmt.line, stmt.column, "TypeError: task {{}} and await() cannot be used in top-level statements (they would silently do nothing). Wrap them in fun main() {{ ... }}.", .{});

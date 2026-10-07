@@ -924,7 +924,7 @@ pub fn emitStatement(
                 try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, stmt, declared_ret);
             }
         },
-        .fun_decl, .import_stmt, .test_decl, .type_decl, .contract_decl, .skill_decl, .object_decl, .enum_decl, .lib_decl => {},
+        .fun_decl, .import_stmt, .test_decl, .type_decl, .contract_decl, .skill_decl, .object_decl, .enum_decl, .union_decl, .lib_decl => {},
         else => {
             _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, node);
         },

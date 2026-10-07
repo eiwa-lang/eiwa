@@ -1,0 +1,17 @@
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson, serializeJson } from "std.json"
+
+type UFieldDef(val selector: String, val many: Bool = false, val attr: String = "") : Serializable
+type UGoto(val url: String, val waitUntil: String, val timeoutMs: Int) : Serializable
+type UCollect(val selector: String, val fields: Map<String, UFieldDef>) : Serializable
+type UPaginate(val selector: String, val maxPages: Int) : Serializable
+
+union UStep {
+  UGoto, UCollect, UPaginate
+}
+
+test "union: decodes goto variant" {
+  val s: UStep = fromJson<UStep>("{\"ugoto\": {\"url\": \"https://x/\", \"waitUntil\": \"load\", \"timeoutMs\": 15000}}")
+  assert(s is UGoto)
+}

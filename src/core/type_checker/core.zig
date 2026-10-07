@@ -93,6 +93,7 @@ pub fn visitEachNode(node: *ASTNode, ctx: anytype, comptime enter: fn (@TypeOf(c
             if (try visitEachNode(m, ctx, enter)) return true;
         },
         .enum_decl => {},
+        .union_decl => {},
         .int_literal, .double_literal, .string_literal, .bool_literal, .null_literal, .identifier => {},
         .string_template => |st| for (st.parts) |p| {
             if (try visitEachNode(p, ctx, enter)) return true;
@@ -252,6 +253,7 @@ pub const TypeChecker = struct {
     contracts_ast: std.StringHashMap(*ASTNode),
     skills_ast: std.StringHashMap(*ASTNode),
     enums_ast: std.StringHashMap(*ASTNode),
+    unions_ast: std.StringHashMap(*ASTNode),
     libs_ast: std.StringHashMap(*ASTNode),
     functions_ast: std.StringHashMap(*ASTNode),
     generic_functions_ast: std.StringHashMap(ArrayList(*ASTNode)),
@@ -381,6 +383,7 @@ pub const TypeChecker = struct {
             .contracts_ast = std.StringHashMap(*ASTNode).init(allocator),
             .skills_ast = std.StringHashMap(*ASTNode).init(allocator),
             .enums_ast = std.StringHashMap(*ASTNode).init(allocator),
+            .unions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .libs_ast = std.StringHashMap(*ASTNode).init(allocator),
             .functions_ast = std.StringHashMap(*ASTNode).init(allocator),
             .generic_functions_ast = std.StringHashMap(ArrayList(*ASTNode)).init(allocator),
@@ -408,6 +411,7 @@ pub const TypeChecker = struct {
         self.contracts_ast.deinit();
         self.skills_ast.deinit();
         self.enums_ast.deinit();
+        self.unions_ast.deinit();
         self.libs_ast.deinit();
         self.functions_ast.deinit();
         var gen_it = self.generic_functions_ast.iterator();
@@ -1380,6 +1384,27 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         _ = self.global_scope.define(actual_c_name, enum_type, false, false) catch {};
                     }
                 }
+            } else if (stmt.data == .union_decl) {
+                var ud = &stmt.data.union_decl;
+                if (ud.resolved_c_name == null) {
+                    if (self.module_prefix) |prefix| {
+                        ud.resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, ud.name });
+                        try self.alias_map.put(ud.name, ud.resolved_c_name.?);
+                    } else {
+                        ud.resolved_c_name = ud.name;
+                    }
+                }
+                const actual_c_name = ud.resolved_c_name.?;
+                const union_type = try self.allocator.create(EiwaType);
+                union_type.* = .{ .Custom = actual_c_name };
+                try self.unions_ast.put(actual_c_name, stmt);
+                try self.local_symbols.put(ud.name, {});
+                if (self.global_scope.lookupVariable(ud.name) == null) {
+                    _ = self.global_scope.define(ud.name, union_type, false, false) catch {};
+                    if (!std.mem.eql(u8, ud.name, actual_c_name)) {
+                        _ = self.global_scope.define(actual_c_name, union_type, false, false) catch {};
+                    }
+                }
             }
         }
     }
@@ -1613,6 +1638,7 @@ fn collectUsedNamesInner(self: *TypeChecker, node: *ASTNode, used: *std.StringHa
             for (o.members) |m| try collectUsedNamesInner(self, m, used, member_uses);
         },
         .enum_decl => {},
+        .union_decl => |u| for (u.members) |m| try used.put(m.name, {}),
         .lib_decl => |l| for (l.functions) |f| try collectUsedNamesInner(self, f, used, member_uses),
         .test_decl => |t| try collectUsedNamesInner(self, t.body, used, member_uses),
         .as_expr => |a| {
@@ -1721,7 +1747,7 @@ fn core_validate(self: *TypeChecker, node: *ASTNode) anyerror!void {
 fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*const EiwaType {
     if (self.pass == .validation) {
         switch (node.data) {
-            .program, .type_decl, .object_decl, .enum_decl, .fun_decl, .import_stmt => {},
+            .program, .type_decl, .object_decl, .enum_decl, .union_decl, .fun_decl, .import_stmt => {},
             else => {
                 if (node.resolved_type) |rt| {
                     return rt;
@@ -1759,6 +1785,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
         .skill_decl => try infer_decl_mod.inferSkillDecl(self, node, scope, t),
         .object_decl => try infer_decl_mod.inferObjectDecl(self, node, scope, t),
         .enum_decl => try infer_decl_mod.inferEnumDecl(self, node, scope, t),
+        .union_decl => try infer_decl_mod.inferUnionDecl(self, node, scope, t),
         .fun_decl => try infer_decl_mod.inferFunDecl(self, node, scope, t),
         .var_decl => try infer_decl_mod.inferVarDecl(self, node, scope, t),
         .assignment => try infer_expr_mod.inferAssignment(self, node, scope, t),

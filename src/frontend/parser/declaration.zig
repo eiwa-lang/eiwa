@@ -44,6 +44,10 @@ pub fn declaration(self: *Parser) anyerror!*ASTNode {
         if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on enum"); return error.ParseError; }
         return try self.enumDeclaration(annotations);
     }
+    if (self.match(.kw_union)) {
+        if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on union"); return error.ParseError; }
+        return try self.unionDeclaration(annotations);
+    }
     
     if (modifiers.len > 0) {
         self.errorAtCurrent("Modifiers must precede a function declaration");
@@ -815,6 +819,54 @@ pub fn enumDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
         .annotations = annotations,
         .name = enum_name,
         .variants = try variants.toOwnedSlice(),
+        .resolved_c_name = null,
+    } }, line, col);
+}
+
+pub fn unionDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*ASTNode {
+    const line = self.previous.line;
+    const col = self.previous.column;
+    try self.consume(.identifier, "Expected union name.");
+    const union_name = self.previous.lexeme;
+
+    try self.consume(.l_brace, "Expected '{' before union body.");
+    var members = ArrayList(ast.UnionMember).init(self.allocator);
+
+    while (!self.check(.r_brace) and !self.check(.eof)) {
+        const member_annotations = try self.parseAnnotations();
+        var alias: ?[]const u8 = null;
+        for (member_annotations) |ann| {
+            if (std.mem.eql(u8, ann.name, "Alias")) {
+                if (ann.arguments.len != 1) {
+                    self.errorAtCurrent("Expected @Alias(\"wire_name\") with exactly one argument.");
+                    return error.ParseError;
+                }
+                if (alias != null) {
+                    self.errorAtCurrent("Duplicate @Alias on union member.");
+                    return error.ParseError;
+                }
+                alias = ann.arguments[0];
+            } else {
+                self.errorAtCurrent("Only @Alias is allowed on union members.");
+                return error.ParseError;
+            }
+        }
+        try self.consume(.identifier, "Expected union member type name.");
+        try members.append(.{
+            .name = self.previous.lexeme,
+            .alias = alias,
+        });
+
+        if (self.match(.comma)) {
+            // optional trailing or separating comma
+        }
+    }
+    try self.consume(.r_brace, "Expected '}' after union body.");
+
+    return try self.createNodeAt(.{ .union_decl = .{
+        .annotations = annotations,
+        .name = union_name,
+        .members = try members.toOwnedSlice(),
         .resolved_c_name = null,
     } }, line, col);
 }

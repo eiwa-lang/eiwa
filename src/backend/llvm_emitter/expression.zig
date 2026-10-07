@@ -4361,7 +4361,7 @@ fn emitExpressionRaw(
             }
             const last = b.statements[b.statements.len - 1];
             switch (last.data) {
-                .while_stmt, .var_decl, .fun_decl, .test_decl, .type_decl, .contract_decl, .skill_decl, .object_decl, .enum_decl, .lib_decl, .import_stmt, .return_stmt, .throw_stmt, .break_stmt => {
+                .while_stmt, .var_decl, .fun_decl, .test_decl, .type_decl, .contract_decl, .skill_decl, .object_decl, .enum_decl, .union_decl, .lib_decl, .import_stmt, .return_stmt, .throw_stmt, .break_stmt => {
                     try statement.emitStatement(ctx, mod, builder, cur_blk_fn, scope, structs, libs, last, null);
                     return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(ctx), 0, 0);
                 },

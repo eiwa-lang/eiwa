@@ -1329,7 +1329,7 @@ pub const LLVMEmitter = struct {
                 // Split mode: only the entry unit synthesizes `main` from
                 // top-level statements (the deps object must not define it).
                 if (m == ast_root and (!split or self.unitOwns(m)) and
-                    stmt.data != .fun_decl and stmt.data != .type_decl and stmt.data != .enum_decl and
+                    stmt.data != .fun_decl and stmt.data != .type_decl and stmt.data != .enum_decl and stmt.data != .union_decl and
                     stmt.data != .contract_decl and stmt.data != .skill_decl and stmt.data != .object_decl and
                     stmt.data != .lib_decl and stmt.data != .import_stmt and stmt.data != .test_decl)
                 {

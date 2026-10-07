@@ -1551,6 +1551,67 @@ pub fn inferEnumDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     t.* = .Void;
 }
 
+pub fn inferUnionDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
+    var ud = &node.data.union_decl;
+    if (ud.resolved_c_name == null) {
+        if (self.module_prefix) |prefix| {
+            ud.resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ prefix, ud.name });
+            try self.alias_map.put(ud.name, ud.resolved_c_name.?);
+        } else {
+            ud.resolved_c_name = ud.name;
+        }
+    }
+    const actual_c_name = ud.resolved_c_name.?;
+    const union_type = try self.allocator.create(EiwaType);
+    union_type.* = .{ .Custom = actual_c_name };
+
+    if (scope.lookupVariable(ud.name) == null) {
+        _ = scope.define(ud.name, union_type, false, false) catch {};
+    }
+    if (!std.mem.eql(u8, ud.name, actual_c_name)) {
+        if (scope.lookupVariable(actual_c_name) == null) {
+            _ = scope.define(actual_c_name, union_type, false, false) catch {};
+        }
+    }
+
+    try self.unions_ast.put(actual_c_name, node);
+
+    if (ud.members.len == 0) {
+        self.reportError(node.line, node.column, "TypeError: union '{s}' must declare at least one member.", .{ud.name});
+        return error.TypeError;
+    }
+    var seen = std.StringHashMap(void).init(self.allocator);
+    defer seen.deinit();
+    var seen_wire = std.StringHashMap(void).init(self.allocator);
+    defer seen_wire.deinit();
+    for (ud.members) |m| {
+        if (seen.contains(m.name)) {
+            self.reportError(node.line, node.column, "TypeError: duplicate member '{s}' in union '{s}'.", .{ m.name, ud.name });
+            return error.TypeError;
+        }
+        try seen.put(m.name, {});
+        const wire = m.alias orelse lowerUnionWire(self, m.name);
+        if (seen_wire.contains(wire)) {
+            self.reportError(node.line, node.column, "TypeError: duplicate wire key '{s}' in union '{s}'.", .{ wire, ud.name });
+            return error.TypeError;
+        }
+        try seen_wire.put(wire, {});
+        const member_c = self.alias_map.get(m.name) orelse m.name;
+        if (self.classes_ast.get(member_c) == null and self.unions_ast.get(member_c) == null and self.enums_ast.get(member_c) == null) {
+            self.reportError(node.line, node.column, "TypeError: unknown member type '{s}' in union '{s}'.", .{ m.name, ud.name });
+            return error.TypeError;
+        }
+    }
+    t.* = .Void;
+}
+
+fn lowerUnionWire(self: *TypeChecker, name: []const u8) []const u8 {
+    if (name.len == 0) return name;
+    const buf = self.allocator.alloc(u8, name.len) catch return name;
+    for (name, 0..) |c, i| buf[i] = std.ascii.toLower(c);
+    return buf;
+}
+
 fn makeIdent(self: *TypeChecker, line: usize, col: usize, name: []const u8) !*ASTNode {
     const node = try self.allocator.create(ASTNode);
     node.* = .{
