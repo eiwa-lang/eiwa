@@ -1849,6 +1849,18 @@ Semântica alvo:
 - [x] **Task 94.3:** Docs (tour §3 mecânica textual, MCP, plano §2, ADR 71) + push em `main`.
 - [x] **Verify:** suíte completa **789/789** + `zig build test` verdes, 10 negativos xfail, sem regressão (incl. task+suspend).
 
+### Phase 95: Closed Unions (`union`) with Serde Dispatch (COMPLETED)
+> **Status:** COMPLETED (GREEN, branch `feat/union-sealed`). Closed sums with payload over the composition model: `union Step { Goto, Collect, Paginate }` over `Serializable` member types, externally-tagged wire (`{"goto": {...}}`), generated `serialize`/`deserialize` on the `SerdeValue` layer (format-agnostic: JSON + YAML), `when` exhaustiveness without `else` (statement and value), member→union conformance with fat-pointer runtime identity over member `Serializable` vtables. Non-goals stay out: inline payloads, generics, top-level `fromJson<List<Step>>`, dedicated LLVM layout, flat-format migration (opt-in per type).
+> Plano em `docs/plan_union_sealed.md`; cobertura em `samples/tests/union_serde_test.ei` (14 testes) + `union_nonexhaustive_xfail_test.ei`.
+
+- [x] **Task 95.1:** Syntax (`kw_union`, `union_decl` AST, `@Alias` per member) + checker registration/validation (concrete `Serializable` members, declared-before-use order, no primitives/generics/nested unions).
+- [x] **Task 95.2:** Serde codegen: synthetic `serialize` (variant dispatch), `deserialize` companion (single-key cardinality + unknown-tag errors with detail, recursive inner rules), `toString`/`hashCode`/`equals` delegation; `List`/`Map`/direct/`@Alias` positions; member→union conformance + explicit `as` upcast on reassignment/field stores; unions are nominal in `isCompatible` (unrelated conversions fail instead of passing silently).
+- [x] **Task 95.3:** `when` exhaustiveness over unions without `else` (missing members listed, positioned `TypeError`).
+- [x] **Task 95.4:** Emitter: fat-pointer lowering, member→union coercion (returns, var-init, globals, call args, literals, `as`), `is`/`when` vtable identity, narrowed rebind, method declaration/emission/reachability; tripwire for thin union values.
+- [x] **Task 95.5:** Docs (tour §1/§5/§10/§11/§21, MCP `docs.ei` + lesson 16) + roadmap.
+- [x] **Verify:** `union_serde_test.ei` 14/14 (decode ×3, unknown/empty/double tag, recursive missing field, round-trips incl. `List` pipeline, `@Alias`, exhaustive `when`, YAML, arg coercion, reassignment) + xfail + suíte completa **819/819** + `zig build test` verdes, `eiwac build` split-mode smoke OK.
+- [ ] **Task 95.6 (follow-up — gap pré-existente, fora de escopo):** `isCompatible` aceita `Custom` → `Custom` não-relacionados (`val b: FooB = FooA(...)` compila; `val s: Shape = NotAShape(...)` compila e produz lixo em runtime) — o braço `else => return true` em `core_isCompatible` (`src/core/type_checker/core.zig`) após falhar `conformsTo`. Uniões foram blindadas nominalmente nesta fase (`isUnionNominal`: qualquer conversão envolvendo união fora de membro/mesma-união falha alto); o caso geral aguarda fase própria com RED + auditoria do que depende da frouxidão.
+
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
   (Pointer) direto para `tolower(c: Int)`/`toupper(c: Int)` do `<ctype.h>`, que

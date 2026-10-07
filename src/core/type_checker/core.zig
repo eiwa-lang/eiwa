@@ -1909,6 +1909,12 @@ fn core_implementsContract(self: *TypeChecker, type_name: []const u8, contract_n
     return false;
 }
 
+fn isUnionNominal(self: *TypeChecker, t: *const EiwaType) bool {
+    if (t.* != .Custom) return false;
+    const actual = self.alias_map.get(t.Custom) orelse t.Custom;
+    return self.unions_ast.contains(actual);
+}
+
 fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *const EiwaType) bool {
     if (expected.* == .Unknown or actual.* == .Unknown) return true;
     if (expected.* == .GenericParam or actual.* == .GenericParam) return true;
@@ -2035,7 +2041,10 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
                 if (f_exp.return_type.* == .Void) return true;
                 return self.isCompatible(f_exp.return_type, f_act.return_type);
             },
-            else => return true,
+            else => {
+                if (isUnionNominal(self, exp_base) or isUnionNominal(self, act_base)) return false;
+                return true;
+            },
         }
     }
     return false;

@@ -53,6 +53,7 @@ Eiwa comes with a core module named `system.ei` which contains fundamental types
 | files, module paths | `snake_case` | `http_client.ei`, `import {...} from "std.net"` |
 | functions, variables, parameters | `camelCase` | `fun pickPort()`, `val liveConn` |
 | `type`, `contract`, `skill`, `object`, `enum` names | `PascalCase` | `type Button`, `contract Drawable` |
+| `union` names | `PascalCase` | `union Step` |
 | `enum` variants | `UPPER_SNAKE` | `Direction.NORTH` |
 | C functions in `lib` blocks | `snake_case` via `@Alias` | `@Alias("curl_easy_init") fun curlEasyInit()` |
 
@@ -526,6 +527,11 @@ fun main() {
     assert(map["version"] == 1)
 }
 ```
+
+> **Closed sums:** open unions like `String | Int` accept any listed type
+> structurally. When the variants carry payloads and the set must be closed
+> (compiler-checked exhaustiveness + serialization dispatch), use `union`
+> (§11.10) instead.
 
 ### 5.2 Compile-Time Null Safety (`T | Null`)
 
@@ -1113,7 +1119,7 @@ val message = when (code) {
 assert(message == "Not Found")
 ```
 
-* **Exhaustiveness:** If `when` is used as an expression (to assign a value), the `else` branch is **mandatory**. If used as a statement, `else` is optional.
+* **Exhaustiveness:** If `when` is used as an expression (to assign a value), the `else` branch is **mandatory**. If used as a statement, `else` is optional. Exception: a `when` over a closed `union` is checked exhaustive **without** `else` — a missing member is a positioned `TypeError`, as a statement and as a value (see §11.10).
 
 ### 10.2 Smart Casting via Type Check
 Eiwa integrates pattern matching with its contract-based polymorphism. If you match a stable variable against a type using `is Type`, the variable is automatically **smart-cast** inside that branch's scope:
@@ -1167,6 +1173,7 @@ Eiwa has **no implementation inheritance**: no superclasses, no abstract classes
 | `contract`  | ❌ No        | ❌ No                | ❌ No                 |
 | `skill`     | ❌ No        | ✅ Yes               | ❌ No                 |
 | `enum`      | —           | —                   | ✅ Yes                |
+| `union`     | ❌ No        | ✅ (synthesized)    | ❌ No                 |
 
 ### 11.0 Coming from Other Languages
 
@@ -1178,6 +1185,7 @@ If you know Kotlin, Java, Rust or Scala, these concepts will feel familiar — b
 | `contract` | `interface` (Java/C#), `trait` signature part (Rust) | Pure signatures only. Contracts cannot require or extend other contracts — conformance is always flat. |
 | `skill` | `trait` (Rust/Scala), `mixin` | A skill does **not** implement the contracts it requires. It only *borrows* them: required methods are supplied by the consuming `type`, not by the skill. |
 | `object` | `object` (Kotlin), static-only class (Java/C#) | A true singleton with identity — it can hold mutable static state, not just static methods. |
+| `union` | `sealed class` hierarchy (Kotlin), `enum` with payload (Rust) | Closed sum: the member list is fixed at declaration. A `when` without `else` must cover every member, and serialization dispatches on the wire key. |
 
 The mental shift is small but important: in Eiwa you never ask *"what does this type inherit from?"* — you ask *"which contracts does it implement (`:`) and which skills does it compose (`+`)?"*
 
@@ -1442,6 +1450,66 @@ val all = Direction.list() // alias: Direction.values()
 assert(all.size() == 4)
 assert(all[0].name == "NORTH")
 ```
+
+### 11.10 Closed Unions (`union`)
+
+A `union` is a closed sum: a value of exactly one of N member types, each
+with its own payload. Unlike open `contract` polymorphism (any module can add
+implementors) or open union types (`String | Int`, §5.1), the member list is
+fixed at declaration — so the compiler checks exhaustiveness and generates
+serialization dispatch.
+
+```kotlin
+type Goto(val url: String, val waitUntil: String, val timeoutMs: Int) : Serializable
+type Collect(val selector: String, val fields: Map<String, FieldDef>) : Serializable
+type Paginate(val selector: String, val maxPages: Int) : Serializable
+
+union Step {
+  Goto, Collect, Paginate
+}
+```
+
+Rules:
+- Members must be concrete `type`s implementing `Serializable`, declared
+  before the union. Primitives, generics and nested unions are rejected (v1).
+- A member value flows into the union implicitly: `val s: Step = Goto(...)`,
+  `fromJson<Step>(raw)`, returns, call arguments and reassignment.
+- The wire format is externally tagged with a single-key object:
+  `{"goto": {"url": "..."}}`. The key is the lowercased member name,
+  overridable per member with `@Alias("go")` (the same annotation used for
+  fields, §21.5). Serialization emits only the active variant's fields.
+- A missing key, an object with 0 or 2+ keys, or an unknown tag throws
+  `Exception` with the expected keys in `message()`; a missing required
+  field inside the payload throws recursively under the same
+  `Missing required field` contract as `type` deserialization.
+- `when` over a union value must cover every member — no `else` needed, and
+  a missing member is a positioned `TypeError`, as a statement AND as a
+  value. Branches smart-cast like `is` checks (§10.2):
+
+```kotlin
+val label = when (s) {
+  is Goto -> "goto:" + s.url
+  is Collect -> "collect:" + s.selector
+  is Paginate -> "paginate:" + s.maxPages.toString()
+}
+```
+
+- A union value does **not** implement `Serializable` as a contract: passing
+  it where `Serializable` is expected (e.g. `serializeJson(s)`) is rejected,
+  so the tag is never silently dropped. Serialize through `s.serialize()`
+  plus `serializeJsonValue` (or `t.toYaml()`-style helpers over `SerdeValue`):
+
+```kotlin
+import { fromJson, serializeJsonValue } from "std.json"
+
+type Pipeline(val name: String, val steps: List<Step>, val required: List<String>) : Serializable
+
+val pipe = fromJson<Pipeline>(raw)
+val back = fromJson<Pipeline>(serializeJsonValue(pipe.serialize()))
+```
+
+`List<Step>`, `Map<String, Step>` and direct `Step` fields all dispatch
+element-wise.
 
 ---
 
@@ -2545,12 +2613,41 @@ skill Toml : Serializable {
 // Then use: type Config : Serializable + Toml
 ```
 
-### 21.8 Limitations (v1)
+### 21.8 Deserialization (`fromJson` / `fromYaml`)
 
-- **Serialization only** — deserialization (`fromJson`/`fromYaml`) is a future phase.
-- **No `Map<K,V>` support** — only primitive fields, nested `: Serializable` objects, and `List<T>`.
-- **No nullable field support** — nullable fields are skipped.
+Decoding mirrors encoding through the same `SerdeValue` layer, so it is
+format-agnostic: `fromJson<T>(raw)` and `fromYaml<T>(raw)` share the
+compiler-generated `deserialize` companion. Rules:
+
+- A missing key for a required (non-nullable, no-default) field throws
+  `Exception("Missing required field 'x' for type 'T'")` instead of decoding
+  a silent zero value. Fields with declared defaults apply the default; absent
+  or explicit-`null` nullable fields decode as `null`.
+- `Map<String, V>` fields (with serializable `V`) and nested `List<T>`
+  decode element-wise, including round-trips (`fromJson(serializeJson(x))`).
+
+### 21.9 Closed Unions (externally-tagged dispatch)
+
+A `union` (§11.10) decodes by dispatching on its single wrapper key
+(`{"goto": {...}}` → `Goto.deserialize(inner)`); unknown tags and
+cardinality violations (0 or 2+ keys) throw `Exception` with detail instead
+of decoding `null`. `List<Step>`, `Map<String, Step>` and direct `Step`
+fields all dispatch element-wise, so a whole pipeline round-trips:
+
+```kotlin
+import { fromJson, serializeJsonValue } from "std.json"
+
+type Pipeline(val name: String, val steps: List<Step>, val required: List<String>) : Serializable
+
+val pipe = fromJson<Pipeline>(raw)
+val back = fromJson<Pipeline>(serializeJsonValue(pipe.serialize()))
+assert(back.steps.size() == pipe.steps.size())
+```
+
+### 21.10 Limitations (v1)
+
 - **Boxing overhead** — each field is boxed into `SerdeInt`/`SerdeString`/etc. at the point of `serdeFields()` construction. This is a one-time cost per call; the encoders themselves are pure function calls that walk the list with contract dispatch.
+- **Unions:** no inline payloads (`union Step { Goto(url: String) }`), no generics, no `fromJson<List<Step>>` at top level; union values don't implement `Serializable` as a contract (serialize via `s.serialize()`).
 
 ---
 
