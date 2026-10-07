@@ -883,11 +883,11 @@ fn findOuterScopeRefsInNode(node: *ASTNode, refs: *OuterScopeRefs, record_this: 
     if (refs.complete()) return;
     switch (node.data) {
         .identifier => |i| {
-            if (record_this and std.mem.eql(u8, i.name, "this")) {
+            if (i.is_outer_this or (record_this and std.mem.eql(u8, i.name, "this"))) {
                 if (refs.this_type == null) {
                     if (node.resolved_type) |rt| refs.this_type = rt;
                 }
-            } else if (i.is_class_property) {
+            } else if (record_this and i.is_class_property) {
                 if (refs.prop_owner == null) {
                     if (i.owner_type_c_name) |o| refs.prop_owner = o;
                 }
@@ -903,7 +903,9 @@ fn findOuterScopeRefsInNode(node: *ASTNode, refs: *OuterScopeRefs, record_this: 
             for (l.params) |p| {
                 if (std.mem.eql(u8, p.name, "this")) shadows_this = true;
             }
-            for (l.body) |s| findOuterScopeRefsInNode(s, refs, record_this and !shadows_this);
+            var inner_record = record_this and !shadows_this;
+            if (lambdaReceiverType(node) != null) inner_record = false;
+            for (l.body) |s| findOuterScopeRefsInNode(s, refs, inner_record);
         },
         .block => |b| {
             for (b.statements) |s| findOuterScopeRefsInNode(s, refs, record_this);
@@ -984,13 +986,20 @@ fn findOuterScopeRefsInNode(node: *ASTNode, refs: *OuterScopeRefs, record_this: 
 }
 
 pub fn rewriteOuterThisRefs(ctx: Ctx, body: []const *ASTNode) !void {
-    for (body) |s| try rewriteOuterThisInNode(ctx, s);
+    for (body) |s| try rewriteOuterThisInNode(ctx, s, false);
 }
 
-pub fn rewriteOuterThisInNode(ctx: Ctx, node: *ASTNode) !void {
+fn lambdaReceiverType(node: *ASTNode) ?*const EiwaType {
+    if (node.resolved_type) |rt| {
+        if (rt.* == .Function and rt.Function.receiver != null) return rt.Function.receiver;
+    }
+    return null;
+}
+
+pub fn rewriteOuterThisInNode(ctx: Ctx, node: *ASTNode, capture_only: bool) !void {
     switch (node.data) {
         .identifier => |i| {
-            if (std.mem.eql(u8, i.name, "this")) {
+            if (i.is_outer_this or (!capture_only and std.mem.eql(u8, i.name, "this"))) {
                 node.data = .{ .get_expr = .{
                     .object = syn.mkIdent("this"),
                     .name = cctx.outer_this_field,
@@ -998,7 +1007,7 @@ pub fn rewriteOuterThisInNode(ctx: Ctx, node: *ASTNode) !void {
                     .is_boxed = false,
                 } };
                 node.resolved_type = null;
-            } else if (i.is_class_property) {
+            } else if (!capture_only and i.is_class_property) {
                 node.data = .{ .get_expr = .{
                     .object = syn.mkGetExpr(syn.mkIdent("this"), cctx.outer_this_field),
                     .name = i.name,
@@ -1011,9 +1020,9 @@ pub fn rewriteOuterThisInNode(ctx: Ctx, node: *ASTNode) !void {
         },
         .call_expr => |c| {
             if (syn.isTaskCall(node)) return;
-            try rewriteOuterThisInNode(ctx, c.callee);
+            try rewriteOuterThisInNode(ctx, c.callee, capture_only);
             for (c.arguments) |a| {
-                try rewriteOuterThisInNode(ctx, a);
+                try rewriteOuterThisInNode(ctx, a, capture_only);
             }
             return;
         },
@@ -1021,24 +1030,25 @@ pub fn rewriteOuterThisInNode(ctx: Ctx, node: *ASTNode) !void {
             for (l.params) |p| {
                 if (std.mem.eql(u8, p.name, "this")) return;
             }
+            const inner_only = capture_only or lambdaReceiverType(node) != null;
             for (l.body) |s| {
-                try rewriteOuterThisInNode(ctx, s);
+                try rewriteOuterThisInNode(ctx, s, inner_only);
             }
             return;
         },
         .block => |b| {
             for (b.statements) |s| {
-                try rewriteOuterThisInNode(ctx, s);
+                try rewriteOuterThisInNode(ctx, s, capture_only);
             }
             return;
         },
         .var_decl => |v| {
-            if (v.initializer) |init| try rewriteOuterThisInNode(ctx, init);
+            if (v.initializer) |init| try rewriteOuterThisInNode(ctx, init, capture_only);
             return;
         },
         .assignment => |a| {
-            try rewriteOuterThisInNode(ctx, a.value);
-            if (a.is_class_property) {
+            try rewriteOuterThisInNode(ctx, a.value, capture_only);
+            if (!capture_only and a.is_class_property) {
                 const assignment_name = a.name;
                 const assignment_value = a.value;
                 node.data = .{ .set_expr = .{
@@ -1053,91 +1063,91 @@ pub fn rewriteOuterThisInNode(ctx: Ctx, node: *ASTNode) !void {
             return;
         },
         .binary_expr => |b| {
-            try rewriteOuterThisInNode(ctx, b.left);
-            try rewriteOuterThisInNode(ctx, b.right);
+            try rewriteOuterThisInNode(ctx, b.left, capture_only);
+            try rewriteOuterThisInNode(ctx, b.right, capture_only);
             return;
         },
         .unary_expr => |u| {
-            try rewriteOuterThisInNode(ctx, u.operand);
+            try rewriteOuterThisInNode(ctx, u.operand, capture_only);
             return;
         },
         .get_expr => |g| {
-            try rewriteOuterThisInNode(ctx, g.object);
+            try rewriteOuterThisInNode(ctx, g.object, capture_only);
             return;
         },
         .set_expr => |s| {
-            try rewriteOuterThisInNode(ctx, s.object);
-            try rewriteOuterThisInNode(ctx, s.value);
+            try rewriteOuterThisInNode(ctx, s.object, capture_only);
+            try rewriteOuterThisInNode(ctx, s.value, capture_only);
             return;
         },
         .if_expr => |i| {
-            try rewriteOuterThisInNode(ctx, i.condition);
-            try rewriteOuterThisInNode(ctx, i.then_branch);
-            if (i.else_branch) |e| try rewriteOuterThisInNode(ctx, e);
+            try rewriteOuterThisInNode(ctx, i.condition, capture_only);
+            try rewriteOuterThisInNode(ctx, i.then_branch, capture_only);
+            if (i.else_branch) |e| try rewriteOuterThisInNode(ctx, e, capture_only);
             return;
         },
         .while_stmt => |w| {
-            try rewriteOuterThisInNode(ctx, w.condition);
-            try rewriteOuterThisInNode(ctx, w.body);
+            try rewriteOuterThisInNode(ctx, w.condition, capture_only);
+            try rewriteOuterThisInNode(ctx, w.body, capture_only);
             return;
         },
         .for_stmt => |f| {
-            try rewriteOuterThisInNode(ctx, f.iterable);
-            try rewriteOuterThisInNode(ctx, f.body);
+            try rewriteOuterThisInNode(ctx, f.iterable, capture_only);
+            try rewriteOuterThisInNode(ctx, f.body, capture_only);
             return;
         },
         .return_stmt => |r| {
-            if (r.value) |v| try rewriteOuterThisInNode(ctx, v);
+            if (r.value) |v| try rewriteOuterThisInNode(ctx, v, capture_only);
             return;
         },
         .break_stmt => |b| {
-            if (b.value) |v| try rewriteOuterThisInNode(ctx, v);
+            if (b.value) |v| try rewriteOuterThisInNode(ctx, v, capture_only);
             return;
         },
         .try_stmt => |t| {
-            try rewriteOuterThisInNode(ctx, t.body);
+            try rewriteOuterThisInNode(ctx, t.body, capture_only);
             for (t.catches) |cb| {
-                try rewriteOuterThisInNode(ctx, cb.body);
+                try rewriteOuterThisInNode(ctx, cb.body, capture_only);
             }
             return;
         },
         .throw_stmt => |t| {
-            try rewriteOuterThisInNode(ctx, t.expr);
+            try rewriteOuterThisInNode(ctx, t.expr, capture_only);
             return;
         },
         .when_expr => |w| {
-            if (w.subject) |s| try rewriteOuterThisInNode(ctx, s);
+            if (w.subject) |s| try rewriteOuterThisInNode(ctx, s, capture_only);
             for (w.cases) |case| {
-                for (case.conds) |cond| try rewriteOuterThisInNode(ctx, cond);
-                try rewriteOuterThisInNode(ctx, case.body);
+                for (case.conds) |cond| try rewriteOuterThisInNode(ctx, cond, capture_only);
+                try rewriteOuterThisInNode(ctx, case.body, capture_only);
             }
             return;
         },
         .array_literal => |al| {
-            for (al.elements) |e| try rewriteOuterThisInNode(ctx, e);
+            for (al.elements) |e| try rewriteOuterThisInNode(ctx, e, capture_only);
             return;
         },
         .string_template => |st| {
-            for (st.parts) |e| try rewriteOuterThisInNode(ctx, e);
+            for (st.parts) |e| try rewriteOuterThisInNode(ctx, e, capture_only);
             return;
         },
         .map_literal => |ml| {
-            for (ml.elements) |e| try rewriteOuterThisInNode(ctx, e);
+            for (ml.elements) |e| try rewriteOuterThisInNode(ctx, e, capture_only);
             return;
         },
         .index_expr => |i| {
-            try rewriteOuterThisInNode(ctx, i.object);
-            try rewriteOuterThisInNode(ctx, i.index);
+            try rewriteOuterThisInNode(ctx, i.object, capture_only);
+            try rewriteOuterThisInNode(ctx, i.index, capture_only);
             return;
         },
         .index_set_expr => |i| {
-            try rewriteOuterThisInNode(ctx, i.object);
-            try rewriteOuterThisInNode(ctx, i.index);
-            try rewriteOuterThisInNode(ctx, i.value);
+            try rewriteOuterThisInNode(ctx, i.object, capture_only);
+            try rewriteOuterThisInNode(ctx, i.index, capture_only);
+            try rewriteOuterThisInNode(ctx, i.value, capture_only);
             return;
         },
         .named_arg => |na| {
-            try rewriteOuterThisInNode(ctx, na.value);
+            try rewriteOuterThisInNode(ctx, na.value, capture_only);
             return;
         },
         else => return,

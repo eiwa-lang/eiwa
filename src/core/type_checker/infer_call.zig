@@ -4,7 +4,6 @@ const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const infer_stmt_mod = @import("infer_stmt.zig");
 const core = @import("core.zig");
-const type_system = @import("../type_system.zig");
 
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
@@ -2277,6 +2276,12 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             
             t.* = matched.Function.return_type.*;
             if (matched.Function.receiver) |rec| {
+                var is_outer_this = false;
+                if (scope.lookupVariable("this")) |inner_this| {
+                    if (!self.sameReceiverType(inner_this, rec)) {
+                        is_outer_this = true;
+                    }
+                }
                 const this_node = try self.allocator.create(ASTNode);
                 this_node.* = .{
                     .line = c.callee.line,
@@ -2287,6 +2292,7 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         .resolved_c_name = null,
                         .is_class_property = false,
                         .is_boxed = false,
+                        .is_outer_this = is_outer_this,
                     } },
                 };
                 

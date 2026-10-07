@@ -321,6 +321,51 @@ pub const TypeChecker = struct {
         return true;
     }
 
+    fn canonicalReceiverName(self: *const TypeChecker, t: *const EiwaType) ?[]const u8 {
+        const b = type_system.extractBaseType(t);
+        const raw: []const u8 = switch (b.*) {
+            .Custom => |n| n,
+            .GenericInstance => |g| g.base_name,
+            .Pointer => |p| if (p.* == .Custom) p.Custom else return null,
+            .Int => "Int",
+            .Double => "Double",
+            .Bool => "Bool",
+            .String => "String",
+            else => return null,
+        };
+        const aliased = self.alias_map.get(raw) orelse raw;
+        if (std.mem.eql(u8, aliased, "core_Int") or std.mem.eql(u8, aliased, "Int")) return "Int";
+        if (std.mem.eql(u8, aliased, "core_Bool") or std.mem.eql(u8, aliased, "Bool")) return "Bool";
+        if (std.mem.eql(u8, aliased, "core_Double") or std.mem.eql(u8, aliased, "Double")) return "Double";
+        if (std.mem.eql(u8, aliased, "core_String") or std.mem.eql(u8, aliased, "String")) return "String";
+        return aliased;
+    }
+
+    pub fn sameReceiverType(self: *const TypeChecker, a: *const EiwaType, b: *const EiwaType) bool {
+        if (self.canonicalReceiverName(a)) |ca| {
+            if (self.canonicalReceiverName(b)) |cb| {
+                return std.mem.eql(u8, ca, cb);
+            }
+            return false;
+        }
+        if (self.canonicalReceiverName(b) != null) return false;
+        const ba = type_system.extractBaseType(a);
+        const bb = type_system.extractBaseType(b);
+        return @intFromEnum(ba.*) == @intFromEnum(bb.*);
+    }
+
+    pub fn outermostThisType(scope: *Scope) ?*const EiwaType {
+        var cur: ?*Scope = scope;
+        var found: ?*const EiwaType = null;
+        while (cur) |s| {
+            if (s.symbols.getPtr("this")) |sym_ptr| {
+                if (sym_ptr.*.variable) |v| found = v.eiwa_type;
+            }
+            cur = s.parent;
+        }
+        return found;
+    }
+
     pub fn init(allocator: std.mem.Allocator, source: []const u8, filename: []const u8) TypeChecker {
         const checker = TypeChecker{
             .allocator = allocator,

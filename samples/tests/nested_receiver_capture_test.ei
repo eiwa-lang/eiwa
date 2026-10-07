@@ -1,0 +1,102 @@
+import { assert } from "std.core"
+
+// RED (TDD): a bare method call inside doubly-nested receiver lambdas
+// must bind to the outer method's receiver. Today it compiles clean
+// but binds wrong at runtime (NPE / garbage), forcing `val self = this`
+// aliases. Passes when implicit-this capture crosses receivers.
+
+// The same rule covers the single-receiver case and bare outer property
+// reads/writes: all three bound the inner receiver at codegen (NPE) before
+// the `__outer_this` capture.
+
+type CapBox(val v: Int) {
+    fun get(): Int {
+        return this.v
+    }
+}
+
+type CapCtxA()
+type CapCtxB()
+
+type CapMid() {
+    fun outer(block: CapCtxA.() -> Void) {
+        block(CapCtxA())
+    }
+
+    fun inner(block: CapCtxB.() -> Void) {
+        block(CapCtxB())
+    }
+}
+
+type CapHolder(val box: CapBox) {
+    fun get(): Int {
+        return this.box.get()
+    }
+
+    fun run(): Int {
+        val mid = CapMid()
+        var out = -1
+        mid.outer {
+            mid.inner {
+                out = get()
+            }
+        }
+        return out
+    }
+}
+
+test "receiver: bare call binds outer method through nested receivers" {
+    assert(CapHolder(CapBox(42)).run() == 42)
+}
+
+type CapSingle(val box: CapBox) {
+    fun get(): Int {
+        return this.box.get()
+    }
+
+    fun run(): Int {
+        val mid = CapMid()
+        var out = -1
+        mid.outer {
+            out = get()
+        }
+        return out
+    }
+}
+
+test "receiver: bare call binds outer method through single receiver" {
+    assert(CapSingle(CapBox(42)).run() == 42)
+}
+
+type CapPropReader(val box: CapBox) {
+    fun run(): Int {
+        val mid = CapMid()
+        var out = -1
+        mid.outer {
+            mid.inner {
+                out = box.get()
+            }
+        }
+        return out
+    }
+}
+
+test "receiver: bare outer property read through nested receivers" {
+    assert(CapPropReader(CapBox(42)).run() == 42)
+}
+
+type CapPropWriter(var count: Int) {
+    fun run(): Int {
+        val mid = CapMid()
+        mid.outer {
+            mid.inner {
+                count = 42
+            }
+        }
+        return count
+    }
+}
+
+test "receiver: bare outer property write through nested receivers" {
+    assert(CapPropWriter(0).run() == 42)
+}

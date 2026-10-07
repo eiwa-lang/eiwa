@@ -3,7 +3,6 @@ const compat = @import("../compat.zig");
 const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const core = @import("core.zig");
-const type_system = @import("../type_system.zig");
 
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
@@ -44,6 +43,32 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     const a = &node.data.assignment;
     var assigned_type: *const EiwaType = undefined;
     if (scope.lookupVariableSymbol(a.name)) |vs| {
+        if (vs.is_mut) {
+            if (outerMemberOwner(self, a.name, scope)) |ot| {
+                const target_name = a.name;
+                const target_value = a.value;
+                const obj = try self.allocator.create(ASTNode);
+                obj.* = .{
+                    .line = node.line,
+                    .column = node.column,
+                    .resolved_type = ot,
+                    .data = .{ .identifier = .{
+                        .name = "this",
+                        .resolved_c_name = null,
+                        .is_outer_this = true,
+                    } },
+                };
+                node.data = .{ .set_expr = .{
+                    .object = obj,
+                    .name = target_name,
+                    .value = target_value,
+                    .is_safe = false,
+                } };
+                node.resolved_type = null;
+                try inferSetExpr(self, node, scope, t);
+                return;
+            }
+        }
         a.value.expected_type = vs.eiwa_type;
         a.value.resolved_type = null;
         markTrailingValue(a.value, true);
@@ -326,6 +351,32 @@ fn inferLogicExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaTyp
     t.* = .Bool;
 }
 
+fn outerMemberOwner(self: *TypeChecker, name: []const u8, scope: *Scope) ?*const EiwaType {
+    var cur: ?*Scope = scope;
+    var defining: ?*Scope = null;
+    while (cur) |s| {
+        if (s.symbols.getPtr(name)) |sym_ptr| {
+            if (sym_ptr.*.variable != null) {
+                defining = s;
+                break;
+            }
+        }
+        cur = s.parent;
+    }
+    const D = defining orelse return null;
+    if (D.is_function_boundary or D.is_lambda_boundary) return null;
+    var owner_this: ?*const EiwaType = null;
+    if (D.symbols.getPtr("this")) |sym_ptr| {
+        if (sym_ptr.*.variable) |v| owner_this = v.eiwa_type;
+    }
+    const ot = owner_this orelse return null;
+    const outer = TypeChecker.outermostThisType(scope) orelse return null;
+    const inner = scope.lookupVariable("this") orelse return null;
+    if (!self.sameReceiverType(ot, outer)) return null;
+    if (self.sameReceiverType(inner, ot)) return null;
+    return ot;
+}
+
 pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     var i = &node.data.identifier;
     if (scope.lookupVariableSymbol(i.name)) |vs| {
@@ -368,6 +419,31 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                 }
             }
         }
+        if (!i.is_class_property) {
+            if (outerMemberOwner(self, i.name, scope)) |ot| {
+                const prop_name = i.name;
+                const obj = try self.allocator.create(ASTNode);
+                obj.* = .{
+                    .line = node.line,
+                    .column = node.column,
+                    .resolved_type = ot,
+                    .data = .{ .identifier = .{
+                        .name = "this",
+                        .resolved_c_name = null,
+                        .is_outer_this = true,
+                    } },
+                };
+                node.data = .{ .get_expr = .{
+                    .object = obj,
+                    .name = prop_name,
+                    .is_safe = false,
+                    .resolved_c_name = null,
+                } };
+                node.resolved_type = null;
+                try inferGetExpr(self, node, scope, t);
+                return;
+            }
+        }
         t.* = vs.eiwa_type.*;
 
         // Detect variable capture
@@ -406,6 +482,12 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             }
         }
     } else {
+        if (i.is_outer_this) {
+            if (TypeChecker.outermostThisType(scope)) |ot| {
+                t.* = ot.*;
+                return;
+            }
+        }
         if (self.alias_map.get(i.name)) |c_name| {
             t.* = .{ .Custom = c_name };
             return;

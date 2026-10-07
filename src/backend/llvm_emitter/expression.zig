@@ -115,7 +115,10 @@ const CaptureInfo = struct {
     /// pointer (double-indirection), matching the C backend `Box_T { T value; }`
     /// model but without needing a named struct.
     is_boxed: bool = false,
+    is_outer_this: bool = false,
 };
+
+const outer_this_slot = "__outer_this";
 
 /// Walk `node` and record every `var_decl` name (and `for` item names) into
 /// `locals`.  These are variables that are *declared* inside the lambda body
@@ -164,6 +167,16 @@ fn collectCapturesLLVM(
 ) anyerror!void {
     switch (node.data) {
         .identifier => |i| {
+            if (i.is_outer_this) {
+                for (captures.items) |cap| {
+                    if (cap.is_outer_this) return;
+                }
+                if (node.resolved_type) |rt| {
+                    const llvm_t = types_mapping.getLLVMType(ctx, rt.*);
+                    try captures.append(.{ .name = outer_this_slot, .llvm_type = llvm_t, .is_outer_this = true });
+                }
+                return;
+            }
             if (locals.contains(i.name)) return;
             if (i.is_class_property) {
                 // Class properties are reached through `this` at emission time
@@ -392,6 +405,13 @@ fn emitExpressionRaw(
             return try emitStringTemplate(ctx, mod, builder, scope, structs, libs, st.parts);
         },
         .identifier => |ident| {
+            if (ident.is_outer_this) {
+                if (scope.get(outer_this_slot)) |var_val| {
+                    return llvm.LLVMBuildLoad2(builder, llvm.LLVMPointerTypeInContext(ctx, 0), var_val, "outer_this_val");
+                }
+                std.debug.print("LLVM Emitter Error: Outer 'this' not found in lambda scope.\n", .{});
+                return error.VariableNotFound;
+            }
             const name = ident.resolved_c_name orelse ident.name;
             const is_prop = ident.is_class_property;
             if (is_prop) {
@@ -1939,6 +1959,15 @@ fn emitExpressionRaw(
                                     break :outer llvm.LLVMBuildLoad2(builder, cap.llvm_type, alloca, "cap_outer");
                                 }
                                 break :outer alloca;
+                            }
+                            if (cap.is_outer_this) {
+                                if (scope.get("this")) |this_alloca| {
+                                    const vt = llvm.LLVMTypeOf(this_alloca);
+                                    if (llvm.LLVMGetTypeKind(vt) == llvm.LLVMPointerTypeKind) {
+                                        break :outer llvm.LLVMBuildLoad2(builder, cap.llvm_type, this_alloca, "outer_this_val");
+                                    }
+                                    break :outer this_alloca;
+                                }
                             }
                             // Fallback: null/zero for unknown captures
                             break :outer llvm.LLVMConstNull(cap.llvm_type);

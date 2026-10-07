@@ -291,6 +291,7 @@ pub const ASTNodeType = union(enum) {
         /// of the boxed var's alloca) instead of the boxed *value* (double
         /// deref) — used for passing a shared mutable capture into a task ctor.
         is_box_ref: bool = false,
+        is_outer_this: bool = false,
         owner_type_c_name: ?[]const u8 = null,
     },
 
