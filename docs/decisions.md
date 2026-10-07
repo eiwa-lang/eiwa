@@ -1246,3 +1246,90 @@ XFAIL comportando-se como XFAIL + suíte completa **720 PASSED, 1 FAILED**
 **Validação:** `embed_test` 14/14 + `embed_inline/return/valued/harden`
 verdes, 8 negativos xfail comportando-se como xfail + suíte completa
 verde + `zig build test` verde, sem regressão.
+
+## ADR 72: Uniões fechadas (`union`) com dispatch serde
+**Status:** Aprovado / Implementado (Phase 95, branch `feat/union-sealed`)
+**Data:** Outubro 2026
+
+**Contexto:**
+1. Pipelines heterogêneos (ex.: steps de scraping) eram modelados como `type`
+   flat + `kind: String` + validação manual: verbo esquecido no runner era bug
+   silencioso e tag errada só falhava pelo check escrito à mão.
+2. O `enum` só tem variante sem payload; `contract` é aberto (qualquer módulo
+   adiciona implementadores, sem exaustividade); uniões gerais (`String | Int`,
+   ADR 28) são abertas e apagadas para `void*` sem dispatch.
+
+**Decisão:**
+1. **Sintaxe bloco estilo `enum`:** `union Step { Goto, Collect, Paginate }`
+   sobre `type`s membros (concretos, `Serializable`, declarados antes; sem
+   primitivos/genéricos/aninhados na v1). Chave do wire por membro via
+   `@Alias` reutilizado (ADR 62) ou lowercased por default.
+2. **Fechada de verdade:** `when` sobre união exige todos os membros sem
+   `else` — como statement E como valor; faltante é `TypeError` posicionado
+   listando os ausentes.
+3. **Wire externamente taggeado de 1 chave** (`{"goto": {...}}`); `toJson`
+   emite só a variante ativa. Chave ausente, 0/2+ chaves ou tag desconhecida
+   lançam `Exception` com detalhe; campo interno faltando segue a regra
+   `Missing required field` recursiva. Nunca `null` silencioso.
+4. **Codegen na camada `SerdeValue`** (format-agnostic, ADRs 27/62):
+   `serialize`/`deserialize`/`toString`/`hashCode`/`equals` sintetizados;
+   posições `List`/`Map`/direta/`@Alias`; `fromJson`/`fromYaml` herdam sem
+   código por formato.
+5. **Conformidade membro→união** + `as` explícito sintetizado em reatribuição
+   e escrita em campo; uniões são **nominais** em `isCompatible` (conversão
+   com união fora de membro/mesma-união falha alto).
+6. **Runtime:** fat pointer com identidade do membro; `is`/`when` por
+   identidade de vtable, rebind estreitado, tripwire contra valor thin,
+   coerção nos pontos de passagem (returns, var-init, globals, args, literais,
+   `as`).
+7. **União NÃO implementa `Serializable` como contrato**
+   (`serializeJson(s)` é rejeitado) para a tag nunca cair em silêncio —
+   serializa-se via `s.serialize()`.
+
+**Razão:**
+Soma fechada dá ao compilador o que o `kind: String` manual não dá:
+exaustividade estática, dispatch gerado e erros fail-fast com posição —
+sem reflexão, sem registro manual estilo Kotlin
+(`SerializersModule.polymorphic`), sem leniência estilo Go. Plano em
+`docs/plan_union_sealed.md`; cobertura em `samples/tests/union_serde_test.ei`
+(14 testes) + `union_nonexhaustive_xfail_test.ei`; non-goals (inline,
+genéricos, layout dedicado, migração flat) ficam para as Phases 96–97.
+
+## ADR 73: Identidade por descritores + uniões anônimas e escalares (direção)
+**Status:** Aprovado (direção) / Em planejamento (Phases 96–97)
+**Data:** Outubro 2026
+
+**Contexto:**
+1. A identidade de união sobre vtable de contrato (`Serializable`) funciona,
+   mas sobrecarrega um contrato de formatação com semântica de identidade —
+   conceitualmente gambiarra.
+2. Uniões anônimas (`fromJson<A | B>`, `List<A | B>`) pedem dispatch sem
+   declaração; chaves só podem ser lowercase fixas (sem lugar para `@Alias`).
+3. Excluir primitivos das somas contradiz o princípio central ("não existem
+   tipos primitivos") e o caso JSON (valor heterogêneo `string | número |
+   bool`); mas primitivos vivem em representação value-in-pointer (Phases
+   46/80), incompatível com fat pointer direto.
+
+**Decisão:**
+1. **Descritor próprio:** global `{Type}_descriptor` por tipo (o endereço é
+   a identidade); o fat da união vira `{data, &Descritor}`. `Serializable`
+   segue exigido no declarado, mas só pelo serde (delegação). A identidade
+   do declarado migra junto (testes verdes provam não-mudança).
+2. **Anônimas estruturais:** tuplas em genéricos/campos/params/`fromJson`
+   com a mesma cobertura posicional; mangling de membros ordenados
+   (internar `A|B` ≣ `B|A`); **nominal ≠ estrutural, sem conversão**
+   (misturar é erro loud).
+3. **Escalares em estágios:** `String` na 96 (já é heap, sem box);
+   `Int`/`Double`/`Bool` na 97 (box na fronteira estilo Phase 80 + unbox no
+   load estreitado do follow-up 91.4); `is` nominal por descritor.
+4. **Frouxidão geral de `isCompatible` registrada e NÃO corrigida aqui**
+   (Task 95.6): só pares com união foram blindados; o caso
+   `Custom → Custom` não-relacionado aguarda fase própria com RED +
+   auditoria.
+
+**Razão:**
+Identidade explícita separa eixos que estavam acoplados (serde vs
+identidade, nominal vs estrutural, imediato vs heap), cada um com regra
+fail-loud própria — em vez de uma vtable emprestada fazendo três papéis.
+Plano em `docs/plan_phase96_anonymous_union.md`; REDs em
+`samples/tests/union_anonymous_test.ei` (vermelhos, quebram o gate).
