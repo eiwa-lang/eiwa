@@ -274,7 +274,10 @@ pub const ASTNodeType = union(enum) {
         annotations: []const Annotation,
         name: []const u8,
         members: []const UnionMember,
+        methods: []const *ASTNode = &.{},
         resolved_c_name: ?[]const u8 = null,
+        serde_generated: bool = false,
+        platform_targets: []const []const u8 = &.{},
     },
     
     // Literals

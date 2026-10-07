@@ -1597,12 +1597,444 @@ pub fn inferUnionDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         }
         try seen_wire.put(wire, {});
         const member_c = self.alias_map.get(m.name) orelse m.name;
-        if (self.classes_ast.get(member_c) == null and self.unions_ast.get(member_c) == null and self.enums_ast.get(member_c) == null) {
-            self.reportError(node.line, node.column, "TypeError: unknown member type '{s}' in union '{s}'.", .{ m.name, ud.name });
+        const member_node = self.classes_ast.get(member_c);
+        if (member_node == null or member_node.?.data != .type_decl) {
+            self.reportError(node.line, node.column, "TypeError: unknown member type '{s}' in union '{s}'. Members must be concrete types declared in this module.", .{ m.name, ud.name });
+            return error.TypeError;
+        }
+        const mt = member_node.?.data.type_decl;
+        if (mt.generic_params.len > 0) {
+            self.reportError(node.line, node.column, "TypeError: generic member '{s}' is not supported in union '{s}' (v1).", .{ m.name, ud.name });
+            return error.TypeError;
+        }
+        if (isUnionScalar(m.name)) {
+            self.reportError(node.line, node.column, "TypeError: primitive '{s}' cannot be a union member in '{s}'. Use an open union type (A | B) instead.", .{ m.name, ud.name });
+            return error.TypeError;
+        }
+        if (!mt.serde_generated) {
+            self.reportError(node.line, node.column, "TypeError: member '{s}' must be declared before union '{s}' so its serializers exist.", .{ m.name, ud.name });
+            return error.TypeError;
+        }
+        if (!self.implementsContract(m.name, "Serializable")) {
+            self.reportError(node.line, node.column, "TypeError: member '{s}' of union '{s}' must implement Serializable.", .{ m.name, ud.name });
             return error.TypeError;
         }
     }
+    if (!ud.serde_generated) {
+        ud.serde_generated = true;
+        try generateUnionSerialize(self, node, ud);
+        try generateUnionDeserialize(self, node, ud);
+    }
+    // Infer the synthetic serialize body with `this: Union` in scope.
+    for (ud.methods) |method| {
+        var union_scope = Scope.init(self.allocator, scope);
+        defer union_scope.deinit();
+        const union_t = try self.allocator.create(EiwaType);
+        union_t.* = .{ .Custom = actual_c_name };
+        try union_scope.define("this", union_t, false, false);
+        const old_class_name = self.current_class_name;
+        const old_type_c_name = self.current_type_c_name;
+        self.current_class_name = actual_c_name;
+        self.current_type_c_name = actual_c_name;
+        defer {
+            self.current_class_name = old_class_name;
+            self.current_type_c_name = old_type_c_name;
+        }
+        _ = try self.inferNode(method, &union_scope);
+    }
     t.* = .Void;
+}
+
+fn isUnionScalar(name: []const u8) bool {
+    for ([_][]const u8{ "Int", "Double", "Bool", "String", "Pointer" }) |s| {
+        if (std.mem.eql(u8, name, s)) return true;
+    }
+    return false;
+}
+
+fn unionWireKey(self: *TypeChecker, m: *const ast.UnionMember) []const u8 {
+    return m.alias orelse lowerUnionWire(self, m.name);
+}
+
+fn unionExpectedKeys(self: *TypeChecker, ud: anytype) ![]const u8 {
+    var buf = ArrayList(u8).init(self.allocator);
+    for (ud.members, 0..) |m, i| {
+        if (i > 0) try buf.appendSlice("|");
+        try buf.appendSlice(unionWireKey(self, &m));
+    }
+    return try buf.toOwnedSlice();
+}
+
+fn makeUnionTypeRef(self: *TypeChecker, line: usize, col: usize, name: []const u8) !*const ast.ASTTypeRef {
+    const tr = try self.allocator.create(ast.ASTTypeRef);
+    tr.* = .{
+        .name = name,
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+    _ = line;
+    _ = col;
+    return tr;
+}
+
+fn makeUnionBlock(self: *TypeChecker, line: usize, col: usize, stmts: []const *ASTNode) !*ASTNode {
+    const b = try self.allocator.create(ASTNode);
+    b.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .block = .{ .statements = stmts } },
+    };
+    return b;
+}
+
+fn makeUnionReturn(self: *TypeChecker, line: usize, col: usize, value: *ASTNode) !*ASTNode {
+    const r = try self.allocator.create(ASTNode);
+    r.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .return_stmt = .{ .value = value } },
+    };
+    return r;
+}
+
+fn makeUnionThrowReturn(self: *TypeChecker, line: usize, col: usize, msg: []const u8) !*ASTNode {
+    const msg_lit = try makeStringLiteral(self, line, col, msg);
+    const exc_args = try self.allocator.alloc(*ASTNode, 1);
+    exc_args[0] = msg_lit;
+    const exc = try makeCall(self, line, col, "Exception", exc_args, &.{});
+    const throw_node = try self.allocator.create(ASTNode);
+    throw_node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .throw_stmt = .{ .expr = exc } },
+    };
+    return try makeUnionReturn(self, line, col, throw_node);
+}
+
+fn makeUnionIs(self: *TypeChecker, line: usize, col: usize, recv_name: []const u8, target: []const u8) !*ASTNode {
+    const recv = try makeIdent(self, line, col, recv_name);
+    const tr = try makeUnionTypeRef(self, line, col, target);
+    const n = try self.allocator.create(ASTNode);
+    n.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .is_expr = .{ .value = recv, .type_ref = tr, .is_not = false } },
+    };
+    return n;
+}
+
+fn makeUnionAs(self: *TypeChecker, line: usize, col: usize, recv_name: []const u8, target: []const u8) !*ASTNode {
+    const recv = try makeIdent(self, line, col, recv_name);
+    const tr = try makeUnionTypeRef(self, line, col, target);
+    const n = try self.allocator.create(ASTNode);
+    n.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .as_expr = .{ .value = recv, .type_ref = tr } },
+    };
+    return n;
+}
+
+fn makeUnionVar(self: *TypeChecker, line: usize, col: usize, name: []const u8, init: *ASTNode) !*ASTNode {
+    const v = try self.allocator.create(ASTNode);
+    v.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .var_decl = .{
+            .is_mut = false,
+            .name = name,
+            .type_ref = null,
+            .initializer = init,
+            .is_boxed = false,
+            .resolved_c_name = null,
+        } },
+    };
+    return v;
+}
+
+fn makeUnionField(self: *TypeChecker, line: usize, col: usize, obj_name: []const u8, field: []const u8) !*ASTNode {
+    const obj = try makeIdent(self, line, col, obj_name);
+    const n = try self.allocator.create(ASTNode);
+    n.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .get_expr = .{ .object = obj, .name = field, .is_safe = false } },
+    };
+    return n;
+}
+
+fn makeUnionIfReturn(self: *TypeChecker, line: usize, col: usize, cond: *ASTNode, ret_val: *ASTNode) !*ASTNode {
+    const ret = try makeUnionReturn(self, line, col, ret_val);
+    const stmts = try self.allocator.alloc(*ASTNode, 1);
+    stmts[0] = ret;
+    const body = try makeUnionBlock(self, line, col, stmts);
+    const n = try self.allocator.create(ASTNode);
+    n.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .if_expr = .{ .condition = cond, .then_branch = body, .else_branch = null, .is_value = false } },
+    };
+    return n;
+}
+
+/// `fun serialize(): SerdeValue` dispatching on the runtime variant with
+/// `if (this is Member) return {"wire": (this as Member).serialize()}`.
+fn generateUnionSerialize(self: *TypeChecker, node: *ASTNode, ud: anytype) anyerror!void {
+    const line = node.line;
+    const col = node.column;
+    const actual_c_name = ud.resolved_c_name.?;
+
+    var stmts = ArrayList(*ASTNode).init(self.allocator);
+    defer stmts.deinit();
+    for (ud.members) |m| {
+        const cond = try makeUnionIs(self, line, col, "this", m.name);
+        const casted = try makeUnionAs(self, line, col, "this", m.name);
+        const ser_call = try makeObjMethodCall(self, line, col, casted, "serialize", &.{});
+        const key_lit = try makeStringLiteral(self, line, col, unionWireKey(self, &m));
+        const field_args = try self.allocator.alloc(*ASTNode, 2);
+        field_args[0] = key_lit;
+        field_args[1] = ser_call;
+        const field = try makeCall(self, line, col, "SerdeField", field_args, &.{});
+        const arr_elems = try self.allocator.alloc(*ASTNode, 1);
+        arr_elems[0] = field;
+        const arr = try self.allocator.create(ASTNode);
+        arr.* = .{
+            .line = line,
+            .column = col,
+            .resolved_type = null,
+            .expected_type = null,
+            .data = .{ .array_literal = .{ .elements = arr_elems } },
+        };
+        const wrap_args = try self.allocator.alloc(*ASTNode, 1);
+        wrap_args[0] = arr;
+        const wrapped = try makeCall(self, line, col, "SerdeObject", wrap_args, &.{});
+        try stmts.append(try makeUnionIfReturn(self, line, col, cond, wrapped));
+    }
+    const keys = try unionExpectedKeys(self, ud);
+    const unreachable_msg = try std.fmt.allocPrint(self.allocator, "Unreachable union variant for '{s}'. Expected one of '{s}'", .{ ud.name, keys });
+    try stmts.append(try makeUnionThrowReturn(self, line, col, unreachable_msg));
+
+    const ret_tr = try makeUnionTypeRef(self, line, col, "SerdeValue");
+    const body = try makeUnionBlock(self, line, col, try stmts.toOwnedSlice());
+    const serialize_fn = try self.allocator.create(ASTNode);
+    serialize_fn.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .fun_decl = .{
+            .annotations = &.{},
+            .modifiers = &[_]ast.TokenType{.kw_implement},
+            .name = "serialize",
+            .generic_params = &[_][]const u8{},
+            .params = &.{},
+            .type_ref = ret_tr,
+            .body = body,
+            .is_expr_body = false,
+            .resolved_c_name = null,
+        } },
+    };
+
+    // Pre-register `{Union}_serialize` like type methods so callers resolve.
+    const m_c_name = try std.fmt.allocPrint(self.allocator, "{s}_serialize", .{actual_c_name});
+    serialize_fn.data.fun_decl.resolved_c_name = m_c_name;
+    try self.functions_ast.put(m_c_name, serialize_fn);
+    const union_t = try self.allocator.create(EiwaType);
+    union_t.* = .{ .Custom = actual_c_name };
+    const ret_t = try self.resolveTypeName("SerdeValue", false);
+    const fn_t = try self.allocator.create(EiwaType);
+    fn_t.* = .{ .Function = .{
+        .params = &.{},
+        .return_type = ret_t,
+        .c_name = m_c_name,
+        .receiver = union_t,
+    } };
+    serialize_fn.resolved_type = fn_t;
+
+    const new_methods = try self.allocator.alloc(*ASTNode, ud.methods.len + 1);
+    for (ud.methods, 0..) |mm, i| new_methods[i] = mm;
+    new_methods[ud.methods.len] = serialize_fn;
+    ud.methods = new_methods;
+}
+
+/// `fun deserialize(value: SerdeValue): Union` dispatching on the single
+/// wrapper key, reusing the type-deserialize companion infrastructure.
+fn generateUnionDeserialize(self: *TypeChecker, node: *ASTNode, ud: anytype) anyerror!void {
+    const line = node.line;
+    const col = node.column;
+    const actual_c_name = ud.resolved_c_name.?;
+
+    const val_tr = try makeUnionTypeRef(self, line, col, "SerdeValue");
+    const params = try self.allocator.alloc(ast.Param, 1);
+    params[0] = .{ .name = "value", .type_ref = val_tr, .initializer = null };
+    const ret_tr = try makeUnionTypeRef(self, line, col, ud.name);
+
+    var stmts = ArrayList(*ASTNode).init(self.allocator);
+    defer stmts.deinit();
+
+    const value_ident = try makeIdent(self, line, col, "value");
+    const as_args = try self.allocator.alloc(*ASTNode, 1);
+    as_args[0] = value_ident;
+    const as_obj = try makeCall(self, line, col, "asSerdeObject", as_args, &.{});
+    try stmts.append(try makeUnionVar(self, line, col, "obj", as_obj));
+
+    // if (obj.fields.size() != 1) return throw ...
+    const fields_get = try makeUnionField(self, line, col, "obj", "fields");
+    const size_call = try makeObjMethodCall(self, line, col, fields_get, "size", &.{});
+    const one_lit = try self.allocator.create(ASTNode);
+    one_lit.* = .{ .line = line, .column = col, .resolved_type = null, .expected_type = null, .data = .{ .int_literal = 1 } };
+    const ne_cond = try self.allocator.create(ASTNode);
+    ne_cond.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .binary_expr = .{ .left = size_call, .op = .bang_eq, .right = one_lit } },
+    };
+    const keys = try unionExpectedKeys(self, ud);
+    const card_msg = try std.fmt.allocPrint(self.allocator, "Expected exactly one variant of union '{s}' (one of '{s}')", .{ ud.name, keys });
+    try stmts.append(try makeUnionIfReturn(self, line, col, ne_cond, (try makeUnionThrowNode(self, line, col, card_msg))));
+
+    // val key = obj.fields.get(0).name ; val inner = obj.fields.get(0).value
+    const fields_get2 = try makeUnionField(self, line, col, "obj", "fields");
+    const zero_lit = try self.allocator.create(ASTNode);
+    zero_lit.* = .{ .line = line, .column = col, .resolved_type = null, .expected_type = null, .data = .{ .int_literal = 0 } };
+    const get_args = try self.allocator.alloc(*ASTNode, 1);
+    get_args[0] = zero_lit;
+    const first = try makeObjMethodCall(self, line, col, fields_get2, "get", get_args);
+    const key_get = try self.allocator.create(ASTNode);
+    key_get.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .get_expr = .{ .object = first, .name = "name", .is_safe = false } },
+    };
+    try stmts.append(try makeUnionVar(self, line, col, "key", key_get));
+
+    const fields_get3 = try makeUnionField(self, line, col, "obj", "fields");
+    const zero_lit2 = try self.allocator.create(ASTNode);
+    zero_lit2.* = .{ .line = line, .column = col, .resolved_type = null, .expected_type = null, .data = .{ .int_literal = 0 } };
+    const get_args2 = try self.allocator.alloc(*ASTNode, 1);
+    get_args2[0] = zero_lit2;
+    const first2 = try makeObjMethodCall(self, line, col, fields_get3, "get", get_args2);
+    const val_get = try self.allocator.create(ASTNode);
+    val_get.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .get_expr = .{ .object = first2, .name = "value", .is_safe = false } },
+    };
+    try stmts.append(try makeUnionVar(self, line, col, "inner", val_get));
+
+    for (ud.members) |m| {
+        const key_ident = try makeIdent(self, line, col, "key");
+        const wire_lit = try makeStringLiteral(self, line, col, unionWireKey(self, &m));
+        const eq_cond = try self.allocator.create(ASTNode);
+        eq_cond.* = .{
+            .line = line,
+            .column = col,
+            .resolved_type = null,
+            .expected_type = null,
+            .data = .{ .binary_expr = .{ .left = key_ident, .op = .eq_eq, .right = wire_lit } },
+        };
+        const member_ident = try makeIdent(self, line, col, m.name);
+        const inner_ident = try makeIdent(self, line, col, "inner");
+        const inner_args = try self.allocator.alloc(*ASTNode, 1);
+        inner_args[0] = inner_ident;
+        const member_des = try makeObjMethodCall(self, line, col, member_ident, "deserialize", inner_args);
+        try stmts.append(try makeUnionIfReturn(self, line, col, eq_cond, member_des));
+    }
+
+    // return throw Exception("Unknown variant '" + key + "' ...")
+    const p1 = try makeStringLiteral(self, line, col, "Unknown variant '");
+    const key_ident2 = try makeIdent(self, line, col, "key");
+    const p3_text = try std.fmt.allocPrint(self.allocator, "' for union '{s}'. Expected one of '{s}'", .{ ud.name, keys });
+    const p3 = try makeStringLiteral(self, line, col, p3_text);
+    const cat1 = try self.allocator.create(ASTNode);
+    cat1.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .binary_expr = .{ .left = p1, .op = .plus, .right = key_ident2 } },
+    };
+    const cat2 = try self.allocator.create(ASTNode);
+    cat2.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .binary_expr = .{ .left = cat1, .op = .plus, .right = p3 } },
+    };
+    const exc_args = try self.allocator.alloc(*ASTNode, 1);
+    exc_args[0] = cat2;
+    const exc = try makeCall(self, line, col, "Exception", exc_args, &.{});
+    const throw_node = try self.allocator.create(ASTNode);
+    throw_node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .throw_stmt = .{ .expr = exc } },
+    };
+    try stmts.append(try makeUnionReturn(self, line, col, throw_node));
+
+    const body = try makeUnionBlock(self, line, col, try stmts.toOwnedSlice());
+    const des_c_name = try std.fmt.allocPrint(self.allocator, "{s}_deserialize", .{actual_c_name});
+    const deserialize_fn = try self.allocator.create(ASTNode);
+    deserialize_fn.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .fun_decl = .{
+            .annotations = &.{},
+            .modifiers = &.{},
+            .name = "deserialize",
+            .generic_params = &.{},
+            .params = params,
+            .type_ref = ret_tr,
+            .body = body,
+            .is_expr_body = false,
+            .resolved_c_name = des_c_name,
+        } },
+    };
+    try emitDeserializeCompanion(self, node, ud, actual_c_name, deserialize_fn);
+}
+
+fn makeUnionThrowNode(self: *TypeChecker, line: usize, col: usize, msg: []const u8) !*ASTNode {
+    const msg_lit = try makeStringLiteral(self, line, col, msg);
+    const exc_args = try self.allocator.alloc(*ASTNode, 1);
+    exc_args[0] = msg_lit;
+    const exc = try makeCall(self, line, col, "Exception", exc_args, &.{});
+    const throw_node = try self.allocator.create(ASTNode);
+    throw_node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .throw_stmt = .{ .expr = exc } },
+    };
+    return throw_node;
 }
 
 fn lowerUnionWire(self: *TypeChecker, name: []const u8) []const u8 {

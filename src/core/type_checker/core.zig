@@ -1866,6 +1866,15 @@ fn core_conformsTo(self: *TypeChecker, actual_name: []const u8, target_name: []c
     const target = self.alias_map.get(target_name) orelse target_name;
     if (std.mem.eql(u8, actual, target)) return true;
 
+    // Closed-union membership (Phase 95): a variant conforms to its union.
+    // Members are stored unmangled; resolve through the alias map.
+    if (self.unions_ast.get(target)) |u| {
+        for (u.data.union_decl.members) |m| {
+            const m_c = self.alias_map.get(m.name) orelse m.name;
+            if (std.mem.eql(u8, actual, m_c)) return true;
+        }
+    }
+
     return self.implementsContract(actual, target);
 }
 

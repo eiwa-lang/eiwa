@@ -867,6 +867,9 @@ pub fn unionDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*
         .annotations = annotations,
         .name = union_name,
         .members = try members.toOwnedSlice(),
+        .methods = &.{},
         .resolved_c_name = null,
+        .serde_generated = false,
+        .platform_targets = &.{},
     } }, line, col);
 }
