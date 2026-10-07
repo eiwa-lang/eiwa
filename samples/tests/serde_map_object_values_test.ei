@@ -1,0 +1,26 @@
+// Run: ./bin/eiwac test samples/tests/serde_map_object_values_test.ei
+//
+// RED (L1): Map<String, CustomType> with a present, well-formed key
+// deserializes as null (member access NPEs) instead of populating.
+// No compile error — the null is silent.
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { Json, fromJson } from "std.json"
+
+type RedField(val selector: String, val many: Bool) : Serializable + Json
+
+type RedHolder(val fields: Map<String, RedField>) : Serializable + Json
+
+test "serde: map with custom-type values populates" {
+    val h = fromJson<RedHolder>("{\"fields\": {\"text\": {\"selector\": \"span.text\", \"many\": false}}}")
+    assert(h.fields.size() == 1)
+    assert(h.fields.get("text")!!.selector == "span.text")
+    assert(h.fields.get("text")!!.many == false)
+}
+
+test "serde: map with custom-type values round-trips" {
+    val h = fromJson<RedHolder>("{\"fields\": {\"text\": {\"selector\": \"span.text\", \"many\": false}}}")
+    val back = fromJson<RedHolder>(h.toJson())
+    assert(back.fields.size() == 1)
+    assert(back.fields.get("text")!!.selector == "span.text")
+}

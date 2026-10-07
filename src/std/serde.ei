@@ -1,5 +1,5 @@
 import { print } from "std.core"
-import { List, MutableList } from "std.collections"
+import { List, MutableList, Map, MutableMap } from "std.collections"
 
 contract Serializable {
     fun serialize(): SerdeValue
@@ -294,5 +294,33 @@ fun deserializeList<T>(serdeList: SerdeList?, mapper: (SerdeValue) -> T): List<T
         i = i + 1
     }
     return out.freeze()
+}
+
+fun deserializeStringMap<V>(mapObj: SerdeObject?, mapper: (SerdeValue) -> V): Map<String, V> {
+    val out = MutableMap<String, V>()
+    if (mapObj == null) {
+        return out.freeze()
+    }
+    var i = 0
+    while (i < mapObj!!.fields.size()) {
+        val f = mapObj!!.fields.get(i)
+        out.put(f.name, mapper(f.value))
+        i = i + 1
+    }
+    return out.freeze()
+}
+
+fun serializeStringMap<V>(map: Map<String, V>, mapper: (V) -> SerdeValue): SerdeValue {
+    val fields = MutableList<SerdeField>()
+    var i = 0
+    while (i < map.entries.size()) {
+        var curr = map.entries.items[i]
+        while (curr != null) {
+            fields.add(SerdeField(curr!!.key, mapper(curr!!.value)))
+            curr = curr!!.next
+        }
+        i = i + 1
+    }
+    return SerdeObject(fields.freeze())
 }
 
