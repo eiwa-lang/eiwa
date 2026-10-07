@@ -103,9 +103,18 @@ fn emitReturnValue(
                 else => "",
             };
         }
+        // Union returns pin the member's vtable (the union itself has none).
+        var union_ret = false;
+        if (declared_ret) |drt| {
+            union_ret = types_mapping.isUnionType(drt.*, expression.global_unions_ast_ptr);
+        }
         if (val_node.resolved_type) |val_rt| {
             if (expression.concreteCNameForVtable(val_rt)) |val_c_name| {
-                ret_val = expression.coerceToContract(ctx, mod, builder, ret_val, val_c_name, contract_c_name) catch ret_val;
+                if (union_ret) {
+                    ret_val = expression.coerceToUnion(ctx, mod, builder, ret_val, val_c_name) catch ret_val;
+                } else {
+                    ret_val = expression.coerceToContract(ctx, mod, builder, ret_val, val_c_name, contract_c_name) catch ret_val;
+                }
             }
         }
     }
@@ -634,6 +643,19 @@ pub fn emitStatement(
                         vtable_target = res_type;
                         if (res_type.* == .Union) {
                             vtable_target = eiwa_types.stripNull(res_type);
+                        }
+                    }
+                    // Union targets pin the member's vtable, like returns above.
+                    const is_union_target = types_mapping.isUnionType(res_type.*, expression.global_unions_ast_ptr);
+                    if (is_union_target) {
+                        if (init_node.resolved_type) |init_rt| {
+                            const fat_t = types_mapping.getFatPointerType(ctx);
+                            if (llvm.LLVMTypeOf(val) != fat_t) {
+                                const init_base = eiwa_types.extractBaseType(init_rt).*;
+                                if (init_base == .Custom) {
+                                    val = expression.coerceToUnion(ctx, mod, builder, val, init_base.Custom) catch val;
+                                }
+                            }
                         }
                     }
                     if (vtable_target) |vt| {

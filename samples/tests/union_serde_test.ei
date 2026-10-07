@@ -1,6 +1,7 @@
 import { assert } from "std.core"
-import { Serializable } from "std.serde"
-import { fromJson, serializeJson } from "std.json"
+import { Serializable, SerdeValue } from "std.serde"
+import { fromJson, serializeJsonValue } from "std.json"
+import { fromYaml, serializeYamlValue } from "std.yaml"
 
 type UFieldDef(val selector: String, val many: Bool = false, val attr: String = "") : Serializable
 type UGoto(val url: String, val waitUntil: String, val timeoutMs: Int) : Serializable
@@ -11,7 +12,153 @@ union UStep {
   UGoto, UCollect, UPaginate
 }
 
+union UAStep {
+  @Alias("go") UGoto,
+  UCollect,
+  UPaginate
+}
+
+type UPipeline(val name: String, val steps: List<UStep>, val required: List<String>) : Serializable
+
+fun gotoJson(): String = "{\"ugoto\": {\"url\": \"https://x/\", \"waitUntil\": \"load\", \"timeoutMs\": 15000}}"
+
 test "union: decodes goto variant" {
-  val s: UStep = fromJson<UStep>("{\"ugoto\": {\"url\": \"https://x/\", \"waitUntil\": \"load\", \"timeoutMs\": 15000}}")
+  val s: UStep = fromJson<UStep>(gotoJson())
   assert(s is UGoto)
+  val g = s as UGoto
+  assert(g.url == "https://x/")
+  assert(g.waitUntil == "load")
+  assert(g.timeoutMs == 15000)
+}
+
+test "union: decodes collect with field map and defaults" {
+  val s: UStep = fromJson<UStep>("{\"ucollect\": {\"selector\": \"div.quote\", \"fields\": {\"text\": {\"selector\": \"span.text\"}}}}")
+  assert(s is UCollect)
+  assert((s is UGoto) == false)
+  val c = s as UCollect
+  assert(c.selector == "div.quote")
+  assert(c.fields.contains("text") == true)
+  val f = c.fields["text"]
+  if (f != null) {
+    assert(f.selector == "span.text")
+    assert(f.many == false)
+    assert(f.attr == "")
+  } else {
+    assert(false)
+  }
+}
+
+test "union: decodes paginate variant" {
+  val s: UStep = fromJson<UStep>("{\"upaginate\": {\"selector\": \"li.next a\", \"maxPages\": 100}}")
+  assert(s is UPaginate)
+  assert((s is UGoto) == false)
+  assert((s is UCollect) == false)
+  assert((s as UPaginate).maxPages == 100)
+}
+
+test "union: unknown tag throws with detail" {
+  var msg = ""
+  try {
+    fromJson<UStep>("{\"fly\": {}}")
+  } catch (e: Exception) {
+    msg = e.message()
+  }
+  assert(msg.indexOf("fly") >= 0)
+  assert(msg.indexOf("UStep") >= 0)
+}
+
+test "union: empty object throws" {
+  var msg = ""
+  try {
+    fromJson<UStep>("{}")
+  } catch (e: Exception) {
+    msg = e.message()
+  }
+  assert(msg.indexOf("UStep") >= 0)
+}
+
+test "union: two keys throw" {
+  var msg = ""
+  try {
+    fromJson<UStep>("{\"ugoto\": {}, \"upaginate\": {}}")
+  } catch (e: Exception) {
+    msg = e.message()
+  }
+  assert(msg.indexOf("UStep") >= 0)
+}
+
+test "union: missing inner field throws recursive" {
+  var msg = ""
+  try {
+    fromJson<UStep>("{\"ugoto\": {}}")
+  } catch (e: Exception) {
+    msg = e.message()
+  }
+  assert(msg.indexOf("url") >= 0)
+}
+
+test "union: round-trip preserves goto and emits only variant fields" {
+  val s: UStep = fromJson<UStep>(gotoJson())
+  val json = serializeJsonValue(s.serialize())
+  assert(json.indexOf("\"ugoto\"") >= 0)
+  assert(json.indexOf("\"url\"") >= 0)
+  assert(json.indexOf("maxPages") < 0)
+  assert(json.indexOf("fields") < 0)
+  val back: UStep = fromJson<UStep>(json)
+  assert(back is UGoto)
+  assert((back as UGoto).url == "https://x/")
+  assert((back as UGoto).timeoutMs == 15000)
+}
+
+test "union: pipeline with step list round-trips" {
+  val raw = "{\"name\": \"quotes\", \"steps\": [{\"ugoto\": {\"url\": \"https://quotes.toscrape.com/\", \"waitUntil\": \"load\", \"timeoutMs\": 15000}}, {\"ucollect\": {\"selector\": \"div.quote\", \"fields\": {\"text\": {\"selector\": \"span.text\"}, \"author\": {\"selector\": \"small.author\"}}}}, {\"upaginate\": {\"selector\": \"li.next a\", \"maxPages\": 100}}], \"required\": [\"text\", \"author\"]}"
+  val p = fromJson<UPipeline>(raw)
+  assert(p.name == "quotes")
+  assert(p.steps.size() == 3)
+  assert(p.steps.get(0) is UGoto)
+  assert(p.steps.get(1) is UCollect)
+  assert(p.steps.get(2) is UPaginate)
+  assert(p.required.size() == 2)
+  val back = fromJson<UPipeline>(serializeJsonValue(p.serialize()))
+  assert(back.name == "quotes")
+  assert(back.steps.size() == 3)
+  assert(back.steps.get(0) is UGoto)
+  assert((back.steps.get(0) as UGoto).url == "https://quotes.toscrape.com/")
+  assert(back.steps.get(1) is UCollect)
+  assert(back.steps.get(2) is UPaginate)
+  assert((back.steps.get(2) as UPaginate).maxPages == 100)
+}
+
+test "union: alias customizes the wire key both ways" {
+  val s: UAStep = fromJson<UAStep>("{\"go\": {\"url\": \"https://x/\", \"waitUntil\": \"load\", \"timeoutMs\": 1}}")
+  assert(s is UGoto)
+  val json = serializeJsonValue(s.serialize())
+  assert(json.indexOf("\"go\"") >= 0)
+  assert(json.indexOf("ugoto") < 0)
+  var msg = ""
+  try {
+    fromJson<UAStep>("{\"ugoto\": {\"url\": \"https://x/\", \"waitUntil\": \"load\", \"timeoutMs\": 1}}")
+  } catch (e: Exception) {
+    msg = e.message()
+  }
+  assert(msg.indexOf("ugoto") >= 0)
+}
+
+test "union: when over union is exhaustive without else" {
+  val s: UStep = fromJson<UStep>(gotoJson())
+  val label = when (s) {
+    is UGoto -> "goto:" + (s as UGoto).url
+    is UCollect -> "collect"
+    is UPaginate -> "paginate"
+  }
+  assert(label == "goto:https://x/")
+}
+
+test "union: yaml round-trips through serde layer" {
+  val s: UStep = fromJson<UStep>(gotoJson())
+  val yaml = serializeYamlValue(s.serialize())
+  assert(yaml.indexOf("ugoto") >= 0)
+  val back: UStep = fromYaml<UStep>(yaml)
+  assert(back is UGoto)
+  assert((back as UGoto).timeoutMs == 15000)
 }

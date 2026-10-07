@@ -1013,6 +1013,7 @@ fn run(init: std.process.Init) !void {
     var global_trampolines = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_enums_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_contracts_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
+    var global_unions_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
     var global_alias_map = std.StringHashMap([]const u8).init(arena.allocator());
     for (registry.ordered_modules.items) |path| {
         const mod = registry.modules.get(path).?;
@@ -1031,6 +1032,10 @@ fn run(init: std.process.Init) !void {
         var enum_it = mod.checker.enums_ast.iterator();
         while (enum_it.next()) |entry| {
             try global_enums_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        var union_it = mod.checker.unions_ast.iterator();
+        while (union_it.next()) |entry| {
+            try global_unions_ast.put(entry.key_ptr.*, entry.value_ptr.*);
         }
         var contract_it = mod.checker.contracts_ast.iterator();
         while (contract_it.next()) |entry| {
@@ -1099,6 +1104,7 @@ fn run(init: std.process.Init) !void {
     emitter.contracts_ast = &global_contracts_ast;
     emitter.classes_ast = &global_classes_ast;
     emitter.objects_ast = &global_objects_ast;
+    emitter.unions_ast = &global_unions_ast;
     emitter.cli_c_flags = cli_c_flags.items;
     emitter.registry = &registry;
     emitter.target_info = target_info;
@@ -1159,6 +1165,7 @@ fn run(init: std.process.Init) !void {
                 deps_emitter.contracts_ast = &global_contracts_ast;
                 deps_emitter.classes_ast = &global_classes_ast;
                 deps_emitter.objects_ast = &global_objects_ast;
+                deps_emitter.unions_ast = &global_unions_ast;
                 deps_emitter.cli_c_flags = cli_c_flags.items;
                 deps_emitter.registry = &registry;
                 deps_emitter.target_info = target_info;

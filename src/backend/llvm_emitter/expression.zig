@@ -323,6 +323,8 @@ fn collectCapturesLLVM(
 pub var global_contracts_ast_ptr: ?*std.StringHashMap(*ast.ASTNode) = null;
 pub var global_classes_ast_ptr: ?*std.StringHashMap(*ast.ASTNode) = null;
 pub var global_objects_ast_ptr: ?*std.StringHashMap(*ast.ASTNode) = null;
+/// Closed-union table for fat-pointer lowering and `is` identity.
+pub var global_unions_ast_ptr: ?*std.StringHashMap(*ast.ASTNode) = null;
 
 /// Returns a monotonically increasing counter for unique lambda naming.
 /// Uses a file-level variable (safe: single-threaded compilation).
@@ -1045,11 +1047,18 @@ fn emitExpressionRaw(
             _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, @bitCast(count), 0), cap_ptr);
 
             const elem_contract = arrayLiteralElementContractName(node);
+            const elem_union = arrayLiteralElementUnionName(node);
 
             // Store elements
             for (arr.elements, 0..) |elem_node, idx| {
                 var elem_val = try emitExpression(ctx, mod, builder, scope, structs, libs, elem_node);
-                if (elem_contract.len > 0) {
+                if (elem_union.len > 0) {
+                    if (elem_node.resolved_type) |ert| {
+                        if (concreteCNameForVtable(ert)) |conc_c_name| {
+                            elem_val = coerceToUnion(ctx, mod, builder, elem_val, conc_c_name) catch elem_val;
+                        }
+                    }
+                } else if (elem_contract.len > 0) {
                     if (elem_node.resolved_type) |ert| {
                     if (concreteCNameForVtable(ert)) |conc_c_name| {
                         elem_val = coerceToContract(ctx, mod, builder, elem_val, conc_c_name, elem_contract) catch elem_val;
@@ -3780,7 +3789,8 @@ fn emitExpressionRaw(
 
                                     var target_vt_opt: llvm.LLVMValueRef = null;
                                     if (subj_contract.len > 0) {
-                                        target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, subj_contract);
+                                        const lookup_contract = unionIdentityContract(subj_contract) orelse subj_contract;
+                                        target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, lookup_contract);
                                     }
                                     if (target_vt_opt == null) {
                                         target_vt_opt = try findVtableGlobal(ctx, mod, target_c_name, "Throwable");
@@ -4039,11 +4049,20 @@ fn emitExpressionRaw(
                 } else if (is_target_str) {
                     res = llvm.LLVMBuildIsNotNull(builder, data_ptr, "is_str_res");
                 } else if (target_c_name.len > 0) {
-                    const val_contract_name = if (i.value.resolved_type) |vrt| switch (ts.extractBaseType(vrt).*) {
+                    var val_contract_name = if (i.value.resolved_type) |vrt| switch (ts.extractBaseType(vrt).*) {
                         .Custom => |cn| cn,
                         .GenericInstance => |gi| gi.base_name,
                         else => "",
                     } else "";
+                    // Union subjects compare the fat vtable only; the
+                    // descriptor-word heuristic below does not apply.
+                    var union_subject = false;
+                    if (val_contract_name.len > 0) {
+                        if (unionIdentityContract(val_contract_name)) |uc| {
+                            val_contract_name = uc;
+                            union_subject = true;
+                        }
+                    }
 
                     var target_vt_opt: llvm.LLVMValueRef = null;
                     if (val_contract_name.len > 0) {
@@ -4060,7 +4079,10 @@ fn emitExpressionRaw(
                         const vt_eq1 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, exc_vtable, vt_cast, "vt_eq1");
                         const vt_eq2 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, obj_vt, vt_cast, "vt_eq2");
                         const vt_eq = llvm.LLVMBuildOr(builder, vt_eq1, vt_eq2, "vt_eq_or");
-                        res = llvm.LLVMBuildAnd(builder, data_not_null, vt_eq, "is_vtable_eq");
+                        res = if (union_subject)
+                            llvm.LLVMBuildAnd(builder, data_not_null, vt_eq1, "is_union_vt_eq")
+                        else
+                            llvm.LLVMBuildAnd(builder, data_not_null, vt_eq, "is_vtable_eq");
                     } else {
                         var short_c = target_c_name;
                         if (std.mem.lastIndexOfScalar(u8, short_c, '_')) |idx| short_c = short_c[idx + 1 ..];
@@ -4084,6 +4106,12 @@ fn emitExpressionRaw(
                         res = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
                     }
                 } else if (val_kind == llvm.LLVMPointerTypeKind) {
+                    // Union values are always fat here; a thin pointer means
+                    // a missed member->union coercion.
+                    if (i.value.resolved_type) |vrt| {
+                        const vb = ts.extractBaseType(vrt).*;
+                        if (vb == .Custom and unionIdentityContract(vb.Custom) != null) return error.UnionSubjectNotFat;
+                    }
                     const i64_type = llvm.LLVMInt64TypeInContext(ctx);
                     const ptr_int = llvm.LLVMBuildPtrToInt(builder, val, i64_type, "ptr_int");
                     const is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGE, ptr_int, llvm.LLVMConstInt(i64_type, 4096, 0), "is_heap");
@@ -5543,6 +5571,27 @@ pub fn concreteCNameForVtable(rt: *const ts.EiwaType) ?[]const u8 {
     };
 }
 
+/// Identity contract for `is`/`when` over a union subject: union values
+/// carry the member's Serializable vtable. Exact match only (a miss keeps
+/// the legacy behavior instead of corrupting silently).
+pub fn unionIdentityContract(static_custom_name: []const u8) ?[]const u8 {
+    const ua = global_unions_ast_ptr orelse return null;
+    if (ua.contains(static_custom_name)) return "Serializable";
+    return null;
+}
+
+/// Fatten a member value into its closed union. Fails loud when the member
+/// vtable is missing instead of attaching a stub identity.
+pub fn coerceToUnion(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    data_val: llvm.LLVMValueRef,
+    member_c_name: []const u8,
+) !llvm.LLVMValueRef {
+    return coerceToContractChecked(ctx, mod, builder, data_val, member_c_name, "Serializable");
+}
+
 pub fn coerceToContract(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -5625,6 +5674,21 @@ pub fn fattenNarrowedIfNeeded(
     const concrete_c_name: []const u8 = ts.extractBaseType(vrt).Custom;
     const trt = is_e.type_ref.resolved_type orelse return .{};
     if (ts.extractBaseType(trt).* != .Custom) return .{};
+    // `x is Member` on a union subject rebinds x to the extracted data
+    // pointer (`x is Union` itself keeps the fat value).
+    if (types_mapping.isUnionType(vrt.*, global_unions_ast_ptr)) {
+        const target_c: []const u8 = ts.extractBaseType(trt).Custom;
+        if (std.mem.eql(u8, target_c, concrete_c_name)) return .{};
+        const fat_val = try emitExpression(ctx, mod, builder, scope, structs, libs, is_e.value);
+        if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_val)) != llvm.LLVMStructTypeKind) return .{};
+        const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+        const data_ptr = llvm.LLVMBuildExtractValue(builder, fat_val, 0, "narrow_union_data");
+        const data_alloca = llvm.LLVMBuildAlloca(builder, ptr_type, "narrow_union_thin");
+        _ = llvm.LLVMBuildStore(builder, data_ptr, data_alloca);
+        const old = scope.get(iname);
+        scope.put(iname, data_alloca) catch return .{};
+        return .{ .active = true, .name = iname, .old = old };
+    }
     if (!types_mapping.isContractType(trt.*, global_contracts_ast_ptr)) return .{};
     const contract_c_name: []const u8 = ts.extractBaseType(trt).Custom;
     const thin_val = try emitExpression(ctx, mod, builder, scope, structs, libs, is_e.value);
@@ -5881,6 +5945,9 @@ pub fn scalarElemLLVMType(ctx: llvm.LLVMContextRef, elem_t: *const ts.EiwaType) 
     if (types_mapping.isContractType(elem_t.*, global_contracts_ast_ptr)) {
         return types_mapping.getFatPointerType(ctx);
     }
+    if (types_mapping.isUnionType(elem_t.*, global_unions_ast_ptr)) {
+        return types_mapping.getFatPointerType(ctx);
+    }
     switch (elem_t.*) {
         .Custom, .String, .Pointer, .Array, .Union, .Function, .GenericInstance => return llvm.LLVMPointerTypeInContext(ctx, 0),
         .Double => return llvm.LLVMDoubleTypeInContext(ctx),
@@ -5927,8 +5994,25 @@ pub fn arrayElemTypedPtr(
     return elem_type_ptr;
 }
 
-fn arrayLiteralElementContractName(node: *ast.ASTNode) []const u8 {
+fn arrayLiteralElementUnionName(node: *ast.ASTNode) []const u8 {
     const rt = node.resolved_type orelse return "";
+    const base_rt = ts.extractBaseType(rt);
+    if (base_rt.* == .GenericInstance and base_rt.GenericInstance.type_args.len > 0) {
+        const ta = base_rt.GenericInstance.type_args[0].*;
+        if (ta == .Custom and types_mapping.isUnionType(ta, global_unions_ast_ptr)) return ta.Custom;
+    } else if (base_rt.* == .Custom) {
+        const name = base_rt.Custom;
+        for ([_][]const u8{ "collections_List_", "collections_MutableList_" }) |p| {
+            if (std.mem.startsWith(u8, name, p)) {
+                const type_arg = name[p.len..];
+                if (types_mapping.isUnionTypeString(type_arg, global_unions_ast_ptr)) return type_arg;
+            }
+        }
+    }
+    return "";
+}
+
+fn arrayLiteralElementContractName(node: *ast.ASTNode) []const u8 {    const rt = node.resolved_type orelse return "";
     const base_rt = ts.extractBaseType(rt);
     if (base_rt.* == .GenericInstance and base_rt.GenericInstance.type_args.len > 0) {
         const ta = base_rt.GenericInstance.type_args[0].*;
@@ -5999,6 +6083,9 @@ fn arrayLiteralElementLLVMType(ctx: llvm.LLVMContextRef, node: *ast.ASTNode) llv
             if (is_contract) {
                 elem_t = types_mapping.getFatPointerType(ctx);
             }
+        }
+        if (types_mapping.isUnionTypeString(type_arg, global_unions_ast_ptr)) {
+            elem_t = types_mapping.getFatPointerType(ctx);
         }
     }
     return elem_t;

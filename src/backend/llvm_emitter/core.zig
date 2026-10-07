@@ -251,6 +251,7 @@ pub const LLVMEmitter = struct {
     contracts_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
     classes_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
     objects_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
+    unions_ast: ?*std.StringHashMap(*ast.ASTNode) = null,
     /// Build requirements declared by `lib` annotations (@Source/@Include/@Define/@Link),
     /// mirroring the C transpiler (Phase 65 — LLVM backend compiles the C sources too).
     lib_declarations: std.StringHashMap(LibDeclEntry),
@@ -648,6 +649,7 @@ pub const LLVMEmitter = struct {
         expression.global_contracts_ast_ptr = self.contracts_ast;
         expression.global_classes_ast_ptr = self.classes_ast;
         expression.global_objects_ast_ptr = self.objects_ast;
+        expression.global_unions_ast_ptr = self.unions_ast;
 
         // Collect the entry module and every module it (transitively) imports.
         var modules = ArrayList(*ast.ASTNode).init(self.allocator);
@@ -824,6 +826,13 @@ pub const LLVMEmitter = struct {
                         if (member.data != .fun_decl) continue;
                         try self.declareFunction(mod, member, true);
                     }
+                } else if (stmt.data == .union_decl) {
+                    // Receiver-driven like type methods (not static like
+                    // object members): declareFunction derives `this`.
+                    for (stmt.data.union_decl.methods) |member| {
+                        if (member.data != .fun_decl) continue;
+                        try self.declareFunction(mod, member, false);
+                    }
                 }
             }
         }
@@ -963,6 +972,15 @@ pub const LLVMEmitter = struct {
                             if (member.data != .fun_decl) continue;
                             if (member.data.fun_decl.generic_params.len > 0) continue;
                             const name = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
+                            try self.markReachable(name, &reachable, &worklist);
+                        }
+                    } else if (stmt.data == .union_decl) {
+                        const u_name = stmt.data.union_decl.resolved_c_name orelse stmt.data.union_decl.name;
+                        for (stmt.data.union_decl.methods) |m_node| {
+                            if (m_node.data != .fun_decl) continue;
+                            if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                            const name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ u_name, m_node.data.fun_decl.name });
+                            defer self.allocator.free(name);
                             try self.markReachable(name, &reachable, &worklist);
                         }
                     }
@@ -1229,6 +1247,23 @@ pub const LLVMEmitter = struct {
             }
         }
 
+        // Union methods have no vtables to mark them reachable; without
+        // this they degrade to stubs. The drain below collects their callees.
+        for (modules.items) |m| {
+            if (m.data != .program) continue;
+            for (m.data.program.statements) |stmt| {
+                if (stmt.data != .union_decl) continue;
+                const u = stmt.data.union_decl;
+                for (u.methods) |m_node| {
+                    if (m_node.data != .fun_decl) continue;
+                    if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                    // Generated names are always preset; skip defensively.
+                    const fname = m_node.data.fun_decl.resolved_c_name orelse continue;
+                    try self.markReachable(fname, &reachable, &worklist);
+                }
+            }
+        }
+
         // The vtable pass above marks each contract implementation reachable
         // (so its body is emitted), but that happens after the fixpoint walk —
         // drain the worklist again so the callees of those implementations
@@ -1303,6 +1338,24 @@ pub const LLVMEmitter = struct {
                         } else if (!reachable.contains(fname)) continue;
                         // Emit the method body, with graceful stub fallback for synthetic
                         // or unmaterialized stdlib derivations that are marked reachable.
+                        try self.emitFunctionBodyOrStub(mod, m_node, fname, true);
+                    }
+                } else if (stmt.data == .union_decl) {
+                    const u_name = stmt.data.union_decl.resolved_c_name orelse stmt.data.union_decl.name;
+                    for (stmt.data.union_decl.methods) |m_node| {
+                        if (m_node.data != .fun_decl) continue;
+                        if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                        const fname = m_node.data.fun_decl.resolved_c_name orelse try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ u_name, m_node.data.fun_decl.name });
+                        if (split) {
+                            if (is_entry and dep_owned_fns.contains(fname)) {
+                                try foreign_names.put(fname, {});
+                                continue;
+                            }
+                            if (own_body) try owned_names.put(fname, {}) else {
+                                try foreign_names.put(fname, {});
+                                continue;
+                            }
+                        } else if (!reachable.contains(fname)) continue;
                         try self.emitFunctionBodyOrStub(mod, m_node, fname, true);
                     }
                 } else if (stmt.data == .object_decl) {
@@ -2397,7 +2450,11 @@ pub const LLVMEmitter = struct {
                                         else => "",
                                     };
                                     if (init_c_name.len > 0 and target_c_name.len > 0) {
-                                        val = expression.coerceToContract(self.context, mod, self.builder, val, init_c_name, target_c_name) catch val;
+                                        if (types_mapping.isUnionType(v_rt.*, expression.global_unions_ast_ptr)) {
+                                            val = expression.coerceToUnion(self.context, mod, self.builder, val, init_c_name) catch val;
+                                        } else {
+                                            val = expression.coerceToContract(self.context, mod, self.builder, val, init_c_name, target_c_name) catch val;
+                                        }
                                     }
                                 }
                             }
@@ -2598,6 +2655,17 @@ pub const LLVMEmitter = struct {
                         if (member.data.fun_decl.generic_params.len > 0) continue;
                         const name = member.data.fun_decl.resolved_c_name orelse member.data.fun_decl.name;
                         if (!index.contains(name)) try index.put(name, member);
+                    }
+                } else if (stmt.data == .union_decl) {
+                    const u = stmt.data.union_decl;
+                    const u_name = u.resolved_c_name orelse u.name;
+                    for (u.methods) |m_node| {
+                        if (m_node.data != .fun_decl) continue;
+                        if (m_node.data.fun_decl.generic_params.len > 0) continue;
+                        const name = m_node.data.fun_decl.resolved_c_name orelse m_node.data.fun_decl.name;
+                        if (!index.contains(name)) try index.put(name, m_node);
+                        const mangled = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ u_name, m_node.data.fun_decl.name });
+                        if (!index.contains(mangled)) try index.put(mangled, m_node);
                     }
                 }
             }
@@ -4228,6 +4296,13 @@ pub const LLVMEmitter = struct {
                             };
                         }
                     }
+                    // Union returns use the member's Serializable vtable.
+                    var union_ret = false;
+                    if (f.type_ref) |tr| {
+                        if (tr.resolved_type) |rt| {
+                            union_ret = types_mapping.isUnionType(rt.*, expression.global_unions_ast_ptr);
+                        }
+                    }
                     if (f.body.resolved_type) |val_rt| {
                         const val_c_name = switch (ts.extractBaseType(val_rt).*) {
                             .Custom => |n| n,
@@ -4235,7 +4310,11 @@ pub const LLVMEmitter = struct {
                             else => "",
                         };
                         if (val_c_name.len > 0) {
-                            ret_val = expression.coerceToContract(self.context, mod, self.builder, ret_val, val_c_name, ret_contract) catch ret_val;
+                            if (union_ret) {
+                                ret_val = expression.coerceToUnion(self.context, mod, self.builder, ret_val, val_c_name) catch ret_val;
+                            } else {
+                                ret_val = expression.coerceToContract(self.context, mod, self.builder, ret_val, val_c_name, ret_contract) catch ret_val;
+                            }
                         }
                     }
                 }

@@ -608,8 +608,6 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 }
             }
         } else if (self.unions_ast.get(actual_name)) |union_node| {
-            // Closed-union receiver (Phase 95): only the synthetic
-            // `serialize` exists here; variant fields never leak.
             for (union_node.data.union_decl.methods) |method| {
                 if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
                     if (method.resolved_type) |rt| {

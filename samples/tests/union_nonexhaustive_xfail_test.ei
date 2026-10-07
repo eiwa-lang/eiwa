@@ -1,0 +1,24 @@
+// XFAIL: a `when` over a closed union missing a variant (and no `else`)
+// must fail compilation with the missing members listed. As a statement,
+// `else` is normally optional — the union exhaustiveness rule (Phase 95)
+// overrides that: a forgotten verb is a silent bug otherwise.
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson } from "std.json"
+
+type XGoto(val url: String) : Serializable
+type XCollect(val selector: String) : Serializable
+type XPaginate(val maxPages: Int) : Serializable
+
+union XStep {
+  XGoto, XCollect, XPaginate
+}
+
+test "union xfail: non-exhaustive when over union does not compile" {
+  val s: XStep = fromJson<XStep>("{\"xgoto\": {\"url\": \"https://x/\"}}")
+  when (s) {
+    is XGoto -> assert(true)
+    is XCollect -> assert(true)
+  }
+  assert(true)
+}

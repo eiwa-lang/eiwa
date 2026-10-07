@@ -1082,6 +1082,10 @@ fn core_declareTypes(self: *TypeChecker, node: *ASTNode) anyerror!void {
                         while (enum_ast_it.next()) |entry| {
                             try self.enums_ast.put(entry.key_ptr.*, entry.value_ptr.*);
                         }
+                        var union_ast_it = m.checker.unions_ast.iterator();
+                        while (union_ast_it.next()) |entry| {
+                            try self.unions_ast.put(entry.key_ptr.*, entry.value_ptr.*);
+                        }
                         var object_ast_it = m.checker.objects_ast.iterator();
                         while (object_ast_it.next()) |entry| {
                             try self.objects_ast.put(entry.key_ptr.*, entry.value_ptr.*);
@@ -1460,6 +1464,9 @@ fn core_declareSignatures(self: *TypeChecker, node: *ASTNode) anyerror!void {
                 _ = try self.inferNode(stmt, &self.global_scope);
             } else if (stmt.data == .object_decl) {
                 if (!self.matchesTarget(stmt.data.object_decl.platform_targets)) continue;
+                _ = try self.inferNode(stmt, &self.global_scope);
+            } else if (stmt.data == .union_decl) {
+                if (!self.matchesTarget(stmt.data.union_decl.platform_targets)) continue;
                 _ = try self.inferNode(stmt, &self.global_scope);
             } else if (stmt.data == .contract_decl or stmt.data == .skill_decl or stmt.data == .fun_decl) {
                 _ = try self.inferNode(stmt, &self.global_scope);
@@ -1866,8 +1873,6 @@ fn core_conformsTo(self: *TypeChecker, actual_name: []const u8, target_name: []c
     const target = self.alias_map.get(target_name) orelse target_name;
     if (std.mem.eql(u8, actual, target)) return true;
 
-    // Closed-union membership (Phase 95): a variant conforms to its union.
-    // Members are stored unmangled; resolve through the alias map.
     if (self.unions_ast.get(target)) |u| {
         for (u.data.union_decl.members) |m| {
             const m_c = self.alias_map.get(m.name) orelse m.name;

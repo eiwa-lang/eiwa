@@ -1,4 +1,6 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
+const ArrayList = compat.ArrayList;
 const ast = @import("../ast.zig");
 const core = @import("core.zig");
 const infer_stmt_mod = @import("infer_stmt.zig");
@@ -18,6 +20,35 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
 
     var resolved_type: ?*const EiwaType = null;
     var has_else = false;
+
+    // Union subjects must cover every member (or have `else`), as a
+    // statement AND as a value.
+    var union_subj_c: ?[]const u8 = null;
+    var union_nullable = false;
+    if (subject_type) |st| {
+        var base_name: ?[]const u8 = null;
+        if (st.* == .Custom) {
+            base_name = st.Custom;
+        } else if (st.* == .Union) {
+            const l = st.Union.left;
+            const r = st.Union.right;
+            if (l.* == .Null and r.* == .Custom) {
+                base_name = r.Custom;
+                union_nullable = true;
+            } else if (r.* == .Null and l.* == .Custom) {
+                base_name = l.Custom;
+                union_nullable = true;
+            }
+        }
+        if (base_name) |bn| {
+            const resolved = self.alias_map.get(bn) orelse bn;
+            if (self.unions_ast.get(resolved) != null) union_subj_c = resolved;
+        }
+    }
+    var union_covered = ArrayList([]const u8).init(self.allocator);
+    defer union_covered.deinit();
+    var union_full_cover = false;
+    var union_null_covered = false;
 
     // Nullable subject narrows to `T` where null is unobservable; `else` only when null is covered.
     var nullable_subject_name: ?[]const u8 = null;
@@ -75,6 +106,25 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                             return error.TypeError;
                         }
                     }
+                    // Track union coverage from positive `is` conds.
+                    if (union_subj_c != null and !type_cond.is_not) {
+                        const tbase = core.extractBaseType(target_t);
+                        if (tbase.* == .Custom) {
+                            const tc = self.alias_map.get(tbase.Custom) orelse tbase.Custom;
+                            if (std.mem.eql(u8, tc, union_subj_c.?)) {
+                                union_full_cover = true;
+                            } else if (self.conformsTo(tbase.Custom, union_subj_c.?)) {
+                                var known = false;
+                                for (union_covered.items) |prev| {
+                                    if (std.mem.eql(u8, prev, tc)) {
+                                        known = true;
+                                        break;
+                                    }
+                                }
+                                if (!known) try union_covered.append(tc);
+                            }
+                        }
+                    }
                 } else {
                     if (cond.expected_type == null and self.typeHasEnum(subj_t)) cond.expected_type = subj_t;
                     const val_t = try self.inferNode(cond, scope);
@@ -119,6 +169,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
             }
         }
         if (case_matches_null) saw_null_branch = true;
+        if (case_matches_null) union_null_covered = true;
 
         if (node.expected_type) |et| {
             case.body.expected_type = et;
@@ -179,8 +230,44 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
     const void_type = EiwaType{ .Void = {} };
     const final_t = resolved_type orelse &void_type;
 
-    // 5. Exclusivity/Exhaustiveness check for expressions (non-Void return type)
-    if (final_t.* != .Void and !has_else) {
+    // 5. Exclusivity/Exhaustiveness checks.
+    var union_exhaustive = false;
+    if (union_subj_c) |uc| {
+        if (!has_else) {
+            if (self.unions_ast.get(uc)) |u_node| {
+                var missing = ArrayList([]const u8).init(self.allocator);
+                defer missing.deinit();
+                if (!union_full_cover) {
+                    for (u_node.data.union_decl.members) |m| {
+                        const m_c = self.alias_map.get(m.name) orelse m.name;
+                        var covered = false;
+                        for (union_covered.items) |c| {
+                            if (std.mem.eql(u8, c, m_c)) {
+                                covered = true;
+                                break;
+                            }
+                        }
+                        if (!covered) try missing.append(m.name);
+                    }
+                    if (union_nullable and !union_null_covered) try missing.append("null");
+                } else if (union_nullable and !union_null_covered) {
+                    try missing.append("null");
+                }
+                if (missing.items.len > 0) {
+                    var msg = ArrayList(u8).init(self.allocator);
+                    defer msg.deinit();
+                    for (missing.items, 0..) |name, idx| {
+                        if (idx > 0) try msg.appendSlice(", ");
+                        try msg.appendSlice(name);
+                    }
+                    self.reportError(node.line, node.column, "TypeError: non-exhaustive when over union '{s}'. Missing: {s}.", .{ u_node.data.union_decl.name, msg.items });
+                    return error.TypeError;
+                }
+            }
+            union_exhaustive = true;
+        }
+    }
+    if (final_t.* != .Void and !has_else and !union_exhaustive) {
         self.reportError(node.line, node.column, "TypeError: when expression returning non-Void type ({f}) must be exhaustive. Missing 'else' branch.", .{final_t.*});
         return error.TypeError;
     }
