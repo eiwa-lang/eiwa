@@ -1,0 +1,57 @@
+// Run: ./bin/eiwac test samples/tests/serde_absent_object_nested_test.ei
+//
+// L3: absent or explicit-null nested-object key with a non-nullable field
+// type throws instead of fabricating a sentinel. A required field with no
+// value on the wire is a data error, not an empty object.
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson } from "std.json"
+
+type RedGoto(val url: String, val timeoutMs: Int) : Serializable
+
+type RedFlat(val goto: RedGoto, val note: String) : Serializable
+
+type RedScalar(val name: String, val age: Int) : Serializable
+
+test "serde: absent non-nullable nested object throws" {
+    var thrown = false
+    var msg = ""
+    try {
+        fromJson<RedFlat>("{\"note\": \"x\"}")
+    } catch (e: Exception) {
+        thrown = true
+        msg = e.message()
+    }
+    assert(thrown)
+    assert(msg.indexOf("goto") >= 0)
+}
+
+test "serde: explicit null non-nullable nested object throws" {
+    var thrown = false
+    try {
+        fromJson<RedFlat>("{\"goto\": null, \"note\": \"x\"}")
+    } catch (e: Exception) {
+        thrown = true
+    }
+    assert(thrown)
+}
+
+test "serde: absent non-nullable scalar throws" {
+    var thrown = false
+    var msg = ""
+    try {
+        fromJson<RedScalar>("{\"name\": \"ana\"}")
+    } catch (e: Exception) {
+        thrown = true
+        msg = e.message()
+    }
+    assert(thrown)
+    assert(msg.indexOf("age") >= 0)
+}
+
+test "serde: present nested object still populates (control)" {
+    val s = fromJson<RedFlat>("{\"goto\": {\"url\": \"https://example.com/\", \"timeoutMs\": 15000}, \"note\": \"x\"}")
+    assert(s.note == "x")
+    assert(s.goto.url == "https://example.com/")
+    assert(s.goto.timeoutMs == 15000)
+}

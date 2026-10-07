@@ -133,10 +133,23 @@ type SerdeGenericList<T>(val list: List<T>) : SerdeList {
 }
 
 fun asSerdeObject(v: SerdeValue?): SerdeObject {
+    if (v == null) {
+        return SerdeObject(List<SerdeField>())
+    }
     if (v is SerdeObject) {
         return v as SerdeObject
     }
     return SerdeObject(List<SerdeField>())
+}
+
+fun isMissingOrNull(v: SerdeValue?): Bool {
+    if (v == null) {
+        return true
+    }
+    if (v is SerdeNull) {
+        return true
+    }
+    return false
 }
 
 fun asString(v: SerdeValue): String {

@@ -1,0 +1,30 @@
+// Run: ./bin/eiwac test samples/tests/serde_absent_nullable_nested_test.ei
+//
+// RED (L2): absent nested-object key with a nullable field type panics
+// (NullPointerException inside fromJson) instead of decoding as null.
+// Present keys populate fine — only absence crashes.
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson } from "std.json"
+
+type RedGoto(val url: String, val timeoutMs: Int) : Serializable
+
+type RedStep(val goto: RedGoto?, val note: String) : Serializable
+
+test "serde: absent nullable nested object decodes as null" {
+    val s = fromJson<RedStep>("{\"note\": \"x\"}")
+    assert(s.note == "x")
+    assert(s.goto == null)
+}
+
+test "serde: explicit null nested object decodes as null" {
+    val s = fromJson<RedStep>("{\"goto\": null, \"note\": \"x\"}")
+    assert(s.note == "x")
+    assert(s.goto == null)
+}
+
+test "serde: present nested object still populates (control)" {
+    val s = fromJson<RedStep>("{\"goto\": {\"url\": \"https://example.com/\", \"timeoutMs\": 15000}, \"note\": \"x\"}")
+    assert(s.goto != null)
+    assert(s.goto!!.url == "https://example.com/")
+}

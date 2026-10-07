@@ -1630,14 +1630,55 @@ fn serdeCloneDefault(self: *TypeChecker, prop: *const ast.ClassProp, init_orig: 
     return cloned;
 }
 
-fn serdeArgWithDefault(self: *TypeChecker, node: *ASTNode, prop: *const ast.ClassProp, conv: *ASTNode) anyerror!*ASTNode {
-    const init_orig = prop.initializer orelse return conv;
-    const init_expr = try serdeCloneDefault(self, prop, init_orig);
+fn serdeMissingCheck(self: *TypeChecker, node: *ASTNode, prop: *const ast.ClassProp) anyerror!*ASTNode {
     const cond_obj = try makeIdent(self, node.line, node.column, "obj");
     const cond_key = try makeStringLiteral(self, node.line, node.column, serdeWireName(prop));
     const cond_get_args = try self.allocator.alloc(*ASTNode, 1);
     cond_get_args[0] = cond_key;
     const cond_get = try makeObjMethodCall(self, node.line, node.column, cond_obj, "get", cond_get_args);
+    const check_args = try self.allocator.alloc(*ASTNode, 1);
+    check_args[0] = cond_get;
+    return try makeCall(self, node.line, node.column, "isMissingOrNull", check_args, &.{});
+}
+
+fn serdeRequireCheck(self: *TypeChecker, node: *ASTNode, prop: *const ast.ClassProp, type_name: []const u8) anyerror!*ASTNode {
+    const cond = try serdeMissingCheck(self, node, prop);
+    const msg = try std.fmt.allocPrint(self.allocator, "Missing required field '{s}' for type '{s}'", .{ serdeWireName(prop), type_name });
+    const msg_lit = try makeStringLiteral(self, node.line, node.column, msg);
+    const exc_args = try self.allocator.alloc(*ASTNode, 1);
+    exc_args[0] = msg_lit;
+    const exc = try makeCall(self, node.line, node.column, "Exception", exc_args, &.{});
+    const throw_node = try self.allocator.create(ASTNode);
+    throw_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .throw_stmt = .{
+                .expr = exc,
+            },
+        },
+    };
+    const if_node = try self.allocator.create(ASTNode);
+    if_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .if_expr = .{
+                .condition = cond,
+                .then_branch = throw_node,
+                .else_branch = null,
+                .is_value = false,
+            },
+        },
+    };
+    return if_node;
+}
+
+fn serdeNullLiteral(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
     const null_lit = try self.allocator.create(ASTNode);
     null_lit.* = .{
         .line = node.line,
@@ -1646,7 +1687,14 @@ fn serdeArgWithDefault(self: *TypeChecker, node: *ASTNode, prop: *const ast.Clas
         .expected_type = null,
         .data = .null_literal,
     };
-    const cond = try makeBinaryOp(self, node.line, node.column, .eq_eq, cond_get, null_lit);
+    return null_lit;
+}
+
+fn serdeArgWithDefault(self: *TypeChecker, node: *ASTNode, prop: *const ast.ClassProp, conv: *ASTNode) anyerror!*ASTNode {
+    const init_orig = prop.initializer orelse return conv;
+    const init_expr = try serdeCloneDefault(self, prop, init_orig);
+    // A declared default covers both absence and explicit null on the wire.
+    const cond = try serdeMissingCheck(self, node, prop);
     const if_node = try self.allocator.create(ASTNode);
     if_node.* = .{
         .line = node.line,
@@ -2963,6 +3011,12 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
     // 4. Constructor arguments for `c.name(arg0, arg1, ...)`
     var ctor_args = ArrayList(*ASTNode).init(self.allocator);
     defer ctor_args.deinit();
+    // Presence guards for required (non-nullable, no-default) fields. They
+    // run before construction so a missing key throws instead of silently
+    // fabricating ""/0/empty sentinels. Unsupported kinds (Map, ...) stay
+    // lenient until their deserializer lands.
+    var required_checks = ArrayList(*ASTNode).init(self.allocator);
+    defer required_checks.deinit();
 
     for (c.primary_constructor) |prop| {
         if (!prop.is_property) continue;
@@ -2974,6 +3028,9 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
         if (serdePrimitiveKind(name)) |kind| {
             const call_val = try serdeDeserializePrimitive(self, node.line, node.column, obj_ident, str_lit, kind, prop.type_ref.is_nullable);
             try ctor_args.append(try serdeArgWithDefault(self, node, &prop, call_val));
+            if (!prop.type_ref.is_nullable and prop.initializer == null) {
+                try required_checks.append(try serdeRequireCheck(self, node, &prop, c.name));
+            }
         } else if (prop.type_ref.generic_args.len == 0 and self.implementsContract(name, "Serializable")) {
             // Child.deserialize(asSerdeObject(obj.get("child")))
             const get_args = try self.allocator.alloc(*ASTNode, 1);
@@ -2988,7 +3045,32 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
             const des_args = try self.allocator.alloc(*ASTNode, 1);
             des_args[0] = as_child_call;
             const child_call = try makeObjMethodCall(self, node.line, node.column, child_ident, "deserialize", des_args);
-            try ctor_args.append(try serdeArgWithDefault(self, node, &prop, child_call));
+            if (prop.type_ref.is_nullable) {
+                // Absent or explicit null decodes as null, never a sentinel.
+                const cond = try serdeMissingCheck(self, node, &prop);
+                const null_lit = try serdeNullLiteral(self, node);
+                const null_if = try self.allocator.create(ASTNode);
+                null_if.* = .{
+                    .line = node.line,
+                    .column = node.column,
+                    .resolved_type = null,
+                    .expected_type = null,
+                    .data = .{
+                        .if_expr = .{
+                            .condition = cond,
+                            .then_branch = null_lit,
+                            .else_branch = child_call,
+                            .is_value = true,
+                        },
+                    },
+                };
+                try ctor_args.append(try serdeArgWithDefault(self, node, &prop, null_if));
+            } else {
+                try ctor_args.append(try serdeArgWithDefault(self, node, &prop, child_call));
+                if (prop.initializer == null) {
+                    try required_checks.append(try serdeRequireCheck(self, node, &prop, c.name));
+                }
+            }
         } else if (std.mem.eql(u8, name, "List") and prop.type_ref.generic_args.len == 1) {
             const elem_tr = prop.type_ref.generic_args[0];
             const elem_name = elem_tr.name;
@@ -3063,7 +3145,31 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
                 t_args[0] = elem_tr;
 
                 const call_val = try makeCall(self, node.line, node.column, "deserializeList", des_list_args, t_args);
-                try ctor_args.append(try serdeArgWithDefault(self, node, &prop, call_val));
+                if (prop.type_ref.is_nullable) {
+                    const cond = try serdeMissingCheck(self, node, &prop);
+                    const null_lit = try serdeNullLiteral(self, node);
+                    const null_if = try self.allocator.create(ASTNode);
+                    null_if.* = .{
+                        .line = node.line,
+                        .column = node.column,
+                        .resolved_type = null,
+                        .expected_type = null,
+                        .data = .{
+                            .if_expr = .{
+                                .condition = cond,
+                                .then_branch = null_lit,
+                                .else_branch = call_val,
+                                .is_value = true,
+                            },
+                        },
+                    };
+                    try ctor_args.append(try serdeArgWithDefault(self, node, &prop, null_if));
+                } else {
+                    try ctor_args.append(try serdeArgWithDefault(self, node, &prop, call_val));
+                    if (prop.initializer == null) {
+                        try required_checks.append(try serdeRequireCheck(self, node, &prop, c.name));
+                    }
+                }
             } else if (prop.initializer) |init_orig| {
                 try ctor_args.append(try serdeCloneDefault(self, &prop, init_orig));
             } else {
@@ -3114,10 +3220,15 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
         },
     };
 
-    // 6. Block { val obj = asSerdeObject(value); return User(...) }
-    const block_stmts = try self.allocator.alloc(*ASTNode, 2);
-    block_stmts[0] = var_stmt;
-    block_stmts[1] = ret_stmt;
+    // 6. Block { val obj = asSerdeObject(value); <require checks>; return User(...) }
+    var block_list = ArrayList(*ASTNode).init(self.allocator);
+    defer block_list.deinit();
+    try block_list.append(var_stmt);
+    for (required_checks.items) |chk| {
+        try block_list.append(chk);
+    }
+    try block_list.append(ret_stmt);
+    const block_stmts = try block_list.toOwnedSlice();
     const block_node = try self.allocator.create(ASTNode);
     block_node.* = .{
         .line = node.line,
