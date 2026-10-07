@@ -1,0 +1,55 @@
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromYaml, serializeYaml } from "std.yaml"
+
+type YUser(val id: Int, val name: String, val avatar: String?, val active: Bool) : Serializable
+type YTeam(val tname: String, val tags: List<String>, val members: List<YUser>) : Serializable
+type YJob(val connector: String, val url: String, val kind: String = "page") : Serializable
+type YHolder(val fields: Map<String, YUser>) : Serializable
+
+test "yaml: fromYaml populates scalars and nullables" {
+    val u = fromYaml<YUser>("id: 42\nname: Alice\nactive: true\n")
+    assert(u.id == 42)
+    assert(u.name == "Alice")
+    assert(u.avatar == null)
+    assert(u.active == true)
+}
+
+test "yaml: round-trip preserves values" {
+    val u = fromYaml<YUser>("id: 7\nname: Bob\navatar: img\nactive: false\n")
+    val back = fromYaml<YUser>(serializeYaml(u))
+    assert(back.id == 7)
+    assert(back.name == "Bob")
+    assert(back.avatar == "img")
+    assert(back.active == false)
+}
+
+test "yaml: lists of scalars and objects" {
+    val t = fromYaml<YTeam>("tname: core\ntags:\n  - a\n  - b\nmembers:\n  - id: 1\n    name: Ana\n    active: true\n")
+    assert(t.tname == "core")
+    assert(t.tags.size() == 2)
+    assert(t.tags.get(1) == "b")
+    assert(t.members.size() == 1)
+    assert(t.members.get(0).name == "Ana")
+}
+
+test "yaml: map with custom-type values" {
+    val h = fromYaml<YHolder>("fields:\n  ana:\n    id: 1\n    name: Ana\n    active: true\n")
+    assert(h.fields.size() == 1)
+    assert(h.fields.get("ana")!!.name == "Ana")
+}
+
+test "yaml: missing keys fall back to constructor defaults" {
+    val j = fromYaml<YJob>("connector: q\nurl: https://example.com/\n")
+    assert(j.kind == "page")
+}
+
+test "yaml: missing required field throws" {
+    var thrown = false
+    try {
+        fromYaml<YUser>("id: 1\nactive: true\n")
+    } catch (e: Exception) {
+        thrown = true
+    }
+    assert(thrown)
+}

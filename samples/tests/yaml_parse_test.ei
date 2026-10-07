@@ -1,0 +1,41 @@
+import { assert } from "std.core"
+import { parseYaml } from "std.yaml"
+
+test "yaml parses flat scalars with coercions" {
+    val doc = parseYaml("name: leo\nage: 30\nratio: 1.5\nactive: true\noff: FALSE\nnick: null\ntilde: ~\nurl: https://example.com/\n")
+    assert(doc.get("name")!!.asString() == "leo")
+    assert(doc.get("age")!!.asNumber() == 30.0)
+    assert(doc.get("ratio")!!.asNumber() == 1.5)
+    assert(doc.get("active")!!.asBool() == true)
+    assert(doc.get("off")!!.asBool() == false)
+    assert(doc.get("nick")!!.isNull())
+    assert(doc.get("tilde")!!.isNull())
+    assert(doc.get("url")!!.asString() == "https://example.com/")
+}
+
+test "yaml parses quoted strings and ignores comments" {
+    val doc = parseYaml("# lead\nname: \"a # b\" # trail\nquote: 'single'\nempty:\n")
+    assert(doc.get("name")!!.asString() == "a # b")
+    assert(doc.get("quote")!!.asString() == "single")
+    assert(doc.get("empty")!!.isNull())
+}
+
+test "yaml parses nested maps and lists" {
+    val doc = parseYaml("addr:\n  city: sp\n  zip: 01310\ntags:\n  - a\n  - b\nsteps:\n  - kind: goto\n    url: https://example.com/\n  - kind: done\n")
+    assert(doc.get("addr")!!.get("city")!!.asString() == "sp")
+    assert(doc.get("tags")!!.getAt(1)!!.asString() == "b")
+    assert(doc.get("steps")!!.getAt(0)!!.get("kind")!!.asString() == "goto")
+    assert(doc.get("steps")!!.getAt(0)!!.get("url")!!.asString() == "https://example.com/")
+    assert(doc.get("steps")!!.getAt(1)!!.get("kind")!!.asString() == "done")
+}
+
+test "yaml skips document markers" {
+    val doc = parseYaml("---\nname: x\n...\n")
+    assert(doc.get("name")!!.asString() == "x")
+}
+
+test "yaml number shapes stay strings when not numeric" {
+    val doc = parseYaml("date: 2026-02-02\nword: 12x\n")
+    assert(doc.get("date")!!.asString() == "2026-02-02")
+    assert(doc.get("word")!!.asString() == "12x")
+}

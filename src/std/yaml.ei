@@ -1,58 +1,523 @@
-import { List } from "std.collections"
+import { List, MutableList, Map, MutableMap } from "std.collections"
+import { split, trim, startsWith, endsWith } from "std.string"
 import { Serializable, SerdeField, SerdeValue, SerdeInt, SerdeDouble, SerdeBool, SerdeString, SerdeObject, SerdeListValue, SerdeList } from "std.serde"
 
+enum YamlKind {
+    MAP,
+    LIST,
+    STRING,
+    NUMBER,
+    BOOL,
+    NULL
+}
+
+type YamlSerdeList(val arr: List<YamlValue>) : SerdeList {
+
+    implement fun size(): Int = this.arr.size()
+
+    implement fun getAt(index: Int): SerdeValue {
+        val elem = this.arr.get(index)
+        return elem.toSerde()
+    }
+}
+
+type YamlValue(
+    var kind: YamlKind = YamlKind.NULL,
+    var map: Map<String, YamlValue> = Map(),
+    var arr: List<YamlValue> = [],
+    var str: String = "",
+    var num: Double = 0.0,
+    var boolean: Bool = false
+) {
+
+    fun isMap(): Bool = this.kind == YamlKind.MAP
+    fun isList(): Bool = this.kind == YamlKind.LIST
+    fun isString(): Bool = this.kind == YamlKind.STRING
+    fun isNumber(): Bool = this.kind == YamlKind.NUMBER
+    fun isBool(): Bool = this.kind == YamlKind.BOOL
+    fun isNull(): Bool = this.kind == YamlKind.NULL
+
+    fun get(key: String): YamlValue? {
+        if (this.kind != YamlKind.MAP) {
+            return null
+        }
+        return this.map.get(key)
+    }
+
+    fun getAt(index: Int): YamlValue? {
+        if (this.kind != YamlKind.LIST) {
+            return null
+        }
+        if (index < 0 || index >= this.arr.size()) {
+            return null
+        }
+        return this.arr.get(index)
+    }
+
+    fun asString(): String = this.str
+    fun asNumber(): Double = this.num
+    fun asBool(): Bool = this.boolean
+
+    fun toSerde(): SerdeValue = when (this.kind) {
+        YamlKind.MAP -> this.toSerdeMap()
+        YamlKind.LIST -> SerdeListValue(YamlSerdeList(this.arr))
+        YamlKind.STRING -> SerdeString(this.str)
+        YamlKind.NUMBER -> SerdeDouble(this.num)
+        YamlKind.BOOL -> SerdeBool(this.boolean)
+        YamlKind.NULL -> SerdeNull()
+        else -> SerdeNull()
+    }
+
+    fun toSerdeMap(): SerdeObject {
+        val fieldList: MutableList<SerdeField> = MutableList()
+        var i = 0
+        while (i < this.map.entries.size()) {
+            var curr = this.map.entries.get(i)
+            while (curr != null) {
+                fieldList.add(SerdeField(curr!!.key, curr!!.value.toSerde()))
+                curr = curr!!.next
+            }
+            i = i + 1
+        }
+        return SerdeObject(fieldList.freeze())
+    }
+}
+
+fun yamlMap(map: Map<String, YamlValue>): YamlValue {
+    val v = YamlValue()
+    v.kind = YamlKind.MAP
+    v.map = map
+    return v
+}
+
+fun yamlList(list: List<YamlValue>): YamlValue {
+    val v = YamlValue()
+    v.kind = YamlKind.LIST
+    v.arr = list
+    return v
+}
+
+fun yamlString(s: String): YamlValue {
+    val v = YamlValue()
+    v.kind = YamlKind.STRING
+    v.str = s
+    return v
+}
+
+fun yamlNumber(d: Double): YamlValue {
+    val v = YamlValue()
+    v.kind = YamlKind.NUMBER
+    v.num = d
+    return v
+}
+
+fun yamlBool(b: Bool): YamlValue {
+    val v = YamlValue()
+    v.kind = YamlKind.BOOL
+    v.boolean = b
+    return v
+}
+
+fun yamlNull(): YamlValue {
+    return YamlValue()
+}
+
+type YamlParser(val lines: List<String>, var pos: Int) {
+
+    fun parse(): YamlValue {
+        this.skipIgnored()
+        if (this.pos >= this.lines.size()) {
+            return yamlNull()
+        }
+        return this.parseBlock(this.indentOf(this.lines.get(this.pos)))
+    }
+
+    fun skipIgnored() {
+        var scanning = true
+        while (scanning) {
+            if (this.pos >= this.lines.size()) {
+                scanning = false
+            } else if (this.isIgnored(this.lines.get(this.pos))) {
+                this.pos = this.pos + 1
+            } else {
+                scanning = false
+            }
+        }
+    }
+
+    fun isIgnored(line: String): Bool {
+        val t = line.trim()
+        if (t == "" || t == "---" || t == "...") {
+            return true
+        }
+        if (t.startsWith("#")) {
+            return true
+        }
+        return false
+    }
+
+    fun indentOf(line: String): Int {
+        var n = 0
+        while (n < line.length && line.substring(n, n + 1) == " ") {
+            n = n + 1
+        }
+        return n
+    }
+
+    fun stripComment(line: String): String {
+        var inStr = false
+        var i = 0
+        while (i < line.length) {
+            val c = line.substring(i, i + 1)
+            if (c == "\"") {
+                inStr = !inStr
+            }
+            if (c == "#" && inStr == false) {
+                return line.substring(0, i)
+            }
+            i = i + 1
+        }
+        return line
+    }
+
+    fun contentOf(line: String): String = this.stripComment(line).trim()
+
+    fun mapColonAt(content: String): Int {
+        var inStr = false
+        var i = 0
+        while (i < content.length) {
+            val c = content.substring(i, i + 1)
+            if (c == "\"") {
+                inStr = !inStr
+            }
+            if (c == ":" && inStr == false) {
+                if (i + 1 >= content.length || content.substring(i + 1, i + 2) == " ") {
+                    return i
+                }
+            }
+            i = i + 1
+        }
+        return -1
+    }
+
+    fun parseBlock(indent: Int): YamlValue {
+        val first = this.contentOf(this.lines.get(this.pos))
+        if (first == "-" || first.startsWith("- ")) {
+            return this.parseList(indent)
+        }
+        if (this.mapColonAt(first) >= 0) {
+            return this.parseMap(indent)
+        }
+        this.pos = this.pos + 1
+        return this.parseScalar(first)
+    }
+
+    fun parseMap(indent: Int): YamlValue {
+        val map = MutableMap<String, YamlValue>()
+        this.parseMapInto(map, indent)
+        return yamlMap(map.freeze())
+    }
+
+    fun parseMapInto(map: MutableMap<String, YamlValue>, indent: Int) {
+        var scanning = true
+        while (scanning) {
+            if (this.pos >= this.lines.size()) {
+                scanning = false
+            } else {
+                val line = this.lines.get(this.pos)
+                if (this.isIgnored(line)) {
+                    this.pos = this.pos + 1
+                } else if (this.indentOf(line) != indent) {
+                    scanning = false
+                } else {
+                    val content = this.contentOf(line)
+                    val ci = this.mapColonAt(content)
+                    if (ci < 0) {
+                        scanning = false
+                    } else {
+                        val key = this.parseKey(content.substring(0, ci))
+                        val rest = content.substring(ci + 1, content.length).trim()
+                        this.pos = this.pos + 1
+                        if (rest == "") {
+                            map.put(key, this.parseNestedOrNull(indent))
+                        } else {
+                            map.put(key, this.parseScalar(rest))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun parseNestedOrNull(indent: Int): YamlValue {
+        this.skipIgnored()
+        if (this.pos < this.lines.size() && this.indentOf(this.lines.get(this.pos)) > indent) {
+            return this.parseBlock(this.indentOf(this.lines.get(this.pos)))
+        }
+        return yamlNull()
+    }
+
+    fun parseList(indent: Int): YamlValue {
+        val list = MutableList<YamlValue>()
+        var scanning = true
+        while (scanning) {
+            if (this.pos >= this.lines.size()) {
+                scanning = false
+            } else {
+                val line = this.lines.get(this.pos)
+                if (this.isIgnored(line)) {
+                    this.pos = this.pos + 1
+                } else if (this.indentOf(line) != indent) {
+                    scanning = false
+                } else {
+                    val content = this.contentOf(line)
+                    if (content == "-" || content.startsWith("- ")) {
+                        val after = if (content == "-") "" else content.substring(2, content.length).trim()
+                        this.pos = this.pos + 1
+                        if (after == "") {
+                            list.add(this.parseNestedOrNull(indent))
+                        } else {
+                            val ci = this.mapColonAt(after)
+                            if (ci < 0) {
+                                list.add(this.parseScalar(after))
+                            } else {
+                                list.add(this.parseCompactMap(after, ci, indent))
+                            }
+                        }
+                    } else {
+                        scanning = false
+                    }
+                }
+            }
+        }
+        return yamlList(list.freeze())
+    }
+
+    fun parseCompactMap(after: String, ci: Int, indent: Int): YamlValue {
+        val map = MutableMap<String, YamlValue>()
+        val key = this.parseKey(after.substring(0, ci))
+        val rest = after.substring(ci + 1, after.length).trim()
+        if (rest == "") {
+            map.put(key, this.parseNestedOrNull(indent))
+        } else {
+            map.put(key, this.parseScalar(rest))
+        }
+        this.skipIgnored()
+        if (this.pos < this.lines.size() && this.indentOf(this.lines.get(this.pos)) > indent) {
+            this.parseMapInto(map, this.indentOf(this.lines.get(this.pos)))
+        }
+        return yamlMap(map.freeze())
+    }
+
+    fun parseKey(raw: String): String {
+        val t = raw.trim()
+        if (t.length >= 2 && t.substring(0, 1) == "\"" && t.substring(t.length - 1, t.length) == "\"") {
+            return this.unquote(t)
+        }
+        return t
+    }
+
+    fun parseScalar(text: String): YamlValue {
+        val t = text.trim()
+        if (t == "" || t == "null" || t == "Null" || t == "NULL" || t == "~") {
+            return yamlNull()
+        }
+        if (t == "true" || t == "True" || t == "TRUE") {
+            return yamlBool(true)
+        }
+        if (t == "false" || t == "False" || t == "FALSE") {
+            return yamlBool(false)
+        }
+        if (t.length >= 2 && t.substring(0, 1) == "\"" && t.substring(t.length - 1, t.length) == "\"") {
+            return yamlString(this.unquote(t))
+        }
+        if (t.substring(0, 1) == "'" && t.endsWith("'") && t.length >= 2) {
+            return yamlString(t.substring(1, t.length - 1))
+        }
+        if (this.isYamlNumber(t)) {
+            return yamlNumber(t.toDouble())
+        }
+        return yamlString(t)
+    }
+
+    fun unquote(t: String): String {
+        var out = ""
+        var i = 1
+        while (i < t.length - 1) {
+            val c = t.substring(i, i + 1)
+            if (c == "\\" && i + 1 < t.length - 1) {
+                val e = t.substring(i + 1, i + 2)
+                if (e == "n") {
+                    out = out + "\n"
+                } else if (e == "t") {
+                    out = out + "\t"
+                } else if (e == "r") {
+                    out = out + "\r"
+                } else if (e == "\"") {
+                    out = out + "\""
+                } else if (e == "\\") {
+                    out = out + "\\"
+                } else {
+                    out = out + e
+                }
+                i = i + 2
+            } else {
+                out = out + c
+                i = i + 1
+            }
+        }
+        return out
+    }
+
+    fun isYamlDigit(c: String): Bool {
+        if (c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9") {
+            return true
+        }
+        return false
+    }
+
+    fun isYamlNumber(t: String): Bool {
+        var i = 0
+        if (t.startsWith("-") || t.startsWith("+")) {
+            i = 1
+        }
+        var digits = 0
+        while (i < t.length && this.isYamlDigit(t.substring(i, i + 1))) {
+            digits = digits + 1
+            i = i + 1
+        }
+        if (digits == 0) {
+            return false
+        }
+        if (i < t.length && t.substring(i, i + 1) == ".") {
+            i = i + 1
+            var frac = 0
+            while (i < t.length && this.isYamlDigit(t.substring(i, i + 1))) {
+                frac = frac + 1
+                i = i + 1
+            }
+            if (frac == 0) {
+                return false
+            }
+        }
+        if (i < t.length && (t.substring(i, i + 1) == "e" || t.substring(i, i + 1) == "E")) {
+            i = i + 1
+            if (i < t.length && (t.substring(i, i + 1) == "-" || t.substring(i, i + 1) == "+")) {
+                i = i + 1
+            }
+            var exp = 0
+            while (i < t.length && this.isYamlDigit(t.substring(i, i + 1))) {
+                exp = exp + 1
+                i = i + 1
+            }
+            if (exp == 0) {
+                return false
+            }
+        }
+        return i == t.length
+    }
+}
+
+fun parseYaml(source: String): YamlValue {
+    return YamlParser(source.split("\n"), 0).parse()
+}
+
 skill Yaml : Serializable {
-    fun toYaml(): String = when (this.serialize()) {
-        is SerdeObject -> this.writeYamlBlock((this.serialize() as SerdeObject).fields, "")
-        is SerdeListValue -> this.writeYamlList((this.serialize() as SerdeListValue).list, "")
-        else -> this.writeYamlScalar(this.serialize())
-    }
+    fun toYaml(): String = serializeYamlValue(this.serialize())
 
-    fun writeYaml(fields: List<SerdeField>): String = this.writeYamlBlock(fields, "")
+    fun writeYaml(fields: List<SerdeField>): String = serializeYamlFields(fields)
 
-    fun writeYamlBlock(fields: List<SerdeField>, indent: String): String {
-        var out = ""
-        var i = 0
-        while (i < fields.size()) {
-            val f = fields.get(i)
-            out = "$out$indent${f.name}:${this.writeYamlValueSuffix(f.value, indent)}"
-            i = i + 1
+    fun writeYamlBlock(fields: List<SerdeField>, indent: String): String = serializeYamlBlock(fields, indent)
+
+    fun writeYamlValueSuffix(v: SerdeValue, indent: String): String = serializeYamlSuffix(v, indent)
+
+    fun writeYamlList(list: SerdeList, indent: String): String = serializeYamlList(list, indent)
+
+    fun writeYamlListItem(v: SerdeValue, indent: String): String = serializeYamlListItem(v, indent)
+
+    fun writeYamlScalar(v: SerdeValue): String = serializeYamlScalar(v)
+}
+
+fun escapeYamlString(s: String): String {
+    var out = ""
+    var i = 0
+    while (i < s.length) {
+        val c = s.substring(i, i + 1)
+        if (c == "\"") {
+            out = out + "\\\""
+        } else if (c == "\\") {
+            out = out + "\\\\"
+        } else if (c == "\n") {
+            out = out + "\\n"
+        } else {
+            out = out + c
         }
-        return out
+        i = i + 1
     }
+    return out
+}
 
-    fun writeYamlValueSuffix(v: SerdeValue, indent: String): String = when (v) {
-        is SerdeInt -> " ${v.v}\n"
-        is SerdeDouble -> " ${v.v}\n"
-        is SerdeBool -> " ${v.v}\n"
-        is SerdeString -> " \"${v.v}\"\n"
-        is SerdeObject -> "\n${this.writeYamlBlock(v.fields, "$indent  ")}"
-        is SerdeListValue -> "\n${this.writeYamlList(v.list, "$indent  ")}"
-        else -> " null\n"
-    }
+fun serializeYaml(obj: Serializable): String {
+    return serializeYamlValue(obj.serialize())
+}
 
-    fun writeYamlList(list: SerdeList, indent: String): String {
-        var out = ""
-        var i = 0
-        while (i < list.size()) {
-            val v = list.getAt(i)
-            out = "$out$indent${this.writeYamlListItem(v, indent)}"
-            i = i + 1
-        }
-        return out
-    }
+fun serializeYamlFields(fields: List<SerdeField>): String = serializeYamlBlock(fields, "")
 
-    fun writeYamlListItem(v: SerdeValue, indent: String): String = when (v) {
-        is SerdeObject -> "-\n${this.writeYamlBlock(v.fields, "$indent  ")}"
-        is SerdeListValue -> "-\n${this.writeYamlList(v.list, "$indent  ")}"
-        else -> "- ${this.writeYamlScalar(v)}\n"
-    }
+fun serializeYamlValue(v: SerdeValue): String = when (v) {
+    is SerdeObject -> serializeYamlBlock(v.fields, "")
+    is SerdeListValue -> serializeYamlList(v.list, "")
+    else -> serializeYamlScalar(v)
+}
 
-    fun writeYamlScalar(v: SerdeValue): String = when (v) {
-        is SerdeInt -> v.v.toString()
-        is SerdeDouble -> v.v.toString()
-        is SerdeBool -> v.v.toString()
-        is SerdeString -> "\"${v.v}\""
-        else -> "null"
+fun serializeYamlBlock(fields: List<SerdeField>, indent: String): String {
+    var out = ""
+    var i = 0
+    while (i < fields.size()) {
+        val f = fields.get(i)
+        out = "$out$indent${f.name}:${serializeYamlSuffix(f.value, indent)}"
+        i = i + 1
     }
+    return out
+}
+
+fun serializeYamlSuffix(v: SerdeValue, indent: String): String = when (v) {
+    is SerdeInt -> " ${v.v}\n"
+    is SerdeDouble -> " ${v.v}\n"
+    is SerdeBool -> " ${v.v}\n"
+    is SerdeString -> " \"${escapeYamlString(v.v)}\"\n"
+    is SerdeObject -> "\n${serializeYamlBlock(v.fields, "$indent  ")}"
+    is SerdeListValue -> "\n${serializeYamlList(v.list, "$indent  ")}"
+    else -> " null\n"
+}
+
+fun serializeYamlList(list: SerdeList, indent: String): String {
+    var out = ""
+    var i = 0
+    while (i < list.size()) {
+        val v = list.getAt(i)
+        out = "$out$indent${serializeYamlListItem(v, indent)}"
+        i = i + 1
+    }
+    return out
+}
+
+fun serializeYamlListItem(v: SerdeValue, indent: String): String = when (v) {
+    is SerdeObject -> "-\n${serializeYamlBlock(v.fields, "$indent  ")}"
+    is SerdeListValue -> "-\n${serializeYamlList(v.list, "$indent  ")}"
+    else -> "- ${serializeYamlScalar(v)}\n"
+}
+
+fun serializeYamlScalar(v: SerdeValue): String = when (v) {
+    is SerdeInt -> v.v.toString()
+    is SerdeDouble -> v.v.toString()
+    is SerdeBool -> v.v.toString()
+    is SerdeString -> "\"${escapeYamlString(v.v)}\""
+    else -> "null"
+}
+
+fun parseYamlToSerde(raw: String): SerdeValue = parseYaml(raw).toSerde()
+
+fun fromYaml<T>(raw: String): T {
+    val serdeVal = parseYamlToSerde(raw)
+    return T.deserialize(serdeVal)
 }
