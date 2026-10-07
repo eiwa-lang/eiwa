@@ -22,7 +22,7 @@
 val s = fromJson<UGoto | UCollect | UPaginate>(gotoJson())  // chaves agotostep-like por tipo
 assert(s is UGoto)
 
-val list: MutableList<UGoto | UCollect | UPaginate> = MutableList<UGoto | UCollect | UPaginate>()
+val list = MutableList<UGoto | UCollect | UPaginate>()
 list.add(UGoto("https://x/"))
 val label = when (list.get(0)) {  // sem else: cobra os 3
   is UGoto -> "goto"
@@ -65,10 +65,10 @@ Aplica em: `conformsTo`, `isUnionNominal`, serde (`isSerdeUnion`,
 
 ## 3. Testes
 
-` samples/tests/union_anonymous_xfail_test.ei` (5 REDs: decode, lowercase,
-lista mutável + dispatch, round-trip, tag desconhecida) deve passar
-integralmente na GREEN (XPASS força promoção). Negativas manuais: membro
-`Int` rejeitado, mistura nomeada↔estrutural rejeitada, `==`/rótulos fora.
+`samples/tests/union_anonymous_test.ei` (5 REDs: decode, lowercase,
+lista mutável + dispatch, round-trip, tag desconhecida) quebra o gate
+até a GREEN. Negativas manuais: membro `Int` rejeitado, mistura
+nomeada↔estrutural rejeitada, `==`/rótulos fora.
 
 Verify: xfail promovido + suíte completa + `zig build test` + `eiwac build` smoke.
 

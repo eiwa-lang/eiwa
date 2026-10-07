@@ -1862,14 +1862,14 @@ Semântica alvo:
 - [ ] **Task 95.6 (follow-up — gap pré-existente, fora de escopo):** `isCompatible` aceita `Custom` → `Custom` não-relacionados (`val b: FooB = FooA(...)` compila; `val s: Shape = NotAShape(...)` compila e produz lixo em runtime) — o braço `else => return true` em `core_isCompatible` (`src/core/type_checker/core.zig`) após falhar `conformsTo`. Uniões foram blindadas nominalmente nesta fase (`isUnionNominal`: qualquer conversão envolvendo união fora de membro/mesma-união falha alto); o caso geral aguarda fase própria com RED + auditoria do que depende da frouxidão.
 
 ### Phase 96: Uniões anônimas (`A | B`) + descritores de identidade (OPEN)
-> Plano em `docs/plan_phase96_anonymous_union.md`; REDs em `samples/tests/union_anonymous_xfail_test.ei` (5 testes, todos vermelhos — XPASS força promoção). Tuplas inline em genéricos/campos/params/`fromJson` com chaves lowercase fixas (sem `@Alias`); nominal ≠ estrutural sem conversão; identidade por global `{Type}_descriptor` (endereço), com migração da identidade do declarado; `String` junto, escalares na 97.
+> Plano em `docs/plan_phase96_anonymous_union.md`; REDs em `samples/tests/union_anonymous_test.ei` (5 testes, vermelhos — quebram o gate até a GREEN). Tuplas inline em genéricos/campos/params/`fromJson` com chaves lowercase fixas (sem `@Alias`); nominal ≠ estrutural sem conversão; identidade por global `{Type}_descriptor` (endereço), com migração da identidade do declarado; `String` junto, escalares na 97.
 
 - [ ] **Task 96.1:** Abstração de lista de membros (registro vs tupla `.Union`) em `conformsTo`, `isUnionNominal`, serde, `when`, identidade.
 - [ ] **Task 96.2:** Descritores + `coerceToUnion`/`is`/`when`/rebind sobre descritores; migração do declarado (testes verdes provam não-mudança).
 - [ ] **Task 96.3:** Checker: exaustividade sobre `.Union`, `fromJson<A | B>` com mangling ordenado, literais vazios anotados.
 - [ ] **Task 96.4:** Emissor: lowering condicional `.Union`, generalização dos pontos nominais, `String` sem box.
 - [ ] **Task 96.5:** `==`/toString sobre anônimos (definir e documentar).
-- [ ] **Verify:** xfail promovido + suíte completa + `zig build test` + `eiwac build` smoke.
+- [ ] **Verify:** REDs verdes + suíte completa + `zig build test` + `eiwac build` smoke.
 
 ### Phase 97: Membros escalares em uniões (`Int`/`Double`/`Bool`) (OPEN)
 > Box na fronteira (célula heap, Phase 80), `is` nominal por descritor, unbox no load estreitado (follow-up 91.4). Primitivos seguem fora das uniões abertas (representação value-in-pointer intocada).
