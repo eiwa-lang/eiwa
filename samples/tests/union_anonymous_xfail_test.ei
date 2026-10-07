@@ -1,0 +1,58 @@
+// XFAIL (Phase 96): anonymous unions `A | B | C` with dispatch. Every test
+// below must fail today (no anonymous deserialize / fat identity /
+// exhaustiveness over structural unions). When Phase 96 lands, this file
+// must FULLY pass (XPASS breaks the build and forces marker removal).
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson, serializeJsonValue } from "std.json"
+
+type AGoto(val url: String) : Serializable
+type ACollect(val selector: String) : Serializable
+type APaginate(val maxPages: Int) : Serializable
+
+type AGotoStep(val url: String) : Serializable
+
+test "anonymous: decode by lowercase-fixed keys" {
+  val s = fromJson<AGoto | ACollect | APaginate>("{\"agoto\": {\"url\": \"https://x/\"}}")
+  assert(s is AGoto)
+  assert((s as AGoto).url == "https://x/")
+}
+
+test "anonymous: key is the lowercased type name" {
+  val s = fromJson<AGotoStep | ACollect>("{\"agotostep\": {\"url\": \"https://x/\"}}")
+  assert(s is AGotoStep)
+  assert((s as AGotoStep).url == "https://x/")
+}
+
+test "anonymous: mutable list of unions dispatches" {
+  val list: MutableList<AGoto | ACollect | APaginate> = MutableList<AGoto | ACollect | APaginate>()
+  list.add(AGoto("https://x/"))
+  list.add(ACollect("div.quote"))
+  list.add(APaginate(3))
+  assert(list.size() == 3)
+  val first = list.get(0)
+  assert(first is AGoto)
+  val label = when (first) {
+    is AGoto -> "goto"
+    is ACollect -> "collect"
+    is APaginate -> "paginate"
+  }
+  assert(label == "goto")
+}
+
+test "anonymous: round-trip preserves variant" {
+  val s = fromJson<APaginate | AGoto>("{\"apaginate\": {\"maxPages\": 5}}")
+  val back = fromJson<APaginate | AGoto>(serializeJsonValue(s.serialize()))
+  assert(back is APaginate)
+  assert((back as APaginate).maxPages == 5)
+}
+
+test "anonymous: unknown tag throws with detail" {
+  var msg = ""
+  try {
+    fromJson<AGoto | ACollect>("{\"fly\": {}}")
+  } catch (e: Exception) {
+    msg = e.message()
+  }
+  assert(msg.indexOf("fly") >= 0)
+}

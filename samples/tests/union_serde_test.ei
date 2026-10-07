@@ -185,3 +185,17 @@ test "union: member reassignment keeps identity" {
   s = UCollect("div.quote", Map<String, UFieldDef>())
   assert(s is UCollect)
 }
+
+test "union: decode without explicit type declaration" {
+  val s = fromJson<UStep>(gotoJson())
+  assert(s is UGoto)
+  val g = s as UGoto
+  assert(g.url == "https://x/")
+}
+
+test "union: decode with explicit type declaration" {
+  val s: UStep = fromJson(gotoJson())
+  assert(s is UGoto)
+  val g = s as UGoto
+  assert(g.url == "https://x/")
+}
