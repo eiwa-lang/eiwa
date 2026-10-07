@@ -1,4 +1,4 @@
-// XFAIL (Phase 96): anonymous unions `A | B | C` with dispatch. Every test
+// (Phase 96): anonymous unions `A | B | C` with dispatch. Every test
 // below must fail today (no anonymous deserialize / fat identity /
 // exhaustiveness over structural unions). When Phase 96 lands, this file
 // must FULLY pass (XPASS breaks the build and forces marker removal).
