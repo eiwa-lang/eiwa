@@ -162,3 +162,26 @@ test "union: yaml round-trips through serde layer" {
   assert(back is UGoto)
   assert((back as UGoto).timeoutMs == 15000)
 }
+
+fun stepKind(s: UStep): String {
+  return when (s) {
+    is UGoto -> "goto"
+    is UCollect -> "collect"
+    is UPaginate -> "paginate"
+  }
+}
+
+test "union: member fattens into union-typed params" {
+  assert(stepKind(UGoto("https://y/", "load", 1)) == "goto")
+  assert(stepKind(UPaginate("li.next a", 3)) == "paginate")
+}
+
+test "union: member reassignment keeps identity" {
+  var s: UStep = fromJson<UStep>(gotoJson())
+  assert(s is UGoto)
+  s = UPaginate("li.next a", 7)
+  assert(s is UPaginate)
+  assert((s as UPaginate).maxPages == 7)
+  s = UCollect("div.quote", Map<String, UFieldDef>())
+  assert(s is UCollect)
+}

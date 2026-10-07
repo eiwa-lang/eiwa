@@ -2260,7 +2260,7 @@ fn emitExpressionRaw(
                                                     }
                                                 }
                                             } else {
-                                                arg_val = try coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name);
+                                                arg_val = try coerceToNominal(ctx, mod, builder, arg_val, arg_c_name, contract_c_name);
                                             }
                                         }
                                     }
@@ -2503,7 +2503,7 @@ fn emitExpressionRaw(
                                                         }
                                                     }
                                                     if (contract_c_name.len > 0) {
-                                                        arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
+                                                        arg_val = coerceToNominal(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
                                                     }
                                                 }
                                             }
@@ -3179,7 +3179,7 @@ fn emitExpressionRaw(
                                                             }
                                                         }
                                                         if (contract_c_name.len > 0) {
-                                                            arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
+                                                            arg_val = coerceToNominal(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
                                                         } else if (global_contracts_ast_ptr) |ca| {
                                                             var it = ca.iterator();
                                                             while (it.next()) |entry| {
@@ -3430,7 +3430,7 @@ fn emitExpressionRaw(
                                         }
                                     }
                                     if (contract_c_name.len > 0) {
-                                        arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
+                                        arg_val = coerceToNominal(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch arg_val;
                                     } else if (global_contracts_ast_ptr) |ca| {
                                         var it = ca.iterator();
                                         while (it.next()) |entry| {
@@ -3511,7 +3511,7 @@ fn emitExpressionRaw(
                                     arg_c_name = n;
                                 }
                             }
-                            arg_val = coerceToContract(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch coerceArg(builder, arg_val, expected_type);
+                            arg_val = coerceToNominal(ctx, mod, builder, arg_val, arg_c_name, contract_c_name) catch coerceArg(builder, arg_val, expected_type);
                             if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(arg_val)) != llvm.LLVMStructTypeKind) {
                                 arg_val = coerceArg(builder, arg_val, expected_type);
                             }
@@ -4314,6 +4314,14 @@ fn emitExpressionRaw(
             const target_rt_opt = node.resolved_type orelse as_e.type_ref.resolved_type;
             if (as_e.value.resolved_type) |v_rt| {
                 if (target_rt_opt) |target_rt| {
+                    if (types_mapping.isUnionType(target_rt.*, global_unions_ast_ptr)) {
+                        const fat_t = types_mapping.getFatPointerType(ctx);
+                        if (llvm.LLVMTypeOf(val) == fat_t) return val;
+                        if (concreteCNameForVtable(v_rt)) |concrete_c| {
+                            return coerceToUnion(ctx, mod, builder, val, concrete_c) catch val;
+                        }
+                        return val;
+                    }
                     if (types_mapping.isContractType(target_rt.*, global_contracts_ast_ptr)) {
                         const target_c = switch (target_rt.*) {
                             .Custom => |n| n,
@@ -5590,6 +5598,22 @@ pub fn coerceToUnion(
     member_c_name: []const u8,
 ) !llvm.LLVMValueRef {
     return coerceToContractChecked(ctx, mod, builder, data_val, member_c_name, "Serializable");
+}
+
+/// Call-arg adaptation: union-typed params pin the member vtable,
+/// everything else keeps the contract path.
+pub fn coerceToNominal(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    arg_val: llvm.LLVMValueRef,
+    arg_c_name: []const u8,
+    nominal_c_name: []const u8,
+) !llvm.LLVMValueRef {
+    if (types_mapping.isUnionTypeString(nominal_c_name, global_unions_ast_ptr)) {
+        return coerceToUnion(ctx, mod, builder, arg_val, arg_c_name);
+    }
+    return coerceToContract(ctx, mod, builder, arg_val, arg_c_name, nominal_c_name);
 }
 
 pub fn coerceToContract(

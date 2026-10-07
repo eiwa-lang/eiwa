@@ -39,6 +39,35 @@ fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
     }
 }
 
+/// Source union name behind a (possibly nullable) expected type, if any.
+pub fn unionTargetOf(self: *TypeChecker, typ: *const EiwaType) ?[]const u8 {
+    const b = extractBaseType(typ);
+    if (b.* != .Custom) return null;
+    const actual = self.alias_map.get(b.Custom) orelse b.Custom;
+    if (self.unions_ast.get(actual)) |u| return u.data.union_decl.name;
+    return null;
+}
+
+/// Explicit upcast carrying member values into union slots.
+pub fn wrapUnionUpcast(self: *TypeChecker, node: *ASTNode, value: *ASTNode, union_src: []const u8) anyerror!*ASTNode {
+    const tr = try self.allocator.create(ast.ASTTypeRef);
+    tr.* = .{
+        .name = union_src,
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+    };
+    const as_node = try self.allocator.create(ASTNode);
+    as_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .as_expr = .{ .value = value, .type_ref = tr } },
+    };
+    return as_node;
+}
+
 pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const a = &node.data.assignment;
     var assigned_type: *const EiwaType = undefined;
@@ -81,6 +110,17 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         if (!self.isCompatible(expected, assigned_type)) {
             self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} when reassigning variable '{s}'.", .{ expected.*, assigned_type.*, a.name });
             return error.TypeError;
+        }
+        if (unionTargetOf(self, expected)) |u_src| {
+            const a_base = extractBaseType(assigned_type);
+            if (a_base.* == .Custom) {
+                const a_actual = self.alias_map.get(a_base.Custom) orelse a_base.Custom;
+                const u_actual = self.alias_map.get(u_src) orelse u_src;
+                if (!std.mem.eql(u8, a_actual, u_actual)) {
+                    a.value = try wrapUnionUpcast(self, node, a.value, u_src);
+                    assigned_type = try self.inferNode(a.value, scope);
+                }
+            }
         }
         a.is_boxed = vs.is_boxed;
 

@@ -5,6 +5,7 @@ const ast = @import("../ast.zig");
 const core = @import("core.zig");
 const type_system = @import("../type_system.zig");
 const infer_call_mod = @import("infer_call.zig");
+const infer_expr_mod = @import("infer_expr.zig");
 
 const ASTNode = core.ASTNode;
 const TypeChecker = core.TypeChecker;
@@ -969,6 +970,17 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                             self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
                             return error.TypeError;
                         }
+                        if (infer_expr_mod.unionTargetOf(self, pt)) |u_src| {
+                            const a_base = extractBaseType(assigned_type);
+                            if (a_base.* == .Custom) {
+                                const a_actual = self.alias_map.get(a_base.Custom) orelse a_base.Custom;
+                                const u_actual = self.alias_map.get(u_src) orelse u_src;
+                                if (!std.mem.eql(u8, a_actual, u_actual)) {
+                                    s.value = try infer_expr_mod.wrapUnionUpcast(self, node, s.value, u_src);
+                                    _ = try self.inferNode(s.value, scope);
+                                }
+                            }
+                        }
                         // sentinel-box scalars bound to nullable fields.
                         if (type_system.isNullableScalar(pt) and type_system.isRawScalar(assigned_type)) {
                             s.value.box_nullable_scalar = true;
@@ -990,6 +1002,17 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                             if (!self.isCompatible(pt, assigned_type)) {
                                 self.reportError(node.line, node.column, "TypeError: Expected {f} but found {f} when setting property '{s}'.", .{ pt.*, assigned_type.*, s.name });
                                 return error.TypeError;
+                            }
+                            if (infer_expr_mod.unionTargetOf(self, pt)) |u_src| {
+                                const a_base = extractBaseType(assigned_type);
+                                if (a_base.* == .Custom) {
+                                    const a_actual = self.alias_map.get(a_base.Custom) orelse a_base.Custom;
+                                    const u_actual = self.alias_map.get(u_src) orelse u_src;
+                                    if (!std.mem.eql(u8, a_actual, u_actual)) {
+                                        s.value = try infer_expr_mod.wrapUnionUpcast(self, node, s.value, u_src);
+                                        _ = try self.inferNode(s.value, scope);
+                                    }
+                                }
                             }
                             // sentinel-box scalars bound to nullable fields.
                             if (type_system.isNullableScalar(pt) and type_system.isRawScalar(assigned_type)) {
