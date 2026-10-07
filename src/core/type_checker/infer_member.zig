@@ -111,6 +111,7 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, m
     if (name_opt == null) return null;
     const lookup = self.alias_map.get(name_opt.?) orelse name_opt.?;
     const actual_name = lookup;
+    var method_needs_fallback = false;
     var class_node_opt = self.classes_ast.get(actual_name);
     if (class_node_opt == null and self.registry != null) {
         var mod_it = self.registry.?.modules.iterator();
@@ -134,6 +135,10 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, m
                 return prop.resolved_type orelse (self.resolveTypeRef(prop.type_ref) catch null);
             }
         }
+        // A same-named method without a usable return yet (expr body whose
+        // defining module validates after this use) must NOT fabricate Void:
+        // fall through to the contract signatures below, which carry
+        // declared returns. Void remains only the last resort.
         for (c.methods) |method| {
             if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, member_name)) {
                 if (method.data.fun_decl.type_ref) |tr| {
@@ -141,9 +146,8 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, m
                 } else if (method.data.fun_decl.is_expr_body) {
                     if (method.data.fun_decl.body.resolved_type) |rt| return rt;
                 }
-                const void_type = self.allocator.create(EiwaType) catch return null;
-                void_type.* = .Void;
-                return void_type;
+                method_needs_fallback = true;
+                break;
             }
         }
         for (c.contracts) |contract_name| {
@@ -179,13 +183,17 @@ fn inferGetExprForSingleType(self: *TypeChecker, target_type: *const EiwaType, m
                         } else if (method.data.fun_decl.is_expr_body) {
                             if (method.data.fun_decl.body.resolved_type) |rt| return rt;
                         }
-                        const void_type = self.allocator.create(EiwaType) catch return null;
-                        void_type.* = .Void;
-                        return void_type;
+                        method_needs_fallback = true;
+                        break;
                     }
                 }
             }
         }
+    }
+    if (method_needs_fallback) {
+        const void_type = self.allocator.create(EiwaType) catch return null;
+        void_type.* = .Void;
+        return void_type;
     }
     return null;
 }
@@ -550,6 +558,7 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 }
             }
             if (prop_type == null) {
+                var method_needs_fallback = false;
                 for (c.methods) |method| {
                     if (std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
                         if (method.data.fun_decl.type_ref) |tr| {
@@ -558,9 +567,11 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                             if (method.data.fun_decl.body.resolved_type) |rt| {
                                 prop_type = rt;
                             } else {
-                                const void_type = try self.allocator.create(EiwaType);
-                                void_type.* = .Void;
-                                prop_type = void_type;
+                                // Expr body whose defining module validates
+                                // after this use: do NOT fabricate Void.
+                                // Declared contract signatures are consulted
+                                // below; Void is only the last resort.
+                                method_needs_fallback = true;
                             }
                         } else {
                             const void_type = try self.allocator.create(EiwaType);
@@ -568,6 +579,31 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                             prop_type = void_type;
                         }
                         break;
+                    }
+                }
+                if (method_needs_fallback) {
+                    for (c.contracts) |contract_name| {
+                        const actual_contract = self.alias_map.get(contract_name) orelse contract_name;
+                        if (self.contracts_ast.get(actual_contract)) |contract_node| {
+                            for (contract_node.data.contract_decl.methods) |method| {
+                                if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
+                                    if (method.data.fun_decl.type_ref) |tr| {
+                                        prop_type = try self.resolveTypeRef(tr);
+                                    } else {
+                                        const void_type = try self.allocator.create(EiwaType);
+                                        void_type.* = .Void;
+                                        prop_type = void_type;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        if (prop_type != null) break;
+                    }
+                    if (prop_type == null) {
+                        const void_type = try self.allocator.create(EiwaType);
+                        void_type.* = .Void;
+                        prop_type = void_type;
                     }
                 }
             }

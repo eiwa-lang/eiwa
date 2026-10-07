@@ -1,0 +1,32 @@
+// Helper module for string_plus_method_result_test.ei (L5): the failing
+// shape lives in an IMPORTED module, not the main file.
+type RedApiError(val detail: String) : Throwable {
+    implement fun message(): String {
+        return this.detail
+    }
+}
+
+type RedAuthError(val detail: String) : Throwable {
+    implement fun message(): String {
+        return this.detail
+    }
+}
+
+fun wrapOp(op: String): String {
+    val out = try {
+        op
+    } catch (e: Exception) {
+        "wrapped: " + e.message()
+    }
+    return out
+}
+
+fun detailOf(op: String): String {
+    val out = try {
+        op
+    } catch (e: Exception) {
+        val detail: String = e.message()
+        "got " + detail
+    }
+    return out
+}

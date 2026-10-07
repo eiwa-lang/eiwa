@@ -1,0 +1,127 @@
+// Run: ./bin/eiwac test samples/tests/string_plus_method_result_test.ei
+//
+// RED (L5): in an IMPORTED module that defines 2+ `message(): String`
+// implementors, `e.message()` on a catch-bound Exception loses its return
+// type (`Expected 'Stringable' but found 'Void'`), while the identical
+// shape in the main file compiles. Template form works in both.
+// Helper: samples/l5catch.ei. Controls below prove the scope: main-file
+// `+`, annotated assign, throw-construct and try-expression all pass —
+// only the imported-module shape fails. Expected after fix: compiles,
+// all tests pass.
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson } from "std.json"
+import { wrapOp, detailOf } from ".samples.l5catch"
+
+fun bang(): String {
+    return "!"
+}
+
+type RedNamed(val name: String) {
+    fun label(): String {
+        return "n:" + this.name
+    }
+}
+
+test "plus: free-fun-call result concatenates" {
+    assert("a" + bang() == "a!")
+}
+
+test "plus: method-call result concatenates" {
+    val n = RedNamed("x")
+    assert("a" + n.label() == "an:x")
+}
+
+test "plus: catch-bound exception message concatenates" {
+    var out = ""
+    try {
+        throw Exception("boom")
+    } catch (e: Exception) {
+        out = "got " + e.message()
+    }
+    assert(out == "got boom")
+}
+
+type RedWrap(val detail: String) : Throwable {
+    implement fun message(): String {
+        return this.detail
+    }
+}
+
+type RedSecond(val detail: String) : Throwable {
+    implement fun message(): String {
+        return this.detail
+    }
+}
+
+test "plus: concatenated message inside throw-construct" {
+    var seen = ""
+    try {
+        try {
+            throw Exception("boom")
+        } catch (e: Exception) {
+            throw RedWrap("got " + e.message())
+        }
+    } catch (e: RedWrap) {
+        seen = e.message()
+    }
+    assert(seen == "got boom")
+}
+
+type RedDoc(val docName: String) : Serializable
+
+fun parseRed(raw: String): RedDoc {
+    val d = try {
+        fromJson<RedDoc>(raw)
+    } catch (e: Exception) {
+        throw RedWrap("bad doc: " + e.message())
+    }
+    return d
+}
+
+test "plus: concatenated message in try-expression catch" {
+    val d = parseRed("{\"docName\": \"x\"}")
+    assert(d.docName == "x")
+}
+
+// Full-shape replica of scraping's pipeline.ei (FieldDef/Step/Pipeline +
+// validate + InvalidPipeline mapping with `+`). This is the exact shape
+// that failed there with `Expected 'Stringable' but found 'Void'`.
+type RedFieldDef(val fname: String, val selector: String, val many: Bool, val attr: String) : Serializable
+
+type RedPipeStep(val kind: String, val url: String, val selector: String, val maxPages: Int, val fields: List<RedFieldDef>) : Serializable {
+    fun isGoto(): Bool {
+        return this.kind == "goto"
+    }
+}
+
+type RedPipe(val pname: String, val steps: List<RedPipeStep>, val required: List<String>) : Serializable {
+    fun validatePipe(): Void {
+        if (this.steps.size() == 0) {
+            throw RedWrap("no steps")
+        }
+    }
+}
+
+fun parseRedPipe(raw: String): RedPipe {
+    val p = try {
+        fromJson<RedPipe>(raw)
+    } catch (e: Exception) {
+        throw RedWrap("bad pipe: " + e.message())
+    }
+    p.validatePipe()
+    return p
+}
+
+test "plus: full pipeline shape concatenates in catch" {
+    val p = parseRedPipe("{\"pname\": \"q\", \"steps\": [{\"kind\": \"goto\", \"url\": \"https://example.com/\", \"selector\": \"\", \"maxPages\": 0, \"fields\": []}], \"required\": []}")
+    assert(p.pname == "q")
+}
+
+test "plus: imported module concatenates catch message" {
+    assert(wrapOp("ok") == "ok")
+}
+
+test "plus: imported module annotates catch message" {
+    assert(detailOf("ok") == "ok")
+}
