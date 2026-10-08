@@ -103,10 +103,9 @@ fn emitReturnValue(
                 else => "",
             };
         }
-        // Union returns pin the member's vtable (the union itself has none).
         var union_ret = false;
         if (declared_ret) |drt| {
-            union_ret = types_mapping.isUnionType(drt.*, expression.global_unions_ast_ptr);
+            union_ret = types_mapping.isRegisteredUnion(drt.*, expression.global_unions_ast_ptr);
         }
         if (val_node.resolved_type) |val_rt| {
             if (expression.concreteCNameForVtable(val_rt)) |val_c_name| {
@@ -645,8 +644,8 @@ pub fn emitStatement(
                             vtable_target = eiwa_types.stripNull(res_type);
                         }
                     }
-                    // Union targets pin the member's vtable, like returns above.
-                    const is_union_target = types_mapping.isUnionType(res_type.*, expression.global_unions_ast_ptr);
+                    // Union targets pin the member descriptor, like returns above.
+                    const is_union_target = types_mapping.isRegisteredUnion(res_type.*, expression.global_unions_ast_ptr);
                     if (is_union_target) {
                         if (init_node.resolved_type) |init_rt| {
                             const fat_t = types_mapping.getFatPointerType(ctx);
@@ -654,6 +653,8 @@ pub fn emitStatement(
                                 const init_base = eiwa_types.extractBaseType(init_rt).*;
                                 if (init_base == .Custom) {
                                     val = expression.coerceToUnion(ctx, mod, builder, val, init_base.Custom) catch val;
+                                } else if (init_base == .String) {
+                                    val = expression.coerceToUnion(ctx, mod, builder, val, "String") catch val;
                                 }
                             }
                         }

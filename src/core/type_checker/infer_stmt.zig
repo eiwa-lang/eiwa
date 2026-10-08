@@ -975,7 +975,7 @@ fn prepareCatchScope(self: *TypeChecker, node: *ASTNode, c: ast.CatchBlock, catc
 
     if (c.var_name) |var_name| {
         var var_type: *const EiwaType = throwable_type;
-        if (c.types.len == 1) {
+        if (c.types.len == 1 and c.types[0].union_types.len == 0) {
             var_type = try self.resolveTypeRef(c.types[0]);
         }
         try catch_scope.define(var_name, var_type, false, false);

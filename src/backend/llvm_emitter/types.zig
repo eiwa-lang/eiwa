@@ -43,7 +43,7 @@ pub fn getLLVMTypeWithContracts(ctx: llvm.LLVMContextRef, resolved_type: types.E
     }
     // Unions share the contract fat-pointer layout (lazy import avoids a cycle).
     const expression = @import("expression.zig");
-    if (isUnionType(resolved_type, expression.global_unions_ast_ptr)) {
+    if (isRegisteredUnion(resolved_type, expression.global_unions_ast_ptr)) {
         return getFatPointerType(ctx);
     }
     switch (resolved_type) {
@@ -107,32 +107,70 @@ pub fn getFatPointerType(ctx: llvm.LLVMContextRef) llvm.LLVMTypeRef {
     return llvm.LLVMStructTypeInContext(ctx, &fields, 2, 0);
 }
 
-pub fn isUnionType(resolved_type: types.EiwaType, unions_ast: ?*std.StringHashMap(*ast.ASTNode)) bool {
-    var base = types.extractBaseType(&resolved_type);
-    while (base.* == .Union or base.* == .Pointer) {
-        if (base.* == .Union) {
-            if (base.Union.left.* != .Null) {
-                base = types.extractBaseType(base.Union.left);
-            } else {
-                base = types.extractBaseType(base.Union.right);
-            }
-        } else if (base.* == .Pointer) {
-            base = types.extractBaseType(base.Pointer);
-        }
-    }
-    const name = switch (base.*) {
-        .Custom => |n| n,
-        .GenericInstance => |gi| gi.base_name,
-        else => return false,
-    };
-    const ua = unions_ast orelse return false;
-    return ua.contains(name);
-}
-
 pub fn isUnionTypeString(type_arg: []const u8, unions_ast: ?*std.StringHashMap(*ast.ASTNode)) bool {
     const ua = unions_ast orelse return false;
     return ua.contains(type_arg);
 }
+
+/// True for a closed union WITH a registered entry (declared name or
+/// structural `.Union` whose `formatSafe` key is registered). Open shapes
+/// stay false and keep the legacy lowering.
+pub fn isRegisteredUnion(typ: types.EiwaType, unions_ast: ?*std.StringHashMap(*ast.ASTNode)) bool {
+    const ua = unions_ast orelse return false;
+    var base = types.extractBaseType(&typ);
+    while (true) {
+        if (base.* == .Pointer) {
+            base = types.extractBaseType(base.Pointer);
+            continue;
+        }
+        if (base.* == .Union) {
+            const l = base.Union.left;
+            const r = base.Union.right;
+            if (l.* == .Null and r.* != .Null) {
+                base = types.extractBaseType(r);
+                continue;
+            }
+            if (r.* == .Null and l.* != .Null) {
+                base = types.extractBaseType(l);
+                continue;
+            }
+        }
+        break;
+    }
+    switch (base.*) {
+        .Custom => |n| return ua.contains(n),
+        .GenericInstance => |gi| return ua.contains(gi.base_name),
+        else => {},
+    }
+    if (base.* != .Union) return false;
+    // Same `formatSafe` key the checker uses for the anonymous companion;
+    // a divergence here silently breaks `is` identity, so share the function.
+    var key = UnionKeyWriter{ .buf = undefined };
+    base.formatSafe(key.writer()) catch return false;
+    return ua.contains(key.buf[0..key.pos]);
+}
+
+/// Stack writer for `formatSafe` without allocation; overflow fails so the
+/// caller treats the key as unregistered.
+const UnionKeyWriter = struct {
+    buf: [256]u8 = undefined,
+    pos: usize = 0,
+
+    const Interface = struct {
+        state: *UnionKeyWriter,
+
+        pub fn writeAll(self: @This(), s: []const u8) !void {
+            const st = self.state;
+            if (st.pos + s.len > st.buf.len) return error.NoSpaceLeft;
+            @memcpy(st.buf[st.pos..][0..s.len], s);
+            st.pos += s.len;
+        }
+    };
+
+    fn writer(self: *@This()) Interface {
+        return .{ .state = self };
+    }
+};
 
 /// Returns true if `resolved_type` represents a Stringable type
 /// (primitives, pointers, unions, or Stringable contracts).

@@ -18,10 +18,16 @@ pub fn cloneTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!*as
     for (ref.generic_args, 0..) |arg, i| {
         generic_args[i] = try self.cloneTypeRef(arg);
     }
-    
+
+    var union_types = try self.allocator.alloc(*const ast.ASTTypeRef, ref.union_types.len);
+    for (ref.union_types, 0..) |arg, i| {
+        union_types[i] = try self.cloneTypeRef(arg);
+    }
+
     new_ref.* = .{
         .name = name,
         .generic_args = generic_args,
+        .union_types = union_types,
         .is_array = ref.is_array,
         .is_nullable = ref.is_nullable,
         .is_function = ref.is_function,

@@ -531,7 +531,7 @@ fun main() {
 > **Closed sums:** open unions like `String | Int` accept any listed type
 > structurally. When the variants carry payloads and the set must be closed
 > (compiler-checked exhaustiveness + serialization dispatch), use `union`
-> (§11.10) instead.
+> (§11.10) — or an inline anonymous union (§11.11) for one-off sets.
 
 ### 5.2 Compile-Time Null Safety (`T | Null`)
 
@@ -1510,6 +1510,37 @@ val back = fromJson<Pipeline>(serializeJsonValue(pipe.serialize()))
 
 `List<Step>`, `Map<String, Step>` and direct `Step` fields all dispatch
 element-wise.
+
+### 11.11 Anonymous unions (`A | B`)
+
+When a member set is used once, the `union` declaration can be skipped:
+any closed set of member types works inline, with the same dispatch and
+exhaustiveness rules as a declared `union`.
+
+```kotlin
+fun label(s: Goto | Collect): String {
+  return when (s) {
+    is Goto -> "goto:" + (s as Goto).url
+    is Collect -> "collect"
+  }
+}
+
+val s: Goto | Collect = Goto("https://x/", "load", 5000)
+assert(s is Goto)
+assert(label(s) == "goto:https://x/")
+```
+
+Anonymous unions compose in locals, params, returns, `List<Goto | Collect>`
+and `Map<String, Goto | Collect>`; `is`/`as` narrow like §10.2, and a `when`
+without `else` must cover every member. For JSON they use the same
+single-key wire format as §11.10 (`fromJson<Goto | Collect>(raw)`).
+
+Rules (v1):
+- Members are reference `type`s plus `String`; `Int`/`Double`/`Bool`
+  members are rejected (scalars arrive in Phase 97).
+- Wire keys are fixed lowercase (`Goto` → `"goto"`); there is no `@Alias`
+  inline. Declared unions and anonymous unions with the same members are
+  distinct types — mixing them is a compile-time error.
 
 ---
 

@@ -5,6 +5,7 @@ const ast = @import("../ast.zig");
 const core = @import("core.zig");
 const type_system = @import("../type_system.zig");
 const infer_call_mod = @import("infer_call.zig");
+const infer_decl_mod = @import("infer_decl.zig");
 const infer_expr_mod = @import("infer_expr.zig");
 
 const ASTNode = core.ASTNode;
@@ -85,6 +86,17 @@ fn inferContractMember(self: *TypeChecker, base_name: []const u8, type_args: []c
                 void_type.* = .Void;
                 return void_type;
             }
+        }
+    }
+    return null;
+}
+
+fn unionMethodType(self: *TypeChecker, union_node: *ASTNode, name: []const u8) anyerror!?*const EiwaType {
+    for (union_node.data.union_decl.methods) |method| {
+        if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, name)) {
+            if (method.resolved_type) |rt| return rt;
+            if (method.data.fun_decl.type_ref) |tr| return try self.resolveTypeRef(tr);
+            return null;
         }
     }
     return null;
@@ -609,15 +621,18 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 }
             }
         } else if (self.unions_ast.get(actual_name)) |union_node| {
-            for (union_node.data.union_decl.methods) |method| {
-                if (method.data == .fun_decl and std.mem.eql(u8, method.data.fun_decl.name, g.name)) {
-                    if (method.resolved_type) |rt| {
-                        prop_type = rt;
-                    } else if (method.data.fun_decl.type_ref) |tr| {
-                        prop_type = try self.resolveTypeRef(tr);
-                    }
-                    break;
-                }
+            prop_type = try unionMethodType(self, union_node, g.name);
+        }
+    } else if (base_type.* == .Union) {
+        if (core.isClosedUnionShape(self, base_type)) {
+            const unode = if (std.mem.eql(u8, g.name, "serialize"))
+                try infer_decl_mod.ensureAnonSerialize(self, node, base_type)
+            else if (std.mem.eql(u8, g.name, "toString") or std.mem.eql(u8, g.name, "hashCode") or std.mem.eql(u8, g.name, "equals"))
+                try infer_decl_mod.ensureAnonStringables(self, node, base_type)
+            else
+                null;
+            if (unode) |u| {
+                prop_type = try unionMethodType(self, u, g.name);
             }
         }
     } else if (base_type.* == .Array) {
@@ -833,6 +848,31 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 }
             }
         }
+    }
+
+    // Companion `T.deserialize` for structural receivers (no lookup name).
+    // Stays top-level: nesting it in the lookup block would hide it.
+    if (prop_type == null and std.mem.eql(u8, g.name, "deserialize") and g.object.data == .identifier) {
+        if (core.isClosedUnionShape(self, obj_type)) {
+            const unode = try infer_decl_mod.ensureAnonDeserialize(self, node, obj_type);
+            const actual_c = unode.data.union_decl.resolved_c_name.?;
+            if (self.objects_ast.get(actual_c)) |obj_node| {
+                for (obj_node.data.object_decl.members) |member| {
+                    if (member.data == .fun_decl and std.mem.eql(u8, member.data.fun_decl.name, g.name)) {
+                        // Heal hollow bodies generated during the declaration
+                        // pass (fun bodies infer in a later pass).
+                        if (member.resolved_type == null or (self.pass != .declaration and member.data.fun_decl.body.resolved_type == null)) {
+                            _ = try self.inferNode(member, scope);
+                        }
+                        prop_type = member.resolved_type;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (prop_type == null) {
         self.reportError(node.line, node.column, "TypeError: Unresolved property '{s}' on type {f}.", .{ g.name, obj_type.* });
         return error.TypeError;
     }

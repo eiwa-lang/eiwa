@@ -2447,10 +2447,11 @@ pub const LLVMEmitter = struct {
                                     const init_c_name = switch (init_rt.*) {
                                         .Custom => |n| n,
                                         .GenericInstance => |gi| gi.base_name,
+                                        .String => "String",
                                         else => "",
                                     };
                                     if (init_c_name.len > 0 and target_c_name.len > 0) {
-                                        if (types_mapping.isUnionType(v_rt.*, expression.global_unions_ast_ptr)) {
+                                        if (types_mapping.isRegisteredUnion(v_rt.*, expression.global_unions_ast_ptr)) {
                                             val = expression.coerceToUnion(self.context, mod, self.builder, val, init_c_name) catch val;
                                         } else {
                                             val = expression.coerceToContract(self.context, mod, self.builder, val, init_c_name, target_c_name) catch val;
@@ -4296,17 +4297,17 @@ pub const LLVMEmitter = struct {
                             };
                         }
                     }
-                    // Union returns use the member's Serializable vtable.
                     var union_ret = false;
                     if (f.type_ref) |tr| {
                         if (tr.resolved_type) |rt| {
-                            union_ret = types_mapping.isUnionType(rt.*, expression.global_unions_ast_ptr);
+                            union_ret = types_mapping.isRegisteredUnion(rt.*, expression.global_unions_ast_ptr);
                         }
                     }
                     if (f.body.resolved_type) |val_rt| {
                         const val_c_name = switch (ts.extractBaseType(val_rt).*) {
                             .Custom => |n| n,
                             .GenericInstance => |gi| gi.base_name,
+                            .String => "String",
                             else => "",
                         };
                         if (val_c_name.len > 0) {

@@ -529,6 +529,15 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             }
         }
         if (self.alias_map.get(i.name)) |c_name| {
+            // `T` bound to a closed union (e.g. `fromJson<A | B>`): surface the
+            // stored union so dispatch sees members, not the mangled key.
+            // Keep scoped to closed unions; other bindings resolve as before.
+            if (scope.lookupVariableSymbol(c_name)) |vs| {
+                if (core.isClosedUnionShape(self, vs.eiwa_type)) {
+                    t.* = vs.eiwa_type.*;
+                    return;
+                }
+            }
             t.* = .{ .Custom = c_name };
             return;
         }

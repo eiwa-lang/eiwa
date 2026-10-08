@@ -1626,7 +1626,18 @@ pub fn inferUnionDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
         try generateUnionDeserialize(self, node, ud);
         try generateUnionStringables(self, node, ud);
     }
+    const actual_c_infer = ud.resolved_c_name.?;
+    try inferUnionMethods(self, ud, scope, actual_c_infer);
+    t.* = .Void;
+}
+
+fn inferUnionMethods(self: *TypeChecker, ud: anytype, scope: *Scope, actual_c_name: []const u8) anyerror!void {
     for (ud.methods) |method| {
+        try inferUnionMethod(self, method, scope, actual_c_name);
+    }
+}
+
+fn inferUnionMethod(self: *TypeChecker, method: *ASTNode, scope: *Scope, actual_c_name: []const u8) anyerror!void {
         var union_scope = Scope.init(self.allocator, scope);
         defer union_scope.deinit();
         const union_t = try self.allocator.create(EiwaType);
@@ -1641,8 +1652,6 @@ pub fn inferUnionDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiw
             self.current_type_c_name = old_type_c_name;
         }
         _ = try self.inferNode(method, &union_scope);
-    }
-    t.* = .Void;
 }
 
 fn isUnionScalar(name: []const u8) bool {
@@ -1650,6 +1659,149 @@ fn isUnionScalar(name: []const u8) bool {
         if (std.mem.eql(u8, name, s)) return true;
     }
     return false;
+}
+
+/// Companion key for a structural union. Member order is significant.
+fn unionAnonKey(self: *TypeChecker, typ: *const EiwaType) ![]const u8 {
+    var buf = ArrayList(u8).init(self.allocator);
+    defer buf.deinit();
+    try typ.formatSafe(buf.writer());
+    return try buf.toOwnedSlice();
+}
+
+/// Backing entry for an anonymous `A | B`, so downstream paths reuse the
+/// declared machinery.
+pub fn ensureAnonUnion(self: *TypeChecker, typ: *const EiwaType, line: usize, col: usize) anyerror!*ASTNode {
+    const key = try unionAnonKey(self, typ);
+    if (self.unions_ast.get(key)) |existing| return existing;
+    const members = core.closedUnionOf(self, typ) orelse {
+        self.reportError(line, col, "TypeError: not a closed union (members must be concrete types or String).", .{});
+        return error.TypeError;
+    };
+    var converted = try self.allocator.alloc(ast.UnionMember, members.len);
+    for (members, 0..) |m, i| {
+        var wire_buf = ArrayList(u8).init(self.allocator);
+        defer wire_buf.deinit();
+        const short = EiwaType.shortName(m.canonical);
+        const src = if (m.is_string) "String" else short;
+        for (src) |c| try wire_buf.append(std.ascii.toLower(c));
+        converted[i] = .{
+            .name = m.canonical,
+            .alias = try wire_buf.toOwnedSlice(),
+            .is_string = m.is_string,
+        };
+    }
+    const unode = try self.allocator.create(ASTNode);
+    unode.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .union_decl = .{
+            .annotations = &.{},
+            .name = key,
+            .members = converted,
+            .methods = &.{},
+            .resolved_c_name = key,
+            .serde_generated = false,
+            .platform_targets = &.{},
+        } },
+    };
+    try self.unions_ast.put(key, unode);
+    try self.alias_map.put(key, key);
+    return unode;
+}
+
+fn anonHasMethod(unode: *ASTNode, name: []const u8) bool {
+    for (unode.data.union_decl.methods) |m| {
+        if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, name)) return true;
+    }
+    return false;
+}
+
+fn validateAnonMembers(self: *TypeChecker, use_node: *ASTNode, unode: *ASTNode, need_serialize: bool) anyerror!void {
+    for (unode.data.union_decl.members) |m| {
+        if (m.is_string) continue;
+        const member_node = self.classes_ast.get(m.name);
+        if (member_node == null or member_node.?.data != .type_decl) {
+            self.reportError(use_node.line, use_node.column, "TypeError: unknown member type '{s}' in anonymous union.", .{m.name});
+            return error.TypeError;
+        }
+        const mt = member_node.?.data.type_decl;
+        if (need_serialize) {
+            if (!mt.serde_generated) {
+                self.reportError(use_node.line, use_node.column, "TypeError: member '{s}' must be declared before use so its serializers exist.", .{m.name});
+                return error.TypeError;
+            }
+            if (!self.implementsContract(m.name, "Serializable")) {
+                self.reportError(use_node.line, use_node.column, "TypeError: member '{s}' of anonymous union must implement Serializable.", .{m.name});
+                return error.TypeError;
+            }
+        }
+    }
+}
+
+fn inferAnonMethods(self: *TypeChecker, unode: *ASTNode, before: usize) anyerror!void {
+    const ud = &unode.data.union_decl;
+    var uscope = Scope.init(self.allocator, &self.global_scope);
+    defer uscope.deinit();
+    for (ud.methods[before..]) |method| {
+        // Bodies stay hollow when first generated during the declaration
+        // pass (fun bodies infer in a later pass). Skip fully inferred
+        // methods so a later pass heals the rest without double-emitting.
+        if (method.data.fun_decl.body.resolved_type != null) continue;
+        try inferUnionMethod(self, method, &uscope, ud.resolved_c_name.?);
+        var already = false;
+        for (self.monomorphized_nodes.items) |m| {
+            if (m == method) {
+                already = true;
+                break;
+            }
+        }
+        if (!already) try self.monomorphized_nodes.append(method);
+    }
+}
+
+pub fn ensureAnonSerialize(self: *TypeChecker, use_node: *ASTNode, typ: *const EiwaType) anyerror!*ASTNode {
+    const unode = try ensureAnonUnion(self, typ, use_node.line, use_node.column);
+    if (!anonHasMethod(unode, "serialize")) {
+        try validateAnonMembers(self, use_node, unode, true);
+        const ud = &unode.data.union_decl;
+        const before = ud.methods.len;
+        try generateUnionSerialize(self, use_node, ud);
+        try inferAnonMethods(self, unode, before);
+    } else if (self.pass != .declaration) {
+        try inferAnonMethods(self, unode, 0);
+    }
+    return unode;
+}
+
+pub fn ensureAnonDeserialize(self: *TypeChecker, use_node: *ASTNode, typ: *const EiwaType) anyerror!*ASTNode {
+    const unode = try ensureAnonUnion(self, typ, use_node.line, use_node.column);
+    const ud = &unode.data.union_decl;
+    const actual_c_name = ud.resolved_c_name.?;
+    if (self.objects_ast.get(actual_c_name)) |existing_obj| {
+        for (existing_obj.data.object_decl.members) |m| {
+            if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, "deserialize")) return unode;
+        }
+    }
+    try validateAnonMembers(self, use_node, unode, true);
+    try generateUnionDeserialize(self, use_node, ud);
+    return unode;
+}
+
+pub fn ensureAnonStringables(self: *TypeChecker, use_node: *ASTNode, typ: *const EiwaType) anyerror!*ASTNode {
+    const unode = try ensureAnonUnion(self, typ, use_node.line, use_node.column);
+    if (!anonHasMethod(unode, "toString")) {
+        try validateAnonMembers(self, use_node, unode, false);
+        const ud = &unode.data.union_decl;
+        const before = ud.methods.len;
+        try generateUnionStringables(self, use_node, ud);
+        try inferAnonMethods(self, unode, before);
+    } else if (self.pass != .declaration) {
+        try inferAnonMethods(self, unode, 0);
+    }
+    return unode;
 }
 
 fn unionWireKey(self: *TypeChecker, m: *const ast.UnionMember) []const u8 {
@@ -1804,11 +1956,17 @@ fn generateUnionSerialize(self: *TypeChecker, node: *ASTNode, ud: anytype) anyer
     for (ud.members) |m| {
         const cond = try makeUnionIs(self, line, col, "this", m.name);
         const casted = try makeUnionAs(self, line, col, "this", m.name);
-        const ser_call = try makeObjMethodCall(self, line, col, casted, "serialize", &.{});
+        const ser_val = if (m.is_string) blk: {
+            const box_args = try self.allocator.alloc(*ASTNode, 1);
+            box_args[0] = casted;
+            break :blk try makeCall(self, line, col, "SerdeString", box_args, &.{});
+        } else blk: {
+            break :blk try makeObjMethodCall(self, line, col, casted, "serialize", &.{});
+        };
         const key_lit = try makeStringLiteral(self, line, col, unionWireKey(self, &m));
         const field_args = try self.allocator.alloc(*ASTNode, 2);
         field_args[0] = key_lit;
-        field_args[1] = ser_call;
+        field_args[1] = ser_val;
         const field = try makeCall(self, line, col, "SerdeField", field_args, &.{});
         const arr_elems = try self.allocator.alloc(*ASTNode, 1);
         arr_elems[0] = field;
@@ -1953,7 +2111,10 @@ fn generateUnionDeserialize(self: *TypeChecker, node: *ASTNode, ud: anytype) any
         const inner_ident = try makeIdent(self, line, col, "inner");
         const inner_args = try self.allocator.alloc(*ASTNode, 1);
         inner_args[0] = inner_ident;
-        const member_des = try makeObjMethodCall(self, line, col, member_ident, "deserialize", inner_args);
+        const member_des = if (m.is_string)
+            try makeCall(self, line, col, "asString", inner_args, &.{})
+        else
+            try makeObjMethodCall(self, line, col, member_ident, "deserialize", inner_args);
         try stmts.append(try makeUnionIfReturn(self, line, col, eq_cond, member_des));
     }
 
@@ -2359,6 +2520,10 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
             if (serdeUnionCName(self, elem_name)) |uc| {
                 try requireUnionSerializeOrder(self, line, col, uc, elem_name);
             }
+        } else if (closedUnionOfRef(self, elem_tr)) |ut| {
+            list_wrapper_name = "SerdeObjectList";
+            needs_generic = true;
+            _ = try ensureAnonSerialize(self, field_ident, ut);
         }
 
         if (list_wrapper_name) |wrapper| {
@@ -2367,12 +2532,17 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
 
             var call_type_args: []const *const ast.ASTTypeRef = &.{};
             if (needs_generic) {
-                const mono_elem_tr = try self.allocator.create(ast.ASTTypeRef);
-                mono_elem_tr.* = .{
-                    .name = elem_name,
-                    .generic_args = &.{},
-                    .is_array = false,
-                    .is_nullable = false,
+                const mono_elem_tr = if (closedUnionOfRef(self, elem_tr) != null)
+                    try self.cloneTypeRef(elem_tr)
+                else blk: {
+                    const flat = try self.allocator.create(ast.ASTTypeRef);
+                    flat.* = .{
+                        .name = elem_name,
+                        .generic_args = &.{},
+                        .is_array = false,
+                        .is_nullable = false,
+                    };
+                    break :blk flat;
                 };
                 const t_args = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
                 t_args[0] = mono_elem_tr;
@@ -2399,9 +2569,11 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
             const box_args = try self.allocator.alloc(*ASTNode, 1);
             box_args[0] = x_ident;
             box_expr = try makeCall(self, line, col, box_fn, box_args, &.{});
-        } else if (val_tr.generic_args.len == 0 and (self.implementsContract(val_name, "Serializable") or isSerdeUnion(self, val_name))) {
+        } else if (val_tr.generic_args.len == 0 and (self.implementsContract(val_name, "Serializable") or isSerdeUnion(self, val_name) or closedUnionOfRef(self, val_tr) != null)) {
             if (serdeUnionCName(self, val_name)) |uc| {
                 try requireUnionSerializeOrder(self, line, col, uc, val_name);
+            } else if (closedUnionOfRef(self, val_tr)) |ut| {
+                _ = try ensureAnonSerialize(self, x_ident, ut);
             }
             const get_ser = try self.allocator.create(ASTNode);
             get_ser.* = .{
@@ -2433,14 +2605,18 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
             };
             box_expr = ser_call;
         }
-
         const be = box_expr orelse return null;
-        const val_type_ref = try self.allocator.create(ast.ASTTypeRef);
-        val_type_ref.* = .{
-            .name = val_name,
-            .generic_args = &.{},
-            .is_array = false,
-            .is_nullable = false,
+        const val_type_ref = if (closedUnionOfRef(self, val_tr) != null)
+            try self.cloneTypeRef(val_tr)
+        else blk: {
+            const flat = try self.allocator.create(ast.ASTTypeRef);
+            flat.* = .{
+                .name = val_name,
+                .generic_args = &.{},
+                .is_array = false,
+                .is_nullable = false,
+            };
+            break :blk flat;
         };
         const lambda_params = try self.allocator.alloc(ast.Param, 1);
         lambda_params[0] = .{
@@ -2469,9 +2645,12 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
         const t_args = try self.allocator.alloc(*const ast.ASTTypeRef, 1);
         t_args[0] = val_tr;
         return try makeCall(self, line, col, "serializeStringMap", map_args, t_args);
-    } else if (self.implementsContract(name, "Serializable") or isSerdeUnion(self, name)) {
+    } else if (self.implementsContract(name, "Serializable") or isSerdeUnion(self, name) or closedUnionOfRef(self, tr) != null) {
         if (serdeUnionCName(self, name)) |uc| {
             try requireUnionSerializeOrder(self, line, col, uc, name);
+        }
+        if (closedUnionOfRef(self, tr)) |ut| {
+            _ = try ensureAnonSerialize(self, field_ident, ut);
         }
         const get_ser = try self.allocator.create(ASTNode);
         get_ser.* = .{
@@ -3147,6 +3326,15 @@ fn requireUnionDeserializeOrder(self: *TypeChecker, line: usize, col: usize, uni
     }
 }
 
+/// Closed-union type behind a TypeRef (nullability stripped), or null.
+/// Resolution failures fall through to the legacy paths — do not report here.
+fn closedUnionOfRef(self: *TypeChecker, tr: *const ast.ASTTypeRef) ?*const EiwaType {
+    const rt = self.resolveTypeRef(tr) catch return null;
+    const stripped = type_system.stripNull(rt);
+    if (core.isClosedUnionShape(self, stripped)) return stripped;
+    return null;
+}
+
 fn serdeWireName(prop: anytype) []const u8 {
     for (prop.annotations) |ann| {
         if (std.mem.eql(u8, ann.name, "Alias") and ann.arguments.len > 0) {
@@ -3750,10 +3938,14 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
             if (!prop.type_ref.is_nullable and prop.initializer == null) {
                 try required_checks.append(try serdeRequireCheck(self, node, &prop, c.name));
             }
-        } else if (prop.type_ref.generic_args.len == 0 and (self.implementsContract(name, "Serializable") or isSerdeUnion(self, name))) {
+        } else if (prop.type_ref.generic_args.len == 0 and (self.implementsContract(name, "Serializable") or isSerdeUnion(self, name) or closedUnionOfRef(self, prop.type_ref) != null)) {
             // Child.deserialize(asSerdeObject(obj.get("child")))
+            var companion: []const u8 = name;
             if (serdeUnionCName(self, name)) |uc| {
                 try requireUnionDeserializeOrder(self, node.line, node.column, uc, name);
+            } else if (closedUnionOfRef(self, prop.type_ref)) |ut| {
+                const unode = try ensureAnonDeserialize(self, node, ut);
+                companion = unode.data.union_decl.resolved_c_name.?;
             }
             const get_args = try self.allocator.alloc(*ASTNode, 1);
             get_args[0] = str_lit;
@@ -3763,7 +3955,7 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
             as_obj_child_args[0] = raw_field_call;
             const as_child_call = try makeCall(self, node.line, node.column, "asSerdeObject", as_obj_child_args, &.{});
 
-            const child_ident = try makeIdent(self, node.line, node.column, name);
+            const child_ident = try makeIdent(self, node.line, node.column, companion);
             const des_args = try self.allocator.alloc(*ASTNode, 1);
             des_args[0] = as_child_call;
             const child_call = try makeObjMethodCall(self, node.line, node.column, child_ident, "deserialize", des_args);
@@ -3834,11 +4026,15 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
                 const as_args = try self.allocator.alloc(*ASTNode, 1);
                 as_args[0] = v_ident;
                 map_expr = try makeCall(self, node.line, node.column, "asBool", as_args, &.{});
-            } else if (self.implementsContract(elem_name, "Serializable") or isSerdeUnion(self, elem_name)) {
+            } else if (self.implementsContract(elem_name, "Serializable") or isSerdeUnion(self, elem_name) or closedUnionOfRef(self, elem_tr) != null) {
+                var companion: []const u8 = elem_name;
                 if (serdeUnionCName(self, elem_name)) |uc| {
                     try requireUnionDeserializeOrder(self, node.line, node.column, uc, elem_name);
+                } else if (closedUnionOfRef(self, elem_tr)) |ut| {
+                    const unode = try ensureAnonDeserialize(self, node, ut);
+                    companion = unode.data.union_decl.resolved_c_name.?;
                 }
-                const elem_ident = try makeIdent(self, node.line, node.column, elem_name);
+                const elem_ident = try makeIdent(self, node.line, node.column, companion);
                 const des_item_args = try self.allocator.alloc(*ASTNode, 1);
                 des_item_args[0] = v_ident;
                 map_expr = try makeObjMethodCall(self, node.line, node.column, elem_ident, "deserialize", des_item_args);
@@ -3938,11 +4134,15 @@ fn generateSerdeDeserialize(self: *TypeChecker, node: *ASTNode, c: anytype) anye
                     const as_args = try self.allocator.alloc(*ASTNode, 1);
                     as_args[0] = v_ident;
                     map_expr = try makeCall(self, node.line, node.column, "asBool", as_args, &.{});
-                } else if (val_tr.generic_args.len == 0 and (self.implementsContract(val_name, "Serializable") or isSerdeUnion(self, val_name))) {
+                } else if (val_tr.generic_args.len == 0 and (self.implementsContract(val_name, "Serializable") or isSerdeUnion(self, val_name) or closedUnionOfRef(self, val_tr) != null)) {
+                    var companion: []const u8 = val_name;
                     if (serdeUnionCName(self, val_name)) |uc| {
                         try requireUnionDeserializeOrder(self, node.line, node.column, uc, val_name);
+                    } else if (closedUnionOfRef(self, val_tr)) |ut| {
+                        const unode = try ensureAnonDeserialize(self, node, ut);
+                        companion = unode.data.union_decl.resolved_c_name.?;
                     }
-                    const map_val_ident = try makeIdent(self, node.line, node.column, val_name);
+                    const map_val_ident = try makeIdent(self, node.line, node.column, companion);
                     const des_item_args = try self.allocator.alloc(*ASTNode, 1);
                     des_item_args[0] = v_ident;
                     map_expr = try makeObjMethodCall(self, node.line, node.column, map_val_ident, "deserialize", des_item_args);

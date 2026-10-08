@@ -1859,17 +1859,20 @@ Semântica alvo:
 - [x] **Task 95.4:** Emitter: fat-pointer lowering, member→union coercion (returns, var-init, globals, call args, literals, `as`), `is`/`when` vtable identity, narrowed rebind, method declaration/emission/reachability; tripwire for thin union values.
 - [x] **Task 95.5:** Docs (tour §1/§5/§10/§11/§21, MCP `docs.ei` + lesson 16) + roadmap.
 - [x] **Verify:** `union_serde_test.ei` 14/14 (decode ×3, unknown/empty/double tag, recursive missing field, round-trips incl. `List` pipeline, `@Alias`, exhaustive `when`, YAML, arg coercion, reassignment) + xfail + suíte completa **819/819** + `zig build test` verdes, `eiwac build` split-mode smoke OK.
-- [ ] **Task 95.6 (follow-up — gap pré-existente, fora de escopo):** `isCompatible` aceita `Custom` → `Custom` não-relacionados (`val b: FooB = FooA(...)` compila; `val s: Shape = NotAShape(...)` compila e produz lixo em runtime) — o braço `else => return true` em `core_isCompatible` (`src/core/type_checker/core.zig`) após falhar `conformsTo`. Uniões foram blindadas nominalmente nesta fase (`isUnionNominal`: qualquer conversão envolvendo união fora de membro/mesma-união falha alto); o caso geral aguarda fase própria com RED + auditoria do que depende da frouxidão.
+- [ ] **Task 95.6 (follow-up — gap pré-existente, fora de escopo):** `isCompatible` aceita `Custom` → `Custom` não-relacionados (`val b: FooB = FooA(...)` compila; `val s: Shape = NotAShape(...)` compila e produz lixo em runtime) — o braço `else => return true` em `core_isCompatible` (`src/core/type_checker/core.zig`) após falhar `conformsTo`. Uniões foram blindadas nominalmente nesta fase (cerca em `core_isCompatible` sobre `isClosedUnionShape`: qualquer conversão envolvendo união registrada fora de membro/mesma-união falha alto); o caso geral aguarda fase própria com RED + auditoria do que depende da frouxidão.
 
-### Phase 96: Uniões anônimas (`A | B`) + descritores de identidade (OPEN)
-> Plano em `docs/plan_phase96_anonymous_union.md`; REDs em `samples/tests/union_anonymous_test.ei` (5 testes, vermelhos — quebram o gate até a GREEN). Tuplas inline em genéricos/campos/params/`fromJson` com chaves lowercase fixas (sem `@Alias`); nominal ≠ estrutural sem conversão; identidade por global `{Type}_descriptor` (endereço), com migração da identidade do declarado; `String` junto, escalares na 97.
+### Phase 96: Uniões anônimas (`A | B`) + descritores de identidade (COMPLETED)
+> **Status:** COMPLETED (GREEN). Plano em `docs/plan_phase96_anonymous_union.md`; 8/8 em `samples/tests/union_anonymous_test.ei` (decode, lowercase, lista mutável, round-trip, tag desconhecida, membro `String`, `when` sobre `String`, campo estrutural em container); suíte 829/829 + `zig build test` + smoke `eiwac build`. Tuplas inline em genéricos/campos/params/`fromJson` com chaves lowercase fixas; nominal ≠ estrutural; identidade por `{Type}_descriptor` (declarado migrado junto, 16/16 intactos); `String` junto, escalares na 97.
 
-- [ ] **Task 96.1:** Abstração de lista de membros (registro vs tupla `.Union`) em `conformsTo`, `isUnionNominal`, serde, `when`, identidade.
-- [ ] **Task 96.2:** Descritores + `coerceToUnion`/`is`/`when`/rebind sobre descritores; migração do declarado (testes verdes provam não-mudança).
-- [ ] **Task 96.3:** Checker: exaustividade sobre `.Union`, `fromJson<A | B>` com mangling ordenado, literais vazios anotados.
-- [ ] **Task 96.4:** Emissor: lowering condicional `.Union`, generalização dos pontos nominais, `String` sem box.
-- [ ] **Task 96.5:** `==`/toString sobre anônimos (definir e documentar).
-- [ ] **Verify:** REDs verdes + suíte completa + `zig build test` + `eiwac build` smoke.
+- [x] **Task 96.1:** Abstração de membros (`closedUnionOf`/`isClosedUnionShape`) + `when` exaustivo estrutural + guarda nominal estendida.
+- [x] **Task 96.2:** Descritores + migração do declarado; `is`/`when`/`as`/rebind/coerções sobre descritores; `is String` nominal no `when` (fast-path corrigido).
+- [x] **Task 96.3:** Checker: `fromJson<A | B>` (superfície do `T` monomorfizado), literais/coleções/`Map`/direto, `T.deserialize` via companion anônimo.
+- [x] **Task 96.4:** Emissor: `isRegisteredUnion` (nome OU `.Union` com chave) em layout/coerções/`is`/`when`/literais/args; fattening de inits `String`.
+- [x] **Task 96.6 (robustez):** entrada anônima registrada no `resolveTypeRef` (cobre returns/params/locais/genéricos aninhados sem serde); corpos ocos curados no primeiro uso fora do pass `declaration`; `catch (e: A|B)` vincula `e` como `Throwable` (despacho por contrato, §6.2); `cloneTypeRef` preserva `union_types` (campos `List`/`Map`).
+- [x] **Task 96.5:** Docs (plano + roadmap + ADR 73).
+- [x] **Limpeza:** fallback short-name no `is` removido (`expression.zig`, ramo `is_not_null_cmp` por igualdade de sufixo sem identidade; suite 829/829 com o ramo desativado provou desuso). Frouxidão geral do `isCompatible` segue na Task 95.6.
+- [ ] **Task 96.7 (follow-up):** literais de `Map` com valores union (`val ms: Map<String, A | B> = ["k" of A(...)]` hoje falha loud em `inferMapLiteral`: a checagem compara sufixos mangled e o literal constrói `Map<String, A>` thin). Unificar o V do literal com o esperado (monomorfizar `Node`/`Map` com `U` + engordar no `put`, espelho do literal de `List`); `Map` via `fromJson`/`put` já funciona.
+- [x] **Verify:** 7/7 + 828/828 + `zig build test` + `eiwac build` smoke.
 
 ### Phase 97: Membros escalares em uniões (`Int`/`Double`/`Bool`) (OPEN)
 > Box na fronteira (célula heap, Phase 80), `is` nominal por descritor, unbox no load estreitado (follow-up 91.4). Primitivos seguem fora das uniões abertas (representação value-in-pointer intocada).

@@ -1,4 +1,11 @@
 # Plano — Phase 96: uniões anônimas (`A | B`) + descritores de identidade
+> **Status:** COMPLETED (GREEN). 7/7 em `samples/tests/union_anonymous_test.ei`,
+> suíte 828/828 + `zig build test` + smoke `eiwac build` (dispatch + serialize
+> em binário AOT). Detalhe de implementação que divergiu do plano: em vez de
+> generalizar cada ponto nominal para uma abstração `unionMembers`, a
+> identidade virou `isRegisteredUnion` (nome declarado OU `.Union` com chave
+> `A_or_B` registrada) e cada ponto ganhou `or` — mesmo efeito, diff menor e
+> caminhos legados intocados.
 
 ## 0. Decisões fechadas
 
@@ -65,12 +72,12 @@ Aplica em: `conformsTo`, `isUnionNominal`, serde (`isSerdeUnion`,
 
 ## 3. Testes
 
-`samples/tests/union_anonymous_test.ei` (5 REDs: decode, lowercase,
-lista mutável + dispatch, round-trip, tag desconhecida) quebra o gate
-até a GREEN. Negativas manuais: membro `Int` rejeitado, mistura
-nomeada↔estrutural rejeitada, `==`/rótulos fora.
+`samples/tests/union_anonymous_test.ei` (7 testes: decode, lowercase,
+lista mutável + dispatch, round-trip, tag desconhecida, membro `String`
+decode/round-trip, `when` sobre `String`). Negativas manuais: membro `Int`
+rejeitado, mistura nomeada↔estrutural rejeitada, `==`/rótulos fora.
 
-Verify: xfail promovido + suíte completa + `zig build test` + `eiwac build` smoke.
+Verify: 7/7 + suíte completa 828/828 + `zig build test` + `eiwac build` smoke.
 
 ## 4. Fora de escopo (Phase 97: escalares)
 

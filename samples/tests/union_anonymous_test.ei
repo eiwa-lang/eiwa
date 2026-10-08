@@ -1,7 +1,5 @@
-// (Phase 96): anonymous unions `A | B | C` with dispatch. Every test
-// below must fail today (no anonymous deserialize / fat identity /
-// exhaustiveness over structural unions). When Phase 96 lands, this file
-// must FULLY pass (XPASS breaks the build and forces marker removal).
+// Anonymous unions `A | B` with member-descriptor dispatch (Phase 96;
+// `Int`/`Double`/`Bool` members are Phase 97).
 import { assert } from "std.core"
 import { Serializable } from "std.serde"
 import { fromJson, serializeJsonValue } from "std.json"
@@ -55,4 +53,35 @@ test "anonymous: unknown tag throws with detail" {
     msg = e.message()
   }
   assert(msg.indexOf("fly") >= 0)
+}
+
+test "anonymous: string member decodes and round-trips" {
+  val s = fromJson<AGoto | String>("{\"agoto\": {\"url\": \"https://x/\"}}")
+  assert(s is AGoto)
+  val t = fromJson<AGoto | String>("{\"string\": \"hello\"}")
+  assert(t is String)
+  val back = fromJson<AGoto | String>(serializeJsonValue(t.serialize()))
+  assert(back is String)
+  assert((back as String) == "hello")
+}
+
+test "anonymous: when dispatches over string member" {
+  val t = fromJson<AGoto | String>("{\"string\": \"hi\"}")
+  val label = when (t) {
+    is AGoto -> "goto"
+    is String -> "str"
+  }
+  assert(label == "str")
+}
+
+type AHolder(val name: String, val value: AGoto | ACollect | APaginate) : Serializable
+
+test "anonymous: union field in serializable container" {
+  val t = fromJson<AHolder>("{\"name\": \"nome\", \"value\": {\"agoto\": {\"url\": \"https://x/\"}}}")
+  assert(t.name == "nome")
+  assert(t.value is AGoto)
+  assert((t.value as AGoto).url == "https://x/")
+  val back = fromJson<AHolder>(serializeJsonValue(t.serialize()))
+  assert(back.value is AGoto)
+  assert((back.value as AGoto).url == "https://x/")
 }

@@ -1296,7 +1296,7 @@ sem reflexão, sem registro manual estilo Kotlin
 genéricos, layout dedicado, migração flat) ficam para as Phases 96–97.
 
 ## ADR 73: Identidade por descritores + uniões anônimas e escalares (direção)
-**Status:** Aprovado (direção) / Em planejamento (Phases 96–97)
+**Status:** Phase 96 implementada (GREEN); Phase 97 (escalares) em planejamento
 **Data:** Outubro 2026
 
 **Contexto:**
@@ -1331,5 +1331,5 @@ genéricos, layout dedicado, migração flat) ficam para as Phases 96–97.
 Identidade explícita separa eixos que estavam acoplados (serde vs
 identidade, nominal vs estrutural, imediato vs heap), cada um com regra
 fail-loud própria — em vez de uma vtable emprestada fazendo três papéis.
-Plano em `docs/plan_phase96_anonymous_union.md`; REDs em
-`samples/tests/union_anonymous_test.ei` (vermelhos, quebram o gate).
+Plano em `docs/plan_phase96_anonymous_union.md`; cobertura em
+`samples/tests/union_anonymous_test.ei` (8 testes verdes).

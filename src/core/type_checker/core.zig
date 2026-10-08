@@ -824,6 +824,16 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
         }
     }
 
+    // Register closed structural unions on resolve so lowering agrees in
+    // every position (returns/params/locals/nested args). Catch unions never
+    // arrive as `.Union`; entry-only, no methods generated.
+    {
+        const stripped = type_system.stripNull(&base_type);
+        if (closedUnionOf(self, stripped) != null) {
+            _ = infer_decl_mod.ensureAnonUnion(self, stripped, 0, 0) catch null;
+        }
+    }
+
     const t = try self.allocator.create(EiwaType);
     if (actual_is_nullable) {
         t.* = .{ .Union = .{
@@ -1868,6 +1878,89 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
     return node.resolved_type.?;
 }
 
+pub const UnionMemberInfo = struct {
+    src: []const u8,
+    canonical: []const u8,
+    alias: ?[]const u8 = null,
+    is_string: bool = false,
+};
+
+fn lowerUnionMemberWire(self: *TypeChecker, src: []const u8) []const u8 {
+    const buf = self.allocator.alloc(u8, src.len) catch return src;
+    for (src, 0..) |c, i| buf[i] = std.ascii.toLower(c);
+    return buf;
+}
+
+/// Closed-union members behind a type. Callers strip nullability first;
+/// a `Null` leaf here means not-closed.
+pub fn closedUnionOf(self: *TypeChecker, typ: *const EiwaType) ?[]UnionMemberInfo {
+    if (typ.* == .Custom) {
+        const actual = self.alias_map.get(typ.Custom) orelse typ.Custom;
+        const u = self.unions_ast.get(actual) orelse return null;
+        var out = ArrayList(UnionMemberInfo).init(self.allocator);
+        for (u.data.union_decl.members) |m| {
+            const m_c = self.alias_map.get(m.name) orelse m.name;
+            out.append(.{ .src = m.name, .canonical = m_c, .alias = m.alias, .is_string = false }) catch return null;
+        }
+        return out.toOwnedSlice() catch null;
+    }
+    if (typ.* != .Union) return null;
+    var leaves = ArrayList(*const EiwaType).init(self.allocator);
+    defer leaves.deinit();
+    flattenUnionLeaves(typ, &leaves);
+    var out = ArrayList(UnionMemberInfo).init(self.allocator);
+    for (leaves.items) |leaf| {
+        const lb = type_system.extractBaseType(leaf);
+        if (lb.* == .Custom) {
+            if (self.unions_ast.contains(lb.Custom)) return null;
+            const short = EiwaType.shortName(lb.Custom);
+            const wire = lowerUnionMemberWire(self, short);
+            out.append(.{ .src = short, .canonical = lb.Custom, .alias = wire, .is_string = false }) catch return null;
+        } else if (lb.* == .String) {
+            out.append(.{ .src = "String", .canonical = "String", .alias = "string", .is_string = true }) catch return null;
+        } else {
+            return null;
+        }
+    }
+    if (out.items.len < 2) return null;
+    return out.toOwnedSlice() catch null;
+}
+
+fn flattenUnionLeaves(typ: *const EiwaType, out: *ArrayList(*const EiwaType)) void {
+    if (typ.* == .Union) {
+        flattenUnionLeaves(typ.Union.left, out);
+        flattenUnionLeaves(typ.Union.right, out);
+    } else {
+        out.append(typ) catch {};
+    }
+}
+
+/// Allocation-free eligibility probe. Unlike `closedUnionOf` it never
+/// allocates member lists, so prefer it on hot guard paths.
+pub fn isClosedUnionShape(self: *TypeChecker, typ: *const EiwaType) bool {
+    if (typ.* == .Custom) {
+        const actual = self.alias_map.get(typ.Custom) orelse typ.Custom;
+        return self.unions_ast.contains(actual);
+    }
+    if (typ.* != .Union) return false;
+    var leaves = ArrayList(*const EiwaType).init(self.allocator);
+    defer leaves.deinit();
+    flattenUnionLeaves(typ, &leaves);
+    var count: usize = 0;
+    for (leaves.items) |leaf| {
+        const lb = type_system.extractBaseType(leaf);
+        if (lb.* == .Null) continue;
+        if (lb.* == .String) {
+            count += 1;
+            continue;
+        }
+        if (lb.* != .Custom) return false;
+        if (self.unions_ast.contains(lb.Custom)) return false;
+        count += 1;
+    }
+    return count >= 2;
+}
+
 fn core_conformsTo(self: *TypeChecker, actual_name: []const u8, target_name: []const u8) bool {
     const actual = self.alias_map.get(actual_name) orelse actual_name;
     const target = self.alias_map.get(target_name) orelse target_name;
@@ -1907,12 +2000,6 @@ fn core_implementsContract(self: *TypeChecker, type_name: []const u8, contract_n
         if (std.mem.eql(u8, c_actual, actual_contract) or std.mem.eql(u8, c_actual, contract_name) or std.mem.eql(u8, c, contract_name)) return true;
     }
     return false;
-}
-
-fn isUnionNominal(self: *TypeChecker, t: *const EiwaType) bool {
-    if (t.* != .Custom) return false;
-    const actual = self.alias_map.get(t.Custom) orelse t.Custom;
-    return self.unions_ast.contains(actual);
 }
 
 fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *const EiwaType) bool {
@@ -2042,7 +2129,7 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
                 return self.isCompatible(f_exp.return_type, f_act.return_type);
             },
             else => {
-                if (isUnionNominal(self, exp_base) or isUnionNominal(self, act_base)) return false;
+                if (isClosedUnionShape(self, exp_base) or isClosedUnionShape(self, act_base)) return false;
                 return true;
             },
         }

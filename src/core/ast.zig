@@ -157,6 +157,7 @@ pub const EnumVariant = struct {
 pub const UnionMember = struct {
     name: []const u8,
     alias: ?[]const u8 = null,
+    is_string: bool = false,
 };
 
 pub const ASTNode = struct {
