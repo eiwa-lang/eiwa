@@ -1,0 +1,56 @@
+// RED (Phase 97): scalar members (`Int`/`Double`/`Bool`) in closed unions.
+// Wire keys are fixed lowercase (`"int"`, `"double"`, `"bool"`); `is` is
+// nominal (Int(5) is not Double(5.0)); zero is a value, not null. Every
+// test below must fail until 97.1 lands (no xfail masking).
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson, serializeJsonValue } from "std.json"
+
+type SGoto(val url: String) : Serializable
+type SCollect(val selector: String) : Serializable
+
+test "scalar: int member decodes by fixed key" {
+  val s = fromJson<SGoto | Int>("{\"int\": 5}")
+  assert(s is Int)
+  assert((s is SGoto) == false)
+}
+
+test "scalar: double member decodes by fixed key" {
+  val s = fromJson<SGoto | Double>("{\"double\": 2.5}")
+  assert(s is Double)
+  assert((s is SGoto) == false)
+}
+
+test "scalar: bool member decodes by fixed key" {
+  val s = fromJson<SGoto | Bool>("{\"bool\": true}")
+  assert(s is Bool)
+  assert((s is SGoto) == false)
+}
+
+test "scalar: int and double are nominally distinct" {
+  val s = fromJson<SGoto | Int | Double>("{\"int\": 5}")
+  assert(s is Int)
+  assert((s is Double) == false)
+  assert((s is SGoto) == false)
+}
+
+test "scalar: round-trip preserves variant" {
+  val s = fromJson<SCollect | Int>("{\"int\": 5}")
+  val back = fromJson<SCollect | Int>(serializeJsonValue(s.serialize()))
+  assert(back is Int)
+  assert(serializeJsonValue(back.serialize()).indexOf("int") >= 0)
+}
+
+test "scalar: zero is a value, not null" {
+  val s = fromJson<SGoto | Int>("{\"int\": 0}")
+  assert(s is Int)
+}
+
+test "scalar: when dispatches over scalar member" {
+  val s = fromJson<SGoto | Int>("{\"int\": 5}")
+  val label = when (s) {
+    is SGoto -> "goto"
+    is Int -> "int"
+  }
+  assert(label == "int")
+}
