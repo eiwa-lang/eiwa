@@ -85,3 +85,72 @@ test "anonymous: union field in serializable container" {
   assert(back.value is AGoto)
   assert((back.value as AGoto).url == "https://x/")
 }
+
+test "anonymous: List<anon> works like List<union>" {
+  val list = MutableList<AGoto | ACollect | APaginate>()
+  list.add(AGoto("https://x/"))
+  list.add(ACollect("div.quote"))
+  list.add(APaginate(3))
+  assert(list.size() == 3)
+  val first = list.get(0)
+  assert(first is AGoto)
+  val label = when (first) {
+    is AGoto -> "goto"
+    is ACollect -> "collect"
+    is APaginate -> "paginate"
+  }
+  assert(label == "goto")
+}
+
+test "anonymous: Map<String, anon>" {
+  val map = MutableMap<String, AGoto | ACollect | APaginate>()
+  map.put("a", AGoto("https://x/"))
+  map.put("b", ACollect("div.quote"))
+  map.put("c", APaginate(3))
+  assert(map.size() == 3)
+  val first = map.get("a")!!
+  assert(first is AGoto)
+  val label = when (first) {
+    is AGoto -> "goto"
+    is ACollect -> "collect"
+    is APaginate -> "paginate"
+  }
+  assert(label == "goto")
+}
+  
+type AMapHolder(val m: Map<String, AGoto | ACollect | APaginate>) : Serializable
+
+test "anonymous: Map<String, anon> round-trip" {
+  val ms: Map<String, AGoto | ACollect | APaginate> = ["k" of AGoto("https://x/")]
+  assert(ms["k"] is AGoto)
+  assert((ms["k"] as AGoto).url == "https://x/")
+  val h = fromJson<AMapHolder>("{\"m\": {\"k\": {\"agoto\": {\"url\": \"https://x/\"}}}}")
+  val back = fromJson<AMapHolder>(serializeJsonValue(h.serialize()))
+  assert(back.m["k"] is AGoto)
+  assert((back.m["k"] as AGoto).url == "https://x/")
+}
+test "anonymous: List<anon> literal dispatches" {
+  val xs: List<String | AGoto | ACollect> = [AGoto("https://x/"), "hi"]
+  assert(xs.size() == 2)
+  assert(xs[0] is AGoto)
+  assert((xs[0] is ACollect) == false)
+  assert(xs[1] is String)
+  val label = when (xs[0]) {
+    is AGoto -> "goto"
+    is ACollect -> "collect"
+    is String -> "str"
+  }
+  assert(label == "goto")
+}
+
+type AListHolder(val name: String, val steps: List<AGoto | ACollect | APaginate>) : Serializable
+
+test "anonymous: List<anon> field round-trip" {
+  val p = fromJson<AListHolder>("{\"name\": \"n\", \"steps\": [{\"agoto\": {\"url\": \"https://x/\"}}, {\"apaginate\": {\"maxPages\": 5}}]}")
+  assert(p.steps.size() == 2)
+  assert(p.steps[0] is AGoto)
+  assert(p.steps[1] is APaginate)
+  val back = fromJson<AListHolder>(serializeJsonValue(p.serialize()))
+  assert(back.steps.size() == 2)
+  assert((back.steps[1] as APaginate).maxPages == 5)
+}

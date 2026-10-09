@@ -87,6 +87,9 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
             if (type_system.isNullableScalar(ee_t) and type_system.isRawScalar(elem_type)) {
                 elem.box_nullable_scalar = true;
             }
+            // Int elements bound to a Double slot must be converted by the
+            // emitter (storing raw i64 bits reads back as garbage double).
+            elem.expected_type = ee_t;
         }
     } else {
         first_type = try self.inferNode(a.elements[0], scope);
@@ -121,6 +124,54 @@ pub fn inferArrayLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *
     try self.monomorphizeClass(type_decl.name, type_args, mangled_name);
     
     t.* = .{ .Custom = self.alias_map.get(mangled_name) orelse mangled_name };
+}
+
+/// Union value type behind an expected map name: matches the inferred key
+/// exactly, then requires every literal value to fit a member of the
+/// expected-V union entry (declared or anonymous). Returns the rebuilt
+/// union type for node layout, or null to keep the legacy tail check.
+fn mapLiteralUnionFit(self: *TypeChecker, exp_mangled: []const u8, elements: []const *ASTNode) ?*const EiwaType {
+    const exp_tail = if (std.mem.indexOf(u8, exp_mangled, "Map_")) |idx| exp_mangled[idx + 4 ..] else return null;
+    const k_t = elements[0].data.call_expr.arguments[0].resolved_type orelse return null;
+    var k_buf = ArrayList(u8).init(self.allocator);
+    defer k_buf.deinit();
+    k_t.formatSafe(k_buf.writer()) catch return null;
+    if (!std.mem.startsWith(u8, exp_tail, k_buf.items)) return null;
+    const rest = exp_tail[k_buf.items.len..];
+    if (rest.len == 0 or rest[0] != '_') return null;
+    const unode = self.unions_ast.get(rest[1..]) orelse return null;
+    if (unode.data.union_decl.members.len < 2) return null;
+    for (elements) |elem| {
+        if (elem.data != .call_expr) return null;
+        const args = elem.data.call_expr.arguments;
+        if (args.len < 2) return null;
+        const v_t = args[1].resolved_type orelse return null;
+        var fits = false;
+        for (unode.data.union_decl.members) |mm| {
+            if (mm.is_string) {
+                if (v_t.* == .String) fits = true;
+            } else if (v_t.* == .Custom) {
+                if (std.mem.eql(u8, v_t.Custom, mm.name) or std.mem.eql(u8, EiwaType.shortName(v_t.Custom), EiwaType.shortName(mm.name))) fits = true;
+            }
+            if (fits) break;
+        }
+        if (!fits) return null;
+    }
+    var acc: ?*EiwaType = null;
+    for (unode.data.union_decl.members) |mm| {
+        const leaf = self.allocator.create(EiwaType) catch return null;
+        if (mm.is_string) {
+            leaf.* = .String;
+        } else {
+            leaf.* = .{ .Custom = self.alias_map.get(mm.name) orelse mm.name };
+        }
+        if (acc) |a| {
+            const u = self.allocator.create(EiwaType) catch return null;
+            u.* = .{ .Union = .{ .left = a, .right = leaf } };
+            acc = u;
+        } else acc = leaf;
+    }
+    return acc;
 }
 
 pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
@@ -158,6 +209,25 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
         }
     }
     
+    // Union-typed values (`["k" of A(...)]` for `Map<String, A | B>` or a
+    // declared union): fit every element against the expected-V union entry
+    // and rebuild U from its members. Anything else keeps the legacy
+    // inferred-V behavior below.
+    var fit_val_t: *const EiwaType = first_value_type;
+    var union_path = false;
+    if (node.expected_type) |exp| {
+        const exp_base = type_system.extractBaseType(exp);
+        if (exp_base.* == .Custom) {
+            if (mapLiteralUnionFit(self, exp_base.Custom, m.elements)) |U| {
+                fit_val_t = U;
+                union_path = true;
+                for (m.elements) |elem| {
+                    elem.data.call_expr.arguments[1].expected_type = U;
+                }
+            }
+        }
+    }
+
     // Simulate Map instantiation
     const node_base = self.alias_map.get("Node") orelse "Node";
     const mmap_base = self.alias_map.get("MutableMap") orelse "MutableMap";
@@ -168,7 +238,7 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     try map_mangled_str.appendSlice("_");
     try first_key_type.formatSafe(map_mangled_str.writer());
     try map_mangled_str.appendSlice("_");
-    try first_value_type.formatSafe(map_mangled_str.writer());
+    try fit_val_t.formatSafe(map_mangled_str.writer());
     const mangled_name = try map_mangled_str.toOwnedSlice();
     
     var node_mangled_str = ArrayList(u8).init(self.allocator);
@@ -176,7 +246,7 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     try node_mangled_str.appendSlice("_");
     try first_key_type.formatSafe(node_mangled_str.writer());
     try node_mangled_str.appendSlice("_");
-    try first_value_type.formatSafe(node_mangled_str.writer());
+    try fit_val_t.formatSafe(node_mangled_str.writer());
     const node_mangled = try node_mangled_str.toOwnedSlice();
     
     var mmap_mangled_str = ArrayList(u8).init(self.allocator);
@@ -184,12 +254,12 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     try mmap_mangled_str.appendSlice("_");
     try first_key_type.formatSafe(mmap_mangled_str.writer());
     try mmap_mangled_str.appendSlice("_");
-    try first_value_type.formatSafe(mmap_mangled_str.writer());
+    try fit_val_t.formatSafe(mmap_mangled_str.writer());
     const mmap_mangled = try mmap_mangled_str.toOwnedSlice();
     
     var type_args = try self.allocator.alloc(*const EiwaType, 2);
     type_args[0] = first_key_type;
-    type_args[1] = first_value_type;
+    type_args[1] = fit_val_t;
     
     if (self.classes_ast.get(node_base) == null or self.classes_ast.get(mmap_base) == null or self.classes_ast.get(map_base) == null) {
         self.reportError(node.line, node.column, "TypeError: Required Map classes not found.", .{});
@@ -202,7 +272,7 @@ pub fn inferMapLiteral(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
     if (node.expected_type) |exp| {
         const exp_base = type_system.extractBaseType(exp);
-        if (exp_base.* == .Custom) {
+        if (exp_base.* == .Custom and !union_path) {
             const exp_tail = if (std.mem.indexOf(u8, exp_base.Custom, "Map_")) |idx| exp_base.Custom[idx + 4 ..] else exp_base.Custom;
             const inf_tail = if (std.mem.indexOf(u8, mangled_name, "Map_")) |idx| mangled_name[idx + 4 ..] else mangled_name;
             if (!std.mem.eql(u8, exp_tail, inf_tail)) {

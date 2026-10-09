@@ -1,0 +1,16 @@
+// RED (hard): scalar layout in list literals. `List<Double> = [1]` compiles
+// via numeric compatibility but stores unconverted i64 bits; reads
+// reinterpret them as double (garbage, e.g. 4.94066e-324). The literal must
+// either convert elements to the annotated layout or reject loudly.
+// Tracks the literal-layout follow-up in the roadmap (Task 96.7 note).
+import { assert } from "std.core"
+
+test "list layout: int element reads back as double" {
+  val xs: List<Double> = [1]
+  assert(xs[0] == 1.0)
+}
+
+test "list layout: int element stringifies as double" {
+  val xs: List<Double> = [1]
+  assert(xs[0].toString() == "1")
+}

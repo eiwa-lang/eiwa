@@ -1065,6 +1065,11 @@ fn emitExpressionRaw(
                     }
                 }
                 }
+                if (elem_node.expected_type) |eet| {
+                    if (ts.extractBaseType(eet).* == .Double and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(elem_val)) == llvm.LLVMIntegerTypeKind) {
+                        elem_val = llvm.LLVMBuildSIToFP(builder, elem_val, llvm.LLVMDoubleTypeInContext(ctx), "int_to_double");
+                    }
+                }
                 const idx_val = llvm.LLVMConstInt(i64_type, @intCast(idx), 0);
                 const elem_ptr_name = try std.heap.page_allocator.dupeZ(u8, "elem_ptr");
                 defer std.heap.page_allocator.free(elem_ptr_name);
@@ -4258,7 +4263,20 @@ fn emitExpressionRaw(
                     for (m.elements) |elem| {
                         if (elem.data == .call_expr and elem.data.call_expr.arguments.len >= 2) {
                             const k_val = try emitExpression(ctx, mod, builder, scope, structs, libs, elem.data.call_expr.arguments[0]);
-                            const v_val = try emitExpression(ctx, mod, builder, scope, structs, libs, elem.data.call_expr.arguments[1]);
+                            const v_arg = elem.data.call_expr.arguments[1];
+                            var v_val = try emitExpression(ctx, mod, builder, scope, structs, libs, v_arg);
+                            if (v_arg.expected_type) |et| {
+                                if (v_arg.resolved_type) |vrt| {
+                                    const v_mem: []const u8 = switch (ts.extractBaseType(vrt).*) {
+                                        .Custom => |n| n,
+                                        .String => "String",
+                                        else => "",
+                                    };
+                                    if (v_mem.len > 0) {
+                                        if (coerceUnionArg(ctx, mod, builder, v_val, v_mem, et)) |uv| v_val = uv;
+                                    }
+                                }
+                            }
                             var p_args = [_]llvm.LLVMValueRef{ mmap_val, k_val, v_val };
                             _ = llvm.LLVMBuildCall2(builder, put_t, put_fn, &p_args, 3, "");
                         }
