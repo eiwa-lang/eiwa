@@ -1536,11 +1536,15 @@ without `else` must cover every member. For JSON they use the same
 single-key wire format as §11.10 (`fromJson<Goto | Collect>(raw)`).
 
 Rules (v1):
-- Members are reference `type`s plus `String`; `Int`/`Double`/`Bool`
-  members are rejected (scalars arrive in Phase 97).
-- Wire keys are fixed lowercase (`Goto` → `"goto"`); there is no `@Alias`
-  inline. Declared unions and anonymous unions with the same members are
-  distinct types — mixing them is a compile-time error.
+- Members are reference `type`s plus `String`, `Int`, `Double` and `Bool`.
+  Wire keys are fixed lowercase (`Goto` → `"goto"`, `Int` → `"int"`); there
+  is no `@Alias` inline. Identity is nominal (`Int(5)` is not `Double(5.0)`),
+  and `0` is a value, not `null` (scalars ride heap cells).
+- Declared unions and anonymous unions with the same members are
+  distinct types — mixing them is a compile-time error, as is a scalar
+  member in a declared `union`.
+- Narrowed scalar use works after `if (s is Int)`; in `when` branches use
+  explicit `as`. `.equals` with a `Double` member is a loud runtime error.
 
 ---
 

@@ -133,7 +133,7 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 }
                             } else if (struct_members) |sm| {
                                 for (sm) |m| {
-                                    if (!m.is_string and std.mem.eql(u8, tc, m.canonical)) {
+                                    if (m.scalar == null and !m.is_string and std.mem.eql(u8, tc, m.canonical)) {
                                         try markUnionCovered(&union_covered, tc);
                                         break;
                                     }
@@ -144,6 +144,15 @@ pub fn inferWhenExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 for (sm) |m| {
                                     if (m.is_string) {
                                         try markUnionCovered(&union_covered, "String");
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if (ast.UnionScalar.fromType(tbase.*)) |want| {
+                            if (struct_members) |sm| {
+                                for (sm) |m| {
+                                    if (m.scalar == want) {
+                                        try markUnionCovered(&union_covered, @tagName(tbase.*));
                                         break;
                                     }
                                 }

@@ -1562,15 +1562,6 @@ fn emitExpressionRaw(
                 },
                 .eq_eq => {
                     if (is_double) return llvm.LLVMBuildFCmp(builder, llvm.LLVMRealOEQ, left_val, right_val, "feqtmp");
-                    const l_is_str = isStringOperand(bin.left);
-                    const r_is_str = isStringOperand(bin.right);
-                    if ((l_is_str and r_is_str) or bin.left.data == .string_literal or bin.right.data == .string_literal) {
-                        const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals") orelse return error.StringEqualsNotFound;
-                        const seq_type = llvm.LLVMGlobalGetValueType(seq_fn);
-                        const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
-                        var args = [_]llvm.LLVMValueRef{ coerceArg(builder, left_val, ptr_t), coerceArg(builder, right_val, ptr_t) };
-                        return llvm.LLVMBuildCall2(builder, seq_type, seq_fn, &args, 2, "streq_tmp");
-                    }
                     if (bin.right.data == .null_literal and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(left_val)) == llvm.LLVMStructTypeKind) {
                         const vt_ptr = llvm.LLVMBuildExtractValue(builder, left_val, 1, "eq_null_vt");
                         const data_ptr = llvm.LLVMBuildExtractValue(builder, left_val, 0, "eq_null_data");
@@ -1585,8 +1576,35 @@ fn emitExpressionRaw(
                         const data_null = llvm.LLVMBuildIsNull(builder, data_ptr, "data_null");
                         return llvm.LLVMBuildAnd(builder, vt_null, data_null, "eq_null");
                     }
-                    var l_val = left_val;
-                    var r_val = right_val;
+                    // Registered-union fat operands compare by payload so the
+                    // string/value paths below see thin values.
+                    var l_eq = left_val;
+                    var r_eq = right_val;
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_eq)) == llvm.LLVMStructTypeKind) {
+                        if (bin.left.resolved_type) |lrt| {
+                            if (types_mapping.isRegisteredUnion(lrt.*, global_unions_ast_ptr)) {
+                                l_eq = llvm.LLVMBuildExtractValue(builder, l_eq, 0, "eq_union_data");
+                            }
+                        }
+                    }
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_eq)) == llvm.LLVMStructTypeKind) {
+                        if (bin.right.resolved_type) |rrt| {
+                            if (types_mapping.isRegisteredUnion(rrt.*, global_unions_ast_ptr)) {
+                                r_eq = llvm.LLVMBuildExtractValue(builder, r_eq, 0, "eq_union_data");
+                            }
+                        }
+                    }
+                    const l_is_str = isStringOperand(bin.left);
+                    const r_is_str = isStringOperand(bin.right);
+                    if ((l_is_str and r_is_str) or bin.left.data == .string_literal or bin.right.data == .string_literal) {
+                        const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals") orelse return error.StringEqualsNotFound;
+                        const seq_type = llvm.LLVMGlobalGetValueType(seq_fn);
+                        const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+                        var args = [_]llvm.LLVMValueRef{ coerceArg(builder, l_eq, ptr_t), coerceArg(builder, r_eq, ptr_t) };
+                        return llvm.LLVMBuildCall2(builder, seq_type, seq_fn, &args, 2, "streq_tmp");
+                    }
+                    var l_val = l_eq;
+                    var r_val = r_eq;
                     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMStructTypeKind) {
                         l_val = llvm.LLVMBuildExtractValue(builder, l_val, 0, "l_data");
                     }
@@ -1597,11 +1615,18 @@ fn emitExpressionRaw(
                         l_val = unboxScalarOperand(ctx, builder, l_val, bin.left.resolved_type, llvm.LLVMTypeOf(r_val));
                     } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
                         r_val = unboxScalarOperand(ctx, builder, r_val, bin.right.resolved_type, llvm.LLVMTypeOf(l_val));
+                    } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMDoubleTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
+                        r_val = unboxDoubleOperand(ctx, builder, r_val, bin.right.resolved_type);
+                    } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMDoubleTypeKind) {
+                        l_val = unboxDoubleOperand(ctx, builder, l_val, bin.left.resolved_type);
                     }
                     {
                         const coerced_eq = coerceIntWidths(builder, l_val, r_val);
                         l_val = coerced_eq.l;
                         r_val = coerced_eq.r;
+                    }
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMDoubleTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMDoubleTypeKind) {
+                        return llvm.LLVMBuildFCmp(builder, llvm.LLVMRealOEQ, l_val, r_val, "feqtmp");
                     }
                     {
                         var eq_class: ?[]const u8 = null;
@@ -1618,17 +1643,6 @@ fn emitExpressionRaw(
                 },
                 .bang_eq => {
                     if (is_double) return llvm.LLVMBuildFCmp(builder, llvm.LLVMRealUNE, left_val, right_val, "fnetmp");
-                    const l_is_str = isStringOperand(bin.left);
-                    const r_is_str = isStringOperand(bin.right);
-                    if ((l_is_str and r_is_str) or bin.left.data == .string_literal or bin.right.data == .string_literal) {
-                        const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals") orelse return error.StringEqualsNotFound;
-                        const seq_type = llvm.LLVMGlobalGetValueType(seq_fn);
-                        const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
-                        var args = [_]llvm.LLVMValueRef{ coerceArg(builder, left_val, ptr_t), coerceArg(builder, right_val, ptr_t) };
-                        const seq_res = llvm.LLVMBuildCall2(builder, seq_type, seq_fn, &args, 2, "streq_tmp");
-                        const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(seq_res), 0, 0);
-                        return llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, seq_res, zero, "strne_tmp");
-                    }
                     if (bin.right.data == .null_literal and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(left_val)) == llvm.LLVMStructTypeKind) {
                         const vt_ptr = llvm.LLVMBuildExtractValue(builder, left_val, 1, "ne_null_vt");
                         const data_ptr = llvm.LLVMBuildExtractValue(builder, left_val, 0, "ne_null_data");
@@ -1643,8 +1657,37 @@ fn emitExpressionRaw(
                         const data_not_null = llvm.LLVMBuildIsNotNull(builder, data_ptr, "data_not_null");
                         return llvm.LLVMBuildOr(builder, vt_not_null, data_not_null, "ne_null");
                     }
-                    var l_val = left_val;
-                    var r_val = right_val;
+                    // Registered-union fat operands compare by payload so the
+                    // string/value paths below see thin values.
+                    var l_ne = left_val;
+                    var r_ne = right_val;
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_ne)) == llvm.LLVMStructTypeKind) {
+                        if (bin.left.resolved_type) |lrt| {
+                            if (types_mapping.isRegisteredUnion(lrt.*, global_unions_ast_ptr)) {
+                                l_ne = llvm.LLVMBuildExtractValue(builder, l_ne, 0, "ne_union_data");
+                            }
+                        }
+                    }
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_ne)) == llvm.LLVMStructTypeKind) {
+                        if (bin.right.resolved_type) |rrt| {
+                            if (types_mapping.isRegisteredUnion(rrt.*, global_unions_ast_ptr)) {
+                                r_ne = llvm.LLVMBuildExtractValue(builder, r_ne, 0, "ne_union_data");
+                            }
+                        }
+                    }
+                    const l_is_str = isStringOperand(bin.left);
+                    const r_is_str = isStringOperand(bin.right);
+                    if ((l_is_str and r_is_str) or bin.left.data == .string_literal or bin.right.data == .string_literal) {
+                        const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals") orelse return error.StringEqualsNotFound;
+                        const seq_type = llvm.LLVMGlobalGetValueType(seq_fn);
+                        const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+                        var args = [_]llvm.LLVMValueRef{ coerceArg(builder, l_ne, ptr_t), coerceArg(builder, r_ne, ptr_t) };
+                        const seq_res = llvm.LLVMBuildCall2(builder, seq_type, seq_fn, &args, 2, "streq_tmp");
+                        const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(seq_res), 0, 0);
+                        return llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, seq_res, zero, "strne_tmp");
+                    }
+                    var l_val = l_ne;
+                    var r_val = r_ne;
                     if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMStructTypeKind) {
                         l_val = llvm.LLVMBuildExtractValue(builder, l_val, 0, "l_data");
                     }
@@ -1655,11 +1698,18 @@ fn emitExpressionRaw(
                         l_val = unboxScalarOperand(ctx, builder, l_val, bin.left.resolved_type, llvm.LLVMTypeOf(r_val));
                     } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
                         r_val = unboxScalarOperand(ctx, builder, r_val, bin.right.resolved_type, llvm.LLVMTypeOf(l_val));
+                    } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMDoubleTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMPointerTypeKind) {
+                        r_val = unboxDoubleOperand(ctx, builder, r_val, bin.right.resolved_type);
+                    } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMPointerTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMDoubleTypeKind) {
+                        l_val = unboxDoubleOperand(ctx, builder, l_val, bin.left.resolved_type);
                     }
                     {
                         const coerced_ne = coerceIntWidths(builder, l_val, r_val);
                         l_val = coerced_ne.l;
                         r_val = coerced_ne.r;
+                    }
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_val)) == llvm.LLVMDoubleTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_val)) == llvm.LLVMDoubleTypeKind) {
+                        return llvm.LLVMBuildFCmp(builder, llvm.LLVMRealUNE, l_val, r_val, "fnetmp");
                     }
                     {
                         var eq_class: ?[]const u8 = null;
@@ -3759,24 +3809,26 @@ fn emitExpressionRaw(
                                 is_match = i1_true;
                             } else if (std.mem.eql(u8, target_c_name, "core_Null") or std.mem.eql(u8, target_c_name, "Null")) {
                                 is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_data, llvm.LLVMConstNull(ptr_type), "when_is_null");
+                            } else if (subj_is_union and (types_mapping.isScalarName(target_c_name, "Int") or types_mapping.isScalarName(target_c_name, "Double") or types_mapping.isScalarName(target_c_name, "Bool") or types_mapping.isScalarName(target_c_name, "String"))) {
+                                // Nominal scalar on a union subject: match the
+                                // member descriptor, not value shape (Int(5)
+                                // is not Double(5.0)).
+                                if (subj_vtable) |svt| {
+                                    const svt_ptr = llvm.LLVMBuildBitCast(builder, svt, ptr_type, "when_scal_subj");
+                                    const desc = try unionDescriptor(ctx, mod, target_c_name);
+                                    const exp_ptr = llvm.LLVMBuildPointerCast(builder, desc, ptr_type, "exp_scal_ptr");
+                                    const desc_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, svt_ptr, exp_ptr, "when_is_scal_eq");
+                                    const data_not_null = llvm.LLVMBuildIsNotNull(builder, subj_data, "scal_data_not_null");
+                                    is_match = llvm.LLVMBuildAnd(builder, data_not_null, desc_eq, "is_match_scal");
+                                } else {
+                                    is_match = i1_false;
+                                }
                             } else if (types_mapping.isScalarName(target_c_name, "Int") or types_mapping.isScalarName(target_c_name, "Double")) {
                                 is_match = if (subj_is_fat) i1_false else is_small;
                             } else if (types_mapping.isScalarName(target_c_name, "Bool")) {
                                 is_match = if (subj_is_fat) i1_false else is_small;
                             } else if (types_mapping.isScalarName(target_c_name, "String")) {
-                                if (subj_is_union) {
-                                    // Union subject: match by member descriptor, not string layout.
-                                    if (subj_vtable) |svt| {
-                                        const svt_ptr = llvm.LLVMBuildBitCast(builder, svt, ptr_type, "when_str_subj");
-                                        const desc = try unionDescriptor(ctx, mod, "String");
-                                        const exp_ptr = llvm.LLVMBuildPointerCast(builder, desc, ptr_type, "exp_str_ptr");
-                                        const desc_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, svt_ptr, exp_ptr, "when_is_str_eq");
-                                        const data_not_null = llvm.LLVMBuildIsNotNull(builder, subj_data, "str_data_not_null");
-                                        is_match = llvm.LLVMBuildAnd(builder, data_not_null, desc_eq, "is_match_str");
-                                    } else {
-                                        is_match = i1_false;
-                                    }
-                                } else if (subj_is_fat) {
+                                if (subj_is_fat) {
                                     is_match = i1_false;
                                 } else {
                                     const dummy_arr_t = llvm.LLVMArrayType2(i64_type, 2);
@@ -4358,6 +4410,21 @@ fn emitExpressionRaw(
                     }
                 }
             }
+            // Closed-union member extraction to a scalar: the fat data slot
+            // holds a heap cell (Phase-80 style, so zero ≠ null) — load it,
+            // don't PtrToInt it like open-union value-in-pointer flows.
+            if (as_e.value.resolved_type) |v_rt| {
+                if (types_mapping.isRegisteredUnion(v_rt.*, global_unions_ast_ptr)) {
+                    if (node.resolved_type) |nrt| {
+                        if (ast.UnionScalar.fromType(ts.extractBaseType(nrt).*)) |sk| {
+                            if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) == llvm.LLVMStructTypeKind) {
+                                const data_ptr = llvm.LLVMBuildExtractValue(builder, val, 0, "as_union_data");
+                                return unboxNullableScalar(ctx, builder, sk.eiwaType(), data_ptr);
+                            }
+                        }
+                    }
+                }
+            }
             const target_rt_opt = node.resolved_type orelse as_e.type_ref.resolved_type;
             if (as_e.value.resolved_type) |v_rt| {
                 if (target_rt_opt) |target_rt| {
@@ -4866,6 +4933,14 @@ pub fn boxNullableScalar(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, buil
 /// provenance first.
 fn unboxScalarOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, node_rt: ?*const ts.EiwaType, target_t: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     if (node_rt) |rt| {
+        // Closed-union fat values hold heap cells (Phase-80 style): load.
+        // Thin legacy values never carry a registered union type, so there
+        // is no ambiguity here — one shape per static type.
+        if (types_mapping.isRegisteredUnion(rt.*, global_unions_ast_ptr)) {
+            const tk = llvm.LLVMGetTypeKind(target_t);
+            const variant: ts.EiwaType = if (tk == llvm.LLVMDoubleTypeKind) .Double else if (tk == llvm.LLVMIntegerTypeKind and llvm.LLVMGetIntTypeWidth(target_t) == 1) .Bool else .Int;
+            return unboxNullableScalar(ctx, builder, variant, val);
+        }
         if (ts.isRawScalar(rt)) {
             return unboxNullableScalar(ctx, builder, rt.*, val);
         }
@@ -5634,7 +5709,7 @@ pub fn unionDescriptor(
     mod: llvm.LLVMModuleRef,
     member_c_name: []const u8,
 ) !llvm.LLVMValueRef {
-    const canon: []const u8 = if (types_mapping.isScalarName(member_c_name, "String")) "String" else member_c_name;
+    const canon: []const u8 = if (types_mapping.isScalarName(member_c_name, "String")) "String" else if (types_mapping.isScalarName(member_c_name, "Int")) "Int" else if (types_mapping.isScalarName(member_c_name, "Double")) "Double" else if (types_mapping.isScalarName(member_c_name, "Bool")) "Bool" else member_c_name;
     var buf: [256]u8 = undefined;
     const name_z = try std.fmt.bufPrintZ(&buf, "{s}_descriptor", .{canon});
     if (llvm.LLVMGetNamedGlobal(mod, name_z.ptr)) |g| return g;
@@ -5662,12 +5737,21 @@ pub fn coerceToUnion(
     }
     const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
     var data_ptr = data_val;
-    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(data_val)) == llvm.LLVMIntegerTypeKind) {
-        data_ptr = llvm.LLVMBuildIntToPtr(builder, data_val, ptr_type, "fat_data_box");
-    } else if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(data_val)) == llvm.LLVMDoubleTypeKind) {
-        const i64_t = llvm.LLVMInt64TypeInContext(ctx);
-        const i64_val = llvm.LLVMBuildBitCast(builder, data_val, i64_t, "dbl_bits");
-        data_ptr = llvm.LLVMBuildIntToPtr(builder, i64_val, ptr_type, "fat_data_box");
+    // Scalar members box into heap cells (Phase-80 style) so zero stays
+    // distinct from null; open-union value-in-pointer flows never reach
+    // here (all callers gate on registered unions).
+    const vkind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(data_val));
+    if (vkind == llvm.LLVMIntegerTypeKind or vkind == llvm.LLVMDoubleTypeKind) {
+        const variant: ?ts.EiwaType = if (types_mapping.isScalarName(member_c_name, "Int")) .Int else if (types_mapping.isScalarName(member_c_name, "Double")) .Double else if (types_mapping.isScalarName(member_c_name, "Bool")) .Bool else null;
+        if (variant) |vv| {
+            data_ptr = boxNullableScalar(ctx, mod, builder, data_val, vv);
+        } else if (vkind == llvm.LLVMIntegerTypeKind) {
+            data_ptr = llvm.LLVMBuildIntToPtr(builder, data_val, ptr_type, "fat_data_box");
+        } else {
+            const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+            const i64_val = llvm.LLVMBuildBitCast(builder, data_val, i64_t, "dbl_bits");
+            data_ptr = llvm.LLVMBuildIntToPtr(builder, i64_val, ptr_type, "fat_data_box");
+        }
     }
     const desc = try unionDescriptor(ctx, mod, member_c_name);
     var fat_val = llvm.LLVMGetUndef(fat_type);
@@ -5791,6 +5875,43 @@ pub fn fattenNarrowedIfNeeded(
     if (vrt_base != .Custom and vrt_base != .Union) return .{};
     const concrete_c_name: []const u8 = if (vrt_base == .Custom) vrt_base.Custom else "";
     const trt = is_e.type_ref.resolved_type orelse return .{};
+    // `x is Scalar` on a structural union subject rebinds x to the unboxed
+    // scalar (heap cell load). Only when the scalar is really a member
+    // (checked via the registered entry) — otherwise keep prior behavior.
+    {
+        const tbase = ts.extractBaseType(trt).*;
+        const want: ?ast.UnionScalar = if (tbase == .Int) .Int else if (tbase == .Double) .Double else if (tbase == .Bool) .Bool else null;
+        if (want) |sk| {
+            if (global_unions_ast_ptr) |ua| {
+                var kbuf = compat.ArrayList(u8).init(std.heap.page_allocator);
+                defer kbuf.deinit();
+                const stripped = ts.extractBaseType(vrt);
+                stripped.formatSafe(kbuf.writer()) catch return .{};
+                if (ua.get(kbuf.items)) |unode| {
+                    var found = false;
+                    for (unode.data.union_decl.members) |mm| {
+                        if (mm.scalar == sk) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) {
+                        const fat_val = try emitExpression(ctx, mod, builder, scope, structs, libs, is_e.value);
+                        if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_val)) != llvm.LLVMStructTypeKind) return .{};
+                        const data_ptr = llvm.LLVMBuildExtractValue(builder, fat_val, 0, "narrow_union_scalar");
+                        const unboxed = unboxNullableScalar(ctx, builder, sk.eiwaType(), data_ptr);
+                        const scalar_t = llvm.LLVMTypeOf(unboxed);
+                        const thin_alloca = llvm.LLVMBuildAlloca(builder, scalar_t, "narrow_scalar_thin");
+                        _ = llvm.LLVMBuildStore(builder, unboxed, thin_alloca);
+                        const old = scope.get(iname);
+                        scope.put(iname, thin_alloca) catch return .{};
+                        return .{ .active = true, .name = iname, .old = old };
+                    }
+                }
+            }
+            return .{};
+        }
+    }
     if (ts.extractBaseType(trt).* != .Custom) return .{};
     // `x is Member` on a union subject rebinds x to the extracted data
     // pointer (`x is Union` itself keeps the fat value).
@@ -6022,6 +6143,18 @@ fn emitCustomEquals(
     var in_bbs = [_]llvm.LLVMBasicBlockRef{ ptr_eq_bb, guard_end, call_end };
     llvm.LLVMAddIncoming(phi, &in_vals, &in_bbs, 3);
     return phi;
+}
+
+/// Double-vs-pointer `==`: unbox registered-union cells to real doubles.
+/// Anything else keeps prior behavior (including the pre-existing verifier
+/// gap for non-union fat Doubles).
+fn unboxDoubleOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, node_rt: ?*const ts.EiwaType) llvm.LLVMValueRef {
+    if (node_rt) |rt| {
+        if (types_mapping.isRegisteredUnion(rt.*, global_unions_ast_ptr)) {
+            return unboxNullableScalar(ctx, builder, .Double, val);
+        }
+    }
+    return val;
 }
 
 /// Maps the element type of an .Array-typed expression to its LLVM load type

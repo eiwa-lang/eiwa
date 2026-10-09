@@ -1689,6 +1689,7 @@ pub fn ensureAnonUnion(self: *TypeChecker, typ: *const EiwaType, line: usize, co
             .name = m.canonical,
             .alias = try wire_buf.toOwnedSlice(),
             .is_string = m.is_string,
+            .scalar = m.scalar,
         };
     }
     const unode = try self.allocator.create(ASTNode);
@@ -1721,7 +1722,7 @@ fn anonHasMethod(unode: *ASTNode, name: []const u8) bool {
 
 fn validateAnonMembers(self: *TypeChecker, use_node: *ASTNode, unode: *ASTNode, need_serialize: bool) anyerror!void {
     for (unode.data.union_decl.members) |m| {
-        if (m.is_string) continue;
+        if (m.is_string or m.scalar != null) continue;
         const member_node = self.classes_ast.get(m.name);
         if (member_node == null or member_node.?.data != .type_decl) {
             self.reportError(use_node.line, use_node.column, "TypeError: unknown member type '{s}' in anonymous union.", .{m.name});
@@ -1956,10 +1957,15 @@ fn generateUnionSerialize(self: *TypeChecker, node: *ASTNode, ud: anytype) anyer
     for (ud.members) |m| {
         const cond = try makeUnionIs(self, line, col, "this", m.name);
         const casted = try makeUnionAs(self, line, col, "this", m.name);
-        const ser_val = if (m.is_string) blk: {
+        const ser_val = if (m.is_string or m.scalar != null) blk: {
             const box_args = try self.allocator.alloc(*ASTNode, 1);
             box_args[0] = casted;
-            break :blk try makeCall(self, line, col, "SerdeString", box_args, &.{});
+            const box_fn: []const u8 = if (m.is_string) "SerdeString" else switch (m.scalar.?) {
+                .Int => "SerdeInt",
+                .Double => "SerdeDouble",
+                .Bool => "SerdeBool",
+            };
+            break :blk try makeCall(self, line, col, box_fn, box_args, &.{});
         } else blk: {
             break :blk try makeObjMethodCall(self, line, col, casted, "serialize", &.{});
         };
@@ -2111,9 +2117,14 @@ fn generateUnionDeserialize(self: *TypeChecker, node: *ASTNode, ud: anytype) any
         const inner_ident = try makeIdent(self, line, col, "inner");
         const inner_args = try self.allocator.alloc(*ASTNode, 1);
         inner_args[0] = inner_ident;
-        const member_des = if (m.is_string)
-            try makeCall(self, line, col, "asString", inner_args, &.{})
-        else
+        const member_des = if (m.is_string or m.scalar != null) blk: {
+            const as_fn: []const u8 = if (m.is_string) "asString" else switch (m.scalar.?) {
+                .Int => "asInt",
+                .Double => "asDouble",
+                .Bool => "asBool",
+            };
+            break :blk try makeCall(self, line, col, as_fn, inner_args, &.{});
+        } else
             try makeObjMethodCall(self, line, col, member_ident, "deserialize", inner_args);
         try stmts.append(try makeUnionIfReturn(self, line, col, eq_cond, member_des));
     }
@@ -2245,8 +2256,38 @@ fn generateUnionStringables(self: *TypeChecker, node: *ASTNode, ud: anytype) any
         const other_ident = try makeIdent(self, line, col, "other");
         const eq_args = try self.allocator.alloc(*ASTNode, 1);
         eq_args[0] = other_ident;
-        const call = try makeObjMethodCall(self, line, col, casted, "equals", eq_args);
-        try eq_stmts.append(try makeUnionIfReturn(self, line, col, cond, call));
+        const ret_expr = if (m.scalar) |sk| blk: {
+            // Scalar members have no emittable `.equals` on raw values:
+            // Int/Bool compare unboxed bits; Double throws loud (`==` on
+            // fat Doubles breaks verification language-wide, pre-existing).
+            if (sk == .Double) {
+                const throw_node = try makeUnionThrowNode(self, line, col, "Equality over Double union members is not supported in v1");
+                const tstmts = try self.allocator.alloc(*ASTNode, 1);
+                tstmts[0] = throw_node;
+                const tbody = try makeUnionBlock(self, line, col, tstmts);
+                const dbl_if = try self.allocator.create(ASTNode);
+                dbl_if.* = .{
+                    .line = line,
+                    .column = col,
+                    .resolved_type = null,
+                    .expected_type = null,
+                    .data = .{ .if_expr = .{ .condition = cond, .then_branch = tbody, .else_branch = null, .is_value = false } },
+                };
+                break :blk dbl_if;
+            }
+            const eq = try self.allocator.create(ASTNode);
+            eq.* = .{
+                .line = line,
+                .column = col,
+                .resolved_type = null,
+                .expected_type = null,
+                .data = .{ .binary_expr = .{ .left = casted, .op = .eq_eq, .right = other_ident } },
+            };
+            break :blk eq;
+        } else blk: {
+            break :blk try makeObjMethodCall(self, line, col, casted, "equals", eq_args);
+        };
+        try eq_stmts.append(try makeUnionIfReturn(self, line, col, cond, ret_expr));
     }
     const false_lit = try makeBoolLiteral(self, line, col, false);
     try eq_stmts.append(try makeUnionReturn(self, line, col, false_lit));

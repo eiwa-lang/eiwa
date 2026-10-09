@@ -48,6 +48,50 @@ pub fn unionTargetOf(self: *TypeChecker, typ: *const EiwaType) ?[]const u8 {
     return null;
 }
 
+/// Structural upcast (`member as (A | B)`): the target TR is rebuilt from
+/// members so checking and emission reuse the unmodified `as` machinery.
+/// Null unless closed with an entry, or the value needs no fattening.
+pub fn structuralUpcastWrap(self: *TypeChecker, node: *ASTNode, value: *ASTNode, expected: *const EiwaType, assigned: *const EiwaType) anyerror!?*ASTNode {
+    if (unionTargetOf(self, expected) != null) return null;
+    const stripped = core.stripNull(expected);
+    if (stripped.* != .Union) return null;
+    const members = core.closedUnionOf(self, stripped) orelse return null;
+    if (members.len == 0) return null;
+    const abase = extractBaseType(assigned);
+    switch (abase.*) {
+        .Custom, .String, .Int, .Double, .Bool => {},
+        else => return null,
+    }
+    var targs = try self.allocator.alloc(*const ast.ASTTypeRef, members.len);
+    for (members, 0..) |mm, i| {
+        const tr = try self.allocator.create(ast.ASTTypeRef);
+        tr.* = .{
+            .name = mm.canonical,
+            .generic_args = &.{},
+            .is_array = false,
+            .is_nullable = false,
+        };
+        targs[i] = tr;
+    }
+    const utr = try self.allocator.create(ast.ASTTypeRef);
+    utr.* = .{
+        .name = "",
+        .generic_args = &.{},
+        .is_array = false,
+        .is_nullable = false,
+        .union_types = targs,
+    };
+    const as_node = try self.allocator.create(ASTNode);
+    as_node.* = .{
+        .line = node.line,
+        .column = node.column,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .as_expr = .{ .value = value, .type_ref = utr } },
+    };
+    return as_node;
+}
+
 /// Explicit upcast carrying member values into union slots.
 pub fn wrapUnionUpcast(self: *TypeChecker, node: *ASTNode, value: *ASTNode, union_src: []const u8) anyerror!*ASTNode {
     const tr = try self.allocator.create(ast.ASTTypeRef);
@@ -121,6 +165,9 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                     assigned_type = try self.inferNode(a.value, scope);
                 }
             }
+        } else if (try structuralUpcastWrap(self, node, a.value, expected, assigned_type)) |wrapped| {
+            a.value = wrapped;
+            assigned_type = try self.inferNode(a.value, scope);
         }
         a.is_boxed = vs.is_boxed;
 

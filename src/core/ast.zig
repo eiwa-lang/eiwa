@@ -154,10 +154,35 @@ pub const EnumVariant = struct {
     ordinal: usize,
 };
 
+pub const UnionScalar = enum {
+    Int,
+    Double,
+    Bool,
+
+    /// Scalar member kind behind a type, if any.
+    pub fn fromType(t: type_system.EiwaType) ?UnionScalar {
+        return switch (t) {
+            .Int => .Int,
+            .Double => .Double,
+            .Bool => .Bool,
+            else => null,
+        };
+    }
+
+    pub fn eiwaType(self: UnionScalar) type_system.EiwaType {
+        return switch (self) {
+            .Int => .Int,
+            .Double => .Double,
+            .Bool => .Bool,
+        };
+    }
+};
+
 pub const UnionMember = struct {
     name: []const u8,
     alias: ?[]const u8 = null,
     is_string: bool = false,
+    scalar: ?UnionScalar = null,
 };
 
 pub const ASTNode = struct {

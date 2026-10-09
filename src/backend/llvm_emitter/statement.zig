@@ -655,6 +655,8 @@ pub fn emitStatement(
                                     val = expression.coerceToUnion(ctx, mod, builder, val, init_base.Custom) catch val;
                                 } else if (init_base == .String) {
                                     val = expression.coerceToUnion(ctx, mod, builder, val, "String") catch val;
+                                } else if (init_base == .Int or init_base == .Double or init_base == .Bool) {
+                                    val = expression.coerceToUnion(ctx, mod, builder, val, @tagName(init_base)) catch val;
                                 }
                             }
                         }

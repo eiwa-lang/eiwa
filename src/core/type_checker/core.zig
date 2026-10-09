@@ -1883,6 +1883,7 @@ pub const UnionMemberInfo = struct {
     canonical: []const u8,
     alias: ?[]const u8 = null,
     is_string: bool = false,
+    scalar: ?ast.UnionScalar = null,
 };
 
 fn lowerUnionMemberWire(self: *TypeChecker, src: []const u8) []const u8 {
@@ -1900,7 +1901,7 @@ pub fn closedUnionOf(self: *TypeChecker, typ: *const EiwaType) ?[]UnionMemberInf
         var out = ArrayList(UnionMemberInfo).init(self.allocator);
         for (u.data.union_decl.members) |m| {
             const m_c = self.alias_map.get(m.name) orelse m.name;
-            out.append(.{ .src = m.name, .canonical = m_c, .alias = m.alias, .is_string = false }) catch return null;
+            out.append(.{ .src = m.name, .canonical = m_c, .alias = m.alias, .is_string = false, .scalar = m.scalar }) catch return null;
         }
         return out.toOwnedSlice() catch null;
     }
@@ -1918,6 +1919,10 @@ pub fn closedUnionOf(self: *TypeChecker, typ: *const EiwaType) ?[]UnionMemberInf
             out.append(.{ .src = short, .canonical = lb.Custom, .alias = wire, .is_string = false }) catch return null;
         } else if (lb.* == .String) {
             out.append(.{ .src = "String", .canonical = "String", .alias = "string", .is_string = true }) catch return null;
+        } else if (ast.UnionScalar.fromType(lb.*)) |kind| {
+            const name = @tagName(kind);
+            const wire = lowerUnionMemberWire(self, name);
+            out.append(.{ .src = name, .canonical = name, .alias = wire, .scalar = kind }) catch return null;
         } else {
             return null;
         }
@@ -1950,7 +1955,7 @@ pub fn isClosedUnionShape(self: *TypeChecker, typ: *const EiwaType) bool {
     for (leaves.items) |leaf| {
         const lb = type_system.extractBaseType(leaf);
         if (lb.* == .Null) continue;
-        if (lb.* == .String) {
+        if (lb.* == .String or lb.* == .Int or lb.* == .Double or lb.* == .Bool) {
             count += 1;
             continue;
         }

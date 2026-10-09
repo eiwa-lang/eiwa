@@ -1875,12 +1875,12 @@ Semântica alvo:
 - [x] **Perna escalar Int→Double (DONE):** o caso acima foi corrigido — `expected_type` do elemento carrega o tipo esperado (`infer_literal.zig`, espelho do flag da Phase 80) e o emissor converte com `SIToFP` no store (`expression.zig`). Cobertura `list_scalar_layout_test.ei` (leitura + `toString`). Direção oposta (`Double`→`Int`) segue erro loud; demais pares escalares e a perna contrato→fatten seguem futuros, cada um com RED.
 - [x] **Verify:** 7/7 + 828/828 + `zig build test` + `eiwac build` smoke.
 
-### Phase 97: Membros escalares em uniões (`Int`/`Double`/`Bool`) (OPEN)
+### Phase 97: Membros escalares em uniões (`Int`/`Double`/`Bool`) (IN PROGRESS — 97.1 GREEN)
 > Box na fronteira (célula heap, Phase 80), `is` nominal por descritor, unbox no load estreitado (follow-up 91.4). Primitivos seguem fora das uniões abertas (representação value-in-pointer intocada).
 
-- [ ] **Task 97.1:** Box de escalar na coerção membro→união + `is` nominal.
-- [ ] **Task 97.2:** Unbox no binding estreitado (fecha o follow-up 91.4 para uniões).
-- [ ] **Task 97.3:** Negativas: escalar em união aberta continua erro; `null`/zero sem colisão.
+- [x] **Task 97.1:** Box de escalar na coerção membro→união + `is` nominal. Folhas aceitas em `closedUnionOf`/`isClosedUnionShape` (chaves `int`/`double`/`bool`); boxes `SerdeInt`/`SerdeDouble`/`SerdeBool` + `asInt`/`asDouble`/`asBool` no serde; `coerceToUnion` em célula heap (`boxNullableScalar`, zero ≠ null); `unionDescriptor` normaliza `core_*`; `is`/`when` por descritor (Int(5) ≠ Double(5.0)); `as`→escalar desempacota a célula; reatribuição com upcast estrutural; `==`/`!=` com unbox de célula. Cobertura `union_scalar_test.ei` 7/7; legado `union_test.ei` intacto.
+- [ ] **Task 97.2:** Unbox no binding estreitado (fecha o follow-up 91.4 para uniões). Feito para `if (s is Int)` (rebind com load); falta o rebind em ramos de `when` (hoje só `as` explícito funciona lá — pré-existente para todos os membros, não só escalares).
+- [ ] **Task 97.3:** Negativas: escalar em união **declarada** segue erro loud (verificado); `.equals` com membro `Double` é erro loud em runtime (`==` em Double fat quebra verificação LLVM em geral, pré-existente); `null`/zero sem colisão.
 - [ ] **Verify:** REDs escalares + suíte completa + `zig build test`.
 
 ### Bugfixes recentes (pós-Phase 81)

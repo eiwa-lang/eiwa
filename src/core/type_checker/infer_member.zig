@@ -1020,6 +1020,9 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                                     _ = try self.inferNode(s.value, scope);
                                 }
                             }
+                        } else if (try infer_expr_mod.structuralUpcastWrap(self, node, s.value, pt, assigned_type)) |wrapped| {
+                            s.value = wrapped;
+                            _ = try self.inferNode(s.value, scope);
                         }
                         // sentinel-box scalars bound to nullable fields.
                         if (type_system.isNullableScalar(pt) and type_system.isRawScalar(assigned_type)) {
@@ -1053,6 +1056,9 @@ pub fn inferSetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                                         _ = try self.inferNode(s.value, scope);
                                     }
                                 }
+                            } else if (try infer_expr_mod.structuralUpcastWrap(self, node, s.value, pt, assigned_type)) |wrapped| {
+                                s.value = wrapped;
+                                _ = try self.inferNode(s.value, scope);
                             }
                             // sentinel-box scalars bound to nullable fields.
                             if (type_system.isNullableScalar(pt) and type_system.isRawScalar(assigned_type)) {

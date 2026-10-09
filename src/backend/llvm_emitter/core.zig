@@ -2448,12 +2448,15 @@ pub const LLVMEmitter = struct {
                                         .Custom => |n| n,
                                         .GenericInstance => |gi| gi.base_name,
                                         .String => "String",
+                                        .Int => "Int",
+                                        .Double => "Double",
+                                        .Bool => "Bool",
                                         else => "",
                                     };
                                     if (init_c_name.len > 0 and target_c_name.len > 0) {
                                         if (types_mapping.isRegisteredUnion(v_rt.*, expression.global_unions_ast_ptr)) {
                                             val = expression.coerceToUnion(self.context, mod, self.builder, val, init_c_name) catch val;
-                                        } else {
+                                        } else if (init_rt.* == .Custom or init_rt.* == .GenericInstance or init_rt.* == .String) {
                                             val = expression.coerceToContract(self.context, mod, self.builder, val, init_c_name, target_c_name) catch val;
                                         }
                                     }
@@ -4304,16 +4307,20 @@ pub const LLVMEmitter = struct {
                         }
                     }
                     if (f.body.resolved_type) |val_rt| {
-                        const val_c_name = switch (ts.extractBaseType(val_rt).*) {
+                        const val_base = ts.extractBaseType(val_rt).*;
+                        const val_c_name: []const u8 = switch (val_base) {
                             .Custom => |n| n,
                             .GenericInstance => |gi| gi.base_name,
                             .String => "String",
+                            .Int => "Int",
+                            .Double => "Double",
+                            .Bool => "Bool",
                             else => "",
                         };
                         if (val_c_name.len > 0) {
                             if (union_ret) {
                                 ret_val = expression.coerceToUnion(self.context, mod, self.builder, ret_val, val_c_name) catch ret_val;
-                            } else {
+                            } else if (val_base == .Custom or val_base == .GenericInstance or val_base == .String) {
                                 ret_val = expression.coerceToContract(self.context, mod, self.builder, ret_val, val_c_name, ret_contract) catch ret_val;
                             }
                         }
