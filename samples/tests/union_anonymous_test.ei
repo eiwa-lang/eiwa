@@ -154,3 +154,18 @@ test "anonymous: List<anon> field round-trip" {
   assert(back.steps.size() == 2)
   assert((back.steps[1] as APaginate).maxPages == 5)
 }
+
+type NWTwo(val a: String, var depth: Int) : Serializable
+type NWOne(val x: String) : Serializable
+
+test "anonymous: narrowed member field write" {
+  val s = fromJson<NWTwo | NWOne>("{\"nwtwo\": {\"a\": \"u\", \"depth\": 3}}")
+  val d = when (s) {
+    is NWTwo -> {
+      s.depth = s.depth + 10
+      s.depth
+    }
+    is NWOne -> -1
+  }
+  assert(d == 13)
+}

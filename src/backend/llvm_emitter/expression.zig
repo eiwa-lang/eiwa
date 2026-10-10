@@ -954,6 +954,11 @@ fn emitExpressionRaw(
             const obj_val = try emitExpression(ctx, mod, builder, scope, structs, libs, set.object);
             const val = try emitExpression(ctx, mod, builder, scope, structs, libs, set.value);
 
+            const real_obj = if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(obj_val)) == llvm.LLVMStructTypeKind)
+                llvm.LLVMBuildExtractValue(builder, obj_val, 0, "fat_obj_ptr")
+            else
+                obj_val;
+
             if (set.object.resolved_type) |rt| {
                 const base_rt = ts.extractBaseType(rt);
                 var type_name: []const u8 = "";
@@ -989,7 +994,7 @@ fn emitExpressionRaw(
                             const field_name_z = try std.heap.page_allocator.dupeZ(u8, f_name);
                             defer std.heap.page_allocator.free(field_name_z);
 
-                            const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, obj_val, @intCast(f_idx), field_name_z.ptr);
+                            const field_ptr = llvm.LLVMBuildStructGEP2(builder, s_info.struct_type, real_obj, @intCast(f_idx), field_name_z.ptr);
                             if (set.is_boxed) {
                                 // Boxed field: load the box pointer from the
                                 // field and store the value through it (shared

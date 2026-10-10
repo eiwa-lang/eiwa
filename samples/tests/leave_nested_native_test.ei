@@ -1,0 +1,32 @@
+// RED NATIVE-ONLY (L6): nested `leave` inside two-level `repeat` escapes
+// as an unhandled throw in NATIVE builds, while JIT runs it correctly.
+// Repro (fails today):
+//   ./bin/eiwac build -o /tmp/l6 samples/tests/leave_nested_native_test.ei && /tmp/l6
+//   -> error: unhandled exception (no active handler)
+// JIT control (passes): ./bin/eiwac test samples/tests/leave_nested_native_test.ei
+// Found via scraping burn-in: prod service (native) died between claim and
+// outcome logs; bisection isolated nested leave (collectPage/readField shape).
+import { assert } from "std.core"
+import { repeat } from "std.system"
+
+fun nestedLeaveCount(): Int {
+    var total = 0
+    repeat(50) { i ->
+        repeat(50) { j ->
+            if (j == 25) {
+                leave
+            }
+            total = total + 1
+        }
+    }
+    return total
+}
+
+test "leave: nested two-level repeat exits inner loop" {
+    assert(nestedLeaveCount() == 1250)
+}
+
+fun main() {
+    assert(nestedLeaveCount() == 1250)
+    println("NATIVE-LEAVE-OK")
+}

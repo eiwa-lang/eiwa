@@ -1864,12 +1864,7 @@ Semântica alvo:
 - [x] **Task 95.5:** Docs (tour §1/§5/§10/§11/§21, MCP `docs.ei` + lesson 16) + roadmap.
 - [x] **Verify:** `union_serde_test.ei` 14/14 (decode ×3, unknown/empty/double tag, recursive missing field, round-trips incl. `List` pipeline, `@Alias`, exhaustive `when`, YAML, arg coercion, reassignment) + xfail + suíte completa **819/819** + `zig build test` verdes, `eiwac build` split-mode smoke OK.
 - [ ] **Task 95.6 (follow-up — gap pré-existente, fora de escopo):** `isCompatible` aceita `Custom` → `Custom` não-relacionados (`val b: FooB = FooA(...)` compila; `val s: Shape = NotAShape(...)` compila e produz lixo em runtime) — o braço `else => return true` em `core_isCompatible` (`src/core/type_checker/core.zig`) após falhar `conformsTo`. Uniões foram blindadas nominalmente nesta fase (cerca em `core_isCompatible` sobre `isClosedUnionShape`: qualquer conversão envolvendo união registrada fora de membro/mesma-união falha alto); o caso geral aguarda fase própria com RED + auditoria do que depende da frouxidão.
-- [ ] **Task 95.7 (follow-up, achado na 97):** uso estreitado de membro `Custom`
-  em ramo de `when` (`when (s) { is Goto -> s.url }`) não faz rebind — o acesso
-  lê o fat pointer em vez do objeto membro (campo 0 acerta por acidente,
-  demais viram lixo). Vale para uniões declaradas e anônimas desde sempre;
-  escalares ganharam rebind na 97.2, `Custom` segue sem. Workaround: `as`
-  explícito. Exige rebind por ramo com save/restore no emissor.
+- [x] **Task 95.7 (achado na 97, DONE):** escrita em membro estreitado (`when (s) { is Goto -> s.x = ... }`) quebrava a verificação LLVM (GEP no fat em vez do objeto; leitura já desempacotava). Fix: `set_expr` espelha o `real_obj` do `get_expr`. Cobertura (`narrowed member field write`).
 
 ### Phase 96: Uniões anônimas (`A | B`) + descritores de identidade (COMPLETED)
 > **Status:** COMPLETED (GREEN). Plano em `docs/plan_phase96_anonymous_union.md`; 13/13 em `samples/tests/union_anonymous_test.ei` (decode, lowercase, lista mutável, round-trip, tag desconhecida, membro `String`, `when` sobre `String`, campo estrutural em container, `List`/`Map` com união); suíte 846/846 + `zig build test` + smoke `eiwac build`. Tuplas inline em genéricos/campos/params/`fromJson` com chaves lowercase fixas; nominal ≠ estrutural; identidade por `{Type}_descriptor` (declarado migrado junto, 16/16 intactos); `String` junto, escalares na 97.
