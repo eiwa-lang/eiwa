@@ -15,6 +15,12 @@ test "scalar: int member decodes by fixed key" {
   assert((s is SGoto) == false)
 }
 
+test "scalar: SGoto member decodes by fixed key" {
+  val s = fromJson<SGoto | Int>("{\"sgoto\": {\"url\": \"https://x/\"}}")
+  assert(s is SGoto)
+  assert((s is Int) == false)
+}
+
 test "scalar: double member decodes by fixed key" {
   val s = fromJson<SGoto | Double>("{\"double\": 2.5}")
   assert(s is Double)
