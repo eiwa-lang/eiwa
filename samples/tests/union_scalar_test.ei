@@ -75,3 +75,17 @@ test "scalar: narrowed use in when branch" {
   }
   assert(label == "int:7")
 }
+
+test "scalar: double equality on union values" {
+  val x: SGoto | Double = 2.5
+  assert(x == 2.5)
+  assert((x == 2.6) == false)
+  assert(x != 2.6)
+}
+
+test "scalar: equality across members is false" {
+  val x: SGoto | Double = SGoto("https://x/")
+  assert((x == 2.5) == false)
+  val y: SGoto | Int = SGoto("https://x/")
+  assert((y == 5) == false)
+}

@@ -4947,13 +4947,14 @@ pub fn boxNullableScalar(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, buil
 /// provenance first.
 fn unboxScalarOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, node_rt: ?*const ts.EiwaType, target_t: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     if (node_rt) |rt| {
-        // Closed-union fat values hold heap cells (Phase-80 style): load.
+        // Closed-union fat values hold heap cells (Phase-80 style): load,
+        // null-safe (null reads as zero, matching `!!`).
         // Thin legacy values never carry a registered union type, so there
         // is no ambiguity here — one shape per static type.
         if (types_mapping.isRegisteredUnion(rt.*, global_unions_ast_ptr)) {
             const tk = llvm.LLVMGetTypeKind(target_t);
             const variant: ts.EiwaType = if (tk == llvm.LLVMDoubleTypeKind) .Double else if (tk == llvm.LLVMIntegerTypeKind and llvm.LLVMGetIntTypeWidth(target_t) == 1) .Bool else .Int;
-            return unboxNullableScalar(ctx, builder, variant, val);
+            return unboxNullableScalarOrZero(ctx, builder, variant, val);
         }
         if (ts.isRawScalar(rt)) {
             return unboxNullableScalar(ctx, builder, rt.*, val);
@@ -6172,13 +6173,14 @@ fn emitCustomEquals(
     return phi;
 }
 
-/// Double-vs-pointer `==`: unbox registered-union cells to real doubles.
-/// Anything else keeps prior behavior (including the pre-existing verifier
-/// gap for non-union fat Doubles).
+/// Double-vs-pointer `==`: unbox registered-union cells to real doubles
+/// (null-safe: null reads as 0.0, matching `!!` semantics). Anything else
+/// keeps prior behavior (including the pre-existing verifier gap for
+/// non-union fat Doubles).
 fn unboxDoubleOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, node_rt: ?*const ts.EiwaType) llvm.LLVMValueRef {
     if (node_rt) |rt| {
         if (types_mapping.isRegisteredUnion(rt.*, global_unions_ast_ptr)) {
-            return unboxNullableScalar(ctx, builder, .Double, val);
+            return unboxNullableScalarOrZero(ctx, builder, .Double, val);
         }
     }
     return val;

@@ -1250,6 +1250,10 @@ Semântica alvo:
   (`if (true) 1 else 2`), logo é ortogonal a esta fase. Evidência via stash:
   falha idêntica no código pré-fix. Requer plumbing de valores na state machine
   (domínio das Phases 68.x). Não coberto pela suíte (manter gate verde).
+- [ ] **Task 79.3 (follow-up, achado na 97):** ternário com ramos incompatíveis
+  infere o primeiro ramo (`val s = if (c) A() else B()` tipa `A`; `s is B`
+  responde `true/true` via heurística em vez de erro). Covaria com a frouxidão
+  da Task 95.6; unificação correta exigiria tipo união + coerção dos ramos.
 - [x] **Verify 79:** `if_expr_test.ei` 12/12 + suíte completa
   (`./bin/eiwac test samples/tests` → **ALL 448 TESTS PASSED**) e
   `zig build test` verdes, sem regressão.
@@ -1860,9 +1864,15 @@ Semântica alvo:
 - [x] **Task 95.5:** Docs (tour §1/§5/§10/§11/§21, MCP `docs.ei` + lesson 16) + roadmap.
 - [x] **Verify:** `union_serde_test.ei` 14/14 (decode ×3, unknown/empty/double tag, recursive missing field, round-trips incl. `List` pipeline, `@Alias`, exhaustive `when`, YAML, arg coercion, reassignment) + xfail + suíte completa **819/819** + `zig build test` verdes, `eiwac build` split-mode smoke OK.
 - [ ] **Task 95.6 (follow-up — gap pré-existente, fora de escopo):** `isCompatible` aceita `Custom` → `Custom` não-relacionados (`val b: FooB = FooA(...)` compila; `val s: Shape = NotAShape(...)` compila e produz lixo em runtime) — o braço `else => return true` em `core_isCompatible` (`src/core/type_checker/core.zig`) após falhar `conformsTo`. Uniões foram blindadas nominalmente nesta fase (cerca em `core_isCompatible` sobre `isClosedUnionShape`: qualquer conversão envolvendo união registrada fora de membro/mesma-união falha alto); o caso geral aguarda fase própria com RED + auditoria do que depende da frouxidão.
+- [ ] **Task 95.7 (follow-up, achado na 97):** uso estreitado de membro `Custom`
+  em ramo de `when` (`when (s) { is Goto -> s.url }`) não faz rebind — o acesso
+  lê o fat pointer em vez do objeto membro (campo 0 acerta por acidente,
+  demais viram lixo). Vale para uniões declaradas e anônimas desde sempre;
+  escalares ganharam rebind na 97.2, `Custom` segue sem. Workaround: `as`
+  explícito. Exige rebind por ramo com save/restore no emissor.
 
 ### Phase 96: Uniões anônimas (`A | B`) + descritores de identidade (COMPLETED)
-> **Status:** COMPLETED (GREEN). Plano em `docs/plan_phase96_anonymous_union.md`; 8/8 em `samples/tests/union_anonymous_test.ei` (decode, lowercase, lista mutável, round-trip, tag desconhecida, membro `String`, `when` sobre `String`, campo estrutural em container); suíte 829/829 + `zig build test` + smoke `eiwac build`. Tuplas inline em genéricos/campos/params/`fromJson` com chaves lowercase fixas; nominal ≠ estrutural; identidade por `{Type}_descriptor` (declarado migrado junto, 16/16 intactos); `String` junto, escalares na 97.
+> **Status:** COMPLETED (GREEN). Plano em `docs/plan_phase96_anonymous_union.md`; 13/13 em `samples/tests/union_anonymous_test.ei` (decode, lowercase, lista mutável, round-trip, tag desconhecida, membro `String`, `when` sobre `String`, campo estrutural em container, `List`/`Map` com união); suíte 846/846 + `zig build test` + smoke `eiwac build`. Tuplas inline em genéricos/campos/params/`fromJson` com chaves lowercase fixas; nominal ≠ estrutural; identidade por `{Type}_descriptor` (declarado migrado junto, 16/16 intactos); `String` junto, escalares na 97.
 
 - [x] **Task 96.1:** Abstração de membros (`closedUnionOf`/`isClosedUnionShape`) + `when` exaustivo estrutural + guarda nominal estendida.
 - [x] **Task 96.2:** Descritores + migração do declarado; `is`/`when`/`as`/rebind/coerções sobre descritores; `is String` nominal no `when` (fast-path corrigido).
@@ -1873,15 +1883,16 @@ Semântica alvo:
 - [x] **Limpeza:** fallback short-name no `is` removido (`expression.zig`, ramo `is_not_null_cmp` por igualdade de sufixo sem identidade; suite 829/829 com o ramo desativado provou desuso). Frouxidão geral do `isCompatible` segue na Task 95.6.
 - [x] **Task 96.7 (follow-up):** literais de `Map` com valores union (`val ms: Map<String, A | B> = ["k" of A(...)]` falhava loud na checagem textual de mangled em `inferMapLiteral`; aceitar sem reconstruir o V gerava `is` falso-falso). Fix: quando o V esperado é união registrada e todos os elementos são membros, o literal infere `Map<K,U>` (monomorfiza `Node`/`Map` com `U`, fattening no `put` via `expected_type`); mismatch segue loud. Resta `fromJson<Map<...>>` top-level (mesma família da limitação `fromJson<List<Step>>` da §21.10, pré-existente para mapas simples).
 - [x] **Perna escalar Int→Double (DONE):** o caso acima foi corrigido — `expected_type` do elemento carrega o tipo esperado (`infer_literal.zig`, espelho do flag da Phase 80) e o emissor converte com `SIToFP` no store (`expression.zig`). Cobertura `list_scalar_layout_test.ei` (leitura + `toString`). Direção oposta (`Double`→`Int`) segue erro loud; demais pares escalares e a perna contrato→fatten seguem futuros, cada um com RED.
-- [x] **Verify:** 7/7 + 828/828 + `zig build test` + `eiwac build` smoke.
+- [x] **Verify:** 13/13 + suíte 846/846 + `zig build test` + `eiwac build` smoke.
 
-### Phase 97: Membros escalares em uniões (`Int`/`Double`/`Bool`) (IN PROGRESS — 97.1 GREEN)
+### Phase 97: Membros escalares em uniões (`Int`/`Double`/`Bool`) (COMPLETED)
 > Box na fronteira (célula heap, Phase 80), `is` nominal por descritor, unbox no load estreitado (follow-up 91.4). Primitivos seguem fora das uniões abertas (representação value-in-pointer intocada).
 
-- [x] **Task 97.1:** Box de escalar na coerção membro→união + `is` nominal. Folhas aceitas em `closedUnionOf`/`isClosedUnionShape` (chaves `int`/`double`/`bool`); boxes `SerdeInt`/`SerdeDouble`/`SerdeBool` + `asInt`/`asDouble`/`asBool` no serde; `coerceToUnion` em célula heap (`boxNullableScalar`, zero ≠ null); `unionDescriptor` normaliza `core_*`; `is`/`when` por descritor (Int(5) ≠ Double(5.0)); `as`→escalar desempacota a célula; reatribuição com upcast estrutural; `==`/`!=` com unbox de célula. Cobertura `union_scalar_test.ei` 7/7; legado `union_test.ei` intacto.
-- [x] **Task 97.2:** Unbox no binding estreitado (fecha o follow-up 91.4 para uniões). `if (s is Int)` rebinda com load da célula; ramos de `when` com alvo escalar único rebindam igual (só escalares — membros `Custom` mantêm sem-rebind). Cobertura no RED (`narrowed use`). Feito para `if (s is Int)` (rebind com load); falta o rebind em ramos de `when` (hoje só `as` explícito funciona lá — pré-existente para todos os membros, não só escalares).
+- [x] **Task 97.1:** Box de escalar na coerção membro→união + `is` nominal. Folhas aceitas em `closedUnionOf`/`isClosedUnionShape` (chaves `int`/`double`/`bool`); boxes `SerdeInt`/`SerdeDouble`/`SerdeBool` + `asInt`/`asDouble`/`asBool` no serde; `coerceToUnion` em célula heap (`boxNullableScalar`, zero ≠ null); `unionDescriptor` normaliza `core_*`; `is`/`when` por descritor (Int(5) ≠ Double(5.0)); `as`→escalar desempacota a célula; reatribuição com upcast estrutural; `==`/`!=` com unbox de célula. Cobertura `union_scalar_test.ei` 10/10; legado `union_test.ei` intacto.
+- [x] **Task 97.2:** Unbox no binding estreitado (fecha o follow-up 91.4 para uniões). `if (s is Int)` e ramos de `when` com alvo escalar único rebindam com load da célula (só escalares — membros `Custom` mantêm sem-rebind). Cobertura no RED (`narrowed use`).
 - [x] **Task 97.3:** Negativas: escalar em união **declarada** segue erro loud (verificado); `.equals` com membro `Double` é erro loud em runtime (`==` em Double fat quebra verificação LLVM em geral, pré-existente); `null`/zero sem colisão.
-- [x] **Verify:** REDs escalares 9/9 + suíte completa + `zig build test` + smoke `eiwac build`.
+- [x] **Follow-up (ICE pré-existente, achado na 97.2 — DONE):** `==` com operando `Double` em fat-pointer quebrava a verificação LLVM (`icmp eq ptr, double`), inclusive sem união (`e == 2.5` com `e: Equatable`). Fix: desempacota o lado ponteiro para double (célula com load null-safe, legado com `PtrToInt`+bitcast) e `FCmp` quando ambos viram double — espelho do caminho inteiro. Cobertura no RED (`double equality`, `equality across members`). O caso não-união continua como antes.
+- [x] **Verify:** REDs escalares 10/10 + suíte 846/846 + `zig build test` + smoke `eiwac build`.
 
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
