@@ -1543,8 +1543,9 @@ Rules (v1):
 - Declared unions and anonymous unions with the same members are
   distinct types — mixing them is a compile-time error, as is a scalar
   member in a declared `union`.
-- Narrowed scalar use works after `if (s is Int)`; in `when` branches use
-  explicit `as`. `.equals` with a `Double` member is a loud runtime error.
+- Narrowed scalar use works after `if (s is Int)` and in single-`is`
+  `when` branches (rebound unboxed; `Custom` members keep no-rebind).
+  `.equals` with a `Double` member is a loud runtime error.
 
 ---
 

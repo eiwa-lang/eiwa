@@ -1879,9 +1879,9 @@ Semântica alvo:
 > Box na fronteira (célula heap, Phase 80), `is` nominal por descritor, unbox no load estreitado (follow-up 91.4). Primitivos seguem fora das uniões abertas (representação value-in-pointer intocada).
 
 - [x] **Task 97.1:** Box de escalar na coerção membro→união + `is` nominal. Folhas aceitas em `closedUnionOf`/`isClosedUnionShape` (chaves `int`/`double`/`bool`); boxes `SerdeInt`/`SerdeDouble`/`SerdeBool` + `asInt`/`asDouble`/`asBool` no serde; `coerceToUnion` em célula heap (`boxNullableScalar`, zero ≠ null); `unionDescriptor` normaliza `core_*`; `is`/`when` por descritor (Int(5) ≠ Double(5.0)); `as`→escalar desempacota a célula; reatribuição com upcast estrutural; `==`/`!=` com unbox de célula. Cobertura `union_scalar_test.ei` 7/7; legado `union_test.ei` intacto.
-- [ ] **Task 97.2:** Unbox no binding estreitado (fecha o follow-up 91.4 para uniões). Feito para `if (s is Int)` (rebind com load); falta o rebind em ramos de `when` (hoje só `as` explícito funciona lá — pré-existente para todos os membros, não só escalares).
-- [ ] **Task 97.3:** Negativas: escalar em união **declarada** segue erro loud (verificado); `.equals` com membro `Double` é erro loud em runtime (`==` em Double fat quebra verificação LLVM em geral, pré-existente); `null`/zero sem colisão.
-- [ ] **Verify:** REDs escalares + suíte completa + `zig build test`.
+- [x] **Task 97.2:** Unbox no binding estreitado (fecha o follow-up 91.4 para uniões). `if (s is Int)` rebinda com load da célula; ramos de `when` com alvo escalar único rebindam igual (só escalares — membros `Custom` mantêm sem-rebind). Cobertura no RED (`narrowed use`). Feito para `if (s is Int)` (rebind com load); falta o rebind em ramos de `when` (hoje só `as` explícito funciona lá — pré-existente para todos os membros, não só escalares).
+- [x] **Task 97.3:** Negativas: escalar em união **declarada** segue erro loud (verificado); `.equals` com membro `Double` é erro loud em runtime (`==` em Double fat quebra verificação LLVM em geral, pré-existente); `null`/zero sem colisão.
+- [x] **Verify:** REDs escalares 9/9 + suíte completa + `zig build test` + smoke `eiwac build`.
 
 ### Bugfixes recentes (pós-Phase 81)
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`

@@ -3973,7 +3973,21 @@ fn emitExpressionRaw(
                 }
 
                 llvm.LLVMPositionBuilderAtEnd(builder, body_bb);
+                var when_narrow: NarrowRestore = .{};
+                if (!case.is_else and case.conds.len == 1 and case.conds[0].data == .is_type_cond) {
+                    const tc = case.conds[0].data.is_type_cond;
+                    if (!tc.is_not) {
+                        if (tc.type_ref.resolved_type) |trt| {
+                            if (w.subject) |subj| {
+                                if (subj.data == .identifier) {
+                                    when_narrow = try narrowUnionScalar(ctx, mod, builder, scope, structs, libs, subj, trt.*);
+                                }
+                            }
+                        }
+                    }
+                }
                 try emitBlockOrExpr(ctx, mod, builder, func_val, scope, structs, libs, case.body, res_ptr, node.resolved_type);
+                restoreNarrowed(scope, when_narrow);
                 if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
                     _ = llvm.LLVMBuildBr(builder, merge_bb);
                 }
@@ -5857,6 +5871,49 @@ pub fn restoreNarrowed(scope: *std.StringHashMap(llvm.LLVMValueRef), r: NarrowRe
     }
 }
 
+/// Rebinds identifier `subject` (union-typed) to its unboxed scalar when
+/// `target` is a scalar member of a registered union. Scope-restoring via
+/// NarrowRestore; inactive otherwise (prior behavior preserved).
+pub fn narrowUnionScalar(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    scope: *std.StringHashMap(llvm.LLVMValueRef),
+    structs: *std.StringHashMap(core.StructInfo),
+    libs: *const std.StringHashMap(std.StringHashMap([]const u8)),
+    subject: *ast.ASTNode,
+    target_rt: ts.EiwaType,
+) !NarrowRestore {
+    if (subject.data != .identifier) return .{};
+    const iname = subject.data.identifier.name;
+    const srt = subject.resolved_type orelse return .{};
+    const want = ast.UnionScalar.fromType(ts.extractBaseType(&target_rt).*) orelse return .{};
+    const ua = global_unions_ast_ptr orelse return .{};
+    var kbuf = compat.ArrayList(u8).init(std.heap.page_allocator);
+    defer kbuf.deinit();
+    const stripped = ts.extractBaseType(srt);
+    stripped.formatSafe(kbuf.writer()) catch return .{};
+    const unode = ua.get(kbuf.items) orelse return .{};
+    var found = false;
+    for (unode.data.union_decl.members) |mm| {
+        if (mm.scalar == want) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) return .{};
+    const fat_val = try emitExpression(ctx, mod, builder, scope, structs, libs, subject);
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_val)) != llvm.LLVMStructTypeKind) return .{};
+    const data_ptr = llvm.LLVMBuildExtractValue(builder, fat_val, 0, "narrow_union_scalar");
+    const unboxed = unboxNullableScalar(ctx, builder, want.eiwaType(), data_ptr);
+    const scalar_t = llvm.LLVMTypeOf(unboxed);
+    const thin_alloca = llvm.LLVMBuildAlloca(builder, scalar_t, "narrow_scalar_thin");
+    _ = llvm.LLVMBuildStore(builder, unboxed, thin_alloca);
+    const old = scope.get(iname);
+    scope.put(iname, thin_alloca) catch return .{};
+    return .{ .active = true, .name = iname, .old = old };
+}
+
 pub fn fattenNarrowedIfNeeded(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -5878,39 +5935,9 @@ pub fn fattenNarrowedIfNeeded(
     // `x is Scalar` on a structural union subject rebinds x to the unboxed
     // scalar (heap cell load). Only when the scalar is really a member
     // (checked via the registered entry) — otherwise keep prior behavior.
-    {
-        const tbase = ts.extractBaseType(trt).*;
-        const want: ?ast.UnionScalar = if (tbase == .Int) .Int else if (tbase == .Double) .Double else if (tbase == .Bool) .Bool else null;
-        if (want) |sk| {
-            if (global_unions_ast_ptr) |ua| {
-                var kbuf = compat.ArrayList(u8).init(std.heap.page_allocator);
-                defer kbuf.deinit();
-                const stripped = ts.extractBaseType(vrt);
-                stripped.formatSafe(kbuf.writer()) catch return .{};
-                if (ua.get(kbuf.items)) |unode| {
-                    var found = false;
-                    for (unode.data.union_decl.members) |mm| {
-                        if (mm.scalar == sk) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (found) {
-                        const fat_val = try emitExpression(ctx, mod, builder, scope, structs, libs, is_e.value);
-                        if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_val)) != llvm.LLVMStructTypeKind) return .{};
-                        const data_ptr = llvm.LLVMBuildExtractValue(builder, fat_val, 0, "narrow_union_scalar");
-                        const unboxed = unboxNullableScalar(ctx, builder, sk.eiwaType(), data_ptr);
-                        const scalar_t = llvm.LLVMTypeOf(unboxed);
-                        const thin_alloca = llvm.LLVMBuildAlloca(builder, scalar_t, "narrow_scalar_thin");
-                        _ = llvm.LLVMBuildStore(builder, unboxed, thin_alloca);
-                        const old = scope.get(iname);
-                        scope.put(iname, thin_alloca) catch return .{};
-                        return .{ .active = true, .name = iname, .old = old };
-                    }
-                }
-            }
-            return .{};
-        }
+    if (is_e.value.data == .identifier) {
+        const r = try narrowUnionScalar(ctx, mod, builder, scope, structs, libs, is_e.value, trt.*);
+        if (r.active) return r;
     }
     if (ts.extractBaseType(trt).* != .Custom) return .{};
     // `x is Member` on a union subject rebinds x to the extracted data

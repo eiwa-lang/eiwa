@@ -54,3 +54,18 @@ test "scalar: when dispatches over scalar member" {
   }
   assert(label == "int")
 }
+
+test "scalar: narrowed use after if-is" {
+  val s = fromJson<SGoto | Int>("{\"int\": 41}")
+  val doubled = if (s is Int) s + 1 else -1
+  assert(doubled == 42)
+}
+
+test "scalar: narrowed use in when branch" {
+  val s = fromJson<SGoto | Int>("{\"int\": 7}")
+  val label = when (s) {
+    is SGoto -> "goto"
+    is Int -> "int:" + s.toString()
+  }
+  assert(label == "int:7")
+}
