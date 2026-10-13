@@ -24,8 +24,15 @@ test "net: connect resolves localhost like a literal ip" {
     val worker = task {
         acceptOne(server)
     }
-    sleepMs(150)
-    val sock = SocketClient.connect("localhost", 19790)
+    // Fixed startup delays flake under loaded CI runners (same class as
+    // coop_io): retry the connect with a cap instead of assuming timing.
+    var attempts = 0
+    var sock = SocketClient.connect("localhost", 19790)
+    while (sock == null && attempts < 40) {
+        sleepMs(50)
+        sock = SocketClient.connect("localhost", 19790)
+        attempts = attempts + 1
+    }
     assert(sock != null, "localhost-connect")
     sock!!.close()
     assert(worker.await() == "ok", "accepted")

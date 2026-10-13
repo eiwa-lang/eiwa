@@ -481,7 +481,7 @@ fun workerThreadTrampoline(arg: Pointer): Pointer {
         while (!disp.isShutdown) {
             val node = disp.scheduler.popBlocking()
             if (node != null) {
-                NativeExc.excCurrentSet(node!!.excState)
+                NativeExc.excCurrentSet(node.excState)
                 node!!.cont.resume()
             }
         }
