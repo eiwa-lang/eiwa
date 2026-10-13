@@ -1,5 +1,5 @@
 import { assert } from "std.core"
-import { TCPServer, SocketClient } from "std.net"
+import { TCPServer, Socket, SocketClient } from "std.net"
 import { sleepMs } from "std.system"
 
 // TDD: eiwa_tcp_connect resolved only literal IPs (inet_pton) —
@@ -8,12 +8,20 @@ import { sleepMs } from "std.system"
 // Loopback only: deterministic on Linux/macOS/Windows, no network.
 
 fun acceptOne(server: TCPServer): String {
-    val conn = server.accept()
+    // Single-shot accept misses under loaded CI (same class as coop_io):
+    // the client connect can land after the 250ms accept window.
+    var conn: Socket? = null
+    var attempts = 0
+    while (conn == null && attempts < 20) {
+        conn = server.accept()
+        attempts = attempts + 1
+    }
     if (conn == null) {
         server.close()
         return "accept-fail"
     }
-    conn.close()
+    val live: Socket = conn!!
+    live.close()
     server.close()
     return "ok"
 }

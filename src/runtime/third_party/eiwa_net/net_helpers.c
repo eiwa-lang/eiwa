@@ -57,11 +57,41 @@ int64_t eiwa_tcp_connect(const char* host, int64_t port) {
     }
     SOCKET fd = INVALID_SOCKET;
     for (struct addrinfo* ai = list; ai != NULL; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd == INVALID_SOCKET) continue;
-        if (connect(fd, ai->ai_addr, (int)ai->ai_addrlen) != SOCKET_ERROR) break;
-        closesocket(fd);
-        fd = INVALID_SOCKET;
+        SOCKET s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (s == INVALID_SOCKET) continue;
+        // Bounded connect: a blocking connect() to an unroutable address
+        // (e.g. ::1 with broken IPv6) can stall for minutes, hanging the
+        // whole test suite on the 120s harness timeout. Go non-blocking and
+        // cap each candidate address at 2s via WSAPoll + SO_ERROR.
+        u_long mode = 1;
+        if (ioctlsocket(s, FIONBIO, &mode) != 0) {
+            closesocket(s);
+            continue;
+        }
+        int cr = connect(s, ai->ai_addr, (int)ai->ai_addrlen);
+        if (cr == SOCKET_ERROR) {
+            if (WSAGetLastError() != WSAEWOULDBLOCK) {
+                closesocket(s);
+                continue;
+            }
+            WSAPOLLFD pfd;
+            pfd.fd = s;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            int pr = WSAPoll(&pfd, 1, 2000);
+            if (pr <= 0) {
+                closesocket(s);
+                continue;
+            }
+            int soerr = 0;
+            int optlen = sizeof(soerr);
+            if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&soerr, &optlen) != 0 || soerr != 0) {
+                closesocket(s);
+                continue;
+            }
+        }
+        fd = s;
+        break;
     }
     freeaddrinfo(list);
     if (fd == INVALID_SOCKET) return -1;
@@ -161,15 +191,43 @@ int64_t eiwa_tcp_connect(const char* host, int64_t port) {
     }
     int fd = -1;
     for (struct addrinfo* ai = list; ai != NULL; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) continue;
+        int s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (s < 0) continue;
+        // Same bounded-connect rationale as the Windows branch above.
+        int flags = fcntl(s, F_GETFL, 0);
+        if (flags < 0 || fcntl(s, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(s);
+            continue;
+        }
         int cr;
         do {
-            cr = connect(fd, ai->ai_addr, ai->ai_addrlen);
+            cr = connect(s, ai->ai_addr, ai->ai_addrlen);
         } while (cr < 0 && errno == EINTR);
-        if (cr == 0) break;
-        close(fd);
-        fd = -1;
+        if (cr < 0 && errno == EINPROGRESS) {
+            struct pollfd pfd;
+            pfd.fd = s;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            int pr;
+            do {
+                pr = poll(&pfd, 1, 2000);
+            } while (pr < 0 && errno == EINTR);
+            if (pr <= 0) {
+                close(s);
+                continue;
+            }
+            int soerr = 0;
+            socklen_t optlen = sizeof(soerr);
+            if (getsockopt(s, SOL_SOCKET, SO_ERROR, &soerr, &optlen) != 0 || soerr != 0) {
+                close(s);
+                continue;
+            }
+        } else if (cr != 0) {
+            close(s);
+            continue;
+        }
+        fd = s;
+        break;
     }
     freeaddrinfo(list);
     if (fd < 0) return -1;
