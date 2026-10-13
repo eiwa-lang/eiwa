@@ -1,0 +1,40 @@
+import { assert } from "std.core"
+
+// RED (TDD): mutable state held in an `object` singleton must survive a
+// GC cycle. Today a GC collection frees it (or its referents) and the
+// next read faults (NPE / segfault). Locals (stack roots) survive; only
+// static object state is lost. Real-world impact: long-lived services
+// crash intermittently once the heap grows enough to trigger a
+// collection (e.g. injected HTTP clients, cached DTOs).
+// Provenance:popup crash bisected to `SocialClient.injected` dying across GC.
+
+type GcCfg(val baseUrl: String, val token: String)
+
+object GcHolder {
+    var cfg: GcCfg? = null
+}
+
+fun gcPressure() {
+    var i = 0
+    var g = ""
+    while (i < 16000) {
+        g = "${g}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        i = i + 1
+    }
+}
+
+test "gc: object static field survives collection" {
+    GcHolder.cfg = GcCfg("http://localhost:4005", "tok-abc-123")
+    gcPressure()
+    val c = GcHolder.cfg
+    assert(c != null)
+    assert(c!!.baseUrl == "http://localhost:4005")
+    assert(c!!.token == "tok-abc-123")
+}
+
+test "gc: local holding same object survives (guard)" {
+    val cfg = GcCfg("http://localhost:4005", "tok-abc-123")
+    gcPressure()
+    assert(cfg.baseUrl == "http://localhost:4005")
+    assert(cfg.token == "tok-abc-123")
+}
