@@ -581,11 +581,20 @@ pub const LLVMEmitter = struct {
 
         var setjmp_params = [_]llvm.LLVMTypeRef{ptr_type};
         const setjmp_type = llvm.LLVMFunctionType(i32_type, &setjmp_params, 1, 0);
-        _ = llvm.LLVMAddFunction(mod, setjmp_name, setjmp_type);
+        const setjmp_fn = llvm.LLVMAddFunction(mod, setjmp_name, setjmp_type);
+        // setjmp returns twice: passes need returns_twice or try/catch
+        // miscompiles natively (L6).
+        const rt_kind = llvm.LLVMGetEnumAttributeKindForName("returns_twice", 13);
+        const rt_attr = llvm.LLVMCreateEnumAttribute(self.context, rt_kind, 0);
+        const fn_idx: c_uint = @bitCast(@as(c_int, llvm.LLVMAttributeFunctionIndex));
+        llvm.LLVMAddAttributeAtIndex(setjmp_fn, fn_idx, rt_attr);
 
         var longjmp_params = [_]llvm.LLVMTypeRef{ ptr_type, i32_type };
         const longjmp_type = llvm.LLVMFunctionType(void_type, &longjmp_params, 2, 0);
-        _ = llvm.LLVMAddFunction(mod, longjmp_name, longjmp_type);
+        const longjmp_fn = llvm.LLVMAddFunction(mod, longjmp_name, longjmp_type);
+        const nr_kind = llvm.LLVMGetEnumAttributeKindForName("noreturn", 8);
+        const nr_attr = llvm.LLVMCreateEnumAttribute(self.context, nr_kind, 0);
+        llvm.LLVMAddAttributeAtIndex(longjmp_fn, fn_idx, nr_attr);
 
         var exit_params = [_]llvm.LLVMTypeRef{i32_type};
         const exit_type = llvm.LLVMFunctionType(void_type, &exit_params, 1, 0);
@@ -599,15 +608,7 @@ pub const LLVMEmitter = struct {
         const time_type = llvm.LLVMFunctionType(size_t_type, &time_params, 1, 0);
         _ = llvm.LLVMAddFunction(mod, "time", time_type);
 
-        // Exception stack + active exception globals.
-        // Split mode: defined (with initializer) only by the entry unit —
-        // cross-module exception propagation requires a single shared
-        // instance; other units reference them as extern declarations.
-        const exc_stack_global = llvm.LLVMAddGlobal(mod, ptr_type, "eiwa_exception_stack");
-        if (!split or is_entry) llvm.LLVMSetInitializer(exc_stack_global, llvm.LLVMConstNull(ptr_type));
-        const fat_type = types_mapping.getFatPointerType(self.context);
-        const active_exc_global = llvm.LLVMAddGlobal(mod, fat_type, "eiwa_active_exception");
-        if (!split or is_entry) llvm.LLVMSetInitializer(active_exc_global, llvm.LLVMConstNull(fat_type));
+        // L7: no process-global handler singletons (per-task state instead).
 
         // struct EiwaExceptionFrame { jmp_buf buf; EiwaExceptionFrame* next; }
         // jmp_buf size is target-dependent (OS/architecture).
@@ -1534,8 +1535,6 @@ pub const LLVMEmitter = struct {
                 const fflush_ft_opt = if (fflush_fn_opt) |ff| llvm.LLVMGlobalGetValueType(ff) else null;
                 const ptr_type_rt = llvm.LLVMPointerTypeInContext(self.context, 0);
                 const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
-                const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
-                const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
                 const setjmp_func = (llvm.LLVMGetNamedFunction(mod, "_setjmp") orelse llvm.LLVMGetNamedFunction(mod, "setjmp")) orelse return error.ExceptionRuntimeMissing;
                 const sj_type = llvm.LLVMGlobalGetValueType(setjmp_func);
 
@@ -1555,10 +1554,10 @@ pub const LLVMEmitter = struct {
                     const frame_ptr = llvm.LLVMBuildAlloca(self.builder, frame_type, "exc_frame");
                     llvm.LLVMSetAlignment(frame_ptr, 16);
 
-                    const cur_stack = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, stack_global, "run_cur_stack");
+                    const cur_stack = try statement.excGet(self.context, mod, self.builder, "eiwa_exc_top_get");
                     const next_gep = llvm.LLVMBuildStructGEP2(self.builder, frame_type, frame_ptr, 1, "run_frame_next");
                     _ = llvm.LLVMBuildStore(self.builder, cur_stack, next_gep);
-                    _ = llvm.LLVMBuildStore(self.builder, frame_ptr, stack_global);
+                    try statement.excSet(self.context, mod, self.builder, "eiwa_exc_top_set", frame_ptr);
 
                     const buf_gep = llvm.LLVMBuildStructGEP2(self.builder, frame_type, frame_ptr, 0, "run_frame_buf");
                     const buf_ptr = llvm.LLVMBuildBitCast(self.builder, buf_gep, ptr_type_rt, "run_fbuf");
@@ -1576,10 +1575,10 @@ pub const LLVMEmitter = struct {
                     llvm.LLVMPositionBuilderAtEnd(self.builder, try_bb);
                     _ = llvm.LLVMBuildCall2(self.builder, test_fn_type_call, test_fn, null, 0, "");
                     {
-                        const st = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, stack_global, "run_stack_pop");
+                        const st = try statement.excGet(self.context, mod, self.builder, "eiwa_exc_top_get");
                         const ng = llvm.LLVMBuildStructGEP2(self.builder, frame_type, st, 1, "run_next_pop");
                         const nv = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, ng, "run_next_val");
-                        _ = llvm.LLVMBuildStore(self.builder, nv, stack_global);
+                        try statement.excSet(self.context, mod, self.builder, "eiwa_exc_top_set", nv);
                     }
                     const pass_fmt_s = try std.fmt.allocPrint(self.allocator, "[PASS] {s}", .{test_names_list.items[i]});
                     defer self.allocator.free(pass_fmt_s);
@@ -1603,14 +1602,20 @@ pub const LLVMEmitter = struct {
                     // print [FAIL]. Do NOT rethrow or exit — let the harness move on.
                     llvm.LLVMPositionBuilderAtEnd(self.builder, catch_bb);
                     {
-                        const st = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, stack_global, "run_stack_pop2");
+                        const st = try statement.excGet(self.context, mod, self.builder, "eiwa_exc_top_get");
                         const ng = llvm.LLVMBuildStructGEP2(self.builder, frame_type, st, 1, "run_next_pop2");
                         const nv = llvm.LLVMBuildLoad2(self.builder, ptr_type_rt, ng, "run_next_val2");
-                        _ = llvm.LLVMBuildStore(self.builder, nv, stack_global);
+                        try statement.excSet(self.context, mod, self.builder, "eiwa_exc_top_set", nv);
                     }
                     const fat_type_rt = types_mapping.getFatPointerType(self.context);
-                    const exc_val = llvm.LLVMBuildLoad2(self.builder, fat_type_rt, active_global, "exc_obj");
-                    _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstNull(fat_type_rt), active_global);
+                    const exc_data2 = try statement.excGet(self.context, mod, self.builder, "eiwa_exc_active_data_get");
+                    const exc_table2 = try statement.excGet(self.context, mod, self.builder, "eiwa_exc_active_table_get");
+                    var exc_val = llvm.LLVMConstNull(fat_type_rt);
+                    exc_val = llvm.LLVMBuildInsertValue(self.builder, exc_val, exc_data2, 0, "run_exc_data");
+                    exc_val = llvm.LLVMBuildInsertValue(self.builder, exc_val, exc_table2, 1, "run_exc_table");
+                    const ptr_null_rt = llvm.LLVMConstNull(ptr_type_rt);
+                    try statement.excSet(self.context, mod, self.builder, "eiwa_exc_active_data_set", ptr_null_rt);
+                    try statement.excSet(self.context, mod, self.builder, "eiwa_exc_active_table_set", ptr_null_rt);
                     const failed_prev = llvm.LLVMBuildLoad2(self.builder, i32_type, failed_var, "failed_prev");
                     const failed_inc = llvm.LLVMBuildAdd(self.builder, failed_prev, llvm.LLVMConstInt(i32_type, 1, 0), "failed_inc");
                     _ = llvm.LLVMBuildStore(self.builder, failed_inc, failed_var);
@@ -4235,6 +4240,23 @@ pub const LLVMEmitter = struct {
         }
     }
 
+    const TryScan = struct { found: bool = false };
+
+    fn tryScanEnter(ctx: *TryScan, node: *ast.ASTNode) anyerror!tc_core.VisitAction {
+        if (node.data == .try_stmt) {
+            ctx.found = true;
+            return .stop;
+        }
+        return .recurse;
+    }
+
+    /// True when the function subtree contains a try statement. See L6.
+    fn bodyHasTry(func_node: *ast.ASTNode) bool {
+        var ctx = TryScan{};
+        _ = tc_core.visitEachNode(func_node, &ctx, tryScanEnter) catch return true;
+        return ctx.found;
+    }
+
     fn emitFunctionBody(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, func_node: *ast.ASTNode, _is_object_method: bool) !void {
         _ = _is_object_method;
         const f = func_node.data.fun_decl;
@@ -4243,6 +4265,18 @@ pub const LLVMEmitter = struct {
 
         const name = f.resolved_c_name orelse f.name;
         const func_val = self.functions.get(name) orelse return error.FunctionNotFound;
+
+        // L6: locals touched between setjmp/longjmp must stay in memory
+        // (C rule); without optnone, SSA promotion loses pre-throw stores.
+        if (bodyHasTry(func_node)) {
+            const on_kind = llvm.LLVMGetEnumAttributeKindForName("optnone", 7);
+            const on_attr = llvm.LLVMCreateEnumAttribute(self.context, on_kind, 0);
+            const ni_kind = llvm.LLVMGetEnumAttributeKindForName("noinline", 8);
+            const ni_attr = llvm.LLVMCreateEnumAttribute(self.context, ni_kind, 0);
+            const fn_idx: c_uint = @bitCast(@as(c_int, llvm.LLVMAttributeFunctionIndex));
+            llvm.LLVMAddAttributeAtIndex(func_val, fn_idx, on_attr);
+            llvm.LLVMAddAttributeAtIndex(func_val, fn_idx, ni_attr);
+        }
 
         const entry_block = llvm.LLVMAppendBasicBlockInContext(self.context, func_val, "entry");
         llvm.LLVMPositionBuilderAtEnd(self.builder, entry_block);

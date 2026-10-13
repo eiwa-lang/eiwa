@@ -1,0 +1,59 @@
+// Concurrent try/throw hammer with await join (no sleeps).
+import { assert } from "std.core"
+import { repeat } from "std.system"
+
+type JitHammerErr(val text: String) : Throwable {
+    implement fun message(): String {
+        return this.text
+    }
+}
+
+fun hammer(): Int {
+    var total = 0
+    repeat(200) { i ->
+        try {
+            repeat(50) { j ->
+                if (j == 25) {
+                    leave
+                }
+                total = total + 1
+            }
+            if (i % 50 == 0) {
+                throw JitHammerErr("x")
+            }
+        } catch (e: JitHammerErr) {
+        }
+    }
+    return total
+}
+
+fun hammer5(): Int {
+    var last = 0
+    repeat(5) { k ->
+        last = hammer()
+    }
+    return last
+}
+
+test "sched: concurrent try hammers stay correct" {
+    val a = task {
+        hammer5()
+    }
+    val b = task {
+        hammer5()
+    }
+    assert(a.await() == 5000, "a")
+    assert(b.await() == 5000, "b")
+}
+
+fun main() {
+    val a = task {
+        hammer5()
+    }
+    val b = task {
+        hammer5()
+    }
+    assert(a.await() == 5000, "a")
+    assert(b.await() == 5000, "b")
+    println("HAMMER-NATIVE-OK")
+}

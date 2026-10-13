@@ -4487,7 +4487,6 @@ fn emitExpressionRaw(
 
             const ret_type = if (node.resolved_type) |rt| types_mapping.getLLVMTypeWithContracts(ctx, rt.*, global_contracts_ast_ptr) else llvm.LLVMPointerTypeInContext(ctx, 0);
             const res_ptr = llvm.LLVMBuildAlloca(builder, ret_type, "expr_try_res");
-            const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
 
             const frame = try statement.emitTryBegin(ctx, mod, builder, func_val);
             const after_bb = frame.after_bb;
@@ -4505,8 +4504,9 @@ fn emitExpressionRaw(
             } else {
                 llvm.LLVMPositionBuilderAtEnd(builder, frame.catch_bb);
                 try statement.emitTryPop(ctx, mod, builder);
-                const fat_type = types_mapping.getFatPointerType(ctx);
-                _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
+                const ptr_null_e = llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(ctx, 0));
+                try statement.excSet(ctx, mod, builder, "eiwa_exc_active_data_set", ptr_null_e);
+                try statement.excSet(ctx, mod, builder, "eiwa_exc_active_table_set", ptr_null_e);
                 _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ret_type), res_ptr);
                 _ = llvm.LLVMBuildBr(builder, after_bb);
             }

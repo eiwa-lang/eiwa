@@ -562,8 +562,11 @@ pub fn buildCompletionStmts(ctx: Ctx, result: ?*ASTNode) !ArrayList(*ASTNode) {
     try out.append(syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(task_mutex, "unlock"), &.{})));
     const while_body = syn.mkBlock(&.{
         syn.mkCall(
-            syn.mkGetExpr(syn.mkIdent("Scheduler"), "schedule"),
-            &.{syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(waiter_name)), "cont")},
+            syn.mkGetExpr(syn.mkIdent("Scheduler"), "scheduleState"),
+            &.{
+                syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(waiter_name)), "cont"),
+                syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(waiter_name)), "excState"),
+            },
         ),
         syn.mkAssign(waiter_name, syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkIdent(waiter_name)), "next")),
     });

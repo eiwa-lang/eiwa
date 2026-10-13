@@ -1890,6 +1890,18 @@ Semântica alvo:
 - [x] **Verify:** REDs escalares 10/10 + suíte 846/846 + `zig build test` + smoke `eiwac build`.
 
 ### Bugfixes recentes (pós-Phase 81)
+- [x] **L7 — per-task exception-handler state:** shared stack + active
+  globals corrupted concurrent tasks (SIGSEGV or `unhandled` in seconds).
+  Fix: 3-word GC blocks per task with TLS "current"
+  (`runtime/third_party/eiwa_exc/`); the scheduler moves the pointer on
+  suspend/resume; the emitter routes through accessors. RED in
+  `samples/tests/sched_exc_hammer_test.ei`.
+  Note: `task(dispatcher)` ignores its argument — separate issue.
+- [x] **L6 — native try/catch losing pre-throw stores:** `mem2reg` promoted
+  locals to SSA and longjmp discarded the values (C rule). Fix in
+  `core.zig`: `returns_twice` on `setjmp` + `noreturn` on `longjmp`, and
+  `optnone`+`noinline` on functions containing `try`. RED in
+  `samples/tests/leave_nested_native_test.ei`.
 - [x] **`String.lowercase()`/`uppercase()` quebrados:** passavam `this.ptr`
   (Pointer) direto para `tolower(c: Int)`/`toupper(c: Int)` do `<ctype.h>`, que
   operam em **um char** e retornam `Int` — assertion fail em qualquer string.

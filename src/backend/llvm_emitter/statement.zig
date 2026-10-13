@@ -71,6 +71,36 @@ const LoopStack = struct {
 
 var loop_stack = LoopStack{};
 
+/// Emitted try machinery uses per-task state via C accessors (L7).
+/// Declared on first use, like the setjmp/longjmp lookups.
+fn excFunc(mod: llvm.LLVMModuleRef, ctx: llvm.LLVMContextRef, name: []const u8, takes_arg: bool) !llvm.LLVMValueRef {
+    const name_z = try std.heap.page_allocator.dupeZ(u8, name);
+    defer std.heap.page_allocator.free(name_z);
+    if (llvm.LLVMGetNamedFunction(mod, name_z.ptr)) |f| return f;
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const ft = if (takes_arg) blk: {
+        var ps = [_]llvm.LLVMTypeRef{ptr_type};
+        break :blk llvm.LLVMFunctionType(llvm.LLVMVoidTypeInContext(ctx), &ps, 1, 0);
+    } else blk: {
+        var ps = [_]llvm.LLVMTypeRef{};
+        break :blk llvm.LLVMFunctionType(ptr_type, &ps, 0, 0);
+    };
+    return llvm.LLVMAddFunction(mod, name_z.ptr, ft);
+}
+
+pub fn excGet(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: llvm.LLVMBuilderRef, name: []const u8) !llvm.LLVMValueRef {
+    const f = try excFunc(mod, ctx, name, false);
+    const ft = llvm.LLVMGlobalGetValueType(f);
+    return llvm.LLVMBuildCall2(builder, ft, f, null, 0, "exc_get");
+}
+
+pub fn excSet(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, builder: llvm.LLVMBuilderRef, name: []const u8, arg: llvm.LLVMValueRef) !void {
+    const f = try excFunc(mod, ctx, name, true);
+    const ft = llvm.LLVMGlobalGetValueType(f);
+    var args = [_]llvm.LLVMValueRef{arg};
+    _ = llvm.LLVMBuildCall2(builder, ft, f, &args, 1, "");
+}
+
 /// Shared lowering for `return v` and lambda-local `break v`.
 fn emitReturnValue(
     ctx: llvm.LLVMContextRef,
@@ -149,8 +179,6 @@ fn emitThrowStmt(
     const throw_i32_type = llvm.LLVMInt32TypeInContext(ctx);
 
     const throw_exc_val = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, th.expr);
-    const throw_active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
-    const throw_stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
     const throw_fat_type = types_mapping.getFatPointerType(ctx);
     var throw_fat_exc = throw_exc_val;
     if (llvm.LLVMTypeOf(throw_exc_val) != throw_fat_type) {
@@ -177,9 +205,12 @@ fn emitThrowStmt(
             break :blk f;
         };
     }
-    _ = llvm.LLVMBuildStore(builder, throw_fat_exc, throw_active_global);
+    const throw_data = llvm.LLVMBuildExtractValue(builder, throw_fat_exc, 0, "throw_data");
+    const throw_table = llvm.LLVMBuildExtractValue(builder, throw_fat_exc, 1, "throw_table");
+    try excSet(ctx, mod, builder, "eiwa_exc_active_data_set", throw_data);
+    try excSet(ctx, mod, builder, "eiwa_exc_active_table_set", throw_table);
 
-    const throw_cur_stack = llvm.LLVMBuildLoad2(builder, throw_ptr_type, throw_stack_global, "cur_stack");
+    const throw_cur_stack = try excGet(ctx, mod, builder, "eiwa_exc_top_get");
     const throw_null_ptr = llvm.LLVMConstNull(throw_ptr_type);
     const throw_has_handler = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, throw_cur_stack, throw_null_ptr, "has_handler");
 
@@ -278,10 +309,11 @@ fn emitRethrowException(
 ) anyerror!void {
     const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
     const i32_type = llvm.LLVMInt32TypeInContext(ctx);
-    const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
-    _ = llvm.LLVMBuildStore(builder, exc_val, active_global);
-    const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
-    const cur_stack2 = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "cur_stack2");
+    const re_data = llvm.LLVMBuildExtractValue(builder, exc_val, 0, "re_data");
+    const re_table = llvm.LLVMBuildExtractValue(builder, exc_val, 1, "re_table");
+    try excSet(ctx, mod, builder, "eiwa_exc_active_data_set", re_data);
+    try excSet(ctx, mod, builder, "eiwa_exc_active_table_set", re_table);
+    const cur_stack2 = try excGet(ctx, mod, builder, "eiwa_exc_top_get");
     const null_ptr2 = llvm.LLVMConstNull(ptr_type);
     const has_handler2 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, cur_stack2, null_ptr2, "has_handler2");
 
@@ -369,15 +401,14 @@ pub fn emitTryBegin(
     const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
     const i32_type = llvm.LLVMInt32TypeInContext(ctx);
     const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
-    const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
 
     const frame_ptr = llvm.LLVMBuildAlloca(builder, frame_type, "exc_frame");
     llvm.LLVMSetAlignment(frame_ptr, 16);
 
-    const cur_stack = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "cur_stack");
+    const cur_stack = try excGet(ctx, mod, builder, "eiwa_exc_top_get");
     const next_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, frame_ptr, 1, "frame_next");
     _ = llvm.LLVMBuildStore(builder, cur_stack, next_gep);
-    _ = llvm.LLVMBuildStore(builder, frame_ptr, stack_global);
+    try excSet(ctx, mod, builder, "eiwa_exc_top_set", frame_ptr);
 
     const buf_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, frame_ptr, 0, "frame_buf");
     const buf_ptr = llvm.LLVMBuildBitCast(builder, buf_gep, ptr_type, "fbuf");
@@ -406,11 +437,10 @@ pub fn emitTryPop(
 ) !void {
     const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
     const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
-    const stack_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_exception_stack") orelse return error.ExceptionRuntimeMissing;
-    const stack = llvm.LLVMBuildLoad2(builder, ptr_type, stack_global, "stack_pop");
+    const stack = try excGet(ctx, mod, builder, "eiwa_exc_top_get");
     const next_gep = llvm.LLVMBuildStructGEP2(builder, frame_type, stack, 1, "next_pop");
     const next_val = llvm.LLVMBuildLoad2(builder, ptr_type, next_gep, "next_val_pop");
-    _ = llvm.LLVMBuildStore(builder, next_val, stack_global);
+    try excSet(ctx, mod, builder, "eiwa_exc_top_set", next_val);
 }
 
 /// Result slot for value `try/catch`: catch bodies store here.
@@ -434,14 +464,17 @@ pub fn emitTryCatches(
     res: ?TryCatchRes,
     declared_ret: ?*const eiwa_types.EiwaType,
 ) !void {
-    const active_global = llvm.LLVMGetNamedGlobal(mod, "eiwa_active_exception") orelse return error.ExceptionRuntimeMissing;
-
     llvm.LLVMPositionBuilderAtEnd(builder, frame.catch_bb);
     try emitTryPop(ctx, mod, builder);
     const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
     const fat_type = types_mapping.getFatPointerType(ctx);
-    const exc_val = llvm.LLVMBuildLoad2(builder, fat_type, active_global, "exc");
-    _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
+    const exc_data = try excGet(ctx, mod, builder, "eiwa_exc_active_data_get");
+    const exc_table = try excGet(ctx, mod, builder, "eiwa_exc_active_table_get");
+    var exc_val = llvm.LLVMConstNull(fat_type);
+    exc_val = llvm.LLVMBuildInsertValue(builder, exc_val, exc_data, 0, "exc_data");
+    exc_val = llvm.LLVMBuildInsertValue(builder, exc_val, exc_table, 1, "exc_table");
+    try excSet(ctx, mod, builder, "eiwa_exc_active_data_set", llvm.LLVMConstNull(ptr_type));
+    try excSet(ctx, mod, builder, "eiwa_exc_active_table_set", llvm.LLVMConstNull(ptr_type));
 
     // ControlFlow bypass: generic handlers never observe control-flow
     // exceptions, only explicit ControlFlow catches do.
@@ -540,7 +573,9 @@ pub fn emitTryCatches(
         const propagate_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "try.propagate");
         _ = llvm.LLVMBuildCondBr(builder, is_ctrl, propagate_bb, swallow_bb);
         llvm.LLVMPositionBuilderAtEnd(builder, swallow_bb);
-        _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(fat_type), active_global);
+        const ptr_null = llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(ctx, 0));
+        try excSet(ctx, mod, builder, "eiwa_exc_active_data_set", ptr_null);
+        try excSet(ctx, mod, builder, "eiwa_exc_active_table_set", ptr_null);
         _ = llvm.LLVMBuildBr(builder, frame.after_bb);
         llvm.LLVMPositionBuilderAtEnd(builder, propagate_bb);
         try emitRethrowException(ctx, mod, builder, func_val, exc_val);

@@ -233,6 +233,34 @@ lib NativeGC {
     fun unregisterMyThread(): Int
 }
 
+// Per-task handler state (L7); the scheduler moves it on suspend/resume.
+@Source("src/runtime/third_party/eiwa_exc/exc_state.c")
+lib NativeExc {
+    @Alias("eiwa_exc_current_get")
+    fun excCurrentGet(): Pointer
+
+    @Alias("eiwa_exc_current_set")
+    fun excCurrentSet(st: Pointer): Void
+
+    @Alias("eiwa_exc_top_get")
+    fun excTopGet(): Pointer
+
+    @Alias("eiwa_exc_top_set")
+    fun excTopSet(p: Pointer): Void
+
+    @Alias("eiwa_exc_active_data_get")
+    fun excActiveDataGet(): Pointer
+
+    @Alias("eiwa_exc_active_data_set")
+    fun excActiveDataSet(p: Pointer): Void
+
+    @Alias("eiwa_exc_active_table_get")
+    fun excActiveTableGet(): Pointer
+
+    @Alias("eiwa_exc_active_table_set")
+    fun excActiveTableSet(p: Pointer): Void
+}
+
 // Context wrapper to pass closure to the pthread worker trampoline
 type ThreadTask(var action: () -> Void)
 

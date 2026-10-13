@@ -1,0 +1,19 @@
+import { repeat } from "std.system"
+
+fun withVal(v: Int, f: (Int) -> Void): Void {
+    f(v)
+}
+
+fun m1(): Int {
+    var total = 0
+    withVal(1) { a ->
+        withVal(2) { b ->
+            total = total + a + b
+        }
+    }
+    return total
+}
+
+test "m1: nested plain lambdas capture-assign" {
+    assert(m1() == 3)
+}

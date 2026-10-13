@@ -1,0 +1,54 @@
+// A suspends inside try, B throws while A sleeps; flag handshake instead
+// of arbitrary sleeps. Bug (L7): B's throw used to read A's frame.
+import { assert } from "std.core"
+import { sleepMs } from "std.time"
+import { AtomicBool } from "std.atomic"
+
+type L7Err(val text: String) : Throwable {
+    implement fun message(): String {
+        return this.text
+    }
+}
+
+fun sleeper(inside: AtomicBool): Void {
+    try {
+        inside.set(true)
+        sleepMs(800)
+    } catch (e: L7Err) {
+        assert(false, "A must not catch B exception")
+    }
+}
+
+fun waitFlag(flag: AtomicBool): Void {
+    var waited = 0
+    while (waited < 200 && flag.get() == false) {
+        sleepMs(5)
+        waited = waited + 1
+    }
+    assert(flag.get(), "A entered try")
+}
+
+fun runInterleave(): Void {
+    val inside = AtomicBool.create(false)
+    val a = task {
+        sleeper(inside)
+    }
+    waitFlag(inside)
+    var bCaught = false
+    try {
+        throw L7Err("b")
+    } catch (e: L7Err) {
+        bCaught = true
+    }
+    assert(bCaught, "B catches its own throw")
+    a.await()
+}
+
+fun main() {
+    runInterleave()
+    println("L7-NATIVE-OK")
+}
+
+test "tasks: throw in B does not hijack suspended A try frame" {
+    runInterleave()
+}
