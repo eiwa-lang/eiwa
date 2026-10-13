@@ -6178,15 +6178,18 @@ fn emitCustomEquals(
     return phi;
 }
 
-/// Double-vs-pointer `==`: unbox registered-union cells to real doubles
-/// (null-safe: null reads as 0.0, matching `!!` semantics). Anything else
-/// keeps prior behavior (including the pre-existing verifier gap for
-/// non-union fat Doubles).
+/// Unbox pointer-kind `==` operands to doubles: union cells and nullable scalars load; contract-held scalars are value-in-pointer (never cells), recovered via PtrToInt+bitcast.
 fn unboxDoubleOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, val: llvm.LLVMValueRef, node_rt: ?*const ts.EiwaType) llvm.LLVMValueRef {
     if (node_rt) |rt| {
         if (types_mapping.isRegisteredUnion(rt.*, global_unions_ast_ptr)) {
             return unboxNullableScalarOrZero(ctx, builder, .Double, val);
         }
+        if (nullableScalarVariant(rt)) |variant| {
+            return unboxNullableScalar(ctx, builder, variant, val);
+        }
+    }
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) == llvm.LLVMPointerTypeKind) {
+        return ptrScalarToVariant(ctx, builder, val, .Double);
     }
     return val;
 }

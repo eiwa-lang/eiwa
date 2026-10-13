@@ -55,3 +55,17 @@ test "scalar as contract: is-check still classifies scalars" {
     assert(x is Stringable, "Int is Stringable")
     assert(x is Equatable, "Int is Equatable")
 }
+
+test "scalar as contract: double equality on fat operands" {
+    val b: Equatable = 2.5
+    assert((b == 2.5) == true, "fat double equals literal")
+    assert((b == 2.6) == false, "fat double mismatch is false")
+    assert((b != 2.6) == true, "fat double neq mismatch")
+    assert((b != 2.5) == false, "fat double neq same is false")
+}
+
+test "scalar as contract: int-typed fat vs double literal is false" {
+    val b: Equatable = 5
+    assert((b == 2.5) == false, "int bits as double never equal 2.5")
+    assert((b != 2.5) == true, "neq mirrors eq")
+}
