@@ -1597,22 +1597,40 @@ fn emitExpressionRaw(
                         }
                     }
                     // Registered-union fat operands compare by payload so the
-                    // string/value paths below see thin values.
+                    // string/value paths below see thin values — except
+                    // against another fat: descriptors must survive for the
+                    // cell-mixing rules, so extraction waits for thin sides.
                     var l_eq = left_val;
                     var r_eq = right_val;
-                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_eq)) == llvm.LLVMStructTypeKind) {
+                    const r_is_fat = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_eq)) == llvm.LLVMStructTypeKind;
+                    const l_is_fat = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_eq)) == llvm.LLVMStructTypeKind;
+                    if (l_is_fat and !r_is_fat) {
                         if (bin.left.resolved_type) |lrt| {
                             if (types_mapping.isRegisteredUnion(lrt.*, global_unions_ast_ptr)) {
                                 l_eq = llvm.LLVMBuildExtractValue(builder, l_eq, 0, "eq_union_data");
                             }
                         }
                     }
-                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_eq)) == llvm.LLVMStructTypeKind) {
+                    if (r_is_fat and !l_is_fat) {
                         if (bin.right.resolved_type) |rrt| {
                             if (types_mapping.isRegisteredUnion(rrt.*, global_unions_ast_ptr)) {
                                 r_eq = llvm.LLVMBuildExtractValue(builder, r_eq, 0, "eq_union_data");
                             }
                         }
+                    }
+                    // Scalar-vs-contract-fat: union-held cells normalize to
+                    // value-in-pointer bits before the legacy path.
+                    if ((llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_eq)) == llvm.LLVMIntegerTypeKind or llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_eq)) == llvm.LLVMDoubleTypeKind) and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_eq)) == llvm.LLVMStructTypeKind) {
+                        r_eq = try normalizeContractDataForScalar(ctx, mod, builder, l_eq, bin.left.resolved_type, r_eq);
+                    }
+                    if ((llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_eq)) == llvm.LLVMIntegerTypeKind or llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_eq)) == llvm.LLVMDoubleTypeKind) and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_eq)) == llvm.LLVMStructTypeKind) {
+                        l_eq = try normalizeContractDataForScalar(ctx, mod, builder, r_eq, bin.right.resolved_type, l_eq);
+                    }
+                    // Fat-vs-fat cell mixing (union passthrough vs raw).
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_eq)) == llvm.LLVMStructTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_eq)) == llvm.LLVMStructTypeKind) {
+                        const norm = try normalizeContractPairForCells(ctx, mod, builder, l_eq, r_eq);
+                        l_eq = norm.l;
+                        r_eq = norm.r;
                     }
                     const l_is_str = isStringOperand(bin.left);
                     const r_is_str = isStringOperand(bin.right);
@@ -1695,22 +1713,40 @@ fn emitExpressionRaw(
                         }
                     }
                     // Registered-union fat operands compare by payload so the
-                    // string/value paths below see thin values.
+                    // string/value paths below see thin values — except
+                    // against another fat: descriptors must survive for the
+                    // cell-mixing rules, so extraction waits for thin sides.
                     var l_ne = left_val;
                     var r_ne = right_val;
-                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_ne)) == llvm.LLVMStructTypeKind) {
+                    const r_is_fat = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_ne)) == llvm.LLVMStructTypeKind;
+                    const l_is_fat = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_ne)) == llvm.LLVMStructTypeKind;
+                    if (l_is_fat and !r_is_fat) {
                         if (bin.left.resolved_type) |lrt| {
                             if (types_mapping.isRegisteredUnion(lrt.*, global_unions_ast_ptr)) {
                                 l_ne = llvm.LLVMBuildExtractValue(builder, l_ne, 0, "ne_union_data");
                             }
                         }
                     }
-                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_ne)) == llvm.LLVMStructTypeKind) {
+                    if (r_is_fat and !l_is_fat) {
                         if (bin.right.resolved_type) |rrt| {
                             if (types_mapping.isRegisteredUnion(rrt.*, global_unions_ast_ptr)) {
                                 r_ne = llvm.LLVMBuildExtractValue(builder, r_ne, 0, "ne_union_data");
                             }
                         }
+                    }
+                    // Scalar-vs-contract-fat: union-held cells normalize to
+                    // value-in-pointer bits before the legacy path.
+                    if ((llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_ne)) == llvm.LLVMIntegerTypeKind or llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_ne)) == llvm.LLVMDoubleTypeKind) and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_ne)) == llvm.LLVMStructTypeKind) {
+                        r_ne = try normalizeContractDataForScalar(ctx, mod, builder, l_ne, bin.left.resolved_type, r_ne);
+                    }
+                    if ((llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_ne)) == llvm.LLVMIntegerTypeKind or llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_ne)) == llvm.LLVMDoubleTypeKind) and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_ne)) == llvm.LLVMStructTypeKind) {
+                        l_ne = try normalizeContractDataForScalar(ctx, mod, builder, r_ne, bin.right.resolved_type, l_ne);
+                    }
+                    // Fat-vs-fat cell mixing (union passthrough vs raw).
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(l_ne)) == llvm.LLVMStructTypeKind and llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(r_ne)) == llvm.LLVMStructTypeKind) {
+                        const norm = try normalizeContractPairForCells(ctx, mod, builder, l_ne, r_ne);
+                        l_ne = norm.l;
+                        r_ne = norm.r;
                     }
                     const l_is_str = isStringOperand(bin.left);
                     const r_is_str = isStringOperand(bin.right);
@@ -4222,11 +4258,26 @@ fn emitExpressionRaw(
                             const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                             const vt_cast = llvm.LLVMBuildPointerCast(builder, target_vt, ptr_type, "target_vt_cast");
                             const data_not_null = llvm.LLVMBuildIsNotNull(builder, data_ptr, "data_not_null");
-                            const obj_vt = llvm.LLVMBuildLoad2(builder, ptr_type, data_ptr, "obj_vt");
+                            // Value-in-pointer scalars are not readable: only
+                            // dereference heap addresses (mirrors `when`).
+                            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                            const data_int = llvm.LLVMBuildPtrToInt(builder, data_ptr, i64_type, "is_dint");
+                            const is_heap = llvm.LLVMBuildICmp(builder, llvm.LLVMIntUGE, data_int, llvm.LLVMConstInt(i64_type, 4096, 0), "is_heap");
+                            const obj_dummy = llvm.LLVMBuildAlloca(builder, ptr_type, "is_obj_dummy");
+                            _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ptr_type), obj_dummy);
+                            const safe_data = llvm.LLVMBuildSelect(builder, is_heap, data_ptr, obj_dummy, "is_safe_data");
+                            const obj_vt = llvm.LLVMBuildLoad2(builder, ptr_type, safe_data, "obj_vt");
                             const vt_eq1 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, exc_vtable, vt_cast, "vt_eq1");
                             const vt_eq2 = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, obj_vt, vt_cast, "vt_eq2");
                             const vt_eq = llvm.LLVMBuildOr(builder, vt_eq1, vt_eq2, "vt_eq_or");
-                            res = llvm.LLVMBuildAnd(builder, data_not_null, vt_eq, "is_vtable_eq");
+                            // Union passthrough carries a member descriptor,
+                            // not a vtable, in the identity word: match it
+                            // too (exact global address compare).
+                            const mem_desc = try unionDescriptor(ctx, mod, target_c_name);
+                            const desc_cast = llvm.LLVMBuildPointerCast(builder, mem_desc, ptr_type, "is_mem_desc");
+                            const desc_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, exc_vtable, desc_cast, "is_desc_eq");
+                            const vt_or_desc = llvm.LLVMBuildOr(builder, vt_eq, desc_eq, "vt_desc_or");
+                            res = llvm.LLVMBuildAnd(builder, data_not_null, vt_or_desc, "is_vtable_eq");
                         } else {
                             // No vtable for this pair: not the target type.
                             res = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
@@ -6230,6 +6281,117 @@ fn unboxDoubleOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, va
         return ptrScalarToVariant(ctx, builder, val, .Double);
     }
     return val;
+}
+
+/// Branched cell load rejoining via phi: `cond` (proven by the caller)
+/// selects between the loaded bits as a pointer and the original pointer.
+/// Loads run only on proven cells; anything else keeps legacy handling.
+fn loadCellOrKeep(
+    ctx: llvm.LLVMContextRef,
+    builder: llvm.LLVMBuilderRef,
+    data: llvm.LLVMValueRef,
+    cond: llvm.LLVMValueRef,
+) llvm.LLVMValueRef {
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const i64_t = llvm.LLVMInt64TypeInContext(ctx);
+    const func_val = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const cell_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "celld_cell");
+    const cont_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "celld_cont");
+    const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "celld_merge");
+    _ = llvm.LLVMBuildCondBr(builder, cond, cell_bb, cont_bb);
+    llvm.LLVMPositionBuilderAtEnd(builder, cell_bb);
+    const as_ptr = llvm.LLVMBuildIntToPtr(builder, llvm.LLVMBuildLoad2(builder, i64_t, data, "celld_load"), ptr_t, "celld_bits");
+    const cell_end = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+    llvm.LLVMPositionBuilderAtEnd(builder, cont_bb);
+    const cont_end = llvm.LLVMGetInsertBlock(builder);
+    _ = llvm.LLVMBuildBr(builder, merge_bb);
+    llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+    const phi = llvm.LLVMBuildPhi(builder, ptr_t, "celld_out");
+    var in_vals = [_]llvm.LLVMValueRef{ as_ptr, data };
+    var in_bbs = [_]llvm.LLVMBasicBlockRef{ cell_end, cont_end };
+    llvm.LLVMAddIncoming(phi, &in_vals, &in_bbs, 2);
+    return phi;
+}
+
+/// Fat-vs-fat `==` cell mixing: when an identity word matches a scalar
+/// member descriptor and the data is non-null, that side holds a union
+/// cell — recover value-in-pointer bits into word0 so the legacy path
+/// compares values. Both-null identity words stay legacy (raw-vs-raw
+/// compares by bits and already works); anything unrecognized passes
+/// through untouched. Loads run only on proven cells (branched). Exact.
+const FatPair = struct { l: llvm.LLVMValueRef, r: llvm.LLVMValueRef };
+fn normalizeContractPairForCells(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    l_fat: llvm.LLVMValueRef,
+    r_fat: llvm.LLVMValueRef,
+) anyerror!FatPair {
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const dl = llvm.LLVMBuildExtractValue(builder, l_fat, 0, "npc_dl");
+    const dr = llvm.LLVMBuildExtractValue(builder, r_fat, 0, "npc_dr");
+    const wl = llvm.LLVMBuildBitCast(builder, llvm.LLVMBuildExtractValue(builder, l_fat, 1, "npc_ql"), ptr_t, "npc_pl");
+    const wr = llvm.LLVMBuildBitCast(builder, llvm.LLVMBuildExtractValue(builder, r_fat, 1, "npc_qr"), ptr_t, "npc_pr");
+    const variants = [_][]const u8{ "Int", "Double", "Bool" };
+    var l_cell = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
+    var r_cell = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0);
+    for (variants) |v| {
+        const vd = try unionDescriptor(ctx, mod, v);
+        const vp = llvm.LLVMBuildBitCast(builder, vd, ptr_t, "npc_vp");
+        const lm = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, wl, vp, "npc_lm");
+        const rm = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, wr, vp, "npc_rm");
+        l_cell = llvm.LLVMBuildOr(builder, l_cell, lm, "npc_lc");
+        r_cell = llvm.LLVMBuildOr(builder, r_cell, rm, "npc_rc");
+    }
+    // Load a side only on proven cells (descriptor match + non-null
+    // data); each side rejoins through the shared diamond.
+    const load_l = llvm.LLVMBuildAnd(builder, l_cell, llvm.LLVMBuildIsNotNull(builder, dl, "npc_lnn"), "npc_ll");
+    const load_r = llvm.LLVMBuildAnd(builder, r_cell, llvm.LLVMBuildIsNotNull(builder, dr, "npc_rnn"), "npc_lr");
+    const dl2 = loadCellOrKeep(ctx, builder, dl, load_l);
+    const dr2 = loadCellOrKeep(ctx, builder, dr, load_r);
+    return .{
+        .l = llvm.LLVMBuildInsertValue(builder, l_fat, dl2, 0, "npc_lfat"),
+        .r = llvm.LLVMBuildInsertValue(builder, r_fat, dr2, 0, "npc_rfat"),
+    };
+}
+
+/// Scalar-vs-contract-fat `==` normalization: when the fat's identity word
+/// is the scalar variant's member descriptor and the data is non-null, the
+/// data is a union-held heap cell — recover value-in-pointer bits into
+/// word0 so the legacy path compares values, not addresses. Anything else
+/// passes through untouched. The load runs only on proven cells (branched).
+/// Exact (global address compare); the mismatch direction keeps semantics.
+fn normalizeContractDataForScalar(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    scalar_val: llvm.LLVMValueRef,
+    scalar_rt: ?*const ts.EiwaType,
+    fat_val: llvm.LLVMValueRef,
+) anyerror!llvm.LLVMValueRef {
+    const srt = scalar_rt orelse return fat_val;
+    const sbase = ts.extractBaseType(srt).* ;
+    const variant_name: []const u8 = switch (sbase) {
+        .Int => "Int",
+        .Double => "Double",
+        .Bool => "Bool",
+        .Custom => |cn| if (types_mapping.isScalarName(cn, "Int") or types_mapping.isScalarName(cn, "Double") or types_mapping.isScalarName(cn, "Bool")) cn else return fat_val,
+        else => return fat_val,
+    };
+    const skind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(scalar_val));
+    if (skind != llvm.LLVMIntegerTypeKind and skind != llvm.LLVMDoubleTypeKind) return fat_val;
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(fat_val)) != llvm.LLVMStructTypeKind) return fat_val;
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const data = llvm.LLVMBuildExtractValue(builder, fat_val, 0, "nscd_data");
+    const desc = llvm.LLVMBuildBitCast(builder, llvm.LLVMBuildExtractValue(builder, fat_val, 1, "nscd_desc"), ptr_t, "nscd_dptr");
+    const want = try unionDescriptor(ctx, mod, variant_name);
+    const want_ptr = llvm.LLVMBuildBitCast(builder, want, ptr_t, "nscd_wptr");
+    const desc_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, desc, want_ptr, "nscd_match");
+    const data_nn = llvm.LLVMBuildIsNotNull(builder, data, "nscd_nn");
+    const is_cell = llvm.LLVMBuildAnd(builder, desc_match, data_nn, "nscd_is_cell");
+    const data2 = loadCellOrKeep(ctx, builder, data, is_cell);
+    return llvm.LLVMBuildInsertValue(builder, fat_val, data2, 0, "nscd_fat");
 }
 
 /// Union×union `==`: descriptors pin the variant (nominal identity), so

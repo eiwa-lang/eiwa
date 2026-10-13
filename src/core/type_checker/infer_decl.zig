@@ -2256,25 +2256,10 @@ fn generateUnionStringables(self: *TypeChecker, node: *ASTNode, ud: anytype) any
         const other_ident = try makeIdent(self, line, col, "other");
         const eq_args = try self.allocator.alloc(*ASTNode, 1);
         eq_args[0] = other_ident;
-        const ret_expr = if (m.scalar) |sk| blk: {
-            // Scalar members have no emittable `.equals` on raw values:
-            // Int/Bool compare unboxed bits; Double throws loud (`==` on
-            // fat Doubles breaks verification language-wide, pre-existing).
-            if (sk == .Double) {
-                const throw_node = try makeUnionThrowNode(self, line, col, "Equality over Double union members is not supported in v1");
-                const tstmts = try self.allocator.alloc(*ASTNode, 1);
-                tstmts[0] = throw_node;
-                const tbody = try makeUnionBlock(self, line, col, tstmts);
-                const dbl_if = try self.allocator.create(ASTNode);
-                dbl_if.* = .{
-                    .line = line,
-                    .column = col,
-                    .resolved_type = null,
-                    .expected_type = null,
-                    .data = .{ .if_expr = .{ .condition = cond, .then_branch = tbody, .else_branch = null, .is_value = false } },
-                };
-                break :blk dbl_if;
-            }
+        const ret_expr = if (m.scalar) |_| blk: {
+            // Scalar members compare unboxed bits via `==`: the `as`
+            // narrows `this` to the raw scalar, and the scalar-vs-fat
+            // `==` rule unboxes union-held cells on the `other` side.
             const eq = try self.allocator.create(ASTNode);
             eq.* = .{
                 .line = line,

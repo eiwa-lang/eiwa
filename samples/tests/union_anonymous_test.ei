@@ -213,3 +213,56 @@ test "anonymous: union equality over double and string" {
   assert((s1 == s3) == false)
   assert((s1 != s3) == true)
 }
+
+type UEqTwo(val x: String) : Serializable {
+  implement fun equals(other: Equatable): Bool {
+    if (other is UEqTwo) { return (other as UEqTwo).x == x }
+    return false
+  }
+}
+
+test "anonymous: scalar member equals across boxes" {
+  val a = fromJson<UEqGo | Int>("{\"int\": 5}")
+  val b = fromJson<UEqGo | Int>("{\"int\": 5}")
+  val c = fromJson<UEqGo | Int>("{\"int\": 6}")
+  val g = fromJson<UEqGo | Int>("{\"ueqgo\": {\"url\": \"u\"}}")
+  assert((a.equals(b)) == true)
+  assert((a.equals(c)) == false)
+  assert((a.equals(g)) == false)
+  assert((g.equals(a)) == false)
+}
+
+test "anonymous: double member equals" {
+  val a = fromJson<UEqGo | Double>("{\"double\": 2.5}")
+  val b = fromJson<UEqGo | Double>("{\"double\": 2.5}")
+  val c = fromJson<UEqGo | Double>("{\"double\": 2.6}")
+  val g = fromJson<UEqGo | Double>("{\"ueqgo\": {\"url\": \"u\"}}")
+  assert((a.equals(b)) == true)
+  assert((a.equals(c)) == false)
+  assert((a.equals(g)) == false)
+}
+
+test "anonymous: custom equals and is on union passthrough" {
+  val a = fromJson<UEqGo | UEqTwo>("{\"ueqgo\": {\"url\": \"u\"}}")
+  val b = fromJson<UEqGo | UEqTwo>("{\"ueqgo\": {\"url\": \"u\"}}")
+  val c = fromJson<UEqGo | UEqTwo>("{\"ueqtwo\": {\"x\": \"u\"}}")
+  assert((a.equals(b)) == true)
+  assert((a.equals(c)) == false)
+  assert((c.equals(a)) == false)
+  val e: Equatable = fromJson<UEqGo | UEqTwo>("{\"ueqgo\": {\"url\": \"u\"}}")
+  assert((e is UEqGo) == true)
+  assert((e is UEqTwo) == false)
+}
+
+type QGo(val url: String) : Serializable {
+  implement fun equals(other: Equatable): Bool {
+    if (other is QGo) { return (other as QGo).url == url }
+    return false
+  }
+}
+type QOne(val x: String) : Serializable {
+  implement fun equals(other: Equatable): Bool {
+    if (other is QOne) { return (other as QOne).x == x }
+    return false
+  }
+}
