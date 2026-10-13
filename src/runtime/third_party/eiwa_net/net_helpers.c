@@ -6,6 +6,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <string.h>
+#include <stdio.h>
 
 static void ensure_winsock_initialized(void) {
     static int initialized = 0;
@@ -43,7 +44,7 @@ int64_t eiwa_tcp_bind(int64_t port) {
 int64_t eiwa_tcp_connect(const char* host, int64_t port) {
     ensure_winsock_initialized();
     char port_str[16];
-    _snprintf(port_str, sizeof(port_str), "%lld", (long long)port);
+    snprintf(port_str, sizeof(port_str), "%lld", (long long)port);
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
