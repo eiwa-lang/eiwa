@@ -169,3 +169,47 @@ test "anonymous: narrowed member field write" {
   }
   assert(d == 13)
 }
+
+type UEqGo(val url: String) : Serializable {
+  implement fun equals(other: Equatable): Bool {
+    if (other is UEqGo) { return (other as UEqGo).url == url }
+    return false
+  }
+}
+
+test "anonymous: union equality compares payload" {
+  val a = fromJson<UEqGo | Int>("{\"int\": 5}")
+  val b = fromJson<UEqGo | Int>("{\"int\": 5}")
+  val c = fromJson<UEqGo | Int>("{\"int\": 6}")
+  val g = fromJson<UEqGo | Int>("{\"ueqgo\": {\"url\": \"u\"}}")
+  assert((a == b) == true)
+  assert((a == c) == false)
+  assert((a != c) == true)
+  assert((a == a) == true)
+  assert((a == g) == false)
+  assert((a != g) == true)
+}
+
+test "anonymous: union equality dispatches custom equals" {
+  val g1 = fromJson<UEqGo | Int>("{\"ueqgo\": {\"url\": \"u\"}}")
+  val g2 = fromJson<UEqGo | Int>("{\"ueqgo\": {\"url\": \"u\"}}")
+  val g3 = fromJson<UEqGo | Int>("{\"ueqgo\": {\"url\": \"v\"}}")
+  assert((g1 == g2) == true)
+  assert((g1 == g3) == false)
+  assert((g1 != g3) == true)
+}
+
+test "anonymous: union equality over double and string" {
+  val d1 = fromJson<UEqGo | Double>("{\"double\": 2.5}")
+  val d2 = fromJson<UEqGo | Double>("{\"double\": 2.5}")
+  val d3 = fromJson<UEqGo | Double>("{\"double\": 2.6}")
+  assert((d1 == d2) == true)
+  assert((d1 == d3) == false)
+  assert((d1 != d3) == true)
+  val s1 = fromJson<UEqGo | String>("{\"string\": \"hi\"}")
+  val s2 = fromJson<UEqGo | String>("{\"string\": \"hi\"}")
+  val s3 = fromJson<UEqGo | String>("{\"string\": \"yo\"}")
+  assert((s1 == s2) == true)
+  assert((s1 == s3) == false)
+  assert((s1 != s3) == true)
+}

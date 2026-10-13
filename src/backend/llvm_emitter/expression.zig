@@ -1581,6 +1581,21 @@ fn emitExpressionRaw(
                         const data_null = llvm.LLVMBuildIsNull(builder, data_ptr, "data_null");
                         return llvm.LLVMBuildAnd(builder, vt_null, data_null, "eq_null");
                     }
+                    // Union×union: same-variant values compare by member payload,
+                    // not cell address (descriptors pin the variant).
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(left_val)) == llvm.LLVMStructTypeKind and
+                        llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(right_val)) == llvm.LLVMStructTypeKind)
+                    {
+                        if (bin.left.resolved_type) |lrt| {
+                            if (bin.right.resolved_type) |rrt| {
+                                if (types_mapping.isRegisteredUnion(lrt.*, global_unions_ast_ptr) and
+                                    types_mapping.isRegisteredUnion(rrt.*, global_unions_ast_ptr))
+                                {
+                                    return try emitUnionEquals(ctx, mod, builder, left_val, right_val, lrt);
+                                }
+                            }
+                        }
+                    }
                     // Registered-union fat operands compare by payload so the
                     // string/value paths below see thin values.
                     var l_eq = left_val;
@@ -1661,6 +1676,23 @@ fn emitExpressionRaw(
                         const vt_not_null = llvm.LLVMBuildIsNotNull(builder, vt_ptr, "vt_not_null");
                         const data_not_null = llvm.LLVMBuildIsNotNull(builder, data_ptr, "data_not_null");
                         return llvm.LLVMBuildOr(builder, vt_not_null, data_not_null, "ne_null");
+                    }
+                    // Union×union: same-variant values compare by member payload,
+                    // not cell address. `!=` inverts the `==` chain result.
+                    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(left_val)) == llvm.LLVMStructTypeKind and
+                        llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(right_val)) == llvm.LLVMStructTypeKind)
+                    {
+                        if (bin.left.resolved_type) |lrt| {
+                            if (bin.right.resolved_type) |rrt| {
+                                if (types_mapping.isRegisteredUnion(lrt.*, global_unions_ast_ptr) and
+                                    types_mapping.isRegisteredUnion(rrt.*, global_unions_ast_ptr))
+                                {
+                                    const ueq = try emitUnionEquals(ctx, mod, builder, left_val, right_val, lrt);
+                                    const one = llvm.LLVMConstInt(llvm.LLVMTypeOf(ueq), 1, 0);
+                                    return llvm.LLVMBuildXor(builder, ueq, one, "uune");
+                                }
+                            }
+                        }
                     }
                     // Registered-union fat operands compare by payload so the
                     // string/value paths below see thin values.
@@ -6077,6 +6109,12 @@ fn customEqualsClass(node: *ast.ASTNode, mod: llvm.LLVMModuleRef) ?[]const u8 {
     if (types_mapping.isScalarName(cn, "String") or types_mapping.isScalarName(cn, "Int") or
         types_mapping.isScalarName(cn, "Double") or types_mapping.isScalarName(cn, "Bool")) return null;
 
+    return equalsClassForName(cn, mod);
+}
+
+/// Searches the module for a `{prefix}{cn}_equals` function, returning the
+/// class-name prefix on hit. Shared by node-based and member-name lookups.
+fn equalsClassForName(cn: []const u8, mod: llvm.LLVMModuleRef) ?[]const u8 {
     const mod_prefixes = [_][]const u8{ "", "collections_", "serde_", "json_", "time_", "std_core_", "core_", "ulid_", "uuid_", "math_", "io_", "fs_", "atomic_" };
     for (mod_prefixes) |p| {
         const full_cn = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ p, cn }) catch continue;
@@ -6192,6 +6230,115 @@ fn unboxDoubleOperand(ctx: llvm.LLVMContextRef, builder: llvm.LLVMBuilderRef, va
         return ptrScalarToVariant(ctx, builder, val, .Double);
     }
     return val;
+}
+
+/// Union×union `==`: descriptors pin the variant (nominal identity), so
+/// same-descriptor values compare by member payload instead of cell
+/// address. Unknown members (or lookup misses) fall back to data-pointer
+/// identity — today's behavior, never louder.
+fn emitUnionEquals(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    l_fat: llvm.LLVMValueRef,
+    r_fat: llvm.LLVMValueRef,
+    union_rt: *const ts.EiwaType,
+) anyerror!llvm.LLVMValueRef {
+    const i1_type = llvm.LLVMInt1TypeInContext(ctx);
+    const ptr_t = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const t_val = llvm.LLVMConstInt(i1_type, 1, 0);
+    const f_val = llvm.LLVMConstInt(i1_type, 0, 0);
+    const data_l = llvm.LLVMBuildExtractValue(builder, l_fat, 0, "uueq_dl");
+    const data_r = llvm.LLVMBuildExtractValue(builder, r_fat, 0, "uueq_dr");
+    const desc_l = llvm.LLVMBuildBitCast(builder, llvm.LLVMBuildExtractValue(builder, l_fat, 1, "uueq_ql"), ptr_t, "uueq_pl");
+    const desc_r = llvm.LLVMBuildBitCast(builder, llvm.LLVMBuildExtractValue(builder, r_fat, 1, "uueq_qr"), ptr_t, "uueq_pr");
+    const func_val = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const merge_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "uueq_merge");
+    var phi_vals = compat.ArrayList(llvm.LLVMValueRef).init(std.heap.page_allocator);
+    defer phi_vals.deinit();
+    var phi_bbs = compat.ArrayList(llvm.LLVMBasicBlockRef).init(std.heap.page_allocator);
+    defer phi_bbs.deinit();
+
+    // Identical data (same cell/object, or null == null) is equal.
+    const entry_bb = llvm.LLVMGetInsertBlock(builder);
+    const data_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, data_l, data_r, "uueq_data_eq");
+    const desc_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "uueq_desc");
+    _ = llvm.LLVMBuildCondBr(builder, data_eq, merge_bb, desc_bb);
+    try phi_vals.append(t_val);
+    try phi_bbs.append(entry_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, desc_bb);
+    const desc_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, desc_l, desc_r, "uueq_desc_eq");
+
+    var members: []const ast.UnionMember = &.{};
+    if (global_unions_ast_ptr) |ua| {
+        var kbuf = compat.ArrayList(u8).init(std.heap.page_allocator);
+        defer kbuf.deinit();
+        const stripped = ts.extractBaseType(union_rt);
+        stripped.formatSafe(kbuf.writer()) catch {};
+        if (ua.get(kbuf.items)) |unode| {
+            members = unode.data.union_decl.members;
+        }
+    }
+    if (members.len == 0) {
+        const desc_end = llvm.LLVMGetInsertBlock(builder);
+        _ = llvm.LLVMBuildBr(builder, merge_bb);
+        try phi_vals.append(f_val);
+        try phi_bbs.append(desc_end);
+    } else {
+        const first_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "uueq_m0");
+        const desc_end = llvm.LLVMGetInsertBlock(builder);
+        _ = llvm.LLVMBuildCondBr(builder, desc_eq, first_bb, merge_bb);
+        try phi_vals.append(f_val);
+        try phi_bbs.append(desc_end);
+        var test_bb = first_bb;
+        for (members, 0..) |m, i| {
+            const is_last = i + 1 >= members.len;
+            llvm.LLVMPositionBuilderAtEnd(builder, test_bb);
+            const mem_desc = try unionDescriptor(ctx, mod, m.name);
+            const mem_ptr = llvm.LLVMBuildBitCast(builder, mem_desc, ptr_t, "uueq_mem");
+            const hit = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, desc_l, mem_ptr, "uueq_hit");
+            const cmp_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "uueq_cmp");
+            if (is_last) {
+                _ = llvm.LLVMBuildCondBr(builder, hit, cmp_bb, merge_bb);
+                try phi_vals.append(f_val);
+                try phi_bbs.append(test_bb);
+            } else {
+                const next_test = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "uueq_mtest");
+                _ = llvm.LLVMBuildCondBr(builder, hit, cmp_bb, next_test);
+                test_bb = next_test;
+            }
+            llvm.LLVMPositionBuilderAtEnd(builder, cmp_bb);
+            var res: llvm.LLVMValueRef = undefined;
+            if (m.scalar) |sk| {
+                const ul = unboxNullableScalarOrZero(ctx, builder, sk.eiwaType(), data_l);
+                const ur = unboxNullableScalarOrZero(ctx, builder, sk.eiwaType(), data_r);
+                if (sk == .Double) {
+                    res = llvm.LLVMBuildFCmp(builder, llvm.LLVMRealOEQ, ul, ur, "uueq_feq");
+                } else {
+                    const cw = coerceIntWidths(builder, ul, ur);
+                    res = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, cw.l, cw.r, "uueq_ieq");
+                }
+            } else if (m.is_string) {
+                const seq_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_string_equals") orelse return error.StringEqualsNotFound;
+                const seq_type = llvm.LLVMGlobalGetValueType(seq_fn);
+                var args = [_]llvm.LLVMValueRef{ coerceArg(builder, data_l, ptr_t), coerceArg(builder, data_r, ptr_t) };
+                res = llvm.LLVMBuildCall2(builder, seq_type, seq_fn, &args, 2, "uueq_streq");
+            } else if (equalsClassForName(m.name, mod)) |eq_cn| {
+                res = try emitCustomEquals(ctx, mod, builder, data_l, data_r, eq_cn);
+            } else {
+                res = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, data_l, data_r, "uueq_ptr");
+            }
+            const cmp_end = llvm.LLVMGetInsertBlock(builder);
+            _ = llvm.LLVMBuildBr(builder, merge_bb);
+            try phi_vals.append(res);
+            try phi_bbs.append(cmp_end);
+        }
+    }
+    llvm.LLVMPositionBuilderAtEnd(builder, merge_bb);
+    const phi = llvm.LLVMBuildPhi(builder, i1_type, "uueq");
+    llvm.LLVMAddIncoming(phi, phi_vals.items.ptr, phi_bbs.items.ptr, @intCast(phi_vals.items.len));
+    return phi;
 }
 
 /// Maps the element type of an .Array-typed expression to its LLVM load type

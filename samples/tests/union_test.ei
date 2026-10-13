@@ -123,3 +123,30 @@ test "should create a union type in a type" {
         assert(item.age == 25)
     }
 }
+
+import { Serializable } from "std.serde"
+import { fromJson } from "std.json"
+
+type DUEqGo(val url: String) : Serializable {
+  implement fun equals(other: Equatable): Bool {
+    if (other is DUEqGo) { return (other as DUEqGo).url == url }
+    return false
+  }
+}
+type DUEqOne(val x: String) : Serializable {
+  implement fun equals(other: Equatable): Bool {
+    if (other is DUEqOne) { return (other as DUEqOne).x == x }
+    return false
+  }
+}
+
+union DUEqStep { DUEqGo, DUEqOne }
+
+test "declared: union equality compares payload" {
+  val a: DUEqStep = fromJson<DUEqStep>("{\"dueqgo\": {\"url\": \"u\"}}")
+  val b: DUEqStep = fromJson<DUEqStep>("{\"dueqgo\": {\"url\": \"u\"}}")
+  val c: DUEqStep = fromJson<DUEqStep>("{\"dueqone\": {\"x\": \"u\"}}")
+  assert((a == b) == true)
+  assert((a == c) == false)
+  assert((a != c) == true)
+}
