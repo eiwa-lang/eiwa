@@ -8,6 +8,11 @@ const diagnostics = @import("../diagnostics.zig");
 
 pub const ASTNode = ast.ASTNode;
 pub const EiwaType = type_system.EiwaType;
+
+pub const MonoBase = struct {
+    base: []const u8,
+    args: []const *const EiwaType,
+};
 pub const Scope = type_system.Scope;
 pub const TargetInfo = @import("../target.zig").TargetInfo;
 
@@ -264,6 +269,7 @@ pub const TypeChecker = struct {
     local_symbols: std.StringHashMap(void),
     lib_symbols: std.StringHashMap(void),
     monomorphized_nodes: ArrayList(*ASTNode),
+    monomorph_bases: std.StringHashMap(MonoBase),
     current_class_name: ?[]const u8 = null,
     current_class_methods: ?[]const *ASTNode = null,
     current_type_c_name: ?[]const u8 = null,
@@ -310,6 +316,7 @@ pub const TypeChecker = struct {
     pub const inferBlockAsExpression = infer_stmt_mod.inferBlockAsExpression;
     pub const inferBranchAsExpression = infer_stmt_mod.inferBranchAsExpression;
     pub const isCompatible = core_isCompatible;
+    pub const sameGenericBase = core_sameGenericBase;
     pub const conformsTo = core_conformsTo;
     pub const implementsContract = core_implementsContract;
     pub const injectImplicitImports = core_injectImplicitImports;
@@ -393,6 +400,7 @@ pub const TypeChecker = struct {
             .local_symbols = std.StringHashMap(void).init(allocator),
             .lib_symbols = std.StringHashMap(void).init(allocator),
             .monomorphized_nodes = ArrayList(*ASTNode).init(allocator),
+            .monomorph_bases = std.StringHashMap(MonoBase).init(allocator),
             .embed_stack = ArrayList([]const u8).init(allocator),
             .current_class_name = null,
             .registry = null,
@@ -428,6 +436,7 @@ pub const TypeChecker = struct {
         self.local_symbols.deinit();
         self.lib_symbols.deinit();
         self.monomorphized_nodes.deinit();
+        self.monomorph_bases.deinit();
         self.embed_stack.deinit();
     }
 };
@@ -736,6 +745,8 @@ fn core_resolveTypeRef(self: *TypeChecker, ref: *const ast.ASTTypeRef) anyerror!
             base_type = .{ .Pointer = try self.allocator.create(EiwaType) };
             @constCast(base_type.Pointer).* = .Void;
         } else if (std.mem.eql(u8, alias, "Null")) {
+            base_type = .Null;
+        } else if (std.mem.eql(u8, alias, "Nothing") and !self.classes_ast.contains(alias)) {
             base_type = .Null;
         } else if (ref.generic_args.len > 0) {
             var args_list = ArrayList(*const EiwaType).init(self.allocator);
@@ -1966,6 +1977,84 @@ pub fn isClosedUnionShape(self: *TypeChecker, typ: *const EiwaType) bool {
     return count >= 2;
 }
 
+/// Canonical spelling through the checker's own alias bridge.
+fn core_canonName(self: *TypeChecker, name: []const u8) []const u8 {
+    return self.alias_map.get(name) orelse name;
+}
+
+/// Exact monomorph record for `name` (following the alias bridge once,
+/// since creation and query spellings may differ by module; then the
+/// module registry, mirroring the classes_ast fallback).
+fn core_monoBase(self: *TypeChecker, name: []const u8) ?MonoBase {
+    if (self.monomorph_bases.get(name)) |e| return e;
+    if (self.alias_map.get(name)) |alt| {
+        if (self.monomorph_bases.get(alt)) |e| return e;
+    }
+    if (self.registry) |reg| {
+        var it = reg.modules.iterator();
+        while (it.next()) |entry| {
+            const mc = entry.value_ptr.checker;
+            if (mc.monomorph_bases.get(name)) |e| return e;
+            const malt = mc.alias_map.get(name) orelse name;
+            if (mc.monomorph_bases.get(malt)) |e| return e;
+        }
+    }
+    return null;
+}
+
+/// Canonical generic-base key for `name`, or null when it denotes no
+/// generic (neither a generic class nor a recorded instantiation).
+fn core_genericBaseKey(self: *TypeChecker, name: []const u8) ?[]const u8 {
+    if (core_monoBase(self, name)) |e| return core_canonName(self, e.base);
+    const cn = core_canonName(self, name);
+    if (self.classes_ast.get(cn)) |n| {
+        if (n.data == .type_decl and n.data.type_decl.generic_params.len > 0 and !n.data.type_decl.is_monomorphized) return cn;
+    }
+    return null;
+}
+
+fn core_sameGenericBase(self: *TypeChecker, a: []const u8, b: []const u8) bool {
+    const ka = core_genericBaseKey(self, a) orelse return false;
+    const kb = core_genericBaseKey(self, b) orelse return false;
+    return std.mem.eql(u8, ka, kb);
+}
+
+/// Mutable-to-readonly view conversion (`MutableList_X` where `List_Y` is
+/// expected, same for `Map`): shared layouts, documented behavior. Argument
+/// pairs check recursively when both sides carry recorded args; the reverse
+/// (readonly into mutable) is rejected.
+fn core_viewConvertsTo(self: *TypeChecker, actual: []const u8, expected: []const u8) bool {
+    const ab = core_genericBaseKey(self, actual) orelse core_canonName(self, actual);
+    const eb = core_genericBaseKey(self, expected) orelse core_canonName(self, expected);
+    const mut_list = core_canonName(self, "MutableList");
+    const list = core_canonName(self, "List");
+    const mut_map = core_canonName(self, "MutableMap");
+    const map = core_canonName(self, "Map");
+    const is_list = std.mem.eql(u8, ab, mut_list) and std.mem.eql(u8, eb, list);
+    const is_map = std.mem.eql(u8, ab, mut_map) and std.mem.eql(u8, eb, map);
+    if (!is_list and !is_map) return false;
+    const a_rec = core_monoBase(self, actual);
+    const e_rec = core_monoBase(self, expected);
+    if (a_rec != null and e_rec != null) {
+        const aa = a_rec.?.args;
+        const ea = e_rec.?.args;
+        if (aa.len != ea.len) return false;
+        for (aa, ea) |x, y| {
+            if (!self.isCompatible(y, x)) return false;
+        }
+    }
+    return true;
+}
+
+/// Blanket-compliance contracts: every type conforms at runtime. Suffix
+/// match mirrors the emitter rule exactly (never narrower than runtime).
+fn core_isAutoContract(typ: *const EiwaType) bool {
+    if (typ.* != .Custom) return false;
+    const n = typ.Custom;
+    return std.mem.endsWith(u8, n, "Stringable") or std.mem.endsWith(u8, n, "Equatable") or
+        std.mem.endsWith(u8, n, "Hashable") or std.mem.endsWith(u8, n, "Echoable");
+}
+
 fn core_conformsTo(self: *TypeChecker, actual_name: []const u8, target_name: []const u8) bool {
     const actual = self.alias_map.get(actual_name) orelse actual_name;
     const target = self.alias_map.get(target_name) orelse target_name;
@@ -2015,6 +2104,8 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
     if (expected.* == .Custom and actual.* == .Custom and std.mem.eql(u8, expected.Custom, actual.Custom)) {
         return true;
     }
+
+    if (core_isAutoContract(expected)) return true;
 
     if (expected.* == .Union) {
         if (self.isCompatible(expected.Union.left, actual) or self.isCompatible(expected.Union.right, actual)) {
@@ -2135,6 +2226,10 @@ fn core_isCompatible(self: *TypeChecker, expected: *const EiwaType, actual: *con
             },
             else => {
                 if (isClosedUnionShape(self, exp_base) or isClosedUnionShape(self, act_base)) return false;
+                if (exp_base.* == .Custom and act_base.* == .Custom) {
+                    if (core_viewConvertsTo(self, act_base.Custom, exp_base.Custom)) return true;
+                    if (!self.sameGenericBase(exp_base.Custom, act_base.Custom)) return false;
+                }
                 return true;
             },
         }

@@ -405,7 +405,7 @@ type GcRootProbe0398(val a: Int, val b: String, val c: Bool)
 type GcRootProbe0399(val a: Int, val b: String, val c: Bool)
 
 test "gc: thousands of nominal types register as few root sets" {
-    val all = [
+    val all: List<Equatable> = [
         GcRootProbe0000(0, "s", true), 
         GcRootProbe0001(1, "s", true), 
         GcRootProbe0002(2, "s", true), 

@@ -223,6 +223,8 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
     // Insert monomorphized node into classes_ast & alias_map
     try self.classes_ast.put(mangled_name, new_node);
     try self.alias_map.put(mangled_name, mangled_name);
+    const args_copy = try self.allocator.dupe(*const EiwaType, type_args);
+    try self.monomorph_bases.put(mangled_name, .{ .base = actual_base_name, .args = args_copy });
     if (std.mem.indexOf(u8, mangled_name, "_or_") != null) {
         var display_buf = ArrayList(u8).init(self.allocator);
         var it = std.mem.splitSequence(u8, mangled_name, "_or_");
