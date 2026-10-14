@@ -1,0 +1,38 @@
+import { assert } from "std.core"
+
+// Mutable state held in an `object` singleton must survive a GC cycle.
+// Fixed in the entry shim: object-member globals are registered as GC
+// roots from running code (`GC_add_roots` on the live addresses), because
+// host-side registration of JIT globals did not retain their referents.
+// Provenance: popup crash bisected to `SocialClient.injected` dying across GC.
+
+type GcCfg(val baseUrl: String, val token: String)
+
+object GcHolder {
+    var cfg: GcCfg? = null
+}
+
+fun gcPressure() {
+    var i = 0
+    var g = ""
+    while (i < 16000) {
+        g = "${g}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        i = i + 1
+    }
+}
+
+test "gc: object static field survives collection" {
+    GcHolder.cfg = GcCfg("http://localhost:4005", "tok-abc-123")
+    gcPressure()
+    val c = GcHolder.cfg
+    assert(c != null)
+    assert(c!!.baseUrl == "http://localhost:4005")
+    assert(c!!.token == "tok-abc-123")
+}
+
+test "gc: local holding same object survives (guard)" {
+    val cfg = GcCfg("http://localhost:4005", "tok-abc-123")
+    gcPressure()
+    assert(cfg.baseUrl == "http://localhost:4005")
+    assert(cfg.token == "tok-abc-123")
+}
