@@ -1895,6 +1895,14 @@ Semântica alvo:
 - [x] **Verify:** REDs escalares 10/10 + suíte 846/846 + `zig build test` + smoke `eiwac build`.
 
 ### Bugfixes recentes (pós-Phase 81)
+- [x] **L8 — duplicate union descriptors at native link:** `{Int,Double,Bool,...}_descriptor`
+  globals were created per LLVM module with strong linkage, so split-mode
+  native builds failed with `ld: duplicate symbols` while JIT (single
+  module) stayed green. Fix: `linkonce_odr` on the descriptor global
+  (identical content everywhere; also keeps cross-module `is` address
+  checks consistent). Proven by the previously-failing native build
+  linking again. No sample-test RED possible (linker-level; JIT harness
+  cannot express multi-object split).
 - [x] **L7 — per-task exception-handler state:** shared stack + active
   globals corrupted concurrent tasks (SIGSEGV or `unhandled` in seconds).
   Fix: 3-word GC blocks per task with TLS "current"
