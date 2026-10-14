@@ -80,6 +80,7 @@ lib NativeDir {
 }
 
 object Dir {
+
     fun names(path: String): List<String> {
         val out: MutableList<String> = MutableList<String>()
         val dir = NativeDir.opendir(path)
@@ -92,7 +93,8 @@ object Dir {
             if (entry == null) {
                 more = false
             } else {
-                out.add(String(entry))
+                val raw = String(entry)
+                out.add(raw.substring(0, raw.length))
             }
         }
         NativeDir.closedir(dir)

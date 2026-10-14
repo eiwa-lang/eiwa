@@ -1,0 +1,40 @@
+import { assert } from "std.core"
+
+// Boxing must not depend on inference order: a `var` assigned BEFORE any
+// lambda captures it must still use box protocol everywhere. Previously
+// only the declaration saw the boxed shape while the earlier assignment
+// kept a direct store, so the lambda dereferenced the raw value as a box
+// pointer (fault ~0x29 for value 41).
+
+test "boxed: var assigned before capture reads back inside lambda" {
+    var n = 0
+    n = 41
+    val f = { n }
+    assert(f() == 41)
+}
+
+test "boxed: unmutated val captured by lambda (guard)" {
+    val b = 41
+    val f = { b }
+    assert(f() == 41)
+}
+
+test "boxed: read before capture also uses box protocol" {
+    var n = 0
+    var before = n
+    n = 41
+    val f = { n }
+    assert(before == 0)
+    assert(f() == 41)
+    assert(n == 41)
+}
+
+test "boxed: two vars, only the captured one boxes" {
+    var hit = 0
+    var other = 7
+    hit = 1
+    val f = { hit }
+    assert(f() == 1)
+    assert(other == 7)
+    assert(hit == 1)
+}

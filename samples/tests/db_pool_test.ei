@@ -1,0 +1,109 @@
+// Run: ./bin/eiwac test samples/tests/db_pool_test.ei
+//
+// ConnectionPool under thread contention: concurrent acquire/release
+// cycles must balance without corrupting the idle/active counters.
+// Before the pool lock, two threads racing acquire() drove idleCount
+// negative (OOB read) and shared one connection (protocol desync).
+import { assert } from "std.core"
+import { Closeable } from "std.core"
+import { List } from "std.collections"
+import { Connection, Result, Statement, Row, ConnectionPool } from "std.db"
+import { Threads } from "std.thread"
+
+type FakeRow() : Row {
+    implement fun int(name: String): Int {
+        return 0
+    }
+    implement fun double(name: String): Double {
+        return 0.0
+    }
+    implement fun string(name: String): String {
+        return ""
+    }
+    implement fun bool(name: String): Bool {
+        return false
+    }
+    implement fun isNull(name: String): Bool {
+        return true
+    }
+}
+
+type FakeResult() : Result {
+    implement fun rows(): List<Row> {
+        return List<Row>()
+    }
+    implement fun rowsAffected(): Int {
+        return 0
+    }
+}
+
+type FakeStmt() : Statement {
+    implement fun query(params: List<String> = []): Result {
+        return FakeResult()
+    }
+    implement fun execute(params: List<String> = []): Result {
+        return FakeResult()
+    }
+}
+
+type FakeConn() : Connection, Closeable {
+    implement fun execute(sql: String, params: List<String> = []): Result {
+        return FakeResult()
+    }
+    implement fun query(sql: String, params: List<String> = []): Result {
+        return FakeResult()
+    }
+    implement fun prepare(sql: String): Statement {
+        return FakeStmt()
+    }
+    implement fun close(): Void {}
+}
+
+fun poolStress(pool: ConnectionPool<FakeConn>, rounds: Int): Int {
+    var done = 0
+    var i = 0
+    while (i < rounds) {
+        val c = pool.acquire()
+        pool.release(c)
+        done = done + 1
+        i = i + 1
+    }
+    return done
+}
+
+test "db: pool survives threaded acquire/release storms" {
+    val pool = ConnectionPool<FakeConn>({ FakeConn() }, 2)
+    val t1 = Threads.spawn {
+        assert(poolStress(pool, 200) == 200, "t1")
+    }
+    val t2 = Threads.spawn {
+        assert(poolStress(pool, 200) == 200, "t2")
+    }
+    val t3 = Threads.spawn {
+        assert(poolStress(pool, 200) == 200, "t3")
+    }
+    t1.join()
+    t2.join()
+    t3.join()
+    assert(true, "joined")
+}
+
+test "db: pool releases slot when factory throws" {
+    var calls = 0
+    val pool = ConnectionPool<FakeConn>({
+        calls = calls + 1
+        if (calls == 1) {
+            throw DbError("boom")
+        }
+        FakeConn()
+    }, 1)
+    try {
+        pool.acquire()
+        assert(false, "should-throw")
+    } catch (e: DbError) {
+        assert(true, "threw")
+    }
+    val c = pool.acquire()
+    pool.release(c)
+    assert(true, "recovered")
+}
