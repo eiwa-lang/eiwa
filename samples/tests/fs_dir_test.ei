@@ -1,0 +1,18 @@
+// Run: ./bin/eiwac test samples/tests/fs_dir_test.ei
+//
+// Dir.names lists directory entries (no . / ..) and returns empty
+// for unreadable directories instead of throwing.
+import { assert } from "std.core"
+import { Dir } from "std.fs"
+
+test "fs: dir names lists entries" {
+    val names = Dir.names("samples/tests")
+    assert(names.size() > 10, "many")
+    assert(names.contains("serde_defaults_test.ei"), "known-file")
+    assert(names.contains(".") == false, "no-dot")
+    assert(names.contains("..") == false, "no-dotdot")
+}
+
+test "fs: dir names missing dir is empty" {
+    assert(Dir.names("no-such-dir").size() == 0, "empty")
+}
