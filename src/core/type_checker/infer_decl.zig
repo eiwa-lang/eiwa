@@ -2513,6 +2513,91 @@ fn serdeDeserializePrimitive(self: *TypeChecker, line: usize, col: usize, obj_id
     return try makeObjMethodCall(self, line, col, obj_ident, get_fn, get_args);
 }
 
+fn serdeBoxNullableChild(self: *TypeChecker, line: usize, col: usize, field_name: []const u8) anyerror!*ASTNode {
+    const cond_ident = try makeIdent(self, line, col, field_name);
+    const null_lit = try self.allocator.create(ASTNode);
+    null_lit.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .null_literal,
+    };
+    const cond = try self.allocator.create(ASTNode);
+    cond.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .binary_expr = .{
+                .left = cond_ident,
+                .op = .eq_eq,
+                .right = null_lit,
+            },
+        },
+    };
+    const ser_null = try makeCall(self, line, col, "SerdeNull", &.{}, &.{});
+    const else_ident = try makeIdent(self, line, col, field_name);
+    const unwrap = try self.allocator.create(ASTNode);
+    unwrap.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .unary_expr = .{
+                .operator = .bang_bang,
+                .operand = else_ident,
+            },
+        },
+    };
+    const get_ser = try self.allocator.create(ASTNode);
+    get_ser.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .get_expr = .{
+                .object = unwrap,
+                .name = "serialize",
+                .is_safe = false,
+            },
+        },
+    };
+    const ser_call = try self.allocator.create(ASTNode);
+    ser_call.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .call_expr = .{
+                .callee = get_ser,
+                .arguments = &.{},
+                .type_args = &.{},
+            },
+        },
+    };
+    const if_node = try self.allocator.create(ASTNode);
+    if_node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .if_expr = .{
+                .condition = cond,
+                .then_branch = ser_null,
+                .else_branch = ser_call,
+                .is_value = true,
+            },
+        },
+    };
+    return if_node;
+}
+
 fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTypeRef, field_name: []const u8) anyerror!?*ASTNode {
     const field_ident = try makeIdent(self, line, col, field_name);
     const name = tr.name;
@@ -2522,8 +2607,12 @@ fn serdeBoxFor(self: *TypeChecker, line: usize, col: usize, tr: *const ast.ASTTy
         args[0] = field_ident;
         return try makeCall(self, line, col, serdeBoxFn(kind, tr.is_nullable), args, &.{});
     }
-    // Complex nullable (List?, Child?, ...) has no boxing yet: omit the field.
-    if (tr.is_nullable) return null;
+    if (tr.is_nullable) {
+        if (tr.generic_args.len == 0 and self.implementsContract(name, "Serializable")) {
+            return try serdeBoxNullableChild(self, line, col, field_name);
+        }
+        return null;
+    }
     if (std.mem.eql(u8, name, "List") and tr.generic_args.len == 1) {
         const elem_tr = tr.generic_args[0];
         if (elem_tr.is_nullable) return null;

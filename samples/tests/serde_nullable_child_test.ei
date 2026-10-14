@@ -1,0 +1,38 @@
+// Run: ./bin/eiwac test samples/tests/serde_nullable_child_test.ei
+//
+// Nullable single-child fields box on serialize (explicit null when
+// absent) so the wire shape round-trips. Absent and explicit-null keys
+// still decode as null; present objects still populate.
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { fromJson } from "std.json"
+
+type Inner(val every: String) : Serializable + Json
+
+type Outer(val name: String, val inner: Inner? = null) : Serializable + Json
+
+test "serde: nullable child serializes present object" {
+    val o = Outer("q", Inner("1h"))
+    val raw = o.toJson()
+    assert(raw.indexOf("\"inner\"") >= 0, "key:" + raw)
+    assert(raw.indexOf("\"every\"") >= 0, "nested:" + raw)
+    val back = fromJson<Outer>(raw)
+    assert(back != null, "typed")
+    assert(back!!.inner != null, "kept")
+    assert(back!!.inner!!.every == "1h", "value")
+}
+
+test "serde: nullable child serializes absent as explicit null" {
+    val o = Outer("q", null)
+    val raw = o.toJson()
+    assert(raw.indexOf("\"inner\": null") >= 0, "null:" + raw)
+    val back = fromJson<Outer>(raw)
+    assert(back != null, "typed")
+    assert(back!!.inner == null, "null-kept")
+}
+
+test "serde: nullable child absent key still decodes as null" {
+    val back = fromJson<Outer>("{\"name\": \"q\"}")
+    assert(back != null, "typed")
+    assert(back!!.inner == null, "absent-null")
+}
