@@ -1,12 +1,10 @@
 import { assert } from "std.core"
 
-// RED (TDD): mutable state held in an `object` singleton must survive a
-// GC cycle. Today a GC collection frees it (or its referents) and the
-// next read faults (NPE / segfault). Locals (stack roots) survive; only
-// static object state is lost. Real-world impact: long-lived services
-// crash intermittently once the heap grows enough to trigger a
-// collection (e.g. injected HTTP clients, cached DTOs).
-// Provenance:popup crash bisected to `SocialClient.injected` dying across GC.
+// Mutable state held in an `object` singleton must survive a GC cycle.
+// Fixed in the entry shim: object-member globals are registered as GC
+// roots from running code (`GC_add_roots` on the live addresses), because
+// host-side registration of JIT globals did not retain their referents.
+// Provenance: popup crash bisected to `SocialClient.injected` dying across GC.
 
 type GcCfg(val baseUrl: String, val token: String)
 
