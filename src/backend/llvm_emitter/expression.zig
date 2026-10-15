@@ -4573,6 +4573,7 @@ fn emitExpressionRaw(
 
             const frame = try statement.emitTryBegin(ctx, mod, builder, func_val);
             const after_bb = frame.after_bb;
+            try statement.tryPush(func_val);
 
             try emitBlockOrExpr(ctx, mod, builder, func_val, scope, structs, libs, ts_node.body, res_ptr, node.resolved_type);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
@@ -4587,6 +4588,7 @@ fn emitExpressionRaw(
             } else {
                 llvm.LLVMPositionBuilderAtEnd(builder, frame.catch_bb);
                 try statement.emitTryPop(ctx, mod, builder);
+                statement.tryPopFor(func_val);
                 const ptr_null_e = llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(ctx, 0));
                 try statement.excSet(ctx, mod, builder, "eiwa_exc_active_data_set", ptr_null_e);
                 try statement.excSet(ctx, mod, builder, "eiwa_exc_active_table_set", ptr_null_e);

@@ -67,12 +67,129 @@ const LoopStack = struct {
         }
         return null;
     }
+
+    fn countFor(self: *LoopStack, func: llvm.LLVMValueRef) usize {
+        return countFuncMatches(self.spilled.items, func) +
+            countFuncMatches(self.inline_frames[0..self.inline_len], func);
+    }
 };
 
 var loop_stack = LoopStack{};
 
-/// Emitted try machinery uses per-task state via C accessors (L7).
-/// Declared on first use, like the setjmp/longjmp lookups.
+fn countFuncMatches(entries: anytype, func: llvm.LLVMValueRef) usize {
+    var n: usize = 0;
+    for (entries) |e| {
+        if (e.func == func) n += 1;
+    }
+    return n;
+}
+
+const TryEntry = struct {
+    func: llvm.LLVMValueRef,
+    loop_depth: usize,
+};
+
+const TryStack = struct {
+    inline_entries: [8]TryEntry = undefined,
+    inline_len: usize = 0,
+    spilled: std.ArrayListUnmanaged(TryEntry) = .empty,
+
+    fn push(self: *TryStack, func: llvm.LLVMValueRef) anyerror!void {
+        const entry = TryEntry{ .func = func, .loop_depth = loop_stack.countFor(func) };
+        if (self.inline_len < self.inline_entries.len) {
+            self.inline_entries[self.inline_len] = entry;
+            self.inline_len += 1;
+            return;
+        }
+        try self.spilled.append(std.heap.page_allocator, entry);
+    }
+
+    fn popFor(self: *TryStack, func: llvm.LLVMValueRef) void {
+        var i = self.spilled.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.spilled.items[i].func == func) {
+                _ = self.spilled.orderedRemove(i);
+                return;
+            }
+        }
+        var j = self.inline_len;
+        while (j > 0) {
+            j -= 1;
+            if (self.inline_entries[j].func == func) {
+                var k = j;
+                while (k + 1 < self.inline_len) : (k += 1) {
+                    self.inline_entries[k] = self.inline_entries[k + 1];
+                }
+                self.inline_len -= 1;
+                return;
+            }
+        }
+    }
+
+    fn countFor(self: *TryStack, func: llvm.LLVMValueRef) usize {
+        return countFuncMatches(self.spilled.items, func) +
+            countFuncMatches(self.inline_entries[0..self.inline_len], func);
+    }
+
+    fn countAfter(self: *TryStack, func: llvm.LLVMValueRef, depth: usize) usize {
+        var n: usize = 0;
+        for (self.spilled.items) |e| {
+            if (e.func == func and e.loop_depth >= depth) n += 1;
+        }
+        var j: usize = 0;
+        while (j < self.inline_len) : (j += 1) {
+            if (self.inline_entries[j].func == func and self.inline_entries[j].loop_depth >= depth) n += 1;
+        }
+        return n;
+    }
+};
+
+var try_stack = TryStack{};
+
+pub fn tryPush(func: llvm.LLVMValueRef) anyerror!void {
+    try try_stack.push(func);
+}
+
+pub fn tryPopFor(func: llvm.LLVMValueRef) void {
+    try_stack.popFor(func);
+}
+
+fn emitPops(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    n: usize,
+) anyerror!void {
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        try emitTryPop(ctx, mod, builder);
+    }
+}
+
+fn emitReturnPops(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+) anyerror!void {
+    try emitPops(ctx, mod, builder, try_stack.countFor(func_val));
+}
+
+// Same leak as return, for `leave` targeting a loop outside open trys.
+// A try opened inside the target loop body sees it open (depth recorded at
+// push >= current depth); older ones survive. Bookkeeping untouched: the
+// branch diverges, surviving paths still see them.
+fn emitLeavePops(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+) anyerror!void {
+    const depth = loop_stack.countFor(func_val);
+    try emitPops(ctx, mod, builder, try_stack.countAfter(func_val, depth));
+}
+
 fn excFunc(mod: llvm.LLVMModuleRef, ctx: llvm.LLVMContextRef, name: []const u8, takes_arg: bool) !llvm.LLVMValueRef {
     const name_z = try std.heap.page_allocator.dupeZ(u8, name);
     defer std.heap.page_allocator.free(name_z);
@@ -149,6 +266,7 @@ fn emitReturnValue(
     }
     // Coerce the return value to the function's declared return type.
     if (llvm.LLVMGetTypeKind(expected_ret_type) == llvm.LLVMVoidTypeKind) {
+        try emitReturnPops(ctx, mod, builder, func_val);
         _ = llvm.LLVMBuildRetVoid(builder);
     } else {
         if (declared_ret) |drt| {
@@ -158,6 +276,7 @@ fn emitReturnValue(
         if (llvm.LLVMTypeOf(ret_val) != expected_ret_type) {
             ret_val = expression.coerceArg(builder, ret_val, expected_ret_type);
         }
+        try emitReturnPops(ctx, mod, builder, func_val);
         _ = llvm.LLVMBuildRet(builder, ret_val);
     }
 }
@@ -466,6 +585,10 @@ pub fn emitTryCatches(
 ) !void {
     llvm.LLVMPositionBuilderAtEnd(builder, frame.catch_bb);
     try emitTryPop(ctx, mod, builder);
+    // Catch-entry pop unwinds one frame at runtime; mirror it in the
+    // return-path bookkeeping (catch bodies see one fewer open frame, and
+    // the join stays balanced: push(+1) + catch-entry(-1) == 0 net).
+    try_stack.popFor(func_val);
     const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
     const fat_type = types_mapping.getFatPointerType(ctx);
     const exc_data = try excGet(ctx, mod, builder, "eiwa_exc_active_data_get");
@@ -919,14 +1042,11 @@ pub fn emitStatement(
                     try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
                 }
             } else {
+                try emitReturnPops(ctx, mod, builder, func_val);
                 _ = llvm.LLVMBuildRetVoid(builder);
             }
         },
         .break_stmt => |b| {
-            // Innermost loop of this function wins; a lambda-local break with
-            // no enclosing loop exits the lambda (same lowering as `return`).
-            // Phase 90: `leave throw E` diverges — emit the throw inline with
-            // no append/branch/return after it (the helper terminates).
             if (loop_stack.innermostFor(func_val)) |frame| {
                 if (b.value) |val_node| {
                     if (val_node.data == .throw_stmt) {
@@ -936,13 +1056,16 @@ pub fn emitStatement(
                         var v = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
                         v = expression.coerceArg(builder, v, ci.elem_type);
                         _ = try expression.emitBufferPushRaw(ctx, mod, builder, ci.buf_addr, v, ci.elem_type, ci.elem_stride);
+                        try emitLeavePops(ctx, mod, builder, func_val);
                         _ = llvm.LLVMBuildBr(builder, frame.after_bb);
                     } else {
                         // Loop target: evaluate and discard.
                         _ = try expression.emitExpression(ctx, mod, builder, scope, structs, libs, val_node);
+                        try emitLeavePops(ctx, mod, builder, func_val);
                         _ = llvm.LLVMBuildBr(builder, frame.after_bb);
                     }
                 } else {
+                    try emitLeavePops(ctx, mod, builder, func_val);
                     _ = llvm.LLVMBuildBr(builder, frame.after_bb);
                 }
             } else if (b.value) |val_node| {
@@ -952,6 +1075,7 @@ pub fn emitStatement(
                     try emitReturnValue(ctx, mod, builder, func_val, scope, structs, libs, val_node, declared_ret);
                 }
             } else if (b.is_lambda_break) {
+                try emitReturnPops(ctx, mod, builder, func_val);
                 _ = llvm.LLVMBuildRetVoid(builder);
             } else {
                 return error.BreakOutsideLoop;
@@ -963,6 +1087,7 @@ pub fn emitStatement(
         .try_stmt => |ts| {
             const frame = try emitTryBegin(ctx, mod, builder, func_val);
             const after_bb = frame.after_bb;
+            try tryPush(func_val);
 
             try emitStatement(ctx, mod, builder, func_val, scope, structs, libs, ts.body, declared_ret);
             if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(builder)) == null) {
