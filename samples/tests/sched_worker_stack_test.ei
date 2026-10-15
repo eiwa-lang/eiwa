@@ -1,0 +1,32 @@
+// Spawned threads (scheduler workers and Threads.spawn) must have a stack large
+// enough for deep call chains such as the HTTP accept loop. The platform default
+// for secondary threads (512KB on macOS) overflowed after minutes of real traffic.
+// The recurrence is non-associative so the optimizer cannot fold it into a loop.
+import { assert } from "std.core"
+import { Threads } from "std.thread"
+
+fun deepStep(n: Int): Int {
+    if (n == 0) {
+        return 0
+    }
+    return (deepStep(n - 1) * 3 + n) % 1000000007
+}
+
+fun iterStep(n: Int): Int {
+    var acc = 0
+    var i = 1
+    while (i <= n) {
+        acc = (acc * 3 + i) % 1000000007
+        i = i + 1
+    }
+    return acc
+}
+
+test "sched: spawned thread survives deep recursion" {
+    var result = -1
+    val t = Threads.spawn {
+        result = deepStep(200000)
+    }
+    t.join()
+    assert(result == iterStep(200000), "deep recursion on spawned thread")
+}

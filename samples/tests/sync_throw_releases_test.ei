@@ -1,0 +1,32 @@
+// An exception thrown inside sync(lock) must release the mutex.
+// Otherwise the next sync(lock) on the same lock deadlocks.
+import { assert } from "std.core"
+import { Mutex, sync } from "std.thread"
+
+type SyncBoom(val text: String) : Throwable {
+    implement fun message(): String {
+        return this.text
+    }
+}
+
+fun failInside(lock: Mutex): Int {
+    return sync(lock) {
+        throw SyncBoom("inside sync")
+        0
+    }
+}
+
+test "sync: exception inside sync releases the lock" {
+    val lock = Mutex()
+    var caught = false
+    try {
+        failInside(lock)
+    } catch (e: SyncBoom) {
+        caught = true
+    }
+    assert(caught, "exception should propagate out of sync")
+    val again = sync(lock) {
+        7
+    }
+    assert(again == 7, "lock must be reusable after a throw")
+}

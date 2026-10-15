@@ -5,7 +5,7 @@
 
 import { mod } from "std.math"
 import { NativeMemory, Standard } from "std.core"
-import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, NativeExc } from "std.thread"
+import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, NativeExc, sync } from "std.thread"
 import { AtomicBool } from "std.atomic"
 import { MutableList } from "std.collections"
 
@@ -496,25 +496,34 @@ type Dispatcher(
     val nThreads: Int,
     val scheduler: TaskScheduler,
     var isShutdown: Bool,
-    var isStarted: Bool = false
+    var isStarted: Bool = false,
+    val lock: Mutex = Mutex()
 ) {
     val threads: MutableList<Thread?> = MutableList<Thread?>()
 
+    // Serialized: every task entry point calls ensureStarted, and several
+    // tasks boot at once. Without the lock, two threads pass the check
+    // together, spawn double workers and corrupt the threads list
+    // (heap corruption surfacing minutes later as guard faults).
     fun ensureStarted() {
-        if (!this.isStarted && !this.isShutdown && this.nThreads > 0) {
-            this.isStarted = true
-            var i = 0
-            while (i < this.nThreads) {
-                val buf = Standard.gcMalloc(24)
-                val task = buf as WorkerTask
-                task.dispatcher = this
-                val threadBuf = Standard.gcMalloc(16)
-                val routine = funPointer { arg: Pointer -> workerThreadTrampoline(arg) }
-                NativeThread.pthreadCreate(threadBuf, null, routine, buf)
-                val handle = Standard.loadInt64(threadBuf) as Pointer
-                this.threads.add(Thread(handle))
-                i = i + 1
+        sync(lock) {
+            if (!this.isStarted && !this.isShutdown && this.nThreads > 0) {
+                this.isStarted = true
+                val attr = Threads.stackAttr()
+                var i = 0
+                while (i < this.nThreads) {
+                    val buf = Standard.gcMalloc(24)
+                    val task = buf as WorkerTask
+                    task.dispatcher = this
+                    val threadBuf = Standard.gcMalloc(16)
+                    val routine = funPointer { arg: Pointer -> workerThreadTrampoline(arg) }
+                    NativeThread.pthreadCreate(threadBuf, attr, routine, buf)
+                    val handle = Standard.loadInt64(threadBuf) as Pointer
+                    this.threads.add(Thread(handle))
+                    i = i + 1
+                }
             }
+            this.isStarted
         }
     }
 
@@ -596,7 +605,10 @@ object Coroutine {
         val mutex = RawMutex.create()
         val cond = CondVar.create()
         mutex.lock()
-        cond.wait(mutex)
+        var parked = true
+        while (parked) {
+            cond.wait(mutex)
+        }
     }
 
     @Suspend
