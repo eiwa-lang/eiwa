@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const type_system = @import("type_system.zig");
 
 /// Token types supported by the Eiwa compiler.
@@ -215,6 +216,7 @@ pub const ASTNodeType = union(enum) {
         initializer: ?*ASTNode,
         is_boxed: bool = false,
         resolved_c_name: ?[]const u8 = null,
+        boxed_sites: ?*compat.ArrayList(*ASTNode) = null,
     },
     fun_decl: struct {
         annotations: []const Annotation,
