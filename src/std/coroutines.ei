@@ -334,10 +334,17 @@ type TaskScheduler(
                     val first = this.timerHead!!
                     val delta = first.deadline - this.now
                     if (delta > 0) {
+                        // Slice long timer waits: a worker sleeping the full
+                        // delta would ignore newly queued work (and shutdown)
+                        // until it elapses. Re-check between slices.
+                        var slice = delta
+                        if (slice > 10) {
+                            slice = 10
+                        }
                         this.mutex.unlock()
-                        this.waitMs(delta)
+                        this.waitMs(slice)
                         this.mutex.lock()
-                        this.now = first.deadline
+                        this.now = this.now + slice
                     }
                     this.fireTimersLocked()
                 } else {
@@ -423,8 +430,14 @@ type TaskScheduler(
                 val first = this.timerHead!!
                 val delta = first.deadline - this.now
                 if (delta > 0 && this.ioHead == null) {
-                    this.waitMs(delta)
-                    this.now = first.deadline
+                    // Slice like popBlocking: a full-delta sleep here would
+                    // stall any thread awaiting (runStep backs await()).
+                    var slice = delta
+                    if (slice > 10) {
+                        slice = 10
+                    }
+                    this.waitMs(slice)
+                    this.now = this.now + slice
                 }
                 this.fireTimersLocked()
             }

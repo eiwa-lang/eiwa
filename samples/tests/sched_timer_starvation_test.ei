@@ -1,0 +1,36 @@
+// A worker parked on a long timer must still pick up newly queued work
+// promptly. Before the fix popBlocking slept the full timer delta,
+// so a second task waited until the first task's timer elapsed.
+import { assert } from "std.core"
+import { Dispatchers } from "std.coroutines"
+import { Threads } from "std.thread"
+import { nowMillis, sleepMs } from "std.time"
+
+test "sched: long timer does not starve newly queued tasks" {
+    val disp = Dispatchers.create("solo-timer", 1)
+    var done = false
+    val watchdog = Threads.spawn {
+        sleep(15)
+        if (!done) {
+            println("RED: task queued behind a long timer never ran")
+            Standard.exit(1)
+        }
+    }
+    val slow = task(disp) {
+        sleepMs(5000)
+        1
+    }
+    sleepMs(100)
+    val t0 = nowMillis()
+    val fast = task(disp) {
+        2
+    }
+    val r = fast.await()
+    val elapsed = nowMillis() - t0
+    val s = slow.await()
+    disp.shutdown()
+    done = true
+    assert(r == 2, "fast task result")
+    assert(s == 1, "slow task result")
+    assert(elapsed < 1000, "fast task must not wait out the 5s timer")
+}
