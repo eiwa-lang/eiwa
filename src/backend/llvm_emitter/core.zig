@@ -5311,11 +5311,17 @@ pub const LLVMEmitter = struct {
     /// Registers JIT globals as Boehm GC roots. MCJIT memory isn't scanned by
     /// default, so live singletons reachable only from globals could be
     /// collected. Globals merge into runs (gap < 1MB with all pages
-    /// resident: mincore on POSIX, VirtualQuery on Windows); doubt splits
-    /// the run. Uses LLVMGetGlobalValueAddress — LLVMGetPointerToGlobal
-    /// segfaults on Windows (libLLVM-23, MCJIT). Runs after engine
+    /// resident via mincore); doubt splits the run. Runs after engine
     /// creation, before main.
+    ///
+    /// Windows (mingw + libLLVM-23) is excluded from the host-side query:
+    /// MCJIT segfaults inside libLLVM when resolving a global's address —
+    /// first via LLVMGetPointerToGlobal (CI #159-#161), then via
+    /// LLVMGetGlobalValueAddress (same resolution machinery, CI #162+).
+    /// Object-member state stays rooted through the entry-shim GC_add_roots
+    /// calls, which take addresses from running code and need no host query.
     fn registerJITGlobalsAsRoots(engine: llvm.LLVMExecutionEngineRef, mod: llvm.LLVMModuleRef) void {
+        if (builtin.os.tag == .windows) return;
         const tm = llvm.LLVMGetExecutionEngineTargetMachine(engine);
         const td = llvm.LLVMCreateTargetDataLayout(tm);
         defer llvm.LLVMDisposeTargetData(td);
