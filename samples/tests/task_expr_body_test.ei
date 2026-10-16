@@ -1,0 +1,23 @@
+// A task created by an expression-bodied function must run. `fun f() = task {}`
+// compiled, but the task body was never scheduled, so await() waited forever.
+import { assert } from "std.core"
+import { Threads } from "std.thread"
+
+fun doubled(n: Int) = task {
+    n * 2
+}
+
+test "task: expression-bodied function returns a task that runs" {
+    var done = false
+    val watchdog = Threads.spawn {
+        sleep(10)
+        if (!done) {
+            println("RED: task from expression-bodied function never ran")
+            Standard.exit(1)
+        }
+    }
+    val t = doubled(21)
+    val r = t.await()
+    done = true
+    assert(r == 42, "expression-bodied task result")
+}

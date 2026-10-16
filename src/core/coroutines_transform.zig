@@ -154,9 +154,20 @@ fn containsNode(nodes: []const *ASTNode, target: *ASTNode) bool {
     return false;
 }
 
+fn liftExpressionBody(ctx: Ctx, node: *ASTNode) !void {
+    const f = &node.data.fun_decl;
+    const result_type = f.body.resolved_type orelse return error.TypeError;
+    f.type_ref = try syn.typeRefForEiwaType(ctx.allocator, result_type);
+    f.body = syn.mkBlock(&.{syn.mkReturn(f.body)});
+    f.is_expr_body = false;
+}
+
 fn rewriteFunctionBody(ctx: Ctx, node: *ASTNode) !bool {
+    if (node.data.fun_decl.body.data != .block) {
+        if (!node.data.fun_decl.is_expr_body or !syn.hasTaskOrAwait(node.data.fun_decl.body)) return false;
+        try liftExpressionBody(ctx, node);
+    }
     var f = &node.data.fun_decl;
-    if (f.body.data != .block) return false;
     if (!syn.hasTaskOrAwait(f.body)) return false;
 
     var new_stmts = ArrayList(*ASTNode).init(ctx.allocator);
