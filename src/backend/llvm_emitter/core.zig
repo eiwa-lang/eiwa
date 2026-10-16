@@ -1517,6 +1517,7 @@ pub const LLVMEmitter = struct {
                 const main_fn = llvm.LLVMAddFunction(mod, "eiwa_test_main", main_fn_type);
                 const main_entry = llvm.LLVMAppendBasicBlockInContext(self.context, main_fn, "entry");
                 llvm.LLVMPositionBuilderAtEnd(self.builder, main_entry);
+                self.emitJitTrace(mod, "[jit] test main entry");
 
                 if (llvm.LLVMGetNamedFunction(mod, "GC_init")) |gc_init| {
                     const gci_type = llvm.LLVMGlobalGetValueType(gc_init);
@@ -1549,6 +1550,7 @@ pub const LLVMEmitter = struct {
                 _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i32_type, 0, 0), failed_var);
                 const passed_var = llvm.LLVMBuildAlloca(self.builder, i32_type, "test_passed");
                 _ = llvm.LLVMBuildStore(self.builder, llvm.LLVMConstInt(i32_type, 0, 0), passed_var);
+                self.emitJitTrace(mod, "[jit] initializers done");
 
                 for (test_funcs.items, 0..) |test_fn, i| {
                     const test_fn_type_call = llvm.LLVMGlobalGetValueType(test_fn);
@@ -1910,6 +1912,27 @@ pub const LLVMEmitter = struct {
 
     /// Emits `main(i32 argc, ptr argv)` — the real C entry the OS runtime
     /// calls. It stores argv into eiwa_argc/eiwa_argv (for Process.args())
+    /// IR-level startup breadcrumb for JIT triage. Emits puts(msg) at the
+    /// current builder position, but ONLY when EIWA_JIT_DEBUG=1 is set at
+    /// compile time (host-side env read — zero cost otherwise). Used to
+    /// bracket the entry shim / test-main prelude on platforms where a
+    /// segfault inside JIT'd code leaves no stack trace.
+    fn emitJitTrace(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, msg: []const u8) void {
+        if (std.c.getenv("EIWA_JIT_DEBUG") == null) return;
+        const puts_fn = llvm.LLVMGetNamedFunction(mod, "puts") orelse blk: {
+            const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+            const i32_type = llvm.LLVMInt32TypeInContext(self.context);
+            var ps = [_]llvm.LLVMTypeRef{ptr_type};
+            break :blk llvm.LLVMAddFunction(mod, "puts", llvm.LLVMFunctionType(i32_type, &ps, 1, 0));
+        };
+        const puts_type = llvm.LLVMGlobalGetValueType(puts_fn);
+        const msg_z = self.allocator.dupeZ(u8, msg) catch return;
+        defer self.allocator.free(msg_z);
+        const str = llvm.LLVMBuildGlobalStringPtr(self.builder, msg_z.ptr, "jit_trace_msg");
+        var args = [_]llvm.LLVMValueRef{str};
+        _ = llvm.LLVMBuildCall2(self.builder, puts_type, puts_fn, &args, 1, "");
+    }
+
     /// and forwards to the program entry: `eiwa_test_main` in test mode, or
     /// the user's `main` renamed to `__eiwa_prog_main` in run/build mode.
     ///
@@ -1941,6 +1964,7 @@ pub const LLVMEmitter = struct {
         const shim = llvm.LLVMAddFunction(mod, "main", shim_type);
         const shim_entry = llvm.LLVMAppendBasicBlockInContext(self.context, shim, "entry");
         llvm.LLVMPositionBuilderAtEnd(self.builder, shim_entry);
+        self.emitJitTrace(mod, "[jit] shim entry");
 
         const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
         if (is_windows) {

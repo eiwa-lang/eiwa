@@ -102,6 +102,45 @@ jobs:
             ./bin/eiwac build -o bin/eiwa cli/src/main.ei
           fi
 
+      - name: JIT startup ladder (Windows triage, TEMP-DIAG)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          export EIWA_JIT_DEBUG=1
+          cat > ladder1.ei <<'EOF'
+          fun main() {}
+          EOF
+          cat > ladder2.ei <<'EOF'
+          fun main() {
+              println("ladder2-ok")
+          }
+          EOF
+          cat > ladder3.ei <<'EOF'
+          object LadderState {
+              var count: Int = 41
+          }
+          fun main() {
+              println(LadderState.count)
+          }
+          EOF
+          cat > ladder4_test.ei <<'EOF'
+          import { assert } from "std.core"
+          test "ladder4" {
+              assert(1 + 1 == 2)
+          }
+          EOF
+          set +e
+          for f in ladder1.ei ladder2.ei ladder3.ei; do
+            echo "=== $f (run) ==="
+            ./bin/eiwac.exe run "$f"
+            echo "exit=$?"
+          done
+          echo "=== ladder4_test.ei (test) ==="
+          ./bin/eiwac.exe test ladder4_test.ei
+          echo "exit=$?"
+          set -e
+          rm -f ladder1.ei ladder2.ei ladder3.ei ladder4_test.ei
+
       - name: Native test suite
         shell: bash
         run: |
