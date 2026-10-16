@@ -106,7 +106,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            ./bin/eiwac.exe test
+            # TEMP-DIAG: EIWA_JIT_DEBUG=1 prints [jit] step breadcrumbs per
+            # test child to locate the Windows MCJIT segfault. Revert after.
+            EIWA_JIT_DEBUG=1 ./bin/eiwac.exe test
           else
             ./bin/eiwac test
           fi

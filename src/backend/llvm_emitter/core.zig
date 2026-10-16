@@ -5459,6 +5459,11 @@ pub const LLVMEmitter = struct {
 
     pub fn executeJIT(self: *LLVMEmitter, io: std.Io) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
+        // Step breadcrumbs for JIT triage (e.g. libLLVM mingw MCJIT
+        // segfaults on Windows CI): enable with EIWA_JIT_DEBUG=1. Prints go
+        // to stderr, which the `eiwac test` parent captures per child.
+        const jit_debug = std.c.getenv("EIWA_JIT_DEBUG") != null;
+        if (jit_debug) std.debug.print("[jit] executeJIT start\n", .{});
         if (has_gc) {
             gc.GC_init();
             gc.GC_allow_register_threads();
@@ -5477,9 +5482,11 @@ pub const LLVMEmitter = struct {
             }
         }
         if (verbose) llvm.LLVMDumpModule(mod);
+        if (jit_debug) std.debug.print("[jit] verified\n", .{});
         // Compile and load lib-declared C sources (@Source) so MCJIT can resolve
         // the FFI externs (e.g. neco/curl). Phase 65.
         try self.loadLibSourcesIntoJIT(io);
+        if (jit_debug) std.debug.print("[jit] libs loaded\n", .{});
         var engine: llvm.LLVMExecutionEngineRef = undefined;
         var err_msg: [*c]u8 = null;
 
@@ -5489,6 +5496,19 @@ pub const LLVMEmitter = struct {
                 llvm.LLVMDisposeMessage(err_msg);
             }
             return error.LLVMJITFailed;
+        }
+        if (jit_debug) {
+            var n_glob: usize = 0;
+            var git = llvm.LLVMGetFirstGlobal(mod);
+            while (git) |g| : (git = llvm.LLVMGetNextGlobal(g)) {
+                n_glob += 1;
+            }
+            var n_fn: usize = 0;
+            var fit = llvm.LLVMGetFirstFunction(mod);
+            while (fit) |f| : (fit = llvm.LLVMGetNextFunction(f)) {
+                n_fn += 1;
+            }
+            std.debug.print("[jit] engine created (globals={d} functions={d})\n", .{ n_glob, n_fn });
         }
         // Ownership of mod transferred to engine!
         self.module = null;
@@ -5535,12 +5555,14 @@ pub const LLVMEmitter = struct {
                 }
             }
         }
+        if (jit_debug) std.debug.print("[jit] mappings added\n", .{});
 
         // Entry shim `main(argc, argv)`. GetFunctionAddress finalizes MCJIT;
         // no PointerToGlobal fallback (segfaults on Windows, see above).
         const main_func = llvm.LLVMGetNamedFunction(mod, "main") orelse return error.MainNotFound;
         const fn_addr = llvm.LLVMGetFunctionAddress(engine, "main");
         if (fn_addr == 0) return error.MainJITCompilationFailed;
+        if (jit_debug) std.debug.print("[jit] main resolved\n", .{});
         const main_fn_ptr: *anyopaque = @ptrFromInt(fn_addr);
         const main_type = llvm.LLVMGlobalGetValueType(main_func);
         const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type));
@@ -5548,6 +5570,7 @@ pub const LLVMEmitter = struct {
         // With the engine materialized and compiled, register JIT globals as GC
         // roots before any GC_malloc from the program can trigger a collection.
         if (has_gc) registerJITGlobalsAsRoots(engine, mod);
+        if (jit_debug) std.debug.print("[jit] roots done\n", .{});
 
         // Pass the host process's real argv so Process.args()/argAt() see the
         // actual command line. host_argv (set by main.zig) is argv[0..]; the
@@ -5563,9 +5586,11 @@ pub const LLVMEmitter = struct {
 
         if (ret_kind == llvm.LLVMVoidTypeKind) {
             const main_fn: *const fn (c_int, [*]?*anyopaque) callconv(.c) void = @ptrCast(@alignCast(main_fn_ptr));
+            if (jit_debug) std.debug.print("[jit] calling main\n", .{});
             main_fn(@intCast(args_list.len), argv_ptrs);
             return 0;
         }
+        if (jit_debug) std.debug.print("[jit] calling main\n", .{});
         const main_fn: *const fn (c_int, [*]?*anyopaque) callconv(.c) i32 = @ptrCast(@alignCast(main_fn_ptr));
         const res = main_fn(@intCast(args_list.len), argv_ptrs);
         const code: u8 = if (res < 0) 1 else @intCast(@min(res, 255));
