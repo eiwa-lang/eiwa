@@ -1,0 +1,26 @@
+// The listen backlog must absorb a burst of connections that arrive before the
+// server accepts them (browser reloads open many keep-alive connections at
+// once). A backlog of 10 makes the extra connects fail with ECONNREFUSED/timeout.
+import { assert } from "std.core"
+import { TCPServer, Socket, SocketClient } from "std.net"
+
+test "net: listen backlog absorbs a burst of pending connections" {
+    val port = 19534
+    val burst = 40
+    val server = TCPServer()
+    assert(server.bind(port), "server should bind")
+
+    var connected = 0
+    var pending: MutableList<Socket> = MutableList<Socket>()
+    var i = 0
+    while (i < burst) {
+        val c = SocketClient.connect("127.0.0.1", port)
+        if (c != null) {
+            connected = connected + 1
+            pending.add(c!!)
+        }
+        i = i + 1
+    }
+    assert(connected == burst, "all connects in the burst should succeed")
+    server.close()
+}

@@ -1,6 +1,13 @@
 #include "net_helpers.h"
 
 #ifdef _WIN32
+#define EIWA_LISTEN_BACKLOG 128
+#else
+#include <sys/socket.h>
+#define EIWA_LISTEN_BACKLOG SOMAXCONN
+#endif
+
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -34,7 +41,7 @@ int64_t eiwa_tcp_bind(int64_t port) {
         closesocket(fd);
         return -1;
     }
-    if (listen(fd, 10) == SOCKET_ERROR) {
+    if (listen(fd, EIWA_LISTEN_BACKLOG) == SOCKET_ERROR) {
         closesocket(fd);
         return -1;
     }
@@ -170,7 +177,7 @@ int64_t eiwa_tcp_bind(int64_t port) {
         close(fd);
         return -1;
     }
-    if (listen(fd, 10) < 0) {
+    if (listen(fd, EIWA_LISTEN_BACKLOG) < 0) {
         close(fd);
         return -1;
     }
