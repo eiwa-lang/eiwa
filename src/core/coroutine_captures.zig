@@ -709,6 +709,16 @@ pub fn rewritePromotedRefs(ctx: Ctx, promoted: []const CapturedVar, node: *ASTNo
                     try rewritePromotedRefs(ctx, promoted, init);
                     return;
                 }
+                // Suspend markers keep `val` form: the state machine assigns
+                // the promoted field when the callee completes. Marker args
+                // are ordinary expressions and still need rewriting.
+                if (syn.isSuspendCallMarker(node)) {
+                    const c = &node.data.var_decl.initializer.?.data.call_expr;
+                    for (c.arguments) |arg| {
+                        try rewritePromotedRefs(ctx, promoted, arg);
+                    }
+                    return;
+                }
                 if (!syn.isTaskCall(init) and !syn.isAwaitCall(init)) {
                     try rewritePromotedRefs(ctx, promoted, init);
                     for (promoted) |c| {

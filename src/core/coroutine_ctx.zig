@@ -12,6 +12,15 @@ pub const Ctx = struct {
     checker: *TypeChecker,
     counter: *usize,
     generated: *ArrayList(*ASTNode),
+    registry: *tc_core.ModuleRegistry,
+    /// Suspend-function machine types already generated (by c_name), shared
+    /// across modules so std methods are generated once and reused.
+    suspend_generated: *std.StringHashMap(void),
+    /// c_names currently being generated (recursion guard for suspend machines).
+    suspend_generating: *ArrayList([]const u8),
+    /// Lowering data for `__SuspendCall` markers in the function currently
+    /// being built (keyed by marker call node).
+    suspend_sites: *ArrayList(SuspendSite),
 };
 
 /// A free variable captured by a `task {}` block. Mutable captures share the
@@ -23,6 +32,17 @@ pub const CapturedVar = struct {
 };
 
 pub const outer_this_field = "__outer_this";
+
+/// Lowering data for one `__SuspendCall` marker: the callee machine type and
+/// result type. Receiver and call args ride in the marker call itself so
+/// capture rewriting sees them. Keyed by marker call node (arena-stable).
+pub const SuspendSite = struct {
+    marker: *ASTNode,
+    machine: []const u8,
+    result: *const ASTTypeRef,
+    /// Assignment target field, set for `val x =` / `x =` shapes (null = bare).
+    target: ?[]const u8,
+};
 
 /// Clears resolved types so re-inference descends into rewritten subtrees.
 /// NOTE: `expected_type` is intentionally PRESERVED (e.g. empty array literal
