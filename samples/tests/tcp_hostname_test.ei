@@ -28,7 +28,7 @@ fun acceptOne(server: TCPServer): String {
 
 test "net: connect resolves localhost like a literal ip" {
     val server = TCPServer()
-    server.bind(19790)
+    assert(server.bind(19790), "bind")
     val worker = task {
         acceptOne(server)
     }

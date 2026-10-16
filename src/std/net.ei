@@ -60,25 +60,13 @@ object SocketClient {
     }
 }
 
-type BindException(val port: Int) : Throwable {
-    implement fun message(): String {
-        return "cannot bind port " + this.port.toString() + ": address already in use or not available"
-    }
-}
-
 type TCPServer(var fd: Int = -1) {
-    fun tryBind(port: Int): Bool {
+    fun bind(port: Int): Bool {
         this.fd = NativeNet.tcpBind(port)
         if (this.fd >= 0) {
             NativeNet.setNonblocking(this.fd)
         }
         return this.fd >= 0
-    }
-
-    fun bind(port: Int): Void {
-        if (!this.tryBind(port)) {
-            throw BindException(port)
-        }
     }
     
     @Suspend

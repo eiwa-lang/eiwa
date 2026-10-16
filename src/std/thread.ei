@@ -12,12 +12,6 @@ lib("posix") PosixThread {
     @Alias("pthread_join")
     fun pthreadJoin(thread: Pointer, retval: Pointer): Int
 
-    @Alias("pthread_attr_init")
-    fun pthreadAttrInit(attr: Pointer): Int
-
-    @Alias("pthread_attr_setstacksize")
-    fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int
-
     @Alias("pthread_self")
     fun pthreadSelf(): Pointer
 
@@ -60,12 +54,6 @@ lib("windows") Win32Thread {
     @Alias("pthread_join")
     fun pthreadJoin(thread: Pointer, retval: Pointer): Int
 
-    @Alias("pthread_attr_init")
-    fun pthreadAttrInit(attr: Pointer): Int
-
-    @Alias("pthread_attr_setstacksize")
-    fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int
-
     @Alias("pthread_self")
     fun pthreadSelf(): Pointer
 
@@ -103,8 +91,6 @@ lib("windows") Win32Thread {
 contract ThreadOpsContract {
     fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
     fun pthreadJoin(thread: Pointer, retval: Pointer): Int
-    fun pthreadAttrInit(attr: Pointer): Int
-    fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int
     fun pthreadSelf(): Pointer
     fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int
     fun pthreadMutexLock(mutex: Pointer): Int
@@ -120,8 +106,6 @@ contract ThreadOpsContract {
 object("posix") NativeThread : ThreadOpsContract {
     implement fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int = PosixThread.pthreadCreate(threadOut, attr, startRoutine, arg)
     implement fun pthreadJoin(thread: Pointer, retval: Pointer): Int = PosixThread.pthreadJoin(thread, retval)
-    implement fun pthreadAttrInit(attr: Pointer): Int = PosixThread.pthreadAttrInit(attr)
-    implement fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int = PosixThread.pthreadAttrSetstacksize(attr, size)
     implement fun pthreadSelf(): Pointer = PosixThread.pthreadSelf()
     implement fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int = PosixThread.pthreadMutexInit(mutex, attr)
     implement fun pthreadMutexLock(mutex: Pointer): Int = PosixThread.pthreadMutexLock(mutex)
@@ -137,8 +121,6 @@ object("posix") NativeThread : ThreadOpsContract {
 object("windows") NativeThread : ThreadOpsContract {
     implement fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int = Win32Thread.pthreadCreate(threadOut, attr, startRoutine, arg)
     implement fun pthreadJoin(thread: Pointer, retval: Pointer): Int = Win32Thread.pthreadJoin(thread, retval)
-    implement fun pthreadAttrInit(attr: Pointer): Int = Win32Thread.pthreadAttrInit(attr)
-    implement fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int = Win32Thread.pthreadAttrSetstacksize(attr, size)
     implement fun pthreadSelf(): Pointer = Win32Thread.pthreadSelf()
     implement fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int = Win32Thread.pthreadMutexInit(mutex, attr)
     implement fun pthreadMutexLock(mutex: Pointer): Int = Win32Thread.pthreadMutexLock(mutex)
@@ -163,8 +145,6 @@ object ThreadConstants {
     val PTHREAD_MUTEX_SIZE: Int = 128
     val PTHREAD_COND_SIZE: Int = 128
     val PTHREAD_HANDLE_SIZE: Int = 16
-    val PTHREAD_ATTR_SIZE: Int = 128
-    val WORKER_STACK_SIZE: Int = 16777216
     val GC_STACK_BASE_SIZE: Int = 16
     val THREAD_TASK_SIZE: Int = 24
 }
@@ -193,15 +173,9 @@ type RawMutex(val ptr: Pointer) {
 type Mutex(val raw: RawMutex = RawMutex.create()) {
     fun withLock<T>(action: () -> T): T {
         this.raw.lock()
-        var result: T? = null
-        try {
-            result = action()
-        } catch (e: Throwable) {
-            this.raw.unlock()
-            throw e
-        }
+        val result = action()
         this.raw.unlock()
-        return result!!
+        return result
     }
 }
 
@@ -345,20 +319,13 @@ object Threads {
         return NativeThread.pthreadSelf()
     }
 
-    fun stackAttr(): Pointer {
-        val attr = Standard.gcMalloc(ThreadConstants.PTHREAD_ATTR_SIZE)
-        NativeThread.pthreadAttrInit(attr)
-        NativeThread.pthreadAttrSetstacksize(attr, ThreadConstants.WORKER_STACK_SIZE)
-        return attr
-    }
-
     fun spawn(block: () -> Void): Thread {
         val buf = Standard.gcMalloc(ThreadConstants.THREAD_TASK_SIZE)
         val task = buf as ThreadTask
         task.action = block
         val threadBuf = Standard.gcMalloc(ThreadConstants.PTHREAD_HANDLE_SIZE)
         val routine = funPointer { arg: Pointer -> threadTrampoline(arg) }
-        NativeThread.pthreadCreate(threadBuf, Threads.stackAttr(), routine, buf)
+        NativeThread.pthreadCreate(threadBuf, null, routine, buf)
         val handle = Standard.loadInt64(threadBuf) as Pointer
         return Thread(handle)
     }

@@ -15,7 +15,7 @@ fun pickEintrPort(): Int {
     var p = 19750
     while (p < 19760) {
         val probe = TCPServer()
-        if (probe.tryBind(p)) {
+        if (probe.bind(p)) {
             probe.close()
             return p
         }
@@ -73,7 +73,7 @@ test "socket read survives gc pressure" {
     val port = pickEintrPort()
     assert(port > 0, "no free port")
     val server = TCPServer()
-    server.bind(port)
+    assert(server.bind(port))
     val w = task {
         delayedWriter(port)
     }

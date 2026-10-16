@@ -523,11 +523,6 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMAddFunction(mod, "GC_init", void_fn_type);
         _ = llvm.LLVMAddFunction(mod, "GC_allow_register_threads", void_fn_type);
         _ = llvm.LLVMAddFunction(mod, "eiwa_install_crash_handler", void_fn_type);
-        {
-            var roots_params = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
-            const roots_type = llvm.LLVMFunctionType(void_type, &roots_params, 2, 0);
-            _ = llvm.LLVMAddFunction(mod, "GC_add_roots", roots_type);
-        }
 
         // Global constructors run before main, covering every entry shape
         // (plain main, eiwa_test_main) without touching each one.
@@ -1737,8 +1732,7 @@ pub const LLVMEmitter = struct {
                         std.mem.eql(u8, fn_name_s, "GC_allow_register_threads") or
                         std.mem.eql(u8, fn_name_s, "GC_get_stack_base") or
                         std.mem.eql(u8, fn_name_s, "GC_register_my_thread") or
-                        std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread") or
-                        std.mem.eql(u8, fn_name_s, "GC_add_roots")
+                        std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread")
                     )) or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
                     std.mem.eql(u8, fn_name_s, "_setjmp") or
@@ -1957,37 +1951,6 @@ pub const LLVMEmitter = struct {
         if (llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads")) |gc_allow| {
             const gca_type = llvm.LLVMGlobalGetValueType(gc_allow);
             _ = llvm.LLVMBuildCall2(self.builder, gca_type, gc_allow, null, 0, "");
-        }
-
-        if (llvm.LLVMGetNamedFunction(mod, "GC_add_roots")) |gc_roots| {
-            const i8_type = llvm.LLVMInt8TypeInContext(self.context);
-            const roots_type = llvm.LLVMGlobalGetValueType(gc_roots);
-            for (modules.items) |m| {
-                if (m.data != .program) continue;
-                for (m.data.program.statements) |stmt| {
-                    if (stmt.data != .object_decl) continue;
-                    const obj = stmt.data.object_decl;
-                    if (!self.matchesTarget(obj.platform_targets)) continue;
-                    const obj_c_name = obj.resolved_c_name orelse (obj.name orelse "Object");
-                    for (obj.members) |member| {
-                        if (member.data != .var_decl) continue;
-                        const v = member.data.var_decl;
-                        const var_name = if (v.resolved_c_name) |rcn| rcn else std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ obj_c_name, v.name }) catch continue;
-                        defer if (v.resolved_c_name == null) self.allocator.free(var_name);
-                        const var_name_z = self.allocator.dupeZ(u8, var_name) catch continue;
-                        defer self.allocator.free(var_name_z);
-                        const global_var = llvm.LLVMGetNamedGlobal(mod, var_name_z.ptr) orelse continue;
-                        if (llvm.LLVMIsDeclaration(global_var) != 0) continue;
-                        const g_type = llvm.LLVMGlobalGetValueType(global_var);
-                        const base_ptr = llvm.LLVMBuildBitCast(self.builder, global_var, ptr_type, "root_base");
-                        const size_val = llvm.LLVMSizeOf(g_type);
-                        var end_idx = [_]llvm.LLVMValueRef{size_val};
-                        const end_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, base_ptr, &end_idx, 1, "root_end");
-                        var rargs = [_]llvm.LLVMValueRef{ base_ptr, end_ptr };
-                        _ = llvm.LLVMBuildCall2(self.builder, roots_type, gc_roots, &rargs, 2, "");
-                    }
-                }
-            }
         }
 
         const argc_val = llvm.LLVMGetParam(shim, 0);
@@ -5308,13 +5271,27 @@ pub const LLVMEmitter = struct {
         }
     }
 
-    /// Registers JIT globals as Boehm GC roots. MCJIT memory isn't scanned by
-    /// default, so live singletons reachable only from globals could be
-    /// collected. Globals merge into runs (gap < 1MB with all pages
-    /// resident: mincore on POSIX, VirtualQuery on Windows); doubt splits
-    /// the run. Uses LLVMGetGlobalValueAddress — LLVMGetPointerToGlobal
-    /// segfaults on Windows (libLLVM-23, MCJIT). Runs after engine
-    /// creation, before main.
+    /// Registers JIT'd module globals as Boehm GC root segments.
+    /// JIT globals live in MCJIT-mmap'd memory, which the
+    /// collector does NOT scan by default — unlike a native binary's
+    /// .data/.bss. Without this, objects only reachable from globals
+    /// (object/enum singletons, eiwa_exception_stack, eiwa_active_exception)
+    /// could be collected while still alive. Must run after engine creation
+    /// (so global addresses are materialized) and before main runs.
+    ///
+    /// Globals are coalesced into address runs and each run is registered
+    /// with a single GC_add_roots call. Registering every global
+    /// separately exhausts Boehm's root-set table ("Too many root sets",
+    /// 2048 entries by default) on modules with thousands of globals
+    /// (type descriptors, enum values, vtables). A run absorbs the next
+    /// global while the gap is under a megabyte AND every page in between
+    /// probes resident via mincore. Merging is safe: resident pages are
+    /// mapped, and JIT mappings are never unmapped (the execution engine
+    /// is intentionally never disposed, see executeJIT below), so a page
+    /// resident now is still mapped when the collector scans it. Doubt
+    /// splits the run instead (more sets, always correct), so the worst
+    /// case degrades to one set per global, never a crash. Windows keeps
+    /// per-global registration (no mincore in msvcrt).
     fn registerJITGlobalsAsRoots(engine: llvm.LLVMExecutionEngineRef, mod: llvm.LLVMModuleRef) void {
         const tm = llvm.LLVMGetExecutionEngineTargetMachine(engine);
         const td = llvm.LLVMCreateTargetDataLayout(tm);
@@ -5326,18 +5303,10 @@ pub const LLVMEmitter = struct {
         var glob_it = llvm.LLVMGetFirstGlobal(mod);
         while (glob_it) |glob| : (glob_it = llvm.LLVMGetNextGlobal(glob)) {
             if (llvm.LLVMIsDeclaration(glob) != 0) continue;
-            if (llvm.LLVMIsThreadLocal(glob) != 0) continue;
-            var name_len: usize = 0;
-            const name_ptr = llvm.LLVMGetValueName2(glob, &name_len);
-            if (name_ptr == null or name_len == 0) continue;
-            const name_slice: []const u8 = name_ptr[0..name_len];
-            const name_z = std.heap.page_allocator.dupeZ(u8, name_slice) catch continue;
-            const addr_int = llvm.LLVMGetGlobalValueAddress(engine, name_z.ptr);
-            std.heap.page_allocator.free(name_z);
-            if (addr_int == 0) continue;
+            const addr = llvm.LLVMGetPointerToGlobal(engine, glob) orelse continue;
             const size = llvm.LLVMABISizeOfType(td, llvm.LLVMGlobalGetValueType(glob));
             if (size == 0) continue;
-            const base: usize = @intCast(addr_int);
+            const base: usize = @intFromPtr(addr);
             spans.append(.{ .base = base, .end = base + @as(usize, @intCast(size)) }) catch continue;
         }
         if (spans.items.len == 0) return;
@@ -5346,10 +5315,11 @@ pub const LLVMEmitter = struct {
                 return a.base < b.base;
             }
         }.lessThan);
+        const probe_pages = builtin.os.tag != .windows;
         var run_base = spans.items[0].base;
         var run_end = spans.items[0].end;
         for (spans.items[1..]) |sp| {
-            if (absorbSpan(run_end, sp.base, sp.end)) {
+            if (probe_pages and absorbSpan(run_end, sp.base, sp.end)) {
                 if (sp.end > run_end) run_end = sp.end;
             } else {
                 gc.GC_add_roots(@ptrFromInt(run_base), @ptrFromInt(run_end));
@@ -5368,7 +5338,6 @@ pub const LLVMEmitter = struct {
     }
 
     fn gapResident(from: usize, to: usize) bool {
-        if (builtin.os.tag == .windows) return gapResidentWindows(from, to);
         const page_size = hostPageSize();
         if (page_size == 0) return false;
         const aligned = from - (from % page_size);
@@ -5383,65 +5352,8 @@ pub const LLVMEmitter = struct {
         return true;
     }
 
-    const WindowsMemoryBasicInfo = extern struct {
-        BaseAddress: ?*anyopaque,
-        AllocationBase: ?*anyopaque,
-        AllocationProtect: u32,
-        RegionSize: usize,
-        State: u32,
-        Protect: u32,
-        Type: u32,
-    };
-
-    extern "kernel32" fn VirtualQuery(lpAddress: ?*const anyopaque, lpBuffer: *WindowsMemoryBasicInfo, dwLength: usize) usize;
-
-    fn gapResidentWindows(from: usize, to: usize) bool {
-        const MEM_COMMIT: u32 = 0x1000;
-        const page_size = hostPageSizeWindows();
-        if (page_size == 0) return false;
-        const aligned = from - (from % page_size);
-        var cur = aligned;
-        var steps: usize = 0;
-        while (cur < to) : (steps += 1) {
-            if (steps >= 256) return false;
-            var info: WindowsMemoryBasicInfo = undefined;
-            const got = VirtualQuery(@ptrFromInt(cur), &info, @sizeOf(WindowsMemoryBasicInfo));
-            if (got == 0) return false;
-            if (info.State != MEM_COMMIT) return false;
-            if (info.RegionSize == 0) return false;
-            const region_base: usize = @intFromPtr(info.BaseAddress orelse return false);
-            const next = region_base + info.RegionSize;
-            if (next <= cur) return false;
-            cur = next;
-        }
-        return true;
-    }
-
     extern "c" fn mincore(addr: *const anyopaque, length: usize, vec: [*c]u8) c_int;
     extern "c" fn getpagesize() c_int;
-
-    fn hostPageSizeWindows() usize {
-        var info: WindowsSystemInfo = undefined;
-        GetSystemInfo(&info);
-        if (info.dwPageSize == 0) return 0;
-        return @intCast(info.dwPageSize);
-    }
-
-    const WindowsSystemInfo = extern struct {
-        wProcessorArchitecture: u16,
-        wReserved: u16,
-        dwPageSize: u32,
-        lpMinimumApplicationAddress: ?*anyopaque,
-        lpMaximumApplicationAddress: ?*anyopaque,
-        dwActiveProcessorMask: usize,
-        dwNumberOfProcessors: u32,
-        dwProcessorType: u32,
-        dwAllocationGranularity: u32,
-        wProcessorLevel: u16,
-        wProcessorRevision: u16,
-    };
-
-    extern "kernel32" fn GetSystemInfo(lpSystemInfo: *WindowsSystemInfo) void;
 
     fn hostPageSize() usize {
         const ps = getpagesize();
@@ -5507,7 +5419,6 @@ pub const LLVMEmitter = struct {
                 .{ .name = "GC_get_stack_base", .ptr = @ptrCast(&gc.GC_get_stack_base) },
                 .{ .name = "GC_register_my_thread", .ptr = @ptrCast(&gc.GC_register_my_thread) },
                 .{ .name = "GC_unregister_my_thread", .ptr = @ptrCast(&gc.GC_unregister_my_thread) },
-                .{ .name = "GC_add_roots", .ptr = @ptrCast(&gc.GC_add_roots) },
             };
             for (gc_syms) |sym| {
                 if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
@@ -5530,12 +5441,14 @@ pub const LLVMEmitter = struct {
             }
         }
 
-        // Entry shim `main(argc, argv)`. GetFunctionAddress finalizes MCJIT;
-        // no PointerToGlobal fallback (segfaults on Windows, see above).
+        // The entry is always the shim `main(i32 argc, ptr argv)` (emitted by
+        // emitEntryShim), which stores argv and forwards to the program main.
         const main_func = llvm.LLVMGetNamedFunction(mod, "main") orelse return error.MainNotFound;
         const fn_addr = llvm.LLVMGetFunctionAddress(engine, "main");
-        if (fn_addr == 0) return error.MainJITCompilationFailed;
-        const main_fn_ptr: *anyopaque = @ptrFromInt(fn_addr);
+        const main_fn_ptr: *anyopaque = if (fn_addr != 0)
+            @ptrFromInt(fn_addr)
+        else
+            (llvm.LLVMGetPointerToGlobal(engine, main_func) orelse return error.MainJITCompilationFailed);
         const main_type = llvm.LLVMGlobalGetValueType(main_func);
         const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type));
 

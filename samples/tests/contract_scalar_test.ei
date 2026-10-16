@@ -62,28 +62,10 @@ test "scalar as contract: double equality on fat operands" {
     assert((b == 2.6) == false, "fat double mismatch is false")
     assert((b != 2.6) == true, "fat double neq mismatch")
     assert((b != 2.5) == false, "fat double neq same is false")
-    assert((2.5 == b) == true, "mirrored order")
-    assert((2.6 != b) == true, "mirrored neq")
 }
 
 test "scalar as contract: int-typed fat vs double literal is false" {
     val b: Equatable = 5
     assert((b == 2.5) == false, "int bits as double never equal 2.5")
     assert((b != 2.5) == true, "neq mirrors eq")
-}
-
-type CSEqGo(val url: String)
-
-test "scalar as contract: cell vs raw equality" {
-  val a: Equatable = 5
-  val b: Equatable = 5
-  val c: Equatable = 6
-  assert((a == b) == true)
-  assert((a == c) == false)
-  assert((a != c) == true)
-}
-
-test "scalar as contract: is custom on raw scalar is false" {
-  val e: Equatable = 5
-  assert((e is CSEqGo) == false)
 }

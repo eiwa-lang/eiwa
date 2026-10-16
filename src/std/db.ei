@@ -7,7 +7,6 @@
 import { List, MutableList } from "std.collections"
 import { Coroutine } from "std.coroutines"
 import { Log } from "std.log"
-import { Mutex, sync } from "std.thread"
 
 contract Row {
     fun int(name: String): Int
@@ -83,48 +82,24 @@ type ConnectionPool<C>(
     val idle: MutableList<C> = MutableList<C>(),
     var idleCount: Int = 0,
     var activeCount: Int = 0,
-    var closed: Bool = false,
-    val lock: Mutex = Mutex()
+    var closed: Bool = false
 ): Connection, Closeable {
 
-    // All counter/list transitions run inside sync(lock); factory() IO and
-    // Coroutine.yield() stay outside it. The outer catch releases on
-    // throw: sync alone would keep a poisoned lock forever, since a
-    // failed factory()/close() must not wedge the pool. Without the
-    // lock, two threads racing acquire() corrupt idleCount (negative
-    // index reads) and share one connection (protocol desync downstream).
     fun acquire(): C {
+        if (closed) {
+            throw DbError("Connection pool is closed")
+        }
         while (true) {
-            if (closed) {
-                throw DbError("Connection pool is closed")
+            if (idleCount > 0) {
+                idleCount = idleCount - 1
+                return idle.get(idleCount)
             }
-            var pooled: C? = null
-            var claimed = false
-            try {
-                sync(lock) {
-                    if (idleCount > 0) {
-                        idleCount = idleCount - 1
-                        pooled = idle.get(idleCount)
-                    } else if (activeCount < maxConnections) {
-                        activeCount = activeCount + 1
-                        claimed = true
-                    }
-                    true
-                }
-            } catch (e: Throwable) {
-                lock.raw.unlock()
-                throw e
-            }
-            if (pooled != null) {
-                return pooled!!
-            }
-            if (claimed) {
+            if (activeCount < maxConnections) {
+                activeCount = activeCount + 1
                 try {
                     return factory()
                 } catch (e: Throwable) {
-                    sync(lock) {
-                        activeCount = activeCount - 1
-                    }
+                    activeCount = activeCount - 1
                     throw e
                 }
             }
@@ -134,26 +109,18 @@ type ConnectionPool<C>(
     }
 
     fun release(conn: C) {
-        try {
-            sync(lock) {
-                if (closed) {
-                    if (conn is Closeable) {
-                        conn.close()
-                    }
-                } else {
-                    if (idleCount < idle.size()) {
-                        idle.set(idleCount, conn)
-                    } else {
-                        idle.add(conn)
-                    }
-                    idleCount = idleCount + 1
-                }
-                true
+        if (closed) {
+            if (conn is Closeable) {
+                conn.close()
             }
-        } catch (e: Throwable) {
-            lock.raw.unlock()
-            throw e
+            return
         }
+        if (idleCount < idle.size()) {
+            idle.set(idleCount, conn)
+        } else {
+            idle.add(conn)
+        }
+        idleCount = idleCount + 1
     }
 
     implement fun query(sql: String, params: List<String> = []): Result {
@@ -207,26 +174,19 @@ type ConnectionPool<C>(
     }
 
     implement fun close() {
-        try {
-            sync(lock) {
-                if (closed == false) {
-                    closed = true
-                    var i = 0
-                    while (i < idleCount) {
-                        val c = idle.get(i)
-                        if (c is Closeable) {
-                            c.close()
-                        }
-                        i = i + 1
-                    }
-                    idleCount = 0
-                    activeCount = 0
-                }
-                true
-            }
-        } catch (e: Throwable) {
-            lock.raw.unlock()
-            throw e
+        if (closed) {
+            return
         }
+        closed = true
+        var i = 0
+        while (i < idleCount) {
+            val conn = idle.get(i)
+            if (conn is Closeable) {
+                conn.close()
+            }
+            i = i + 1
+        }
+        idleCount = 0
+        activeCount = 0
     }
 }

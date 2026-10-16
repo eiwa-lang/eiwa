@@ -1888,21 +1888,12 @@ Semântica alvo:
 - [x] **Task 97.3:** Negativas: escalar em união **declarada** segue erro loud (verificado); `.equals` com membro `Double` é erro loud em runtime (`==` em Double fat quebra verificação LLVM em geral, pré-existente); `null`/zero sem colisão.
 - [x] **Follow-up (ICE pré-existente, achado na 97.2 — DONE):** `==` com operando `Double` em fat-pointer quebrava a verificação LLVM (`icmp eq ptr, double`), inclusive sem união (`e == 2.5` com `e: Equatable`). Fix: `unboxDoubleOperand` agora cobre os três casos — célula de união registrada (load null-safe), escalar nulável (load da célula) e demais ponteiros (bits value-in-pointer via `PtrToInt`+bitcast, null-safe por construção) — com `FCmp` quando ambos viram double, espelho do caminho inteiro. Cobertura em `contract_scalar_test.ei` (`double equality on fat operands`, `int-typed fat vs double literal`) + RED de união (`double equality`, `equality across members`).
 - [x] **Task 95.8.1 (DONE):** operador `==`/`!=` união×união compara payload, não endereço de célula. `emitUnionEquals` (`expression.zig`): fast path data-idêntico (cobre `null == null` + reflexivo), mismatch de descritor → falso, senão cadeia por membro (escalares via load null-safe + `ICmp`/`FCmp`, `String` via `eiwa_string_equals`, `Custom` via `_equals` com fallback identidade). Cobertura: `union_anonymous_test.ei` (+3: payload, custom-equals, double/string), `union_test.ei` (+1: declarada).
-- [x] **Task 95.8.2 (DONE):** `.equals` sintetizado de membro escalar com `other` vindo de união. Normalização por descritor no `==`: lado fat cuja word-identidade é o descritor do membro escalar tem a célula carregada (loads só em célula provada, com diamonds+phi — a tentativa branchless com dummy lia doubles crus e regrediu, revertida). Vale para escalar×contrato, contrato×contrato e união×contrato escalares; `union-extract` agora espera lados thin para não destruir descritores. Cobertura: `union_anonymous_test.ei` (+3: scalar-equals, double-equals, custom-equals+is-passthrough), `contract_scalar_test.ei` (+2: cell-vs-raw, is-custom-sem-crash).
-- [x] **Task 95.8.3 (DONE):** `.equals` de membro `Double` sem `throw` (usa a mesma regra; `gap2i` verde).
-- [x] **Bônus (mesma sessão):** `is` com alvo `Custom` aceita OR com descritor de membro (união-passthrough agora responde; cobre `.equals` custom via `other is M`) + `is` sobre escalar cru pequeno não faz mais fault (`is_heap` guard; provado `0x5`).
+- [ ] **Task 95.8.2 (follow-up):** `.equals` sintetizado de membro escalar com `other` vindo de união (`a.equals(b)` falso-falso, `Int` incluso) — o lado `other: Equatable` mistura célula com value-in-pointer sem discriminação estática; sniffing por vtable rejeitado (duas rotas de coerção, mesmo hack do `Stringable`-como-identidade). Caminho provável: comparação com guarda-`is` na síntese, mas `is` escalar sobre sujeito contrato hoje responde sempre falso (`expression.zig`, ramo `subj_is_fat`). Exige fase própria.
+- [ ] **Task 95.8.3 (follow-up):** `.equals` de membro `Double` segue `throw` loud até 95.8.2 fechar (un-throw tentado e revertido nesta sessão).
 - [ ] **Follow-up (ICE pré-existente, provado via stash):** `==` misto `Int?` × `Double` (`val d: Int? = 5; d == 2.5`) quebra a verificação (`icmp` com tipos distintos; antes `ptr × double`, agora `i64 × double` — mesma classe, só mudou a mensagem). O checker deixa passar; o emissor não promove int→double nesse caminho. Não tocado por este fix.
 - [x] **Verify:** REDs escalares 10/10 + suíte 846/846 + `zig build test` + smoke `eiwac build`.
 
 ### Bugfixes recentes (pós-Phase 81)
-- [x] **L8 — duplicate union descriptors at native link:** `{Int,Double,Bool,...}_descriptor`
-  globals were created per LLVM module with strong linkage, so split-mode
-  native builds failed with `ld: duplicate symbols` while JIT (single
-  module) stayed green. Fix: `linkonce_odr` on the descriptor global
-  (identical content everywhere; also keeps cross-module `is` address
-  checks consistent). Proven by the previously-failing native build
-  linking again. No sample-test RED possible (linker-level; JIT harness
-  cannot express multi-object split).
 - [x] **L7 — per-task exception-handler state:** shared stack + active
   globals corrupted concurrent tasks (SIGSEGV or `unhandled` in seconds).
   Fix: 3-word GC blocks per task with TLS "current"

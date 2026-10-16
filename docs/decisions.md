@@ -1333,38 +1333,3 @@ identidade, nominal vs estrutural, imediato vs heap), cada um com regra
 fail-loud própria — em vez de uma vtable emprestada fazendo três papéis.
 Plano em `docs/plan_phase96_anonymous_union.md`; cobertura em
 `samples/tests/union_anonymous_test.ei` (8 testes verdes).
-
-## ADR 74: Proveniência do fat fica na comparação, não na fronteira (trilema)
-**Status:** Decidido (Phases 95.8.1–95.8.3 GREEN); 95.8.4 rastreado, prioridade baixa
-**Data:** Outubro 2026
-
-**Contexto:**
-O fat `{data, word1}` carrega três procedências indistinguíveis no tipo
-estático: célula de união + descritor, escalar cru + vtable null, objeto +
-vtable. O `==` legado compara `word0` com `word0`: certo quando as
-procedências coincidem, silent-false quando misturam (célula×valor).
-
-**Trilema (as três saídas, só uma consistente com fat de 2 palavras):**
-1. **Normalizar na comparação** (o que foi feito): `word1 == *_descriptor`
-   prova célula → carrega (loads só em célula provada, com diamonds+phi);
-   senão, caminho legado intacto. Exato, mas taxa cada `==` e repara
-   sintoma, não causa.
-2. **Desempacotar na fronteira + manter `desc`**: o `==` não distingue
-   célula-com-desc de valor-com-desc — o load volta a ser chute (foi assim
-   que um fault em double cru nasceu e morreu nesta fase). Quebra a
-   exatidão de (1).
-3. **Desempacotar na fronteira + anular `word1`**: o `==` legado resolve
-   tudo, mas o `is`-OR morre e o `.equals` custom (que usa `other is M`)
-   volta a falso-falso. Troca um gap por outro.
-
-**Decisão:** manter (1) — células seguem em slots de contrato com
-descritor intacto, comparação normaliza por igualdade de endereço de
-global. A 4ª via (proveniência explícita: tag dedicada no fat) é invasiva
-de verdade (todos os sites de fat no emissor) e vira fase própria **só se**
-um bug real exigir — hoje nada no backlog (módulos, genéricos, corrotinas)
-depende disso.
-
-**Consequência:** 95.8.4 delimita o restante (operador `==` com variante
-`Custom` mista + `is`-`Custom` sobre double cru: método funciona, operador
-segue falso-false). Energia estrutural vai para resolução de módulos, o
-gargalo real.

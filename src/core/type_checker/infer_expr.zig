@@ -112,39 +112,6 @@ pub fn wrapUnionUpcast(self: *TypeChecker, node: *ASTNode, value: *ASTNode, unio
     return as_node;
 }
 
-fn recordBoxSite(decl_node: ?*ast.ASTNode, node: *ASTNode, allocator: std.mem.Allocator) !void {
-    const decl = decl_node orelse return;
-    switch (decl.data) {
-        .var_decl => |*vd| {
-            if (vd.boxed_sites == null) {
-                const list = try allocator.create(compat.ArrayList(*ast.ASTNode));
-                list.* = compat.ArrayList(*ast.ASTNode).init(allocator);
-                vd.boxed_sites = list;
-            }
-            try vd.boxed_sites.?.append(node);
-        },
-        else => {},
-    }
-}
-
-fn retroBoxSites(decl: *ast.ASTNode) void {
-    switch (decl.data) {
-        .var_decl => |*vd| {
-            const list = vd.boxed_sites orelse return;
-            for (list.items) |site| {
-                switch (site.data) {
-                    .assignment => |*asg| asg.is_boxed = true,
-                    .identifier => |*id| {
-                        if (!id.is_box_ref) id.is_boxed = true;
-                    },
-                    else => {},
-                }
-            }
-        },
-        else => {},
-    }
-}
-
 pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const a = &node.data.assignment;
     var assigned_type: *const EiwaType = undefined;
@@ -203,9 +170,6 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             assigned_type = try self.inferNode(a.value, scope);
         }
         a.is_boxed = vs.is_boxed;
-        if (vs.is_mut) {
-            try recordBoxSite(vs.decl_node, node, self.allocator);
-        }
 
         var cap_scope: ?*Scope = scope;
         var cap_crossed = false;
@@ -240,7 +204,6 @@ pub fn inferAssignment(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                                 a.is_boxed = true;
                                 if (v.decl_node) |decl| {
                                     decl.data.var_decl.is_boxed = true;
-                                    retroBoxSites(decl);
                                 }
                                 sym_ptr.* = sym;
                             }
@@ -524,9 +487,6 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             i.resolved_c_name = c_name;
         }
         i.is_boxed = vs.is_boxed;
-        if (vs.is_mut) {
-            try recordBoxSite(vs.decl_node, node, self.allocator);
-        }
         if (self.current_class_props) |props| {
             if (props.contains(i.name)) {
                 var curr: ?*Scope = scope;
@@ -599,7 +559,6 @@ pub fn inferIdentifier(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
                             i.is_boxed = true;
                             if (v.decl_node) |decl| {
                                 decl.data.var_decl.is_boxed = true;
-                                retroBoxSites(decl);
                             }
                             sym_ptr.* = sym;
                         }

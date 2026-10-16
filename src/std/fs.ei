@@ -1,5 +1,3 @@
-import { List, MutableList } from "std.collections"
-
 @Header("<stdio.h>")
 lib NativeFS {
     fun fopen(path: String, mode: String): Pointer
@@ -64,40 +62,4 @@ type File(val path: String) {
     fun delete(path: String) = File(path).delete()
 
     fun exists(path: String) = File(path).exists()
-}
-
-@Header("src/runtime/third_party/eiwa_dir/dir_helpers.h")
-@Source("src/runtime/third_party/eiwa_dir/dir_helpers.c")
-lib NativeDir {
-    @Alias("eiwa_opendir")
-    fun opendir(path: String): Pointer
-
-    @Alias("eiwa_readdir_name")
-    fun readdirName(dir: Pointer): Pointer
-
-    @Alias("eiwa_closedir")
-    fun closedir(dir: Pointer): Int
-}
-
-object Dir {
-
-    fun names(path: String): List<String> {
-        val out: MutableList<String> = MutableList<String>()
-        val dir = NativeDir.opendir(path)
-        if (dir == null) {
-            return out.freeze()
-        }
-        var more = true
-        while (more) {
-            val entry = NativeDir.readdirName(dir)
-            if (entry == null) {
-                more = false
-            } else {
-                val raw = String(entry)
-                out.add(raw.substring(0, raw.length))
-            }
-        }
-        NativeDir.closedir(dir)
-        return out.freeze()
-    }
 }
