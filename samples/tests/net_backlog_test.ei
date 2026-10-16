@@ -8,7 +8,7 @@ test "net: listen backlog absorbs a burst of pending connections" {
     val port = 19534
     val burst = 40
     val server = TCPServer()
-    assert(server.bind(port), "server should bind")
+    server.bind(port)
 
     var connected = 0
     var pending: MutableList<Socket> = MutableList<Socket>()

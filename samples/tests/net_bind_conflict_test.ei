@@ -1,0 +1,21 @@
+// Binding a port that another socket already listens on must fail loudly.
+// Silently returning false let a second server start, and POSIX SO_REUSEPORT
+// let two processes share one port without any error.
+import { assert } from "std.core"
+import { TCPServer } from "std.net"
+
+test "net: binding a port already in use throws" {
+    val port = 19536
+    val first = TCPServer()
+    first.bind(port)
+
+    val second = TCPServer()
+    var threw = false
+    try {
+        second.bind(port)
+    } catch (e: Throwable) {
+        threw = true
+    }
+    first.close()
+    assert(threw, "second bind on a port in use must throw")
+}

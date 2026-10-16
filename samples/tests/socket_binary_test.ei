@@ -14,7 +14,7 @@ fun pickPort(): Int {
     var p = 19884
     while (p < 19894) {
         val probe = TCPServer()
-        if (probe.bind(p)) {
+        if (probe.tryBind(p)) {
             probe.close()
             return p
         }
@@ -62,9 +62,7 @@ fun readNul(): String? {
         return null
     }
     val server = TCPServer()
-    if (server.bind(port) == false) {
-        return null
-    }
+    server.bind(port)
     val serving = task {
         serveNulOnce(server)
     }

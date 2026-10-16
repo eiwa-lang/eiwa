@@ -474,8 +474,8 @@ type ServerConnection(val sock: Socket) {
 }
 
 type Server(val tcpServer: TCPServer = TCPServer(-1)) {
-    fun bind(port: Int): Bool {
-        return this.tcpServer.bind(port)
+    fun bind(port: Int): Void {
+        this.tcpServer.bind(port)
     }
     
     fun accept(): ServerConnection? {

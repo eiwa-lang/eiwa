@@ -2,8 +2,7 @@ import { TCPServer, NativeNet } from "std.net"
 
 test "net: TCPServer bind and close" {
     val server = TCPServer()
-    val ok = server.bind(18092)
-    assert(ok)
+    server.bind(18092)
     assert(server.fd >= 0)
     server.close()
     assert(server.fd == -1)

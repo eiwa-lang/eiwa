@@ -12,7 +12,7 @@ fun pickPipePort(): Int {
     var p = 19760
     while (p < 19770) {
         val probe = TCPServer()
-        if (probe.bind(p)) {
+        if (probe.tryBind(p)) {
             probe.close()
             return p
         }
@@ -50,7 +50,7 @@ test "socket write after close survives" {
     val port = pickPipePort()
     assert(port > 0, "no free port")
     val server = TCPServer()
-    assert(server.bind(port))
+    server.bind(port)
     val closer = task {
         closerSide(server)
     }
