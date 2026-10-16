@@ -523,11 +523,6 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMAddFunction(mod, "GC_init", void_fn_type);
         _ = llvm.LLVMAddFunction(mod, "GC_allow_register_threads", void_fn_type);
         _ = llvm.LLVMAddFunction(mod, "eiwa_install_crash_handler", void_fn_type);
-        {
-            var roots_params = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
-            const roots_type = llvm.LLVMFunctionType(void_type, &roots_params, 2, 0);
-            _ = llvm.LLVMAddFunction(mod, "GC_add_roots", roots_type);
-        }
 
         // Global constructors run before main, covering every entry shape
         // (plain main, eiwa_test_main) without touching each one.
@@ -1737,8 +1732,7 @@ pub const LLVMEmitter = struct {
                         std.mem.eql(u8, fn_name_s, "GC_allow_register_threads") or
                         std.mem.eql(u8, fn_name_s, "GC_get_stack_base") or
                         std.mem.eql(u8, fn_name_s, "GC_register_my_thread") or
-                        std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread") or
-                        std.mem.eql(u8, fn_name_s, "GC_add_roots")
+                        std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread")
                     )) or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
                     std.mem.eql(u8, fn_name_s, "_setjmp") or
@@ -1957,37 +1951,6 @@ pub const LLVMEmitter = struct {
         if (llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads")) |gc_allow| {
             const gca_type = llvm.LLVMGlobalGetValueType(gc_allow);
             _ = llvm.LLVMBuildCall2(self.builder, gca_type, gc_allow, null, 0, "");
-        }
-
-        if (llvm.LLVMGetNamedFunction(mod, "GC_add_roots")) |gc_roots| {
-            const i8_type = llvm.LLVMInt8TypeInContext(self.context);
-            const roots_type = llvm.LLVMGlobalGetValueType(gc_roots);
-            for (modules.items) |m| {
-                if (m.data != .program) continue;
-                for (m.data.program.statements) |stmt| {
-                    if (stmt.data != .object_decl) continue;
-                    const obj = stmt.data.object_decl;
-                    if (!self.matchesTarget(obj.platform_targets)) continue;
-                    const obj_c_name = obj.resolved_c_name orelse (obj.name orelse "Object");
-                    for (obj.members) |member| {
-                        if (member.data != .var_decl) continue;
-                        const v = member.data.var_decl;
-                        const var_name = if (v.resolved_c_name) |rcn| rcn else std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ obj_c_name, v.name }) catch continue;
-                        defer if (v.resolved_c_name == null) self.allocator.free(var_name);
-                        const var_name_z = self.allocator.dupeZ(u8, var_name) catch continue;
-                        defer self.allocator.free(var_name_z);
-                        const global_var = llvm.LLVMGetNamedGlobal(mod, var_name_z.ptr) orelse continue;
-                        if (llvm.LLVMIsDeclaration(global_var) != 0) continue;
-                        const g_type = llvm.LLVMGlobalGetValueType(global_var);
-                        const base_ptr = llvm.LLVMBuildBitCast(self.builder, global_var, ptr_type, "root_base");
-                        const size_val = llvm.LLVMSizeOf(g_type);
-                        var end_idx = [_]llvm.LLVMValueRef{size_val};
-                        const end_ptr = llvm.LLVMBuildGEP2(self.builder, i8_type, base_ptr, &end_idx, 1, "root_end");
-                        var rargs = [_]llvm.LLVMValueRef{ base_ptr, end_ptr };
-                        _ = llvm.LLVMBuildCall2(self.builder, roots_type, gc_roots, &rargs, 2, "");
-                    }
-                }
-            }
         }
 
         const argc_val = llvm.LLVMGetParam(shim, 0);
@@ -5507,7 +5470,6 @@ pub const LLVMEmitter = struct {
                 .{ .name = "GC_get_stack_base", .ptr = @ptrCast(&gc.GC_get_stack_base) },
                 .{ .name = "GC_register_my_thread", .ptr = @ptrCast(&gc.GC_register_my_thread) },
                 .{ .name = "GC_unregister_my_thread", .ptr = @ptrCast(&gc.GC_unregister_my_thread) },
-                .{ .name = "GC_add_roots", .ptr = @ptrCast(&gc.GC_add_roots) },
             };
             for (gc_syms) |sym| {
                 if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
