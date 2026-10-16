@@ -1931,6 +1931,18 @@ pub const LLVMEmitter = struct {
         const str = llvm.LLVMBuildGlobalStringPtr(self.builder, msg_z.ptr, "jit_trace_msg");
         var args = [_]llvm.LLVMValueRef{str};
         _ = llvm.LLVMBuildCall2(self.builder, puts_type, puts_fn, &args, 1, "");
+        // Flush stdout immediately: the marker must survive a segfault
+        // later in startup (a crashed process loses buffered stdout).
+        const fflush_fn = llvm.LLVMGetNamedFunction(mod, "fflush") orelse blk: {
+            const ptr_type = llvm.LLVMPointerTypeInContext(self.context, 0);
+            const i32_type = llvm.LLVMInt32TypeInContext(self.context);
+            var ps = [_]llvm.LLVMTypeRef{ptr_type};
+            break :blk llvm.LLVMAddFunction(mod, "fflush", llvm.LLVMFunctionType(i32_type, &ps, 1, 0));
+        };
+        const fflush_type = llvm.LLVMGlobalGetValueType(fflush_fn);
+        const ptr_type_rt = llvm.LLVMPointerTypeInContext(self.context, 0);
+        var flush_args = [_]llvm.LLVMValueRef{llvm.LLVMConstNull(ptr_type_rt)};
+        _ = llvm.LLVMBuildCall2(self.builder, fflush_type, fflush_fn, &flush_args, 1, "");
     }
 
     /// and forwards to the program entry: `eiwa_test_main` in test mode, or
@@ -5587,6 +5599,21 @@ pub const LLVMEmitter = struct {
         const fn_addr = llvm.LLVMGetFunctionAddress(engine, "main");
         if (fn_addr == 0) return error.MainJITCompilationFailed;
         if (jit_debug) std.debug.print("[jit] main resolved\n", .{});
+        if (jit_debug) {
+            // Probe MCJIT symbol resolution: mapped functions must match
+            // their host addresses; host libc (puts/printf/...) resolves
+            // only if the Windows resolver sees it. A 0 here means every
+            // JIT call to that symbol segfaults at 0x0.
+            const probe_names = [_][]const u8{ "main", "GC_init", "GC_malloc", "setjmp", "eiwa_install_crash_handler", "puts", "printf", "fflush", "exit", "strlen" };
+            for (probe_names) |pname| {
+                const pz = self.allocator.dupeZ(u8, pname) catch continue;
+                defer self.allocator.free(pz);
+                const pa = llvm.LLVMGetFunctionAddress(engine, pz.ptr);
+                std.debug.print("[jit] resolve {s} = 0x{x}\n", .{ pname, pa });
+            }
+            std.debug.print("[jit] host GC_init = 0x{x}\n", .{@intFromPtr(&gc.GC_init)});
+            std.debug.print("[jit] main fn_addr = 0x{x}\n", .{fn_addr});
+        }
         const main_fn_ptr: *anyopaque = @ptrFromInt(fn_addr);
         const main_type = llvm.LLVMGlobalGetValueType(main_func);
         const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type));
