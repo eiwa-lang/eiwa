@@ -24,12 +24,18 @@ static void ensure_winsock_initialized(void) {
     }
 }
 
+#ifndef SO_EXCLUSIVEADDRUSE
+#define SO_EXCLUSIVEADDRUSE ((int)(~SO_REUSEADDR))
+#endif
+
 int64_t eiwa_tcp_bind(int64_t port) {
     ensure_winsock_initialized();
     SOCKET fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd == INVALID_SOCKET) return -1;
     char opt = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    /* Windows SO_REUSEADDR lets a second socket bind a port already in use;
+       SO_EXCLUSIVEADDRUSE makes that bind fail, matching POSIX. */
+    setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &opt, sizeof(opt));
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));

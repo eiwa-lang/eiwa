@@ -4537,6 +4537,17 @@ pub const LLVMEmitter = struct {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         try self.collectUsedLibAnnotations();
 
+        var desc_it = llvm.LLVMGetFirstGlobal(mod);
+        while (desc_it) |dg| : (desc_it = llvm.LLVMGetNextGlobal(dg)) {
+            if (llvm.LLVMIsDeclaration(dg) != 0) continue;
+            var dlen: usize = 0;
+            const dptr = llvm.LLVMGetValueName2(dg, &dlen);
+            if (dptr == null or dlen == 0) continue;
+            if (expression.union_descriptor_names.contains(dptr[0..dlen])) {
+                llvm.LLVMSetLinkage(dg, llvm.LLVMLinkOnceODRLinkage);
+            }
+        }
+
         const is_host = if (self.target_info) |ti| ti.is_host else true;
         const default_triple_c = if (self.target_info == null) llvm.LLVMGetDefaultTargetTriple() else null;
         defer if (default_triple_c) |dt| llvm.LLVMDisposeMessage(dt);
