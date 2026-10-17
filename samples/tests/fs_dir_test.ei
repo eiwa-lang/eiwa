@@ -19,12 +19,15 @@ test "fs: dir names missing dir is empty" {
 
 test "fs: dir mkdir creates single level" {
     val probe = "samples/tests/tmp_mkdir_probe"
+    if (Dir.exists(probe)) {
+        Dir.delete(probe)
+    }
     if (File.exists(probe)) {
         File.delete(probe)
     }
     assert(Dir.mkdir(probe), "created")
-    assert(File.exists(probe), "exists-after-mkdir")
+    assert(Dir.exists(probe), "exists-after-mkdir")
     assert(Dir.mkdir(probe) == false, "existing-is-false")
-    assert(File.delete(probe), "cleanup")
-    assert(File.exists(probe) == false, "gone-after-cleanup")
+    assert(Dir.delete(probe), "cleanup")
+    assert(Dir.exists(probe) == false, "gone-after-cleanup")
 }

@@ -80,6 +80,12 @@ lib NativeDir {
 
     @Alias("eiwa_mkdir")
     fun mkdir(path: String): Int
+
+    @Alias("eiwa_is_dir")
+    fun isDir(path: String): Int
+
+    @Alias("eiwa_rmdir")
+    fun rmdir(path: String): Int
 }
 
 object Dir {
@@ -106,5 +112,13 @@ object Dir {
 
     fun mkdir(path: String): Bool {
         return NativeDir.mkdir(path) == 0
+    }
+
+    fun exists(path: String): Bool {
+        return NativeDir.isDir(path) == 1
+    }
+
+    fun delete(path: String): Bool {
+        return NativeDir.rmdir(path) == 0
     }
 }
