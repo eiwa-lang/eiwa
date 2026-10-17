@@ -5809,6 +5809,8 @@ pub fn concreteCNameForVtable(rt: *const ts.EiwaType) ?[]const u8 {
 /// Per-type identity global `{Canonical}_descriptor`. Lookup-or-create; the
 /// address is the identity compared by `is`/`when`. `core_String` spellings
 /// normalize to `String` so both sides of a member share one global.
+pub var union_descriptor_names = std.StringHashMap(void).init(std.heap.page_allocator);
+
 pub fn unionDescriptor(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -5826,6 +5828,9 @@ pub fn unionDescriptor(
     const g = llvm.LLVMAddGlobal(mod, desc_type, name_z.ptr);
     llvm.LLVMSetInitializer(g, desc_const);
     llvm.LLVMSetGlobalConstant(g, 1);
+    if (!union_descriptor_names.contains(name_z)) {
+        try union_descriptor_names.put(try std.heap.page_allocator.dupe(u8, name_z), {});
+    }
     return g;
 }
 
