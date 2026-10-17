@@ -17,7 +17,7 @@ test "net: listen backlog absorbs a burst of pending connections" {
         val c = SocketClient.connect("127.0.0.1", port)
         if (c != null) {
             connected = connected + 1
-            pending.add(c!!)
+            pending.add(c)
         }
         i = i + 1
     }
