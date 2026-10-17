@@ -72,12 +72,25 @@ int eiwa_mkdir(const char* path) {
     return _mkdir(path);
 }
 
+int eiwa_is_dir(const char* path) {
+    if (!path) return 0;
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) return 0;
+    return (attrs & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+}
+
+int eiwa_rmdir(const char* path) {
+    if (!path) return -1;
+    return _rmdir(path);
+}
+
 #else
 
 #include <dirent.h>
 #include <stddef.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 void* eiwa_opendir(const char* path) {
     return (void*)opendir(path);
@@ -106,6 +119,18 @@ int eiwa_closedir(void* dir) {
 int eiwa_mkdir(const char* path) {
     if (!path) return -1;
     return mkdir(path, 0755);
+}
+
+int eiwa_is_dir(const char* path) {
+    if (!path) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+int eiwa_rmdir(const char* path) {
+    if (!path) return -1;
+    return rmdir(path);
 }
 
 #endif
