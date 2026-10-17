@@ -5824,7 +5824,6 @@ pub fn unionDescriptor(
     const g = llvm.LLVMAddGlobal(mod, desc_type, name_z.ptr);
     llvm.LLVMSetInitializer(g, desc_const);
     llvm.LLVMSetGlobalConstant(g, 1);
-    llvm.LLVMSetLinkage(g, llvm.LLVMLinkOnceODRLinkage);
     return g;
 }
 

@@ -4500,6 +4500,21 @@ pub const LLVMEmitter = struct {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         try self.collectUsedLibAnnotations();
 
+        // Union descriptors are identical in every unit, so native objects
+        // mark them linkonce_odr to avoid duplicate symbols at link. Applied
+        // here (not at creation) because MCJIT on Windows cannot resolve
+        // linkonce_odr globals via LLVMGetPointerToGlobal.
+        var desc_it = llvm.LLVMGetFirstGlobal(mod);
+        while (desc_it) |dg| : (desc_it = llvm.LLVMGetNextGlobal(dg)) {
+            if (llvm.LLVMIsDeclaration(dg) != 0) continue;
+            var dlen: usize = 0;
+            const dptr = llvm.LLVMGetValueName2(dg, &dlen);
+            if (dptr == null or dlen == 0) continue;
+            if (std.mem.endsWith(u8, dptr[0..dlen], "_descriptor")) {
+                llvm.LLVMSetLinkage(dg, llvm.LLVMLinkOnceODRLinkage);
+            }
+        }
+
         const is_host = if (self.target_info) |ti| ti.is_host else true;
         const default_triple_c = if (self.target_info == null) llvm.LLVMGetDefaultTargetTriple() else null;
         defer if (default_triple_c) |dt| llvm.LLVMDisposeMessage(dt);
