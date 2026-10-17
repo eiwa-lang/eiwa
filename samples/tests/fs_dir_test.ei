@@ -3,7 +3,7 @@
 // Dir.names lists directory entries (no . / ..) and returns empty
 // for unreadable directories instead of throwing.
 import { assert } from "std.core"
-import { Dir } from "std.fs"
+import { Dir, File } from "std.fs"
 
 test "fs: dir names lists entries" {
     val names = Dir.names("samples/tests")
@@ -15,4 +15,16 @@ test "fs: dir names lists entries" {
 
 test "fs: dir names missing dir is empty" {
     assert(Dir.names("no-such-dir").size() == 0, "empty")
+}
+
+test "fs: dir mkdir creates single level" {
+    val probe = "samples/tests/tmp_mkdir_probe"
+    if (File.exists(probe)) {
+        File.delete(probe)
+    }
+    assert(Dir.mkdir(probe), "created")
+    assert(File.exists(probe), "exists-after-mkdir")
+    assert(Dir.mkdir(probe) == false, "existing-is-false")
+    assert(File.delete(probe), "cleanup")
+    assert(File.exists(probe) == false, "gone-after-cleanup")
 }
