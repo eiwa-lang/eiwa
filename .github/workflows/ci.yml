@@ -106,7 +106,7 @@ jobs:
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            ./bin/eiwac.exe test
+            EIWA_JIT_PROBE=1 ./bin/eiwac.exe test
           else
             ./bin/eiwac test
           fi

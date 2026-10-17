@@ -5535,6 +5535,14 @@ pub const LLVMEmitter = struct {
         const main_func = llvm.LLVMGetNamedFunction(mod, "main") orelse return error.MainNotFound;
         const fn_addr = llvm.LLVMGetFunctionAddress(engine, "main");
         if (fn_addr == 0) return error.MainJITCompilationFailed;
+        if (std.c.getenv("EIWA_JIT_PROBE") != null) {
+            const probe = [_][]const u8{ "pthread_mutex_init", "pthread_cond_init", "pthread_create", "pthread_self", "GetActiveProcessorCount", "puts" };
+            for (probe) |name| {
+                const z = try self.allocator.dupeZ(u8, name);
+                defer self.allocator.free(z);
+                std.debug.print("[probe] {s} jit=0x{x}\n", .{ name, llvm.LLVMGetFunctionAddress(engine, z.ptr) });
+            }
+        }
         const main_fn_ptr: *anyopaque = @ptrFromInt(fn_addr);
         const main_type = llvm.LLVMGlobalGetValueType(main_func);
         const ret_kind = llvm.LLVMGetTypeKind(llvm.LLVMGetReturnType(main_type));
