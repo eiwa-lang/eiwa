@@ -3,6 +3,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <direct.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,10 +67,17 @@ int eiwa_closedir(void* dir) {
     return 0;
 }
 
+int eiwa_mkdir(const char* path) {
+    if (!path) return -1;
+    return _mkdir(path);
+}
+
 #else
 
 #include <dirent.h>
 #include <stddef.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 void* eiwa_opendir(const char* path) {
     return (void*)opendir(path);
@@ -93,6 +101,11 @@ int eiwa_closedir(void* dir) {
     DIR* d = (DIR*)dir;
     if (!d) return -1;
     return closedir(d);
+}
+
+int eiwa_mkdir(const char* path) {
+    if (!path) return -1;
+    return mkdir(path, 0755);
 }
 
 #endif

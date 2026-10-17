@@ -4,5 +4,6 @@
 void* eiwa_opendir(const char* path);
 const char* eiwa_readdir_name(void* dir);
 int eiwa_closedir(void* dir);
+int eiwa_mkdir(const char* path);
 
 #endif // EIWA_DIR_HELPERS_H

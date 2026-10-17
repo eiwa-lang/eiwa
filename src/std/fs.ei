@@ -77,6 +77,9 @@ lib NativeDir {
 
     @Alias("eiwa_closedir")
     fun closedir(dir: Pointer): Int
+
+    @Alias("eiwa_mkdir")
+    fun mkdir(path: String): Int
 }
 
 object Dir {
@@ -99,5 +102,9 @@ object Dir {
         }
         NativeDir.closedir(dir)
         return out.freeze()
+    }
+
+    fun mkdir(path: String): Bool {
+        return NativeDir.mkdir(path) == 0
     }
 }
