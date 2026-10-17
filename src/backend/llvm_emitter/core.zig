@@ -5451,6 +5451,24 @@ pub const LLVMEmitter = struct {
 
     fn eiwa_noop_crash_install() callconv(.c) void {}
 
+    /// Resolves a host symbol on Windows via GetProcAddress over the system
+    /// DLLs. MCJIT cannot see UCRT imports of the host exe, so JIT calls to
+    /// libc land on null (segfault at 0x0). Returns null off Windows or when
+    /// the symbol is absent from those DLLs (e.g. pthread_*).
+    fn hostLibcAddress(name: [*:0]const u8) ?*const anyopaque {
+        if (builtin.os.tag != .windows) return null;
+        const kernel32 = struct {
+            extern "kernel32" fn GetModuleHandleA(lpModuleName: ?[*:0]const u8) ?*anyopaque;
+            extern "kernel32" fn GetProcAddress(hModule: ?*anyopaque, lpProcName: [*:0]const u8) ?*anyopaque;
+        };
+        const modules = [_]?[*:0]const u8{ null, "ucrtbase.dll", "msvcrt.dll", "kernel32.dll", "ws2_32.dll" };
+        for (modules) |m| {
+            const h = kernel32.GetModuleHandleA(m) orelse continue;
+            if (kernel32.GetProcAddress(h, name)) |p| return @ptrCast(p);
+        }
+        return null;
+    }
+
     pub fn executeJIT(self: *LLVMEmitter, io: std.Io) !i32 {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         if (has_gc) {
@@ -5526,6 +5544,31 @@ pub const LLVMEmitter = struct {
             for (sjlj_syms) |sym| {
                 if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
                     llvm.LLVMAddGlobalMapping(engine, f, @constCast(sym.ptr));
+                }
+            }
+        }
+
+        // Windows: map bodiless libc externs to host addresses (see
+        // hostLibcAddress). Runtime symbols already mapped above are skipped.
+        if (builtin.os.tag == .windows) {
+            var wfit = llvm.LLVMGetFirstFunction(mod);
+            while (wfit) |wf| : (wfit = llvm.LLVMGetNextFunction(wf)) {
+                if (llvm.LLVMCountBasicBlocks(wf) != 0) continue;
+                var wlen: usize = 0;
+                const wptr = llvm.LLVMGetValueName2(wf, &wlen);
+                if (wptr == null or wlen == 0) continue;
+                const wslice: []const u8 = wptr[0..wlen];
+                const skip_prefixes = [_][]const u8{ "GC_", "eiwa_install_crash_handler" };
+                var skip = std.mem.eql(u8, wslice, "setjmp") or std.mem.eql(u8, wslice, "_setjmp") or
+                    std.mem.eql(u8, wslice, "longjmp") or std.mem.eql(u8, wslice, "_longjmp");
+                for (skip_prefixes) |pre| {
+                    if (std.mem.startsWith(u8, wslice, pre)) skip = true;
+                }
+                if (skip) continue;
+                const wz = std.heap.page_allocator.dupeZ(u8, wslice) catch continue;
+                defer std.heap.page_allocator.free(wz);
+                if (hostLibcAddress(wz.ptr)) |addr| {
+                    llvm.LLVMAddGlobalMapping(engine, wf, @constCast(addr));
                 }
             }
         }
