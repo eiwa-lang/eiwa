@@ -1,0 +1,25 @@
+import { assert } from "std.core"
+import { MutableList } from "std.collections"
+
+test "collections: remove shrinks the list" {
+    val l = MutableList<String>()
+    l.add("a")
+    l.add("b")
+    l.add("c")
+    l.remove(1)
+    assert(l.size() == 2, "size-after-remove")
+    assert(l.get(0) == "a", "first-kept")
+    assert(l.get(1) == "c", "shifted")
+    l.remove(0)
+    l.remove(0)
+    assert(l.size() == 0, "empty-after-all")
+}
+
+test "collections: remove out of range is a no-op" {
+    val l = MutableList<Int>()
+    l.add(7)
+    l.remove(5)
+    l.remove(-1)
+    assert(l.size() == 1, "still-one")
+    assert(l.get(0) == 7, "value-kept")
+}
