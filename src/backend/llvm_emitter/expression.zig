@@ -3473,6 +3473,15 @@ fn emitExpressionRaw(
                         if (std.mem.eql(u8, g.name, "push") and call.arguments.len == 1) {
                             return try emitNativeArrayPush(ctx, mod, builder, scope, structs, libs, g.object, call.arguments[0]);
                         }
+                        if (std.mem.eql(u8, g.name, "truncate") and call.arguments.len == 1) {
+                            const arr_ptr = try emitExpression(ctx, mod, builder, scope, structs, libs, g.object);
+                            const n_val = try emitExpression(ctx, mod, builder, scope, structs, libs, call.arguments[0]);
+                            const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+                            var size_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+                            const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_ptr, &size_idx, 1, "arr_trunc_size_ptr");
+                            _ = llvm.LLVMBuildStore(builder, n_val, size_ptr);
+                            return n_val;
+                        }
                     }
                 }
             }

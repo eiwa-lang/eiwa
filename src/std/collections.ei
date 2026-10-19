@@ -236,12 +236,17 @@ type MutableList<T>(val list: List<T> = []): Slicable<T>, Indexed<T>, Searchable
     }
 
     fun remove(index: Int): Void {
-        // Shifting elements left
+        val n = this.list.items.length
+        if (index < 0 || index >= n) {
+            return
+        }
+        // Shifting elements left, then shrinking the buffer size.
         var i = index
-        while (i < this.list.items.length - 1) {
+        while (i < n - 1) {
             this.list.items[i] = this.list.items[i + 1]
             i = i + 1
         }
+        this.list.items.truncate(n - 1)
     }
 
     implement fun size(): Int {
