@@ -11,7 +11,7 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
 > **Phase 88 — Renomear `break` → `leave`** (hard break da keyword, sem alias; decisão em ADR 69) — **concluída** (2026-09-17).
 > **Fase atual (2026-09):** follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9, 91.4). **Phase 89** (string multilinha) — **concluída**. **Phase 91** (smartcast de nullable em `if`/ternário/`when`) — **concluída**. **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
-> **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
+> **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**. **Phase 98** (allocas em loops + sigaltstack por thread) — **concluída** (2026-10-20).
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
 
@@ -1929,6 +1929,57 @@ Semântica alvo:
 ---
 
 * [x] **Errors:** Semantic validations fail gracefully, emitting rich terminal errors.
+
+---
+
+### Phase 98: Servidores de vida longa — allocas em loops + crash handler (COMPLETED, 2026-10-20)
+
+> **Sintoma:** serviços Eiwa de vida longa (`agena`, `eiwa-home`, `sexpot-webclient`)
+> morriam a cada ~2,5 h com `exit 139` (SIGSEGV) **sem nenhuma mensagem** — sem
+> relatório de crash, sem stack trace, sem entrada no ring do kernel.
+
+> **Causa raiz (1) — `alloca` emitido dentro de loops:** o emissor criava o alloca da
+> moldura de exceção (`exc_frame`), da variável do `catch`, das declarações locais, dos
+> slots de `for` (`for_i`, índice, item, buffer do collect) e dos resultados de
+> expressões `if`/`when`/`try` **no bloco corrente**. Um `alloca` em bloco não-entry
+> aloca um slot novo a cada execução; em funções que contêm `setjmp` (qualquer `try`) o
+> LLVM não promove esses slots para registradores (`returns_twice`), então o loop
+> vazava ~230 B por iteração (medido: 54 kB/min no `agena`, 8 MiB em ~150 min) até
+> estourar a stack da thread principal.
+>
+> **Correção:** helper `allocInEntryBlock()` em `statement.zig` (builder temporário
+> posicionado antes da primeira instrução do bloco de entrada da função) aplicado a
+> todos os allocas por-iteração de `statement.zig` e `expression.zig`. Um slot por
+> invocação da função, endereço estável, sem mudança de semântica (capturas de lambda
+> copiam o valor; `for`/`when`/`if` escrevem antes de ler).
+
+> **Causa raiz (2) — `SA_ONSTACK` sem `sigaltstack`:** `eiwa_install_crash_handler`
+> registrava o handler com `SA_ONSTACK` mas nunca instalava uma stack alternativa. Num
+> SIGSEGV por stack esgotada o handler rodava na própria stack estourada e refaultava,
+> matando o processo silenciosamente. **Correção:** `sigaltstack()` por thread
+> (`_Thread_local`, 64 KiB) em `eiwa_crash.c`, instalado também pelos trampolines de
+> `std.thread` e `std.coroutines` — agora o overflow imprime `runtime crash (SIGSEGV)`
+> com trace em vez de morrer calado.
+
+> **Validação:** `zig build test` + 916/916 `eiwac test` + 29/29 testes do app;
+> repros de 3M–20M iterações com `ulimit -s 1024` (antes morriam com exit 132/139);
+> app real com 6.000 requests + 5 min idle em stack de 1 MiB com uso estável
+> (binário antigo: 2.784 kB em 39 min idle).
+
+> **Follow-ups abertos:**
+> - [ ] **T1 — `Threads.spawn` vaza 16 MiB de VA por spawn:** `std.thread.Threads.spawn`
+>   cria a thread com `pthread_attr_setstacksize(16 MiB)` e a deixa *joinable* por
+>   padrão, devolvendo um `Thread` cujo handle é GC-managed. Se o chamador não guardar
+>   o handle e chamar `Thread.join()` (ex.: cron loop que spawna a cada iteração), a
+>   thread nunca é joined nem detached: stack + descritores ficam reservados até o
+>   processo morrer (`VmSize` cresce ~16 MiB por spawn; em serviço de vida longa chega
+>   a GBs de VA). Não é a causa do estouro de 8 MiB da main thread (Phase 98), mas é
+>   vazamento real. Fix proposto: `spawn` detached por padrão + `spawnJoinable()`
+>   explícito (ou `pthread_detach` num finalizer/`Thread.close()`), e revisar os 16 MiB
+>   (1–2 MiB bastam para os workloads atuais). **Cuidado:** `Thread.join()` é API
+>   pública e precisa continuar funcionando para quem guarda o handle.
+> - [ ] **T2 — `Threads.spawn` aloca `pthread_attr_t` via `gcMalloc` a cada spawn**
+>   (`Threads.stackAttr()`), sem `pthread_attr_destroy` — mesma família de T1.
 
 ---
 

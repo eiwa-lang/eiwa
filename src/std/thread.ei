@@ -4,6 +4,14 @@
 
 import { Standard } from "std.core"
 
+// Per-thread alternate signal stack: SA_ONSTACK needs a real sigaltstack, and
+// the stacks are per-thread. Without it a stack-overflow SIGSEGV kills the
+// worker silently (the handler would run on the exhausted stack).
+lib NativeCrash {
+    @Alias("eiwa_install_crash_handler")
+    fun installCrashHandler(): Void
+}
+
 @Header("<pthread.h>", "<unistd.h>")
 lib("posix") PosixThread {
     @Alias("pthread_create")
@@ -292,6 +300,7 @@ type ThreadTask(var action: () -> Void)
 
 fun threadTrampoline(arg: Pointer): Pointer {
     if (arg != null) {
+        NativeCrash.installCrashHandler()
         val sb = Standard.malloc(ThreadConstants.GC_STACK_BASE_SIZE)
         NativeGC.getStackBase(sb)
         NativeGC.registerMyThread(sb)

@@ -502,6 +502,31 @@ fn typeWantsKind(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, rt: *const e
     }
 }
 
+pub fn allocInEntryBlock(
+    ctx: llvm.LLVMContextRef,
+    builder: llvm.LLVMBuilderRef,
+    ty: llvm.LLVMTypeRef,
+    name: [*:0]const u8,
+) llvm.LLVMValueRef {
+    const cur_bb = llvm.LLVMGetInsertBlock(builder);
+    if (cur_bb == null) {
+        return llvm.LLVMBuildAlloca(builder, ty, name);
+    }
+    const func_val = llvm.LLVMGetBasicBlockParent(cur_bb);
+    if (func_val == null) {
+        return llvm.LLVMBuildAlloca(builder, ty, name);
+    }
+    const entry_bb = llvm.LLVMGetEntryBasicBlock(func_val);
+    const tmp = llvm.LLVMCreateBuilderInContext(ctx);
+    defer llvm.LLVMDisposeBuilder(tmp);
+    if (llvm.LLVMGetFirstInstruction(entry_bb)) |first| {
+        llvm.LLVMPositionBuilderBefore(tmp, first);
+    } else {
+        llvm.LLVMPositionBuilderAtEnd(tmp, entry_bb);
+    }
+    return llvm.LLVMBuildAlloca(tmp, ty, name);
+}
+
 /// Shared `setjmp`/`longjmp` exception frame for `try` (statement and value
 /// emitters). Pushes the frame, emits the `setjmp` dispatch and leaves the
 /// builder positioned at the `try` body block.
@@ -521,7 +546,7 @@ pub fn emitTryBegin(
     const i32_type = llvm.LLVMInt32TypeInContext(ctx);
     const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
 
-    const frame_ptr = llvm.LLVMBuildAlloca(builder, frame_type, "exc_frame");
+    const frame_ptr = allocInEntryBlock(ctx, builder, frame_type, "exc_frame");
     llvm.LLVMSetAlignment(frame_ptr, 16);
 
     const cur_stack = try excGet(ctx, mod, builder, "eiwa_exc_top_get");
@@ -670,7 +695,7 @@ pub fn emitTryCatches(
                 const v_z = try std.heap.page_allocator.dupeZ(u8, var_name);
                 defer std.heap.page_allocator.free(v_z);
 
-                const var_alloca = llvm.LLVMBuildAlloca(builder, fat_type, v_z.ptr);
+                const var_alloca = allocInEntryBlock(ctx, builder, fat_type, v_z.ptr);
                 _ = llvm.LLVMBuildStore(builder, exc_val, var_alloca);
                 try scope.put(var_name, var_alloca);
             }
@@ -741,7 +766,7 @@ pub fn emitStatement(
                 const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                 const name_z = try std.heap.page_allocator.dupeZ(u8, name);
                 defer std.heap.page_allocator.free(name_z);
-                const dummy = llvm.LLVMBuildAlloca(builder, ptr_type, name_z.ptr);
+                const dummy = allocInEntryBlock(ctx, builder, ptr_type, name_z.ptr);
                 _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ptr_type), dummy);
                 try scope.put(name, dummy);
                 if (!std.mem.eql(u8, name, v.name)) {
@@ -779,14 +804,14 @@ pub fn emitStatement(
                 }
 
                 // Stack alloca holds the box pointer
-                const alloca_ptr = llvm.LLVMBuildAlloca(builder, ptr_type, name_z.ptr);
+                const alloca_ptr = allocInEntryBlock(ctx, builder, ptr_type, name_z.ptr);
                 _ = llvm.LLVMBuildStore(builder, box_ptr, alloca_ptr);
                 try scope.put(name, alloca_ptr);
                 if (!std.mem.eql(u8, name, v.name)) {
                     try scope.put(v.name, alloca_ptr);
                 }
             } else {
-                const alloca_ptr = llvm.LLVMBuildAlloca(builder, llvm_type, name_z.ptr);
+                const alloca_ptr = allocInEntryBlock(ctx, builder, llvm_type, name_z.ptr);
                 try scope.put(name, alloca_ptr);
                 if (!std.mem.eql(u8, name, v.name)) {
                     try scope.put(v.name, alloca_ptr);
@@ -1147,7 +1172,7 @@ fn emitForLoop(
     const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &idx0, 1, "for_size_ptr");
     const size_val = llvm.LLVMBuildLoad2(builder, i64_type, size_ptr, "for_size");
 
-    const i_ptr = llvm.LLVMBuildAlloca(builder, i64_type, "for_i");
+    const i_ptr = allocInEntryBlock(ctx, builder, i64_type, "for_i");
     _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), i_ptr);
 
     const cond_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.cond");
@@ -1195,7 +1220,7 @@ fn emitForLoop(
     if (f.index_name) |idx_name| {
         const idx_name_z = try std.heap.page_allocator.dupeZ(u8, idx_name);
         defer std.heap.page_allocator.free(idx_name_z);
-        const idx_alloca = llvm.LLVMBuildAlloca(builder, i64_type, idx_name_z.ptr);
+        const idx_alloca = allocInEntryBlock(ctx, builder, i64_type, idx_name_z.ptr);
         _ = llvm.LLVMBuildStore(builder, i_body, idx_alloca);
         try loop_scope.put(idx_name, idx_alloca);
     }
@@ -1203,7 +1228,7 @@ fn emitForLoop(
     const item_type = llvm.LLVMTypeOf(item_val);
     const item_name_z = try std.heap.page_allocator.dupeZ(u8, f.item_name);
     defer std.heap.page_allocator.free(item_name_z);
-    const item_alloca = llvm.LLVMBuildAlloca(builder, item_type, item_name_z.ptr);
+    const item_alloca = allocInEntryBlock(ctx, builder, item_type, item_name_z.ptr);
     _ = llvm.LLVMBuildStore(builder, item_val, item_alloca);
     try loop_scope.put(f.item_name, item_alloca);
 
@@ -1309,7 +1334,7 @@ pub fn emitForCollect(
     var one_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
     const cap_ptr = llvm.LLVMBuildGEP2(builder, i64_type, buf_val, &one_idx, 1, "for_buf_cap");
     _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), cap_ptr);
-    const buf_addr = llvm.LLVMBuildAlloca(builder, ptr_type, "for_buf_addr");
+    const buf_addr = allocInEntryBlock(ctx, builder, ptr_type, "for_buf_addr");
     _ = llvm.LLVMBuildStore(builder, buf_val, buf_addr);
 
     const ci = ForCollect{

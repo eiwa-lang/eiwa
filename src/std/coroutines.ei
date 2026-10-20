@@ -9,6 +9,12 @@ import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, Nati
 import { AtomicBool } from "std.atomic"
 import { MutableList } from "std.collections"
 
+// Same per-thread alternate signal stack as std.thread's spawn trampoline.
+lib NativeCrash {
+    @Alias("eiwa_install_crash_handler")
+    fun installCrashHandler(): Void
+}
+
 // ============================================================================
 // System primitives via FFI (no neco). `nanosleep` for time, `poll` for I/O
 // readiness, `sched_yield` for cooperative yielding.
@@ -484,6 +490,7 @@ type WorkerTask(var dispatcher: Dispatcher)
 
 fun workerThreadTrampoline(arg: Pointer): Pointer {
     if (arg != null) {
+        NativeCrash.installCrashHandler()
         val sb = Standard.malloc(16)
         NativeGC.getStackBase(sb)
         NativeGC.registerMyThread(sb)
