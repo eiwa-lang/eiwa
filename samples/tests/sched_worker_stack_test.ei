@@ -1,4 +1,4 @@
-// Spawned threads (scheduler workers and Threads.spawn) must have a stack large
+// Spawned threads (scheduler workers and Threads.spawnJoinable) must have a stack large
 // enough for deep call chains such as the HTTP accept loop. The platform default
 // for secondary threads (512KB on macOS) overflowed after minutes of real traffic.
 // The recurrence is non-associative so the optimizer cannot fold it into a loop.
@@ -24,7 +24,7 @@ fun iterStep(n: Int): Int {
 
 test "sched: spawned thread survives deep recursion" {
     var result = -1
-    val t = Threads.spawn {
+    val t = Threads.spawnJoinable {
         result = deepStep(200000)
     }
     t.join()

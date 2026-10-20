@@ -1966,20 +1966,20 @@ Semântica alvo:
 > app real com 6.000 requests + 5 min idle em stack de 1 MiB com uso estável
 > (binário antigo: 2.784 kB em 39 min idle).
 
-> **Follow-ups abertos:**
-> - [ ] **T1 — `Threads.spawn` vaza 16 MiB de VA por spawn:** `std.thread.Threads.spawn`
->   cria a thread com `pthread_attr_setstacksize(16 MiB)` e a deixa *joinable* por
->   padrão, devolvendo um `Thread` cujo handle é GC-managed. Se o chamador não guardar
->   o handle e chamar `Thread.join()` (ex.: cron loop que spawna a cada iteração), a
->   thread nunca é joined nem detached: stack + descritores ficam reservados até o
->   processo morrer (`VmSize` cresce ~16 MiB por spawn; em serviço de vida longa chega
->   a GBs de VA). Não é a causa do estouro de 8 MiB da main thread (Phase 98), mas é
->   vazamento real. Fix proposto: `spawn` detached por padrão + `spawnJoinable()`
->   explícito (ou `pthread_detach` num finalizer/`Thread.close()`), e revisar os 16 MiB
->   (1–2 MiB bastam para os workloads atuais). **Cuidado:** `Thread.join()` é API
->   pública e precisa continuar funcionando para quem guarda o handle.
-> - [ ] **T2 — `Threads.spawn` aloca `pthread_attr_t` via `gcMalloc` a cada spawn**
->   (`Threads.stackAttr()`), sem `pthread_attr_destroy` — mesma família de T1.
+> **Follow-ups (DONE 2026-10-20, v0.0.94):**
+> - [x] **T1 — `Threads.spawn` vaza 16 MiB de VA por spawn (DONE):** `spawn(block): Void`
+>   fire-and-forget (detach no trampoline via `pthreadDetach(pthreadSelf())`) +
+>   `spawnJoinable(block): Thread` explícito (caller MUST `join()`); testes migrados
+>   (`threads/sync/atomic/db_pool/sched_worker_stack`) + novo `thread_spawn_test.ei`
+>   (50x/200x detached sem join). 16 MiB mantidos (ver § abaixo) — VA de pool agora
+>   limitada (`Ncores × 16 MiB`), detached é transitória e reclaimada no exit.
+>   Stack-shrink 16→1-2 MiB **não aplicado**: `sched_worker_stack_test.ei`
+>   (`deepStep(200000)`) prova que 512 KiB default já estourou em tráfego real;
+>   exige medição de high-water antes de tunar.
+> - [x] **T2 — `pthread_attr_t` sem destroy (DONE):** `pthreadAttrDestroy` exposto no
+>   `lib PosixThread/Win32Thread` + `ThreadOpsContract`/`NativeThread` e chamado após
+>   `pthreadCreate` em `Threads.spawnThread` e `Dispatcher.ensureStarted`
+>   (attrs são copiados pelo create; buffer de 128 B era leak por spawn/worker).
 
 ---
 

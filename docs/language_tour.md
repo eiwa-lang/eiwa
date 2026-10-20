@@ -2520,8 +2520,17 @@ import { Threads } from "std.thread"
 
 val cores = Threads.numCores() // Número de núcleos da CPU
 
-val thread = Threads.spawn {
+// Fire-and-forget: a thread se destaca (detach) sozinha e o SO libera
+// sua stack assim que o bloco termina. Use para listeners, watchdogs e
+// jobs de uma vez.
+Threads.spawn {
     // Executa em uma pthread nativa isolada
+}
+
+// Joinable: devolve o handle e exige `join()`. Enquanto ninguém der join,
+// a stack da thread (16 MiB) fica reservada.
+val thread = Threads.spawnJoinable {
+    // Trabalho cujo término você precisa aguardar
 }
 thread.join() // Aguarda o término da thread
 ```

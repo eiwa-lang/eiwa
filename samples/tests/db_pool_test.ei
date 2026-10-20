@@ -73,13 +73,13 @@ fun poolStress(pool: ConnectionPool<FakeConn>, rounds: Int): Int {
 
 test "db: pool survives threaded acquire/release storms" {
     val pool = ConnectionPool<FakeConn>({ FakeConn() }, 2)
-    val t1 = Threads.spawn {
+    val t1 = Threads.spawnJoinable {
         assert(poolStress(pool, 200) == 200, "t1")
     }
-    val t2 = Threads.spawn {
+    val t2 = Threads.spawnJoinable {
         assert(poolStress(pool, 200) == 200, "t2")
     }
-    val t3 = Threads.spawn {
+    val t3 = Threads.spawnJoinable {
         assert(poolStress(pool, 200) == 200, "t3")
     }
     t1.join()

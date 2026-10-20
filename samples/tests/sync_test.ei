@@ -29,7 +29,7 @@ test "should synchronize counter across threads with sync { }" {
     val lock = Mutex()
     var counter = 0
 
-    val t1 = Threads.spawn {
+    val t1 = Threads.spawnJoinable {
         var i = 0
         while (i < 100) {
             sync(lock) {
@@ -39,7 +39,7 @@ test "should synchronize counter across threads with sync { }" {
         }
     }
 
-    val t2 = Threads.spawn {
+    val t2 = Threads.spawnJoinable {
         var i = 0
         while (i < 100) {
             sync(lock) {
@@ -58,12 +58,12 @@ test "should synchronize counter across threads with sync { }" {
 test "should synchronize string concat across threads with sync { }" {
     var log = ""
 
-    val t1 = Threads.spawn {
+    val t1 = Threads.spawnJoinable {
         sync {
             log = "${log}AAA"
         }
     }
-    val t2 = Threads.spawn {
+    val t2 = Threads.spawnJoinable {
         sync {
             log = "${log}BBB"
         }
@@ -82,12 +82,12 @@ test "should synchronize independent resources using dedicated Mutex instances" 
     var countA = 0
     var countB = 0
 
-    val t1 = Threads.spawn {
+    val t1 = Threads.spawnJoinable {
         sync(lockA) {
             countA = countA + 10
         }
     }
-    val t2 = Threads.spawn {
+    val t2 = Threads.spawnJoinable {
         sync(lockB) {
             countB = countB + 20
         }

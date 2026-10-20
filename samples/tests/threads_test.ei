@@ -20,7 +20,7 @@ test "should synchronize block using withLock" {
 
 test "should spawn thread and join" {
     var ran = false
-    val thread = Threads.spawn {
+    val thread = Threads.spawnJoinable {
         ran = true
     }
     thread.join()
@@ -31,7 +31,7 @@ test "should synchronize counter across threads with mutex" {
     val mutex = RawMutex.create()
     var counter = 0
 
-    val t1 = Threads.spawn {
+    val t1 = Threads.spawnJoinable {
         var i = 0
         while (i < 100) {
             mutex.lock()
@@ -41,7 +41,7 @@ test "should synchronize counter across threads with mutex" {
         }
     }
 
-    val t2 = Threads.spawn {
+    val t2 = Threads.spawnJoinable {
         var i = 0
         while (i < 100) {
             mutex.lock()
@@ -63,7 +63,7 @@ test "should signal condition variable between threads" {
     val cond = CondVar.create()
     var ready = false
 
-    val t = Threads.spawn {
+    val t = Threads.spawnJoinable {
         mutex.lock()
         ready = true
         cond.signal()

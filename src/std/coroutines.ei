@@ -542,6 +542,7 @@ type Dispatcher(
                     this.threads.add(Thread(handle))
                     i = i + 1
                 }
+                NativeThread.pthreadAttrDestroy(attr)
             }
             this.isStarted
         }
