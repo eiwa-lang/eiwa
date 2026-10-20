@@ -5,7 +5,7 @@
 
 import { mod } from "std.math"
 import { NativeMemory, Standard } from "std.core"
-import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, NativeExc, sync } from "std.thread"
+import { Thread, RawMutex, Mutex, CondVar, Threads, ThreadConstants, NativeThread, NativeGC, NativeExc, sync } from "std.thread"
 import { AtomicBool } from "std.atomic"
 import { MutableList } from "std.collections"
 
@@ -517,7 +517,8 @@ type Dispatcher(
     val scheduler: TaskScheduler,
     var isShutdown: Bool,
     var isStarted: Bool = false,
-    val lock: Mutex = Mutex()
+    val lock: Mutex = Mutex(),
+    val stackSize: Int = ThreadConstants.WORKER_STACK_SIZE
 ) {
     val threads: MutableList<Thread?> = MutableList<Thread?>()
 
@@ -529,7 +530,7 @@ type Dispatcher(
         sync(lock) {
             if (!this.isStarted && !this.isShutdown && this.nThreads > 0) {
                 this.isStarted = true
-                val attr = Threads.stackAttr()
+                val attr = Threads.stackAttrSized(this.stackSize)
                 var i = 0
                 while (i < this.nThreads) {
                     val buf = Standard.gcMalloc(24)
@@ -573,6 +574,11 @@ object Dispatchers {
     fun create(name: String, threads: Int): Dispatcher {
         val sched = TaskScheduler.create()
         return Dispatcher(name, threads, sched, false, false)
+    }
+
+    fun createWithStack(name: String, threads: Int, stackSize: Int): Dispatcher {
+        val sched = TaskScheduler.create()
+        return Dispatcher(name, threads, sched, false, false, Mutex(), stackSize)
     }
 }
 

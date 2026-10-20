@@ -1976,6 +1976,13 @@ Semântica alvo:
 >   Stack-shrink 16→1-2 MiB **não aplicado**: `sched_worker_stack_test.ei`
 >   (`deepStep(200000)`) prova que 512 KiB default já estourou em tráfego real;
 >   exige medição de high-water antes de tunar.
+> - [x] **T3 — default 16→8 MiB + stack configurável (DONE 2026-10-20):** medido
+>   2/4 MiB crash exit 132, 8/12/16 MiB passam no `deepStep(200000)` (~30B/frame).
+>   `WORKER_STACK_SIZE = 8388608` (Linux default, tamanho da fibra Crystal);
+>   `spawnWithStack`/`spawnJoinableWithStack`/`spawnThreadWithStack` +
+>   `stackAttrSized` em `std.thread`, `Dispatcher.stackSize` +
+>   `Dispatchers.createWithStack` em `std.coroutines`; cobertura em
+>   `thread_spawn_test.ei` (custom 8 MiB detached + joinable).
 > - [x] **T2 — `pthread_attr_t` sem destroy (DONE):** `pthreadAttrDestroy` exposto no
 >   `lib PosixThread/Win32Thread` + `ThreadOpsContract`/`NativeThread` e chamado após
 >   `pthreadCreate` em `Threads.spawnThread` e `Dispatcher.ensureStarted`

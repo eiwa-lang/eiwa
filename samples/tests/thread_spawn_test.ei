@@ -50,3 +50,25 @@ test "spawn: many detached threads exit on their own" {
     }
     assert(done.get() == 200, "all detached workers should finish")
 }
+
+test "spawnJoinableWithStack: custom stack runs and joins" {
+    var result = 0
+    val t = Threads.spawnJoinableWithStack({
+        result = 7
+    }, 8388608)
+    t.join()
+    assert(result == 7, "custom stack joinable should run")
+}
+
+test "spawnWithStack: detached custom stack runs without join" {
+    val counter = AtomicInt.create(0)
+    Threads.spawnWithStack({
+        counter.incrementAndGet()
+    }, 8388608)
+    var waited = 0
+    while (counter.get() < 1 && waited < 5000) {
+        sleepMs(5)
+        waited = waited + 5
+    }
+    assert(counter.get() == 1, "custom stack detached should run")
+}

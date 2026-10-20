@@ -190,7 +190,10 @@ object ThreadConstants {
     val PTHREAD_COND_SIZE: Int = 128
     val PTHREAD_HANDLE_SIZE: Int = 16
     val PTHREAD_ATTR_SIZE: Int = 128
-    val WORKER_STACK_SIZE: Int = 16777216
+    // Default OS-thread stack (8 MiB = Linux default, Crystal fiber size).
+    // Measured 2026-10-20: deepStep(200000) needs >4 MiB (2/4 MiB crash exit
+    // 132, 8 MiB passes). 16 MiB opt-in via spawnWithStack for deeper chains.
+    val WORKER_STACK_SIZE: Int = 8388608
     val GC_STACK_BASE_SIZE: Int = 16
     val THREAD_TASK_SIZE: Int = 32
 }
@@ -376,9 +379,13 @@ object Threads {
     }
 
     fun stackAttr(): Pointer {
+        return Threads.stackAttrSized(ThreadConstants.WORKER_STACK_SIZE)
+    }
+
+    fun stackAttrSized(stackSize: Int): Pointer {
         val attr = Standard.gcMalloc(ThreadConstants.PTHREAD_ATTR_SIZE)
         NativeThread.pthreadAttrInit(attr)
-        NativeThread.pthreadAttrSetstacksize(attr, ThreadConstants.WORKER_STACK_SIZE)
+        NativeThread.pthreadAttrSetstacksize(attr, stackSize)
         return attr
     }
 
@@ -386,18 +393,32 @@ object Threads {
         Threads.spawnThread(block, true)
     }
 
+    /// Joinable with explicit stack size (bytes). Use 16777216 for deep
+    /// recursion (see sched_worker_stack_test); 8 MiB fits most workloads.
+    fun spawnWithStack(block: () -> Void, stackSize: Int) {
+        Threads.spawnThreadWithStack(block, true, stackSize)
+    }
+
     fun spawnJoinable(block: () -> Void): Thread {
         return Threads.spawnThread(block, false)
     }
 
+    fun spawnJoinableWithStack(block: () -> Void, stackSize: Int): Thread {
+        return Threads.spawnThreadWithStack(block, false, stackSize)
+    }
+
     fun spawnThread(block: () -> Void, detach: Bool): Thread {
+        return Threads.spawnThreadWithStack(block, detach, ThreadConstants.WORKER_STACK_SIZE)
+    }
+
+    fun spawnThreadWithStack(block: () -> Void, detach: Bool, stackSize: Int): Thread {
         val buf = Standard.gcMalloc(ThreadConstants.THREAD_TASK_SIZE)
         val task = buf as ThreadTask
         task.action = block
         task.detach = detach
         val threadBuf = Standard.gcMalloc(ThreadConstants.PTHREAD_HANDLE_SIZE)
         val routine = funPointer { arg: Pointer -> threadTrampoline(arg) }
-        val attr = Threads.stackAttr()
+        val attr = Threads.stackAttrSized(stackSize)
         NativeThread.pthreadCreate(threadBuf, attr, routine, buf)
         NativeThread.pthreadAttrDestroy(attr)
         val handle = Standard.loadInt64(threadBuf) as Pointer
