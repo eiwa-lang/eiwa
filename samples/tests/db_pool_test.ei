@@ -107,3 +107,26 @@ test "db: pool releases slot when factory throws" {
     pool.release(c)
     assert(true, "recovered")
 }
+
+object ContractPool {
+    var pool: Connection? = null
+    fun connect(): Connection {
+        if (ContractPool.pool == null) {
+            ContractPool.pool = ConnectionPool<FakeConn>({ FakeConn() }, 1)
+        }
+        val p = ContractPool.pool
+        if (p == null) {
+            throw DbError("pool init failed")
+        }
+        return p
+    }
+}
+
+test "db: contract-typed object field holds generic pool" {
+    val db = ContractPool.connect()
+    val r = db.query("SELECT 1")
+    assert(r.rows().size() == 0)
+    ContractPool.pool = ConnectionPool<FakeConn>({ FakeConn() }, 1)
+    val db2 = ContractPool.connect()
+    assert(db2.query("SELECT 1").rows().size() == 0)
+}

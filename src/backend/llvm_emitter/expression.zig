@@ -943,8 +943,44 @@ fn emitExpressionRaw(
                     }
                 }
                 if (g) |global_var| {
-                    const val = try emitExpression(ctx, mod, builder, scope, structs, libs, set.value);
-                    if (storeValue(val, llvm.LLVMGlobalGetValueType(global_var))) |sv| {
+                    var val = try emitExpression(ctx, mod, builder, scope, structs, libs, set.value);
+                    // Fat globals need fat values: attach the real
+                    // vtable/descriptor (a thin store leaves a null
+                    // vtable behind, issue #16).
+                    const global_type = llvm.LLVMGlobalGetValueType(global_var);
+                    if (llvm.LLVMGetTypeKind(global_type) == llvm.LLVMStructTypeKind and
+                        llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) != llvm.LLVMStructTypeKind)
+                    {
+                        if (objectFieldType(obj_c_name, set.object.data.identifier.name, set.name)) |field_rt| {
+                            if (types_mapping.isRegisteredUnion(field_rt.*, global_unions_ast_ptr)) {
+                                if (set.value.resolved_type) |vrt| {
+                                    if (concreteCNameForVtable(vrt)) |cn| {
+                                        val = coerceToUnion(ctx, mod, builder, val, cn) catch val;
+                                    }
+                                }
+                            }
+                            if (types_mapping.isContractType(field_rt.*, global_contracts_ast_ptr)) {
+                                const stripped = ts.stripNull(field_rt);
+                                const contract_name = switch (stripped.*) {
+                                    .Custom => |n| n,
+                                    .GenericInstance => |gi| gi.base_name,
+                                    else => "",
+                                };
+                                if (contract_name.len > 0) {
+                                    if (set.value.resolved_type) |vrt| {
+                                        const v_stripped = ts.stripNull(vrt);
+                                        if (!types_mapping.isContractType(v_stripped.*, global_contracts_ast_ptr) and v_stripped.* != .Null) {
+                                            if (concreteCNameForVtable(v_stripped)) |cn| {
+                                                val = try coerceToContract(ctx, mod, builder, val, cn, contract_name);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    val = coerceArg(builder, val, global_type);
+                    if (storeValue(val, global_type)) |sv| {
                         _ = llvm.LLVMBuildStore(builder, sv, global_var);
                     }
                     return val;
@@ -5642,6 +5678,29 @@ pub fn coerceCollectionArg(
     const arg_name = nominalName(art) orelse return arg_val;
     const param_name = nominalName(prt) orelse return arg_val;
     return mutableListView(builder, structs, arg_val, arg_name, param_name) orelse arg_val;
+}
+
+/// Declared type of an `object` member, or null. Used to fatten thin
+/// values stored into contract/union-typed globals (issue #16).
+fn objectFieldType(obj_c_name: []const u8, obj_plain_name: []const u8, field: []const u8) ?*const ts.EiwaType {
+    const objects = global_objects_ast_ptr orelse return null;
+    var onode: ?*ast.ASTNode = objects.get(obj_c_name);
+    if (onode == null) onode = objects.get(obj_plain_name);
+    const on = onode orelse return null;
+    if (on.data != .object_decl) return null;
+    for (on.data.object_decl.members) |m| {
+        if (m.data != .var_decl) continue;
+        const v = m.data.var_decl;
+        const name_match = std.mem.eql(u8, v.name, field) or
+            (if (v.resolved_c_name) |rcn| std.mem.eql(u8, rcn, field) else false);
+        if (!name_match) continue;
+        if (m.resolved_type) |rt| return rt;
+        if (v.type_ref) |tr| {
+            if (tr.resolved_type) |rt| return rt;
+        }
+        return null;
+    }
+    return null;
 }
 
 /// Declared parameter type for a call argument: the checker's recorded
