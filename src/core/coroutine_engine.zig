@@ -917,6 +917,13 @@ pub fn buildResumeStateMachine(ctx: Ctx, captures: []const CapturedVar, locals: 
     var trailing: ?*ASTNode = null;
     if (!is_void_result and rewritten.items.len > 0 and syn.isValueStatement(rewritten.items[rewritten.items.len - 1])) {
         trailing = rewritten.pop();
+        // F2: a suspension inside the result value cannot cooperatively
+        // suspend from the done state — fail loud instead of silently
+        // dropping the result (the pre-F2 silent-zero behavior).
+        if (syn.containsTrueSuspend(trailing.?)) {
+            ctx.checker.reportError(trailing.?.line, trailing.?.column, "TypeError: suspend call in task result value is not supported inside task blocks (suspend calls can only be used as separate statements).", .{});
+            return error.TypeError;
+        }
     }
     try leading.appendSlice(rewritten.items);
 

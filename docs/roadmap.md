@@ -10,7 +10,7 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
 > **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
 > **Phase 88 — Renomear `break` → `leave`** (hard break da keyword, sem alias; decisão em ADR 69) — **concluída** (2026-09-17).
-> **Fase atual (2026-09):** follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9, 91.4). **Phase 89** (string multilinha) — **concluída**. **Phase 91** (smartcast de nullable em `if`/ternário/`when`) — **concluída**. **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
+> **Fase atual (2026-10):** follow-ups abertos (G2–G10, F3–F4, H1–H3, 75.8/75.9, 91.4). **Phase 89** (string multilinha) — **concluída**. **Phase 91** (smartcast de nullable em `if`/ternário/`when`) — **concluída**. **Phase 90** (`throw` em `return`/`leave`) — **concluída**. **F2** (trailing `if`/`when` em `task`) + **79.2** (bônus) — **concluídos**. **T1/T2** (spawn detached) + **T3** (stack 8 MiB configurável) — **concluídos** (v0.0.94/v0.0.95).
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**. **Phase 98** (allocas em loops + sigaltstack por thread) — **concluída** (2026-10-20).
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
@@ -1245,11 +1245,10 @@ Semântica alvo:
 - [x] **Task 79.1:** Checker — `inferIfExpr` infere branches em bloco como expressão
   (regras acima). `checkBlock` (blocos como statement) inalterado: `if` sem
   `else` continua `Void`.
-- [ ] **Task 79.2 (follow-up, gap pré-existente do transform):** `if` como valor
-  *dentro* de `task {}` falha em runtime — inclusive sem chaves
-  (`if (true) 1 else 2`), logo é ortogonal a esta fase. Evidência via stash:
-  falha idêntica no código pré-fix. Requer plumbing de valores na state machine
-  (domínio das Phases 68.x). Não coberto pela suíte (manter gate verde).
+- [x] **Task 79.2 (follow-up, gap pré-existente do transform — DONE via F2, 2026-10-20):**
+  trailing `if`-valor em `task {}` devolvia zero silencioso (gate `isValueStatement`
+  não reconhecia `if`/`when` como valor). Mesmo fix do F2; cobertura em
+  `task_trailing_value_test.ei`.
 - [ ] **Task 79.3 (follow-up, achado na 97):** ternário com ramos incompatíveis
   infere o primeiro ramo (`val s = if (c) A() else B()` tipa `A`; `s is B`
   responde `true/true` via heurística em vez de erro). Covaria com a frouxidão
@@ -1373,10 +1372,18 @@ Semântica alvo:
   tipo + `catch (e: T)` + `catch {}` + rethrow sem match; `Null` absorve em `T?`; ramos
   divergentes (`return`/`throw`) excluídos; `Void` = `TypeError`). Cobertura
   `try_expression_test.ei` (+6 testes: fallback, var tipada, multi-catch, Int, Null, rethrow).
-- [ ] **F2 — try-valor em `task {}`:** plumbing do slot `res` na state machine.
-  Achado na F1 (2026-09-16): a rejeição `TypeError` NÃO dispara p/ `task {}`
-  top-level — compila e trava em runtime (provado na main limpa; bare e com
-  catch idênticos). Hang pré-existente, sem relação com F1.
+- [x] **F2 — try-valor em `task {}` (DONE 2026-10-20):** raiz era o gate
+  `isValueStatement` (`coroutine_syntax.zig`) — trailing `if`/`when` não eram
+  reconhecidos como valor, então `buildCompletionStmts` nunca armazenava
+  `this.task.result` (silent-zero no `await`; o hang original de 2026-09-16 já
+  não reproduzia — shapes diretos falham alto via `taskNodeHas`). Achado extra:
+  `when`-valor + subject `try`-elvis dava ramo errado só em `task` (P3). Fix:
+  `.if_expr`/`.when_expr` no gate (emitem inline no done state, sem split) +
+  erro loud dedicado p/ suspensão dentro do trailing (`suspend call in task
+  result value...`, espelho G8); `try`/`for`-valor mantêm as rejeições
+  dedicadas (res-slot/collect entre estados seguem não-implementados).
+  Cobertura `task_trailing_value_test.ei` (6) + `task_trailing_suspend_xfail_test.ei`.
+  Bônus: fecha o 79.2 (trailing `if`-valor em `task`). Suíte 902/902.
 - [ ] **F3 — `try` como operando geral:** ramos de ternário e operandos
   binários (exceto LHS do `?:`, que conta como slot-valor) continuam fora;
   `obj.x = try {...}` não verificado.

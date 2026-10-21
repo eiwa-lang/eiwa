@@ -1,0 +1,66 @@
+// Trailing `if`/`when` values are the task result (F2). The state machine
+// used to drop them silently (`t.await()` returned zero); only literals,
+// identifiers and calls flowed into `this.task.result`. `try`-value and
+// `for`-value keep their dedicated loud rejections (res slot / collect
+// across states are unimplemented).
+import { assert } from "std.core"
+import { sleepMs } from "std.time"
+
+test "trailing if-value is the task result" {
+    val t = task { if (true) 10 else 20 }
+    assert(t.await() == 10)
+}
+
+test "trailing if-value with suspension elsewhere (state machine)" {
+    val t = task {
+        sleepMs(1)
+        if (true) 10 else 20
+    }
+    assert(t.await() == 10)
+}
+
+test "trailing when-value is the task result" {
+    val t = task {
+        when (1) {
+            1 -> 10
+            else -> 20
+        }
+    }
+    assert(t.await() == 10)
+}
+
+test "trailing when-value with try elvis subject" {
+    val t = task {
+        val one = 1
+        when (try { one } ?: 0) {
+            1 -> 10
+            else -> 20
+        }
+    }
+    assert(t.await() == 10)
+}
+
+test "when statement with try subject still works" {
+    val t = task {
+        var r = 0
+        when (try { 1 } ?: 0) {
+            1 -> r = 10
+            else -> r = 20
+        }
+        r
+    }
+    assert(t.await() == 10)
+}
+
+test "if-value with try in condition" {
+    val t = task {
+        var r = 0
+        if (try { true } ?: false) {
+            r = 1
+        } else {
+            r = 2
+        }
+        r
+    }
+    assert(t.await() == 1)
+}
