@@ -326,3 +326,30 @@ test "exception: leave inside try keeps the frame" {
     assert(leaveInsideTry(10) == 10)
     assert(NativeExc.excTopGet() == before, "no pop when leave stays inside try")
 }
+
+type FieldBoom(val status: Int, val detail: String = "") : Throwable {
+    implement fun message(): String = "boom"
+}
+
+fun fieldBoomHelper(e: FieldBoom): String {
+    return e.detail
+}
+
+test "exception: caught field reads across function boundary" {
+    var viaHelper = ""
+    try {
+        throw FieldBoom(403, "c-detail")
+    } catch (e: FieldBoom) {
+        viaHelper = fieldBoomHelper(e)
+    }
+    assert(viaHelper == "c-detail")
+
+    var viaAssign = ""
+    try {
+        throw FieldBoom(403, "x-detail")
+    } catch (e: FieldBoom) {
+        val x: FieldBoom = e
+        viaAssign = x.detail
+    }
+    assert(viaAssign == "x-detail")
+}

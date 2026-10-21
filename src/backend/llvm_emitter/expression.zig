@@ -5557,16 +5557,9 @@ pub fn coerceArg(
         return llvm.LLVMBuildInsertValue(builder, fat_with_data, null_vtable, 1, "fat_val");
     }
     if (arg_kind == llvm.LLVMStructTypeKind and param_kind == llvm.LLVMPointerTypeKind) {
-        const parent_bb = llvm.LLVMGetInsertBlock(builder);
-        const mod = llvm.LLVMGetGlobalParent(llvm.LLVMGetBasicBlockParent(parent_bb));
-        const c_ctx = llvm.LLVMGetTypeContext(param_type);
-        const gc_alloc = core.getHeapAllocFn(mod);
-        const sz = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(c_ctx), 16, 0);
-        const ft2 = llvm.LLVMGlobalGetValueType(gc_alloc);
-        var args = [_]llvm.LLVMValueRef{sz};
-        const heap_ptr = llvm.LLVMBuildCall2(builder, ft2, gc_alloc, &args, 1, "fat_box");
-        _ = llvm.LLVMBuildStore(builder, arg_val, heap_ptr);
-        return heap_ptr;
+        // Struct values are fat pointers { data, vtable }; a thin-pointer
+        // parameter wants the object itself, so extract the data pointer.
+        return llvm.LLVMBuildExtractValue(builder, arg_val, 0, "fat_data_ptr");
     }
 
     if (arg_kind == llvm.LLVMIntegerTypeKind and param_kind == llvm.LLVMIntegerTypeKind) {
