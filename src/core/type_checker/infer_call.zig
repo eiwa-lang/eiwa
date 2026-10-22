@@ -272,6 +272,13 @@ fn candidateHasNamedParams(params: []const ast.Param, call_args: []const *ASTNod
     return true;
 }
 
+fn paramIndexByName(params: []const ast.Param, name: []const u8) ?usize {
+    for (params, 0..) |p, i| {
+        if (std.mem.eql(u8, p.name, name)) return i;
+    }
+    return null;
+}
+
 fn isValidType(self: *TypeChecker, t: *const EiwaType) bool {
     switch (t.*) {
         .Int, .Bool, .String, .Void, .Null => return true,
@@ -2199,6 +2206,15 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                 all_match = false;
                                 break;
                             }
+                        } else if (arg.data == .named_arg) {
+                            const pi = paramIndexByName(fun_decl.params, arg.data.named_arg.name) orelse {
+                                all_match = false;
+                                break;
+                            };
+                            if (pi >= f.params.len or !self.isCompatible(f.params[pi], arg.resolved_type.?)) {
+                                all_match = false;
+                                break;
+                            }
                         } else if (arg_i < f.params.len and !fun_decl.params[arg_i].is_varargs) {
                             if (!self.isCompatible(f.params[arg_i], arg.resolved_type.?)) {
                                 all_match = false;
@@ -2927,9 +2943,13 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                         for (c.arguments, 0..) |arg, arg_i| {
                             // Propagate the declared param type so lambdas infer
                             // `it` (skip raw generic params, which would mislead).
+                            const param_idx: usize = if (arg.data == .named_arg) paramIndexByName(f.params, arg.data.named_arg.name) orelse {
+                                all_match = false;
+                                break;
+                            } else arg_i;
                             var expected_type: ?*EiwaType = null;
-                            if (arg_i < f.params.len and f.params[arg_i].type_ref != null) {
-                                const et = try self.resolveTypeRef(f.params[arg_i].type_ref.?);
+                            if (param_idx < f.params.len and f.params[param_idx].type_ref != null) {
+                                const et = try self.resolveTypeRef(f.params[param_idx].type_ref.?);
                                 if (et.* != .GenericParam) {
                                     expected_type = et;
                                     arg.expected_type = expected_type;
@@ -3149,12 +3169,16 @@ pub fn inferCallExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
                                         break;
                                     }
                                 } else {
+                                    const param_idx: usize = if (arg.data == .named_arg) paramIndexByName(f.params, arg.data.named_arg.name) orelse {
+                                        all_match = false;
+                                        break;
+                                    } else arg_i;
                                     const arg_type = arg.resolved_type orelse (self.inferNode(arg, scope) catch null);
                                     if (arg_type == null) {
                                         all_match = false;
                                         break;
                                     }
-                                    const expected_type = self.resolveTypeRef(f.params[arg_i].type_ref.?) catch null;
+                                    const expected_type = self.resolveTypeRef(f.params[param_idx].type_ref.?) catch null;
                                     if (expected_type == null or !self.isCompatible(expected_type.?, arg_type.?)) {
                                         all_match = false;
                                         break;
