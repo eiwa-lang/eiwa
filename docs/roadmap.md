@@ -1997,6 +1997,21 @@ Semântica alvo:
 
 ---
 
+### Phase 99: Delinear report de exceção não-tratada em função por módulo (FUTURE / BACKLOG)
+> **Contexto:** o fix da issue #19 (`emitUnhandledReport` em `src/backend/llvm_emitter/statement.zig`)
+> emite o bloco de report inline em cada site de `throw` (cadeia de selects + strings por vtable).
+> Medido via chave A/B (2026-10-22): custo marginal de ~0.05s (~4%) no JIT de arquivo
+> throw-denso, ~0 em workload stdlib-pesado — teto do ganho, sem efeito em runtime
+> (o caminho executa 1x por crash). Não paga o churn agora; batch futuro com outras
+> dedupes do emissor.
+- [ ] **Task 99.1:** Gerar uma única `eiwa_report_unhandled(data, table)` por módulo (hook de
+  fim-de-módulo, após todos os corpos — vtables criadas sob demanda via `coerceToContract`
+  precisam existir antes da coleta) e emitir só um `call` por site.
+- [ ] **Verify:** `Unhandled exception report` do CI verde + suíte completa verde; `eiwac build`
+  smoke (split-mode: sem `duplicate symbol`).
+
+---
+
 ## ✅ Known Bugs — Coroutines (Todos Resolvidos)
 
 ### Bug 1: Lambda closures e `sync { ... }` dentro de `task {}` capturando/mutando variáveis (RESOLVIDO)
