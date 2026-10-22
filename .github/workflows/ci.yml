@@ -170,9 +170,12 @@ jobs:
           fi
           set +e
           OUT=$($BIN 2>&1); CODE=$?
+          STDOUT_ONLY=$($BIN 2>/dev/null); CODE2=$?
           set -e
           echo "$OUT"
           echo "$OUT" | grep -q "Boom"
           echo "$OUT" | grep -q "boom:kablam"
           test $CODE -ne 0
+          test -z "$STDOUT_ONLY"
+          test $CODE2 -ne 0
           rm -f unhandled_probe.ei unhandled_probe unhandled_probe.exe
