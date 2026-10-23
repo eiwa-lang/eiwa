@@ -352,7 +352,7 @@ fn emitThrowStmt(
     }
 
     llvm.LLVMPositionBuilderAtEnd(builder, throw_unhandled_bb);
-    try emitUnhandledReport(ctx, mod, builder, func_val, "unhandled exception (no active handler)");
+    try emitUnhandledReport(ctx, mod, builder, func_val, "error: unhandled exception (no active handler)\n  --> throw reached the top level without a matching try/catch");
 
     // throw never falls through: both branches end in unreachable. Put
     // the builder in a fresh unreachable block so subsequent statements
@@ -412,22 +412,6 @@ fn unhandledDisplayName(mod: llvm.LLVMModuleRef, full: []const u8) []const u8 {
     return best;
 }
 
-fn libc_fn(
-    mod: llvm.LLVMModuleRef,
-    name: [*:0]const u8,
-    ret: llvm.LLVMTypeRef,
-    params: []llvm.LLVMTypeRef,
-    varargs: bool,
-) struct { fn_val: llvm.LLVMValueRef, fn_type: llvm.LLVMTypeRef } {
-    if (core.known_libc_names.get(std.mem.span(name)) == null) {
-        const owned = std.heap.page_allocator.dupe(u8, std.mem.span(name)) catch "";
-        core.known_libc_names.put(owned, {}) catch {};
-    }
-    const f = llvm.LLVMGetNamedFunction(mod, name) orelse
-        llvm.LLVMAddFunction(mod, name, llvm.LLVMFunctionType(ret, params.ptr, @intCast(params.len), if (varargs) 1 else 0));
-    return .{ .fn_val = f, .fn_type = llvm.LLVMGlobalGetValueType(f) };
-}
-
 fn emitUnhandledReport(
     ctx: llvm.LLVMContextRef,
     mod: llvm.LLVMModuleRef,
@@ -448,71 +432,12 @@ fn emitUnhandledReport(
     const report_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "unhandled.report");
     const fallback_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "unhandled.fallback");
 
-    var fdopen_ps = [_]llvm.LLVMTypeRef{ i32_type, ptr_type };
-    const fdopen_lib = libc_fn(mod, "fdopen", ptr_type, &fdopen_ps, false);
-    const wmode = llvm.LLVMBuildGlobalStringPtr(builder, "w", "unhandled_wmode");
-    var fdargs = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i32_type, 2, 0), wmode };
-    const err = llvm.LLVMBuildCall2(builder, fdopen_lib.fn_type, fdopen_lib.fn_val, &fdargs, 2, "unhandled_stderr");
-    var fprintf_ps = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
-    const fprintf_lib = libc_fn(mod, "fprintf", i32_type, &fprintf_ps, true);
-    const fprintf_fn = fprintf_lib.fn_val;
-    const fprintf_ft = fprintf_lib.fn_type;
-    var getenv_ps = [_]llvm.LLVMTypeRef{ptr_type};
-    const getenv_lib = libc_fn(mod, "getenv", ptr_type, &getenv_ps, false);
-    const getenv_fn = getenv_lib.fn_val;
-    const getenv_ft = getenv_lib.fn_type;
-    var strcmp_ps = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
-    const strcmp_lib = libc_fn(mod, "strcmp", i32_type, &strcmp_ps, false);
-    const strcmp_fn = strcmp_lib.fn_val;
-    const strcmp_ft = strcmp_lib.fn_type;
-    var isatty_ps = [_]llvm.LLVMTypeRef{i32_type};
-    const isatty_lib = libc_fn(mod, "isatty", i32_type, &isatty_ps, false);
-    const isatty_fn = isatty_lib.fn_val;
-    const isatty_ft = isatty_lib.fn_type;
-
-    const nc_name = llvm.LLVMBuildGlobalStringPtr(builder, "NO_COLOR", "unhandled_nc");
-    var nc_args = [_]llvm.LLVMValueRef{nc_name};
-    const nc_ptr = llvm.LLVMBuildCall2(builder, getenv_ft, getenv_fn, &nc_args, 1, "unhandled_nc_ptr");
-    const has_nc = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, nc_ptr, null_ptr, "unhandled_has_nc");
-    const term_name = llvm.LLVMBuildGlobalStringPtr(builder, "TERM", "unhandled_term");
-    var term_args = [_]llvm.LLVMValueRef{term_name};
-    const term_ptr = llvm.LLVMBuildCall2(builder, getenv_ft, getenv_fn, &term_args, 1, "unhandled_term_ptr");
-    const term_null = llvm.LLVMBuildIsNull(builder, term_ptr, "unhandled_term_null");
-    const empty_str = llvm.LLVMBuildGlobalStringPtr(builder, "", "unhandled_empty");
-    const safe_term = llvm.LLVMBuildSelect(builder, term_null, empty_str, term_ptr, "unhandled_safe_term");
-    const dumb_lit = llvm.LLVMBuildGlobalStringPtr(builder, "dumb", "unhandled_dumb");
-    var cmp_args = [_]llvm.LLVMValueRef{ safe_term, dumb_lit };
-    const cmp_res = llvm.LLVMBuildCall2(builder, strcmp_ft, strcmp_fn, &cmp_args, 2, "unhandled_cmp");
-    const is_dumb_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, cmp_res, llvm.LLVMConstInt(i32_type, 0, 0), "unhandled_dumb_eq");
-    const term_set = llvm.LLVMBuildNot(builder, term_null, "unhandled_term_set");
-    const is_dumb = llvm.LLVMBuildAnd(builder, term_set, is_dumb_eq, "unhandled_is_dumb");
-    var tty_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 2, 0)};
-    const tty_res = llvm.LLVMBuildCall2(builder, isatty_ft, isatty_fn, &tty_args, 1, "unhandled_tty");
-    const is_tty = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, tty_res, llvm.LLVMConstInt(i32_type, 0, 0), "unhandled_is_tty");
-    const no_nc = llvm.LLVMBuildNot(builder, has_nc, "unhandled_no_nc");
-    const no_dumb = llvm.LLVMBuildNot(builder, is_dumb, "unhandled_no_dumb");
-    const colors_ok = llvm.LLVMBuildAnd(builder, no_nc, no_dumb, "unhandled_colors_ok");
-    const colors = llvm.LLVMBuildAnd(builder, colors_ok, is_tty, "unhandled_colors");
-
-    const c_red_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[1;31m", "unhandled_c_red");
-    const c_bold_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[1m", "unhandled_c_bold");
-    const c_cyan_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[36m", "unhandled_c_cyan");
-    const c_rst_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[0m", "unhandled_c_rst");
-    const c_empty = llvm.LLVMBuildGlobalStringPtr(builder, "", "unhandled_c_empty");
-    const c_red = llvm.LLVMBuildSelect(builder, colors, c_red_c, c_empty, "unhandled_red");
-    const c_bold = llvm.LLVMBuildSelect(builder, colors, c_bold_c, c_empty, "unhandled_bold");
-    const c_cyan = llvm.LLVMBuildSelect(builder, colors, c_cyan_c, c_empty, "unhandled_cyan");
-    const c_rst = llvm.LLVMBuildSelect(builder, colors, c_rst_c, c_empty, "unhandled_rst");
-    const fmt1 = llvm.LLVMBuildGlobalStringPtr(builder, "%serror:%s %sunhandled %s: %s%s\n", "unhandled_fmt1");
-    const fmt1d = llvm.LLVMBuildGlobalStringPtr(builder, "%serror:%s %s%s\n", "unhandled_fmt1d");
-    const hintfmt = llvm.LLVMBuildGlobalStringPtr(builder, "  %s-->%s throw reached the top level without a matching try/catch\n", "unhandled_hintfmt");
-
     const guard_z = try std.heap.page_allocator.dupeZ(u8, "eiwa_unhandled_active");
     defer std.heap.page_allocator.free(guard_z);
     const guard = llvm.LLVMGetNamedGlobal(mod, guard_z.ptr) orelse blk: {
         const g = llvm.LLVMAddGlobal(mod, i32_type, guard_z.ptr);
         llvm.LLVMSetInitializer(g, llvm.LLVMConstInt(i32_type, 0, 0));
-        llvm.LLVMSetLinkage(g, llvm.LLVMInternalLinkage);
+        llvm.LLVMSetLinkage(g, llvm.LLVMCommonLinkage);
         break :blk g;
     };
     const guard_val = llvm.LLVMBuildLoad2(builder, i32_type, guard, "unhandled_active");
@@ -525,11 +450,12 @@ fn emitUnhandledReport(
 
     llvm.LLVMPositionBuilderAtEnd(builder, fallback_bb);
     {
-        const detail = llvm.LLVMBuildGlobalStringPtr(builder, static_msg, "unhandled_detail");
-        var fargs = [_]llvm.LLVMValueRef{ err, fmt1d, c_red, c_rst, c_bold, detail, c_rst };
-        _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &fargs, 7, "");
-        var hargs = [_]llvm.LLVMValueRef{ err, hintfmt, c_cyan, c_rst };
-        _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &hargs, 4, "");
+        if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
+            const puts_ft = llvm.LLVMGlobalGetValueType(puts_fn);
+            const msg_ptr = llvm.LLVMBuildGlobalStringPtr(builder, static_msg, "unhandled_msg");
+            var puts_args = [_]llvm.LLVMValueRef{msg_ptr};
+            _ = llvm.LLVMBuildCall2(builder, puts_ft, puts_fn, &puts_args, 1, "");
+        }
         const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
         const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
         var exit_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 1, 0)};
@@ -610,10 +536,20 @@ fn emitUnhandledReport(
     var phi_bbs = [_]llvm.LLVMBasicBlockRef{ msgfb_bb, msgok_bb };
     llvm.LLVMAddIncoming(msg_chars, &phi_vals, &phi_bbs, 2);
 
-    var pargs = [_]llvm.LLVMValueRef{ err, fmt1, c_red, c_rst, c_bold, type_val, msg_chars, c_rst };
-    _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &pargs, 8, "");
-    var hargs2 = [_]llvm.LLVMValueRef{ err, hintfmt, c_cyan, c_rst };
-    _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &hargs2, 4, "");
+    const printf_fn = llvm.LLVMGetNamedFunction(mod, "printf") orelse blk: {
+        var pps = [_]llvm.LLVMTypeRef{ptr_type};
+        break :blk llvm.LLVMAddFunction(mod, "printf", llvm.LLVMFunctionType(i32_type, &pps, 1, 1));
+    };
+    const printf_ft = llvm.LLVMGlobalGetValueType(printf_fn);
+    const fmt = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled %s: %s\n", "unhandled_fmt");
+    var pargs = [_]llvm.LLVMValueRef{ fmt, type_val, msg_chars };
+    _ = llvm.LLVMBuildCall2(builder, printf_ft, printf_fn, &pargs, 3, "");
+    if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
+        const puts_ft = llvm.LLVMGlobalGetValueType(puts_fn);
+        const hint = llvm.LLVMBuildGlobalStringPtr(builder, "  --> throw reached the top level without a matching try/catch", "unhandled_hint");
+        var puts_args = [_]llvm.LLVMValueRef{hint};
+        _ = llvm.LLVMBuildCall2(builder, puts_ft, puts_fn, &puts_args, 1, "");
+    }
     const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
     const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
     var exit_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 1, 0)};
@@ -698,7 +634,7 @@ fn emitRethrowException(
     }
 
     llvm.LLVMPositionBuilderAtEnd(builder, rethrow_unhandled_bb);
-    try emitUnhandledReport(ctx, mod, builder, func_val, "unhandled exception (no matching handler)");
+    try emitUnhandledReport(ctx, mod, builder, func_val, "error: unhandled exception (no matching handler)\n  --> throw reached the top level without a matching try/catch");
 }
 
 /// { wants_control, wants_normal } per catch-list type. Unions OR arms.

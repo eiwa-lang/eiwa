@@ -103,10 +103,6 @@ pub var prefer_gc_alloc: bool = false;
 /// retention). Kill switch: EIWA_GC_ATOMIC=0 restores plain GC_malloc.
 pub var prefer_gc_atomic: bool = true;
 
-/// Real libc names declared through `libc_fn` (statement.zig). The stub
-/// pass must leave them extern instead of emitting no-op bodies.
-pub var known_libc_names = std.StringHashMap(void).init(std.heap.page_allocator);
-
 /// libgc bindings into the host process. Only referenced when `has_gc` is
 /// true (Zig lazily compiles externs, so hosts without libgc never link these).
 const gc = struct {
@@ -1728,7 +1724,7 @@ pub const LLVMEmitter = struct {
                 }
                 const is_posix_target = if (self.target_info) |ti| ti.family == .posix else (!is_windows);
                 const is_lib_fn = if (is_windows) false else ffi_symbols.contains(fn_name_s);
-                const is_libc = is_libm or is_lib_fn or known_libc_names.contains(fn_name_s) or
+                const is_libc = is_libm or is_lib_fn or
                     std.mem.eql(u8, fn_name_s, "printf") or
                     std.mem.eql(u8, fn_name_s, "malloc") or
                     std.mem.eql(u8, fn_name_s, "realloc") or
