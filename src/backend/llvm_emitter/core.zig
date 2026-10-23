@@ -103,6 +103,10 @@ pub var prefer_gc_alloc: bool = false;
 /// retention). Kill switch: EIWA_GC_ATOMIC=0 restores plain GC_malloc.
 pub var prefer_gc_atomic: bool = true;
 
+/// Real libc names declared through `libc_fn` (statement.zig). The stub
+/// pass must leave them extern instead of emitting no-op bodies.
+pub var known_libc_names = std.StringHashMap(void).init(std.heap.page_allocator);
+
 /// libgc bindings into the host process. Only referenced when `has_gc` is
 /// true (Zig lazily compiles externs, so hosts without libgc never link these).
 const gc = struct {
@@ -1690,19 +1694,105 @@ pub const LLVMEmitter = struct {
             }
         }
 
+        // Stub pass: emit no-op bodies for any externally-declared functions
+        // that have no body (e.g. exceptions_assert_Bool_String, io_println, etc.).
+        // Without this the LLVM JIT/linker resolves them to null/undefined → segfault/link error.
+        var ffi_symbols = std.StringHashMap(void).init(self.allocator);
+        defer ffi_symbols.deinit();
+        {
+            var lib_it = self.libs.valueIterator();
+            while (lib_it.next()) |fmap| {
+                var fn_it2 = fmap.valueIterator();
+                while (fn_it2.next()) |cname| {
+                    try ffi_symbols.put(cname.*, {});
+                }
+            }
+        }
+
         var fn_iter = llvm.LLVMGetFirstFunction(mod);
         while (fn_iter != null) : (fn_iter = llvm.LLVMGetNextFunction(fn_iter.?)) {
             if (llvm.LLVMCountBasicBlocks(fn_iter.?) == 0) {
+                // Only stub Eiwa-mangled functions (not libc: printf, malloc, exit…)
                 const fn_name_ptr = llvm.LLVMGetValueName(fn_iter.?);
                 const fn_name_s = std.mem.span(fn_name_ptr);
-                if (!self.functions.contains(fn_name_s) or self.isLibFunction(fn_name_s)) continue;
-                if (split) {
-                    if (!is_entry) continue;
-                    if (dep_owned_types.contains(fn_name_s) or dep_owned_fns.contains(fn_name_s)) {
-                        continue;
+                // libm math functions are resolved by MCJIT from the host, so
+                // they must NOT get a no-op stub (e.g. `pow` → ret 0.0) or any
+                // math test silently returns wrong results.
+                const libm_names = [_][]const u8{ "pow", "sqrt", "cbrt", "fabs", "floor", "ceil", "round", "trunc", "nearbyint", "rint", "fmod", "remainder", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "ldexp", "frexp", "modf", "hypot" };
+                var is_libm = false;
+                for (libm_names) |n| {
+                    if (std.mem.eql(u8, fn_name_s, n)) {
+                        is_libm = true;
+                        break;
                     }
                 }
-                self.emitFunctionStub(mod, fn_name_s) catch {};
+                const is_posix_target = if (self.target_info) |ti| ti.family == .posix else (!is_windows);
+                const is_lib_fn = if (is_windows) false else ffi_symbols.contains(fn_name_s);
+                const is_libc = is_libm or is_lib_fn or known_libc_names.contains(fn_name_s) or
+                    std.mem.eql(u8, fn_name_s, "printf") or
+                    std.mem.eql(u8, fn_name_s, "malloc") or
+                    std.mem.eql(u8, fn_name_s, "realloc") or
+                    (prefer_gc_alloc and (
+                        std.mem.eql(u8, fn_name_s, "GC_malloc") or
+                        std.mem.eql(u8, fn_name_s, "GC_malloc_atomic") or
+                        std.mem.eql(u8, fn_name_s, "GC_malloc_uncollectable") or
+                        std.mem.eql(u8, fn_name_s, "GC_realloc") or
+                        std.mem.eql(u8, fn_name_s, "GC_init") or
+                        std.mem.eql(u8, fn_name_s, "GC_allow_register_threads") or
+                        std.mem.eql(u8, fn_name_s, "GC_get_stack_base") or
+                        std.mem.eql(u8, fn_name_s, "GC_register_my_thread") or
+                        std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread") or
+                        std.mem.eql(u8, fn_name_s, "GC_add_roots")
+                    )) or
+                    std.mem.eql(u8, fn_name_s, "setjmp") or
+                    std.mem.eql(u8, fn_name_s, "_setjmp") or
+                    std.mem.eql(u8, fn_name_s, "longjmp") or
+                    std.mem.eql(u8, fn_name_s, "_longjmp") or
+                    std.mem.eql(u8, fn_name_s, "exit") or
+                    std.mem.eql(u8, fn_name_s, "fflush") or
+                    std.mem.eql(u8, fn_name_s, "GetSystemTimeAsFileTime") or
+                    std.mem.eql(u8, fn_name_s, "memcpy") or
+                    std.mem.eql(u8, fn_name_s, "strcpy") or
+                    std.mem.eql(u8, fn_name_s, "strcat") or
+                    std.mem.eql(u8, fn_name_s, "strcmp") or
+                    std.mem.eql(u8, fn_name_s, "strstr") or
+                    std.mem.eql(u8, fn_name_s, "strlen") or
+                    std.mem.eql(u8, fn_name_s, "snprintf") or
+                    std.mem.eql(u8, fn_name_s, "sprintf") or
+                    std.mem.eql(u8, fn_name_s, "time") or
+                    std.mem.eql(u8, fn_name_s, "puts") or
+                    std.mem.eql(u8, fn_name_s, "rand") or
+                    std.mem.eql(u8, fn_name_s, "abs") or
+                    std.mem.eql(u8, fn_name_s, "labs") or
+                    std.mem.eql(u8, fn_name_s, "llabs") or
+                    std.mem.eql(u8, fn_name_s, "memset") or
+                    std.mem.eql(u8, fn_name_s, "calloc") or
+                    // Real external symbol: must NOT get a no-op stub.
+                    std.mem.eql(u8, fn_name_s, "eiwa_install_crash_handler") or
+                    (is_posix_target and (
+                        std.mem.eql(u8, fn_name_s, "socket") or
+                        std.mem.eql(u8, fn_name_s, "setsockopt") or
+                        std.mem.eql(u8, fn_name_s, "bind") or
+                        std.mem.eql(u8, fn_name_s, "listen") or
+                        std.mem.eql(u8, fn_name_s, "accept") or
+                        std.mem.eql(u8, fn_name_s, "read") or
+                        std.mem.eql(u8, fn_name_s, "write") or
+                        std.mem.eql(u8, fn_name_s, "close") or
+                        std.mem.eql(u8, fn_name_s, "sysconf") or
+                        std.mem.eql(u8, fn_name_s, "gettimeofday") or
+                        std.mem.eql(u8, fn_name_s, "poll")
+                    ));
+                if (!is_libc) {
+                    // Split mode: deps unit never stubs symbols (leaves them as extern);
+                    // entry unit only stubs non-dep symbols.
+                    if (split) {
+                        if (!is_entry) continue;
+                        if (dep_owned_types.contains(fn_name_s) or dep_owned_fns.contains(fn_name_s)) {
+                            continue;
+                        }
+                    }
+                    self.emitFunctionStub(mod, fn_name_s) catch {};
+                }
             }
         }
 

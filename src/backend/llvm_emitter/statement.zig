@@ -419,6 +419,10 @@ fn libc_fn(
     params: []llvm.LLVMTypeRef,
     varargs: bool,
 ) struct { fn_val: llvm.LLVMValueRef, fn_type: llvm.LLVMTypeRef } {
+    if (core.known_libc_names.get(std.mem.span(name)) == null) {
+        const owned = std.heap.page_allocator.dupe(u8, std.mem.span(name)) catch "";
+        core.known_libc_names.put(owned, {}) catch {};
+    }
     const f = llvm.LLVMGetNamedFunction(mod, name) orelse
         llvm.LLVMAddFunction(mod, name, llvm.LLVMFunctionType(ret, params.ptr, @intCast(params.len), if (varargs) 1 else 0));
     return .{ .fn_val = f, .fn_type = llvm.LLVMGlobalGetValueType(f) };
