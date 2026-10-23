@@ -352,7 +352,7 @@ fn emitThrowStmt(
     }
 
     llvm.LLVMPositionBuilderAtEnd(builder, throw_unhandled_bb);
-    try emitUnhandledReport(ctx, mod, builder, func_val, "error: unhandled exception (no active handler)\n  --> throw reached the top level without a matching try/catch");
+    try emitUnhandledReport(ctx, mod, builder, func_val, "\x1b[1;31merror:\x1b[0m \x1b[1munhandled exception (no active handler)\x1b[0m\n  \x1b[36m-->\x1b[0m throw reached the top level without a matching try/catch");
 
     // throw never falls through: both branches end in unreachable. Put
     // the builder in a fresh unreachable block so subsequent statements
@@ -541,12 +541,12 @@ fn emitUnhandledReport(
         break :blk llvm.LLVMAddFunction(mod, "printf", llvm.LLVMFunctionType(i32_type, &pps, 1, 1));
     };
     const printf_ft = llvm.LLVMGlobalGetValueType(printf_fn);
-    const fmt = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled %s: %s\n", "unhandled_fmt");
+    const fmt = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[1;31merror:\x1b[0m \x1b[1munhandled %s: %s\x1b[0m\n", "unhandled_fmt");
     var pargs = [_]llvm.LLVMValueRef{ fmt, type_val, msg_chars };
     _ = llvm.LLVMBuildCall2(builder, printf_ft, printf_fn, &pargs, 3, "");
     if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
         const puts_ft = llvm.LLVMGlobalGetValueType(puts_fn);
-        const hint = llvm.LLVMBuildGlobalStringPtr(builder, "  --> throw reached the top level without a matching try/catch", "unhandled_hint");
+        const hint = llvm.LLVMBuildGlobalStringPtr(builder, "  \x1b[36m-->\x1b[0m throw reached the top level without a matching try/catch", "unhandled_hint");
         var puts_args = [_]llvm.LLVMValueRef{hint};
         _ = llvm.LLVMBuildCall2(builder, puts_ft, puts_fn, &puts_args, 1, "");
     }
@@ -634,7 +634,7 @@ fn emitRethrowException(
     }
 
     llvm.LLVMPositionBuilderAtEnd(builder, rethrow_unhandled_bb);
-    try emitUnhandledReport(ctx, mod, builder, func_val, "error: unhandled exception (no matching handler)\n  --> throw reached the top level without a matching try/catch");
+    try emitUnhandledReport(ctx, mod, builder, func_val, "\x1b[1;31merror:\x1b[0m \x1b[1munhandled exception (no matching handler)\x1b[0m\n  \x1b[36m-->\x1b[0m throw reached the top level without a matching try/catch");
 }
 
 /// { wants_control, wants_normal } per catch-list type. Unions OR arms.
