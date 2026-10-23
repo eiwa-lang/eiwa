@@ -512,7 +512,7 @@ fn emitUnhandledReport(
     const guard = llvm.LLVMGetNamedGlobal(mod, guard_z.ptr) orelse blk: {
         const g = llvm.LLVMAddGlobal(mod, i32_type, guard_z.ptr);
         llvm.LLVMSetInitializer(g, llvm.LLVMConstInt(i32_type, 0, 0));
-        llvm.LLVMSetLinkage(g, llvm.LLVMCommonLinkage);
+        llvm.LLVMSetLinkage(g, llvm.LLVMInternalLinkage);
         break :blk g;
     };
     const guard_val = llvm.LLVMBuildLoad2(builder, i32_type, guard, "unhandled_active");
