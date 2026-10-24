@@ -119,6 +119,18 @@ const gc = struct {
     pub extern "c" fn GC_add_roots(low: *anyopaque, high_plus_1: *anyopaque) void;
 };
 
+/// libc stream bindings for the unhandled-exception report. Mapped
+/// explicitly into the JIT engine like the GC symbols above: host symbol
+/// lookup is unreliable for these on some targets, and an unmapped
+/// extern resolves to null and segfaults the child on first use.
+const report_io = struct {
+    pub extern "c" fn fdopen(fd: c_int, mode: [*:0]const u8) ?*anyopaque;
+    pub extern "c" fn fprintf(stream: ?*anyopaque, fmt: [*:0]const u8, ...) c_int;
+    pub extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
+    pub extern "c" fn strcmp(a: [*:0]const u8, b: [*:0]const u8) c_int;
+    pub extern "c" fn isatty(fd: c_int) c_int;
+};
+
 /// Returns the heap allocation function emitted code should call:
 /// GC_malloc-first when `prefer_gc_alloc`, malloc-first otherwise. Both
 /// prototypes are always declared in emitModule's pass 0, so the lookup
@@ -1763,6 +1775,12 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "llabs") or
                     std.mem.eql(u8, fn_name_s, "memset") or
                     std.mem.eql(u8, fn_name_s, "calloc") or
+                    std.mem.eql(u8, fn_name_s, "fdopen") or
+                    std.mem.eql(u8, fn_name_s, "fprintf") or
+                    std.mem.eql(u8, fn_name_s, "getenv") or
+                    std.mem.eql(u8, fn_name_s, "isatty") or
+                    std.mem.eql(u8, fn_name_s, "fdopen") or
+                    std.mem.eql(u8, fn_name_s, "fprintf") or
                     // Real external symbol: must NOT get a no-op stub.
                     std.mem.eql(u8, fn_name_s, "eiwa_install_crash_handler") or
                     (is_posix_target and (
@@ -5535,6 +5553,21 @@ pub const LLVMEmitter = struct {
                 .{ .name = "_longjmp", .ptr = @ptrCast(&windows_sjlj.eiwa_longjmp) },
             };
             for (sjlj_syms) |sym| {
+                if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
+                    llvm.LLVMAddGlobalMapping(engine, f, @constCast(sym.ptr));
+                }
+            }
+        }
+
+        {
+            const report_syms = [_]struct { name: [:0]const u8, ptr: *const anyopaque }{
+                .{ .name = "fdopen", .ptr = @ptrCast(&report_io.fdopen) },
+                .{ .name = "fprintf", .ptr = @ptrCast(&report_io.fprintf) },
+                .{ .name = "getenv", .ptr = @ptrCast(&report_io.getenv) },
+                .{ .name = "strcmp", .ptr = @ptrCast(&report_io.strcmp) },
+                .{ .name = "isatty", .ptr = @ptrCast(&report_io.isatty) },
+            };
+            for (report_syms) |sym| {
                 if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
                     llvm.LLVMAddGlobalMapping(engine, f, @constCast(sym.ptr));
                 }
