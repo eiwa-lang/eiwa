@@ -1763,6 +1763,8 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "llabs") or
                     std.mem.eql(u8, fn_name_s, "memset") or
                     std.mem.eql(u8, fn_name_s, "calloc") or
+                    std.mem.eql(u8, fn_name_s, "fdopen") or
+                    std.mem.eql(u8, fn_name_s, "fprintf") or
                     // Real external symbol: must NOT get a no-op stub.
                     std.mem.eql(u8, fn_name_s, "eiwa_install_crash_handler") or
                     (is_posix_target and (
