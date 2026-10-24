@@ -352,7 +352,7 @@ fn emitThrowStmt(
     }
 
     llvm.LLVMPositionBuilderAtEnd(builder, throw_unhandled_bb);
-    try emitUnhandledReport(ctx, mod, builder, func_val, "\x1b[1;31merror:\x1b[0m \x1b[1munhandled exception (no active handler)\x1b[0m\n  \x1b[36m-->\x1b[0m throw reached the top level without a matching try/catch\n");
+    try emitUnhandledReport(ctx, mod, builder, func_val, "unhandled exception (no active handler)");
 
     // throw never falls through: both branches end in unreachable. Put
     // the builder in a fresh unreachable block so subsequent statements
@@ -453,6 +453,55 @@ fn emitUnhandledReport(
     const fprintf_lib = libc_fn(mod, "fprintf", i32_type, &fprintf_ps, true);
     const fprintf_fn = fprintf_lib.fn_val;
     const fprintf_ft = fprintf_lib.fn_type;
+    var getenv_ps = [_]llvm.LLVMTypeRef{ptr_type};
+    const getenv_lib = libc_fn(mod, "getenv", ptr_type, &getenv_ps, false);
+    const getenv_fn = getenv_lib.fn_val;
+    const getenv_ft = getenv_lib.fn_type;
+    var strcmp_ps = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
+    const strcmp_lib = libc_fn(mod, "strcmp", i32_type, &strcmp_ps, false);
+    const strcmp_fn = strcmp_lib.fn_val;
+    const strcmp_ft = strcmp_lib.fn_type;
+    var isatty_ps = [_]llvm.LLVMTypeRef{i32_type};
+    const isatty_lib = libc_fn(mod, "isatty", i32_type, &isatty_ps, false);
+    const isatty_fn = isatty_lib.fn_val;
+    const isatty_ft = isatty_lib.fn_type;
+
+    const nc_name = llvm.LLVMBuildGlobalStringPtr(builder, "NO_COLOR", "unhandled_nc");
+    var nc_args = [_]llvm.LLVMValueRef{nc_name};
+    const nc_ptr = llvm.LLVMBuildCall2(builder, getenv_ft, getenv_fn, &nc_args, 1, "unhandled_nc_ptr");
+    const has_nc = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, nc_ptr, null_ptr, "unhandled_has_nc");
+    const term_name = llvm.LLVMBuildGlobalStringPtr(builder, "TERM", "unhandled_term");
+    var term_args = [_]llvm.LLVMValueRef{term_name};
+    const term_ptr = llvm.LLVMBuildCall2(builder, getenv_ft, getenv_fn, &term_args, 1, "unhandled_term_ptr");
+    const term_null = llvm.LLVMBuildIsNull(builder, term_ptr, "unhandled_term_null");
+    const empty_str = llvm.LLVMBuildGlobalStringPtr(builder, "", "unhandled_empty");
+    const safe_term = llvm.LLVMBuildSelect(builder, term_null, empty_str, term_ptr, "unhandled_safe_term");
+    const dumb_lit = llvm.LLVMBuildGlobalStringPtr(builder, "dumb", "unhandled_dumb");
+    var cmp_args = [_]llvm.LLVMValueRef{ safe_term, dumb_lit };
+    const cmp_res = llvm.LLVMBuildCall2(builder, strcmp_ft, strcmp_fn, &cmp_args, 2, "unhandled_cmp");
+    const is_dumb_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, cmp_res, llvm.LLVMConstInt(i32_type, 0, 0), "unhandled_dumb_eq");
+    const term_set = llvm.LLVMBuildNot(builder, term_null, "unhandled_term_set");
+    const is_dumb = llvm.LLVMBuildAnd(builder, term_set, is_dumb_eq, "unhandled_is_dumb");
+    var tty_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 2, 0)};
+    const tty_res = llvm.LLVMBuildCall2(builder, isatty_ft, isatty_fn, &tty_args, 1, "unhandled_tty");
+    const is_tty = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, tty_res, llvm.LLVMConstInt(i32_type, 0, 0), "unhandled_is_tty");
+    const no_nc = llvm.LLVMBuildNot(builder, has_nc, "unhandled_no_nc");
+    const no_dumb = llvm.LLVMBuildNot(builder, is_dumb, "unhandled_no_dumb");
+    const colors_ok = llvm.LLVMBuildAnd(builder, no_nc, no_dumb, "unhandled_colors_ok");
+    const colors = llvm.LLVMBuildAnd(builder, colors_ok, is_tty, "unhandled_colors");
+
+    const c_red_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[1;31m", "unhandled_c_red");
+    const c_bold_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[1m", "unhandled_c_bold");
+    const c_cyan_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[36m", "unhandled_c_cyan");
+    const c_rst_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[0m", "unhandled_c_rst");
+    const c_empty = llvm.LLVMBuildGlobalStringPtr(builder, "", "unhandled_c_empty");
+    const c_red = llvm.LLVMBuildSelect(builder, colors, c_red_c, c_empty, "unhandled_red");
+    const c_bold = llvm.LLVMBuildSelect(builder, colors, c_bold_c, c_empty, "unhandled_bold");
+    const c_cyan = llvm.LLVMBuildSelect(builder, colors, c_cyan_c, c_empty, "unhandled_cyan");
+    const c_rst = llvm.LLVMBuildSelect(builder, colors, c_rst_c, c_empty, "unhandled_rst");
+    const fmt1 = llvm.LLVMBuildGlobalStringPtr(builder, "%serror:%s %sunhandled %s: %s%s\n", "unhandled_fmt1");
+    const fmt1d = llvm.LLVMBuildGlobalStringPtr(builder, "%serror:%s %s%s\n", "unhandled_fmt1d");
+    const hintfmt = llvm.LLVMBuildGlobalStringPtr(builder, "  %s-->%s throw reached the top level without a matching try/catch\n", "unhandled_hintfmt");
 
     const guard_z = try std.heap.page_allocator.dupeZ(u8, "eiwa_unhandled_active");
     defer std.heap.page_allocator.free(guard_z);
@@ -473,8 +522,10 @@ fn emitUnhandledReport(
     llvm.LLVMPositionBuilderAtEnd(builder, fallback_bb);
     {
         const detail = llvm.LLVMBuildGlobalStringPtr(builder, static_msg, "unhandled_detail");
-        var fargs = [_]llvm.LLVMValueRef{ err, detail };
-        _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &fargs, 2, "");
+        var fargs = [_]llvm.LLVMValueRef{ err, fmt1d, c_red, c_rst, c_bold, detail, c_rst };
+        _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &fargs, 7, "");
+        var hargs = [_]llvm.LLVMValueRef{ err, hintfmt, c_cyan, c_rst };
+        _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &hargs, 4, "");
         const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
         const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
         var exit_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 1, 0)};
@@ -555,12 +606,10 @@ fn emitUnhandledReport(
     var phi_bbs = [_]llvm.LLVMBasicBlockRef{ msgfb_bb, msgok_bb };
     llvm.LLVMAddIncoming(msg_chars, &phi_vals, &phi_bbs, 2);
 
-    const fmt = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[1;31merror:\x1b[0m \x1b[1munhandled %s: %s\x1b[0m\n", "unhandled_fmt");
-    var pargs = [_]llvm.LLVMValueRef{ err, fmt, type_val, msg_chars };
-    _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &pargs, 4, "");
-    const hint = llvm.LLVMBuildGlobalStringPtr(builder, "  \x1b[36m-->\x1b[0m throw reached the top level without a matching try/catch\n", "unhandled_hint");
-    var hargs = [_]llvm.LLVMValueRef{ err, hint };
-    _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &hargs, 2, "");
+    var pargs = [_]llvm.LLVMValueRef{ err, fmt1, c_red, c_rst, c_bold, type_val, msg_chars, c_rst };
+    _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &pargs, 8, "");
+    var hargs = [_]llvm.LLVMValueRef{ err, hintfmt, c_cyan, c_rst };
+    _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &hargs, 4, "");
     const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
     const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
     var exit_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 1, 0)};
@@ -645,7 +694,7 @@ fn emitRethrowException(
     }
 
     llvm.LLVMPositionBuilderAtEnd(builder, rethrow_unhandled_bb);
-    try emitUnhandledReport(ctx, mod, builder, func_val, "\x1b[1;31merror:\x1b[0m \x1b[1munhandled exception (no matching handler)\x1b[0m\n  \x1b[36m-->\x1b[0m throw reached the top level without a matching try/catch\n");
+    try emitUnhandledReport(ctx, mod, builder, func_val, "unhandled exception (no matching handler)");
 }
 
 /// { wants_control, wants_normal } per catch-list type. Unions OR arms.

@@ -126,6 +126,9 @@ const gc = struct {
 const report_io = struct {
     pub extern "c" fn fdopen(fd: c_int, mode: [*:0]const u8) ?*anyopaque;
     pub extern "c" fn fprintf(stream: ?*anyopaque, fmt: [*:0]const u8, ...) c_int;
+    pub extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
+    pub extern "c" fn strcmp(a: [*:0]const u8, b: [*:0]const u8) c_int;
+    pub extern "c" fn isatty(fd: c_int) c_int;
 };
 
 /// Returns the heap allocation function emitted code should call:
@@ -1772,6 +1775,10 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "llabs") or
                     std.mem.eql(u8, fn_name_s, "memset") or
                     std.mem.eql(u8, fn_name_s, "calloc") or
+                    std.mem.eql(u8, fn_name_s, "fdopen") or
+                    std.mem.eql(u8, fn_name_s, "fprintf") or
+                    std.mem.eql(u8, fn_name_s, "getenv") or
+                    std.mem.eql(u8, fn_name_s, "isatty") or
                     std.mem.eql(u8, fn_name_s, "fdopen") or
                     std.mem.eql(u8, fn_name_s, "fprintf") or
                     // Real external symbol: must NOT get a no-op stub.
@@ -5556,6 +5563,9 @@ pub const LLVMEmitter = struct {
             const report_syms = [_]struct { name: [:0]const u8, ptr: *const anyopaque }{
                 .{ .name = "fdopen", .ptr = @ptrCast(&report_io.fdopen) },
                 .{ .name = "fprintf", .ptr = @ptrCast(&report_io.fprintf) },
+                .{ .name = "getenv", .ptr = @ptrCast(&report_io.getenv) },
+                .{ .name = "strcmp", .ptr = @ptrCast(&report_io.strcmp) },
+                .{ .name = "isatty", .ptr = @ptrCast(&report_io.isatty) },
             };
             for (report_syms) |sym| {
                 if (llvm.LLVMGetNamedFunction(mod, sym.name.ptr)) |f| {
