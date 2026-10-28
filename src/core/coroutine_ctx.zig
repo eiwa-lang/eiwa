@@ -18,6 +18,7 @@ pub const Ctx = struct {
     suspend_generating: *ArrayList([]const u8),
     /// Marker lowering data, accumulated across modules, keyed by marker node.
     suspend_sites: *ArrayList(SuspendSite),
+    suspend_memo: *std.AutoHashMap(u64, bool),
 };
 
 pub const SuspendShared = struct {
@@ -25,6 +26,7 @@ pub const SuspendShared = struct {
     generated: *std.StringHashMap(void),
     generating: *ArrayList([]const u8),
     sites: *ArrayList(SuspendSite),
+    memo: *std.AutoHashMap(u64, bool),
 };
 
 /// A free variable captured by a `task {}` block. Mutable captures share the

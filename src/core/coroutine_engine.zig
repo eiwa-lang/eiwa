@@ -1254,7 +1254,21 @@ pub fn resolveSuspendCallee(ctx: Ctx, call_node: *ASTNode) ?SuspendCallee {
 
 const SuspendMode = enum { Any, UserOnly };
 
+fn memoKey(node: *ASTNode, mode: SuspendMode) u64 {
+    return (@as(u64, @intFromPtr(node)) << 1) | @as(u64, @intFromEnum(mode));
+}
+
 fn funBodySuspends(ctx: Ctx, fun_node: *ASTNode, visiting: *ArrayList(*ASTNode), mode: SuspendMode) bool {
+    if (fun_node.data != .fun_decl) return false;
+    if (visiting.items.len > 0) return funBodySuspendsInner(ctx, fun_node, visiting, mode);
+    const key = memoKey(fun_node, mode);
+    if (ctx.suspend_memo.get(key)) |cached| return cached;
+    const result = funBodySuspendsInner(ctx, fun_node, visiting, mode);
+    ctx.suspend_memo.put(key, result) catch {};
+    return result;
+}
+
+fn funBodySuspendsInner(ctx: Ctx, fun_node: *ASTNode, visiting: *ArrayList(*ASTNode), mode: SuspendMode) bool {
     if (fun_node.data != .fun_decl) return false;
     const f = &fun_node.data.fun_decl;
     if (hasSuspendAnnotation(f.annotations)) return true;
