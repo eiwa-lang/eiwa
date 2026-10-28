@@ -149,3 +149,30 @@ jobs:
           echo "$OUT" | grep -q "runtime crash"
           test $CODE -ne 0
           rm -f crash_probe.ei crash_probe crash_probe.exe
+
+      - name: Unhandled exception report (native binary)
+        shell: bash
+        run: |
+          cat > unhandled_probe.ei <<'EOF'
+          type Boom(val detail: String) : Throwable {
+              implement fun message(): String = "boom:$detail"
+          }
+          fun main() {
+              throw Boom("kablam")
+          }
+          EOF
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./bin/eiwac.exe build -o unhandled_probe.exe unhandled_probe.ei
+            BIN=./unhandled_probe.exe
+          else
+            ./bin/eiwac build -o unhandled_probe unhandled_probe.ei
+            BIN=./unhandled_probe
+          fi
+          set +e
+          OUT=$($BIN 2>&1); CODE=$?
+          set -e
+          echo "$OUT"
+          echo "$OUT" | grep -q "Boom"
+          echo "$OUT" | grep -q "boom:kablam"
+          test $CODE -ne 0
+          rm -f unhandled_probe.ei unhandled_probe unhandled_probe.exe

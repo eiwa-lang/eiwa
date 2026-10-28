@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("../../core/ast.zig");
+const compat = @import("../../core/compat.zig");
 const types_mapping = @import("types.zig");
 const eiwa_types = @import("../../core/type_system.zig");
 const expression = @import("expression.zig");
@@ -351,20 +352,7 @@ fn emitThrowStmt(
     }
 
     llvm.LLVMPositionBuilderAtEnd(builder, throw_unhandled_bb);
-    {
-        if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
-            const puts_ft = llvm.LLVMGlobalGetValueType(puts_fn);
-            const msg_ptr = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled exception (no active handler)\n  --> throw reached the top level without a matching try/catch", "unhandled_msg");
-            var puts_args = [_]llvm.LLVMValueRef{msg_ptr};
-            _ = llvm.LLVMBuildCall2(builder, puts_ft, puts_fn, &puts_args, 1, "");
-        }
-        const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
-        const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
-        const one_i32 = llvm.LLVMConstInt(throw_i32_type, 1, 0);
-        var exit_args = [_]llvm.LLVMValueRef{one_i32};
-        _ = llvm.LLVMBuildCall2(builder, exit_type, exit_func, &exit_args, 1, "");
-        _ = llvm.LLVMBuildUnreachable(builder);
-    }
+    try emitUnhandledReport(ctx, mod, builder, func_val, "unhandled exception (no active handler)");
 
     // throw never falls through: both branches end in unreachable. Put
     // the builder in a fresh unreachable block so subsequent statements
@@ -375,6 +363,258 @@ fn emitThrowStmt(
     _ = llvm.LLVMBuildUnreachable(builder);
     const throw_dead_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "throw.dead");
     llvm.LLVMPositionBuilderAtEnd(builder, throw_dead_bb);
+}
+
+fn sameVtableValue(a: llvm.LLVMValueRef, b: llvm.LLVMValueRef) bool {
+    const ia = llvm.LLVMGetInitializer(a) orelse return false;
+    const ib = llvm.LLVMGetInitializer(b) orelse return false;
+    const ta = llvm.LLVMTypeOf(ia);
+    if (llvm.LLVMGetTypeKind(ta) != llvm.LLVMStructTypeKind) return false;
+    const tb = llvm.LLVMTypeOf(ib);
+    if (llvm.LLVMGetTypeKind(tb) != llvm.LLVMStructTypeKind) return false;
+    const n = llvm.LLVMCountStructElementTypes(ta);
+    if (n != llvm.LLVMCountStructElementTypes(tb)) return false;
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        if (llvm.LLVMGetOperand(ia, i) != llvm.LLVMGetOperand(ib, i)) return false;
+    }
+    return true;
+}
+
+fn unhandledDisplayName(mod: llvm.LLVMModuleRef, full: []const u8) []const u8 {
+    var n = full;
+    if (std.mem.endsWith(u8, n, "_vtable")) n = n[0 .. n.len - "_vtable".len];
+    var contract: []const u8 = "";
+    for ([_][]const u8{ "_Throwable", "_ControlFlow" }) |s| {
+        if (std.mem.endsWith(u8, n, s)) {
+            contract = s[1..];
+            n = n[0 .. n.len - s.len];
+            break;
+        }
+    }
+    if (contract.len == 0) return "Throwable";
+    const full_z = std.heap.page_allocator.dupeZ(u8, full) catch return n;
+    defer std.heap.page_allocator.free(full_z);
+    const mg = llvm.LLVMGetNamedGlobal(mod, full_z.ptr) orelse return n;
+    var best = n;
+    var rest = n;
+    while (std.mem.indexOfScalar(u8, rest, '_')) |idx| {
+        rest = rest[idx + 1 ..];
+        const cand = std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}_vtable", .{ rest, contract }) catch continue;
+        defer std.heap.page_allocator.free(cand);
+        const cand_z = std.heap.page_allocator.dupeZ(u8, cand) catch continue;
+        defer std.heap.page_allocator.free(cand_z);
+        if (llvm.LLVMGetNamedGlobal(mod, cand_z.ptr)) |cg| {
+            if (sameVtableValue(mg, cg)) best = rest;
+        }
+    }
+    if (best.len == 0) return "Throwable";
+    return best;
+}
+
+fn libc_fn(
+    mod: llvm.LLVMModuleRef,
+    name: [*:0]const u8,
+    ret: llvm.LLVMTypeRef,
+    params: []llvm.LLVMTypeRef,
+    varargs: bool,
+) struct { fn_val: llvm.LLVMValueRef, fn_type: llvm.LLVMTypeRef } {
+    const f = llvm.LLVMGetNamedFunction(mod, name) orelse
+        llvm.LLVMAddFunction(mod, name, llvm.LLVMFunctionType(ret, params.ptr, @intCast(params.len), if (varargs) 1 else 0));
+    return .{ .fn_val = f, .fn_type = llvm.LLVMGlobalGetValueType(f) };
+}
+
+fn emitUnhandledReport(
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
+    func_val: llvm.LLVMValueRef,
+    static_msg: [*:0]const u8,
+) anyerror!void {
+    const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
+    const i32_type = llvm.LLVMInt32TypeInContext(ctx);
+    const i64_type = llvm.LLVMInt64TypeInContext(ctx);
+
+    const data = try excGet(ctx, mod, builder, "eiwa_exc_active_data_get");
+    const table = try excGet(ctx, mod, builder, "eiwa_exc_active_table_get");
+    const null_ptr = llvm.LLVMConstNull(ptr_type);
+    try excSet(ctx, mod, builder, "eiwa_exc_active_data_set", null_ptr);
+    try excSet(ctx, mod, builder, "eiwa_exc_active_table_set", null_ptr);
+
+    const report_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "unhandled.report");
+    const fallback_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "unhandled.fallback");
+
+    var fdopen_ps = [_]llvm.LLVMTypeRef{ i32_type, ptr_type };
+    const fdopen_lib = libc_fn(mod, "fdopen", ptr_type, &fdopen_ps, false);
+    const wmode = llvm.LLVMBuildGlobalStringPtr(builder, "w", "unhandled_wmode");
+    var fdargs = [_]llvm.LLVMValueRef{ llvm.LLVMConstInt(i32_type, 2, 0), wmode };
+    const err = llvm.LLVMBuildCall2(builder, fdopen_lib.fn_type, fdopen_lib.fn_val, &fdargs, 2, "unhandled_stderr");
+    var fprintf_ps = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
+    const fprintf_lib = libc_fn(mod, "fprintf", i32_type, &fprintf_ps, true);
+    const fprintf_fn = fprintf_lib.fn_val;
+    const fprintf_ft = fprintf_lib.fn_type;
+    var getenv_ps = [_]llvm.LLVMTypeRef{ptr_type};
+    const getenv_lib = libc_fn(mod, "getenv", ptr_type, &getenv_ps, false);
+    const getenv_fn = getenv_lib.fn_val;
+    const getenv_ft = getenv_lib.fn_type;
+    var strcmp_ps = [_]llvm.LLVMTypeRef{ ptr_type, ptr_type };
+    const strcmp_lib = libc_fn(mod, "strcmp", i32_type, &strcmp_ps, false);
+    const strcmp_fn = strcmp_lib.fn_val;
+    const strcmp_ft = strcmp_lib.fn_type;
+    var isatty_ps = [_]llvm.LLVMTypeRef{i32_type};
+    const isatty_lib = libc_fn(mod, "isatty", i32_type, &isatty_ps, false);
+    const isatty_fn = isatty_lib.fn_val;
+    const isatty_ft = isatty_lib.fn_type;
+
+    const nc_name = llvm.LLVMBuildGlobalStringPtr(builder, "NO_COLOR", "unhandled_nc");
+    var nc_args = [_]llvm.LLVMValueRef{nc_name};
+    const nc_ptr = llvm.LLVMBuildCall2(builder, getenv_ft, getenv_fn, &nc_args, 1, "unhandled_nc_ptr");
+    const has_nc = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, nc_ptr, null_ptr, "unhandled_has_nc");
+    const term_name = llvm.LLVMBuildGlobalStringPtr(builder, "TERM", "unhandled_term");
+    var term_args = [_]llvm.LLVMValueRef{term_name};
+    const term_ptr = llvm.LLVMBuildCall2(builder, getenv_ft, getenv_fn, &term_args, 1, "unhandled_term_ptr");
+    const term_null = llvm.LLVMBuildIsNull(builder, term_ptr, "unhandled_term_null");
+    const empty_str = llvm.LLVMBuildGlobalStringPtr(builder, "", "unhandled_empty");
+    const safe_term = llvm.LLVMBuildSelect(builder, term_null, empty_str, term_ptr, "unhandled_safe_term");
+    const dumb_lit = llvm.LLVMBuildGlobalStringPtr(builder, "dumb", "unhandled_dumb");
+    var cmp_args = [_]llvm.LLVMValueRef{ safe_term, dumb_lit };
+    const cmp_res = llvm.LLVMBuildCall2(builder, strcmp_ft, strcmp_fn, &cmp_args, 2, "unhandled_cmp");
+    const is_dumb_eq = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, cmp_res, llvm.LLVMConstInt(i32_type, 0, 0), "unhandled_dumb_eq");
+    const term_set = llvm.LLVMBuildNot(builder, term_null, "unhandled_term_set");
+    const is_dumb = llvm.LLVMBuildAnd(builder, term_set, is_dumb_eq, "unhandled_is_dumb");
+    var tty_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 2, 0)};
+    const tty_res = llvm.LLVMBuildCall2(builder, isatty_ft, isatty_fn, &tty_args, 1, "unhandled_tty");
+    const is_tty = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, tty_res, llvm.LLVMConstInt(i32_type, 0, 0), "unhandled_is_tty");
+    const no_nc = llvm.LLVMBuildNot(builder, has_nc, "unhandled_no_nc");
+    const no_dumb = llvm.LLVMBuildNot(builder, is_dumb, "unhandled_no_dumb");
+    const colors_ok = llvm.LLVMBuildAnd(builder, no_nc, no_dumb, "unhandled_colors_ok");
+    const colors = llvm.LLVMBuildAnd(builder, colors_ok, is_tty, "unhandled_colors");
+
+    const c_red_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[1;31m", "unhandled_c_red");
+    const c_bold_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[1m", "unhandled_c_bold");
+    const c_cyan_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[36m", "unhandled_c_cyan");
+    const c_rst_c = llvm.LLVMBuildGlobalStringPtr(builder, "\x1b[0m", "unhandled_c_rst");
+    const c_empty = llvm.LLVMBuildGlobalStringPtr(builder, "", "unhandled_c_empty");
+    const c_red = llvm.LLVMBuildSelect(builder, colors, c_red_c, c_empty, "unhandled_red");
+    const c_bold = llvm.LLVMBuildSelect(builder, colors, c_bold_c, c_empty, "unhandled_bold");
+    const c_cyan = llvm.LLVMBuildSelect(builder, colors, c_cyan_c, c_empty, "unhandled_cyan");
+    const c_rst = llvm.LLVMBuildSelect(builder, colors, c_rst_c, c_empty, "unhandled_rst");
+    const fmt1 = llvm.LLVMBuildGlobalStringPtr(builder, "%serror:%s %sunhandled %s: %s%s\n", "unhandled_fmt1");
+    const fmt1d = llvm.LLVMBuildGlobalStringPtr(builder, "%serror:%s %s%s\n", "unhandled_fmt1d");
+    const hintfmt = llvm.LLVMBuildGlobalStringPtr(builder, "  %s-->%s throw reached the top level without a matching try/catch\n", "unhandled_hintfmt");
+
+    const guard_z = try std.heap.page_allocator.dupeZ(u8, "eiwa_unhandled_active");
+    defer std.heap.page_allocator.free(guard_z);
+    const guard = llvm.LLVMGetNamedGlobal(mod, guard_z.ptr) orelse blk: {
+        const g = llvm.LLVMAddGlobal(mod, i32_type, guard_z.ptr);
+        llvm.LLVMSetInitializer(g, llvm.LLVMConstInt(i32_type, 0, 0));
+        llvm.LLVMSetLinkage(g, llvm.LLVMCommonLinkage);
+        break :blk g;
+    };
+    const guard_val = llvm.LLVMBuildLoad2(builder, i32_type, guard, "unhandled_active");
+    const reentered = llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, guard_val, llvm.LLVMConstInt(i32_type, 0, 0), "unhandled_reentry");
+    const no_data = llvm.LLVMBuildIsNull(builder, data, "unhandled_no_data");
+    const no_table = llvm.LLVMBuildIsNull(builder, table, "unhandled_no_table");
+    const no_exc = llvm.LLVMBuildOr(builder, no_data, no_table, "unhandled_no_exc");
+    const use_fallback = llvm.LLVMBuildOr(builder, reentered, no_exc, "unhandled_use_fallback");
+    _ = llvm.LLVMBuildCondBr(builder, use_fallback, fallback_bb, report_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, fallback_bb);
+    {
+        const detail = llvm.LLVMBuildGlobalStringPtr(builder, static_msg, "unhandled_detail");
+        var fargs = [_]llvm.LLVMValueRef{ err, fmt1d, c_red, c_rst, c_bold, detail, c_rst };
+        _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &fargs, 7, "");
+        var hargs = [_]llvm.LLVMValueRef{ err, hintfmt, c_cyan, c_rst };
+        _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &hargs, 4, "");
+        const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
+        const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
+        var exit_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 1, 0)};
+        _ = llvm.LLVMBuildCall2(builder, exit_type, exit_func, &exit_args, 1, "");
+        _ = llvm.LLVMBuildUnreachable(builder);
+    }
+
+    llvm.LLVMPositionBuilderAtEnd(builder, report_bb);
+    _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i32_type, 1, 0), guard);
+
+    var vt_names = compat.ArrayList([]const u8).init(std.heap.page_allocator);
+    defer vt_names.deinit();
+    var vt_it = llvm.LLVMGetFirstGlobal(mod);
+    while (vt_it) |g| : (vt_it = llvm.LLVMGetNextGlobal(g)) {
+        const g_name = std.mem.span(llvm.LLVMGetValueName(g));
+        if (std.mem.endsWith(u8, g_name, "_Throwable_vtable") or std.mem.endsWith(u8, g_name, "_ControlFlow_vtable")) {
+            vt_names.append(g_name) catch continue;
+        }
+    }
+
+    var type_val = llvm.LLVMBuildGlobalStringPtr(builder, "Throwable", "unhandled_type_dflt");
+    for (vt_names.items) |g_name| {
+        const g_z = std.heap.page_allocator.dupeZ(u8, g_name) catch continue;
+        defer std.heap.page_allocator.free(g_z);
+        const g = llvm.LLVMGetNamedGlobal(mod, g_z.ptr) orelse continue;
+        const disp = unhandledDisplayName(mod, g_name);
+        const disp_z = std.heap.page_allocator.dupeZ(u8, disp) catch continue;
+        defer std.heap.page_allocator.free(disp_z);
+        const name_str = llvm.LLVMBuildGlobalStringPtr(builder, disp_z.ptr, "unhandled_type");
+        const is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, table, g, "unhandled_type_eq");
+        type_val = llvm.LLVMBuildSelect(builder, is_match, name_str, type_val, "unhandled_type_sel");
+    }
+
+    const stub_z = try std.heap.page_allocator.dupeZ(u8, "eiwa_unhandled_nomsg");
+    defer std.heap.page_allocator.free(stub_z);
+    const stub = llvm.LLVMGetNamedFunction(mod, stub_z.ptr) orelse blk: {
+        var sps = [_]llvm.LLVMTypeRef{ptr_type};
+        const sft = llvm.LLVMFunctionType(ptr_type, &sps, 1, 0);
+        const f = llvm.LLVMAddFunction(mod, stub_z.ptr, sft);
+        llvm.LLVMSetLinkage(f, llvm.LLVMInternalLinkage);
+        const ebb = llvm.LLVMAppendBasicBlockInContext(ctx, f, "entry");
+        const tb = llvm.LLVMCreateBuilderInContext(ctx);
+        llvm.LLVMPositionBuilderAtEnd(tb, ebb);
+        _ = llvm.LLVMBuildRet(tb, llvm.LLVMConstNull(ptr_type));
+        llvm.LLVMDisposeBuilder(tb);
+        break :blk f;
+    };
+    const stub_ptr = llvm.LLVMBuildPointerCast(builder, stub, ptr_type, "unhandled_stub");
+    var vidx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 0, 0)};
+    const slot_ptr = llvm.LLVMBuildGEP2(builder, ptr_type, table, &vidx, 1, "unhandled_slot");
+    const fn_ptr = llvm.LLVMBuildLoad2(builder, ptr_type, slot_ptr, "unhandled_fn");
+    const fn_null = llvm.LLVMBuildIsNull(builder, fn_ptr, "unhandled_fn_null");
+    const safe_fn = llvm.LLVMBuildSelect(builder, fn_null, stub_ptr, fn_ptr, "unhandled_fn_sel");
+    var mps = [_]llvm.LLVMTypeRef{ptr_type};
+    const msg_ft = llvm.LLVMFunctionType(ptr_type, &mps, 1, 0);
+    var margs = [_]llvm.LLVMValueRef{data};
+    const msg_obj = llvm.LLVMBuildCall2(builder, msg_ft, safe_fn, &margs, 1, "unhandled_msg_obj");
+
+    const fallback_chars = llvm.LLVMBuildGlobalStringPtr(builder, "<no message>", "unhandled_no_msg");
+    const msgok_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "unhandled.msgok");
+    const msgfb_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "unhandled.msgfb");
+    const print_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "unhandled.print");
+    const msg_null = llvm.LLVMBuildIsNull(builder, msg_obj, "unhandled_msg_null");
+    _ = llvm.LLVMBuildCondBr(builder, msg_null, msgfb_bb, msgok_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, msgok_bb);
+    const field0 = llvm.LLVMBuildLoad2(builder, ptr_type, msg_obj, "unhandled_field0");
+    const chars_null = llvm.LLVMBuildIsNull(builder, field0, "unhandled_chars_null");
+    const ok_chars = llvm.LLVMBuildSelect(builder, chars_null, fallback_chars, field0, "unhandled_chars_sel");
+    _ = llvm.LLVMBuildBr(builder, print_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, msgfb_bb);
+    _ = llvm.LLVMBuildBr(builder, print_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(builder, print_bb);
+    const msg_chars = llvm.LLVMBuildPhi(builder, ptr_type, "unhandled_chars");
+    var phi_vals = [_]llvm.LLVMValueRef{ fallback_chars, ok_chars };
+    var phi_bbs = [_]llvm.LLVMBasicBlockRef{ msgfb_bb, msgok_bb };
+    llvm.LLVMAddIncoming(msg_chars, &phi_vals, &phi_bbs, 2);
+
+    var pargs = [_]llvm.LLVMValueRef{ err, fmt1, c_red, c_rst, c_bold, type_val, msg_chars, c_rst };
+    _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &pargs, 8, "");
+    var hargs = [_]llvm.LLVMValueRef{ err, hintfmt, c_cyan, c_rst };
+    _ = llvm.LLVMBuildCall2(builder, fprintf_ft, fprintf_fn, &hargs, 4, "");
+    const exit_func = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
+    const exit_type = llvm.LLVMGlobalGetValueType(exit_func);
+    var exit_args = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i32_type, 1, 0)};
+    _ = llvm.LLVMBuildCall2(builder, exit_type, exit_func, &exit_args, 1, "");
+    _ = llvm.LLVMBuildUnreachable(builder);
 }
 
 /// `Throwable` vtable, else the `ControlFlow` one. Null when neither exists.
@@ -454,20 +694,7 @@ fn emitRethrowException(
     }
 
     llvm.LLVMPositionBuilderAtEnd(builder, rethrow_unhandled_bb);
-    {
-        if (llvm.LLVMGetNamedFunction(mod, "puts")) |puts_fn| {
-            const puts_ft2 = llvm.LLVMGlobalGetValueType(puts_fn);
-            const msg_ptr2 = llvm.LLVMBuildGlobalStringPtr(builder, "error: unhandled exception (no matching handler)\n  --> throw reached the top level without a matching try/catch", "unhandled_msg2");
-            var puts_args2 = [_]llvm.LLVMValueRef{msg_ptr2};
-            _ = llvm.LLVMBuildCall2(builder, puts_ft2, puts_fn, &puts_args2, 1, "");
-        }
-        const exit_func2 = llvm.LLVMGetNamedFunction(mod, "exit") orelse return error.ExceptionRuntimeMissing;
-        const exit_type2 = llvm.LLVMGlobalGetValueType(exit_func2);
-        const one_i322 = llvm.LLVMConstInt(i32_type, 1, 0);
-        var exit_args2 = [_]llvm.LLVMValueRef{one_i322};
-        _ = llvm.LLVMBuildCall2(builder, exit_type2, exit_func2, &exit_args2, 1, "");
-        _ = llvm.LLVMBuildUnreachable(builder);
-    }
+    try emitUnhandledReport(ctx, mod, builder, func_val, "unhandled exception (no matching handler)");
 }
 
 /// { wants_control, wants_normal } per catch-list type. Unions OR arms.
@@ -502,6 +729,31 @@ fn typeWantsKind(ctx: llvm.LLVMContextRef, mod: llvm.LLVMModuleRef, rt: *const e
     }
 }
 
+pub fn allocInEntryBlock(
+    ctx: llvm.LLVMContextRef,
+    builder: llvm.LLVMBuilderRef,
+    ty: llvm.LLVMTypeRef,
+    name: [*:0]const u8,
+) llvm.LLVMValueRef {
+    const cur_bb = llvm.LLVMGetInsertBlock(builder);
+    if (cur_bb == null) {
+        return llvm.LLVMBuildAlloca(builder, ty, name);
+    }
+    const func_val = llvm.LLVMGetBasicBlockParent(cur_bb);
+    if (func_val == null) {
+        return llvm.LLVMBuildAlloca(builder, ty, name);
+    }
+    const entry_bb = llvm.LLVMGetEntryBasicBlock(func_val);
+    const tmp = llvm.LLVMCreateBuilderInContext(ctx);
+    defer llvm.LLVMDisposeBuilder(tmp);
+    if (llvm.LLVMGetFirstInstruction(entry_bb)) |first| {
+        llvm.LLVMPositionBuilderBefore(tmp, first);
+    } else {
+        llvm.LLVMPositionBuilderAtEnd(tmp, entry_bb);
+    }
+    return llvm.LLVMBuildAlloca(tmp, ty, name);
+}
+
 /// Shared `setjmp`/`longjmp` exception frame for `try` (statement and value
 /// emitters). Pushes the frame, emits the `setjmp` dispatch and leaves the
 /// builder positioned at the `try` body block.
@@ -521,7 +773,7 @@ pub fn emitTryBegin(
     const i32_type = llvm.LLVMInt32TypeInContext(ctx);
     const frame_type = llvm.LLVMGetTypeByName(mod, "EiwaExceptionFrame") orelse return error.ExceptionRuntimeMissing;
 
-    const frame_ptr = llvm.LLVMBuildAlloca(builder, frame_type, "exc_frame");
+    const frame_ptr = allocInEntryBlock(ctx, builder, frame_type, "exc_frame");
     llvm.LLVMSetAlignment(frame_ptr, 16);
 
     const cur_stack = try excGet(ctx, mod, builder, "eiwa_exc_top_get");
@@ -670,7 +922,7 @@ pub fn emitTryCatches(
                 const v_z = try std.heap.page_allocator.dupeZ(u8, var_name);
                 defer std.heap.page_allocator.free(v_z);
 
-                const var_alloca = llvm.LLVMBuildAlloca(builder, fat_type, v_z.ptr);
+                const var_alloca = allocInEntryBlock(ctx, builder, fat_type, v_z.ptr);
                 _ = llvm.LLVMBuildStore(builder, exc_val, var_alloca);
                 try scope.put(var_name, var_alloca);
             }
@@ -741,7 +993,7 @@ pub fn emitStatement(
                 const ptr_type = llvm.LLVMPointerTypeInContext(ctx, 0);
                 const name_z = try std.heap.page_allocator.dupeZ(u8, name);
                 defer std.heap.page_allocator.free(name_z);
-                const dummy = llvm.LLVMBuildAlloca(builder, ptr_type, name_z.ptr);
+                const dummy = allocInEntryBlock(ctx, builder, ptr_type, name_z.ptr);
                 _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstNull(ptr_type), dummy);
                 try scope.put(name, dummy);
                 if (!std.mem.eql(u8, name, v.name)) {
@@ -779,14 +1031,14 @@ pub fn emitStatement(
                 }
 
                 // Stack alloca holds the box pointer
-                const alloca_ptr = llvm.LLVMBuildAlloca(builder, ptr_type, name_z.ptr);
+                const alloca_ptr = allocInEntryBlock(ctx, builder, ptr_type, name_z.ptr);
                 _ = llvm.LLVMBuildStore(builder, box_ptr, alloca_ptr);
                 try scope.put(name, alloca_ptr);
                 if (!std.mem.eql(u8, name, v.name)) {
                     try scope.put(v.name, alloca_ptr);
                 }
             } else {
-                const alloca_ptr = llvm.LLVMBuildAlloca(builder, llvm_type, name_z.ptr);
+                const alloca_ptr = allocInEntryBlock(ctx, builder, llvm_type, name_z.ptr);
                 try scope.put(name, alloca_ptr);
                 if (!std.mem.eql(u8, name, v.name)) {
                     try scope.put(v.name, alloca_ptr);
@@ -1147,7 +1399,7 @@ fn emitForLoop(
     const size_ptr = llvm.LLVMBuildGEP2(builder, i64_type, arr_val, &idx0, 1, "for_size_ptr");
     const size_val = llvm.LLVMBuildLoad2(builder, i64_type, size_ptr, "for_size");
 
-    const i_ptr = llvm.LLVMBuildAlloca(builder, i64_type, "for_i");
+    const i_ptr = allocInEntryBlock(ctx, builder, i64_type, "for_i");
     _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), i_ptr);
 
     const cond_bb = llvm.LLVMAppendBasicBlockInContext(ctx, func_val, "for.cond");
@@ -1195,7 +1447,7 @@ fn emitForLoop(
     if (f.index_name) |idx_name| {
         const idx_name_z = try std.heap.page_allocator.dupeZ(u8, idx_name);
         defer std.heap.page_allocator.free(idx_name_z);
-        const idx_alloca = llvm.LLVMBuildAlloca(builder, i64_type, idx_name_z.ptr);
+        const idx_alloca = allocInEntryBlock(ctx, builder, i64_type, idx_name_z.ptr);
         _ = llvm.LLVMBuildStore(builder, i_body, idx_alloca);
         try loop_scope.put(idx_name, idx_alloca);
     }
@@ -1203,7 +1455,7 @@ fn emitForLoop(
     const item_type = llvm.LLVMTypeOf(item_val);
     const item_name_z = try std.heap.page_allocator.dupeZ(u8, f.item_name);
     defer std.heap.page_allocator.free(item_name_z);
-    const item_alloca = llvm.LLVMBuildAlloca(builder, item_type, item_name_z.ptr);
+    const item_alloca = allocInEntryBlock(ctx, builder, item_type, item_name_z.ptr);
     _ = llvm.LLVMBuildStore(builder, item_val, item_alloca);
     try loop_scope.put(f.item_name, item_alloca);
 
@@ -1309,7 +1561,7 @@ pub fn emitForCollect(
     var one_idx = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(i64_type, 1, 0)};
     const cap_ptr = llvm.LLVMBuildGEP2(builder, i64_type, buf_val, &one_idx, 1, "for_buf_cap");
     _ = llvm.LLVMBuildStore(builder, llvm.LLVMConstInt(i64_type, 0, 0), cap_ptr);
-    const buf_addr = llvm.LLVMBuildAlloca(builder, ptr_type, "for_buf_addr");
+    const buf_addr = allocInEntryBlock(ctx, builder, ptr_type, "for_buf_addr");
     _ = llvm.LLVMBuildStore(builder, buf_val, buf_addr);
 
     const ci = ForCollect{

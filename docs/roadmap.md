@@ -10,8 +10,8 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 82 — `this` em defaults de métodos/extensões** (`this` = receiver via `substituteParam`) — **concluída** (2026-09-16).
 > **Phase 87 — Shadowing top-level & top-level nos testes** (`val error` sombreia `fun error`; top-level executa por teste) — **concluída** (2026-09-16).
 > **Phase 88 — Renomear `break` → `leave`** (hard break da keyword, sem alias; decisão em ADR 69) — **concluída** (2026-09-17).
-> **Fase atual (2026-09):** follow-ups abertos (G2–G10, F2–F4, H1–H3, 75.8/75.9, 91.4). **Phase 89** (string multilinha) — **concluída**. **Phase 91** (smartcast de nullable em `if`/ternário/`when`) — **concluída**. **Phase 90** (`throw` em `return`/`leave`) — **concluída**.
-> **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**.
+> **Fase atual (2026-10):** follow-ups abertos (G2–G10, F3–F4, H1–H3, 75.8/75.9, 91.4). **Phase 89** (string multilinha) — **concluída**. **Phase 91** (smartcast de nullable em `if`/ternário/`when`) — **concluída**. **Phase 90** (`throw` em `return`/`leave`) — **concluída**. **F2** (trailing `if`/`when` em `task`) + **79.2** (bônus) — **concluídos**. **T1/T2** (spawn detached) + **T3** (stack 8 MiB configurável) — **concluídos** (v0.0.94/v0.0.95).
+> **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**. **Phase 98** (allocas em loops + sigaltstack por thread) — **concluída** (2026-10-20).
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
 
@@ -1245,11 +1245,10 @@ Semântica alvo:
 - [x] **Task 79.1:** Checker — `inferIfExpr` infere branches em bloco como expressão
   (regras acima). `checkBlock` (blocos como statement) inalterado: `if` sem
   `else` continua `Void`.
-- [ ] **Task 79.2 (follow-up, gap pré-existente do transform):** `if` como valor
-  *dentro* de `task {}` falha em runtime — inclusive sem chaves
-  (`if (true) 1 else 2`), logo é ortogonal a esta fase. Evidência via stash:
-  falha idêntica no código pré-fix. Requer plumbing de valores na state machine
-  (domínio das Phases 68.x). Não coberto pela suíte (manter gate verde).
+- [x] **Task 79.2 (follow-up, gap pré-existente do transform — DONE via F2, 2026-10-20):**
+  trailing `if`-valor em `task {}` devolvia zero silencioso (gate `isValueStatement`
+  não reconhecia `if`/`when` como valor). Mesmo fix do F2; cobertura em
+  `task_trailing_value_test.ei`.
 - [ ] **Task 79.3 (follow-up, achado na 97):** ternário com ramos incompatíveis
   infere o primeiro ramo (`val s = if (c) A() else B()` tipa `A`; `s is B`
   responde `true/true` via heurística em vez de erro). Covaria com a frouxidão
@@ -1373,10 +1372,18 @@ Semântica alvo:
   tipo + `catch (e: T)` + `catch {}` + rethrow sem match; `Null` absorve em `T?`; ramos
   divergentes (`return`/`throw`) excluídos; `Void` = `TypeError`). Cobertura
   `try_expression_test.ei` (+6 testes: fallback, var tipada, multi-catch, Int, Null, rethrow).
-- [ ] **F2 — try-valor em `task {}`:** plumbing do slot `res` na state machine.
-  Achado na F1 (2026-09-16): a rejeição `TypeError` NÃO dispara p/ `task {}`
-  top-level — compila e trava em runtime (provado na main limpa; bare e com
-  catch idênticos). Hang pré-existente, sem relação com F1.
+- [x] **F2 — try-valor em `task {}` (DONE 2026-10-20):** raiz era o gate
+  `isValueStatement` (`coroutine_syntax.zig`) — trailing `if`/`when` não eram
+  reconhecidos como valor, então `buildCompletionStmts` nunca armazenava
+  `this.task.result` (silent-zero no `await`; o hang original de 2026-09-16 já
+  não reproduzia — shapes diretos falham alto via `taskNodeHas`). Achado extra:
+  `when`-valor + subject `try`-elvis dava ramo errado só em `task` (P3). Fix:
+  `.if_expr`/`.when_expr` no gate (emitem inline no done state, sem split) +
+  erro loud dedicado p/ suspensão dentro do trailing (`suspend call in task
+  result value...`, espelho G8); `try`/`for`-valor mantêm as rejeições
+  dedicadas (res-slot/collect entre estados seguem não-implementados).
+  Cobertura `task_trailing_value_test.ei` (6) + `task_trailing_suspend_xfail_test.ei`.
+  Bônus: fecha o 79.2 (trailing `if`-valor em `task`). Suíte 902/902.
 - [ ] **F3 — `try` como operando geral:** ramos de ternário e operandos
   binários (exceto LHS do `?:`, que conta como slot-valor) continuam fora;
   `obj.x = try {...}` não verificado.
@@ -1929,6 +1936,79 @@ Semântica alvo:
 ---
 
 * [x] **Errors:** Semantic validations fail gracefully, emitting rich terminal errors.
+
+---
+
+### Phase 98: Servidores de vida longa — allocas em loops + crash handler (COMPLETED, 2026-10-20)
+
+> **Sintoma:** serviços Eiwa de vida longa (`agena`, `eiwa-home`, `sexpot-webclient`)
+> morriam a cada ~2,5 h com `exit 139` (SIGSEGV) **sem nenhuma mensagem** — sem
+> relatório de crash, sem stack trace, sem entrada no ring do kernel.
+
+> **Causa raiz (1) — `alloca` emitido dentro de loops:** o emissor criava o alloca da
+> moldura de exceção (`exc_frame`), da variável do `catch`, das declarações locais, dos
+> slots de `for` (`for_i`, índice, item, buffer do collect) e dos resultados de
+> expressões `if`/`when`/`try` **no bloco corrente**. Um `alloca` em bloco não-entry
+> aloca um slot novo a cada execução; em funções que contêm `setjmp` (qualquer `try`) o
+> LLVM não promove esses slots para registradores (`returns_twice`), então o loop
+> vazava ~230 B por iteração (medido: 54 kB/min no `agena`, 8 MiB em ~150 min) até
+> estourar a stack da thread principal.
+>
+> **Correção:** helper `allocInEntryBlock()` em `statement.zig` (builder temporário
+> posicionado antes da primeira instrução do bloco de entrada da função) aplicado a
+> todos os allocas por-iteração de `statement.zig` e `expression.zig`. Um slot por
+> invocação da função, endereço estável, sem mudança de semântica (capturas de lambda
+> copiam o valor; `for`/`when`/`if` escrevem antes de ler).
+
+> **Causa raiz (2) — `SA_ONSTACK` sem `sigaltstack`:** `eiwa_install_crash_handler`
+> registrava o handler com `SA_ONSTACK` mas nunca instalava uma stack alternativa. Num
+> SIGSEGV por stack esgotada o handler rodava na própria stack estourada e refaultava,
+> matando o processo silenciosamente. **Correção:** `sigaltstack()` por thread
+> (`_Thread_local`, 64 KiB) em `eiwa_crash.c`, instalado também pelos trampolines de
+> `std.thread` e `std.coroutines` — agora o overflow imprime `runtime crash (SIGSEGV)`
+> com trace em vez de morrer calado.
+
+> **Validação:** `zig build test` + 916/916 `eiwac test` + 29/29 testes do app;
+> repros de 3M–20M iterações com `ulimit -s 1024` (antes morriam com exit 132/139);
+> app real com 6.000 requests + 5 min idle em stack de 1 MiB com uso estável
+> (binário antigo: 2.784 kB em 39 min idle).
+
+> **Follow-ups (DONE 2026-10-20, v0.0.94):**
+> - [x] **T1 — `Threads.spawn` vaza 16 MiB de VA por spawn (DONE):** `spawn(block): Void`
+>   fire-and-forget (detach no trampoline via `pthreadDetach(pthreadSelf())`) +
+>   `spawnJoinable(block): Thread` explícito (caller MUST `join()`); testes migrados
+>   (`threads/sync/atomic/db_pool/sched_worker_stack`) + novo `thread_spawn_test.ei`
+>   (50x/200x detached sem join). 16 MiB mantidos (ver § abaixo) — VA de pool agora
+>   limitada (`Ncores × 16 MiB`), detached é transitória e reclaimada no exit.
+>   Stack-shrink 16→1-2 MiB **não aplicado**: `sched_worker_stack_test.ei`
+>   (`deepStep(200000)`) prova que 512 KiB default já estourou em tráfego real;
+>   exige medição de high-water antes de tunar.
+> - [x] **T3 — default 16→8 MiB + stack configurável (DONE 2026-10-20):** medido
+>   2/4 MiB crash exit 132, 8/12/16 MiB passam no `deepStep(200000)` (~30B/frame).
+>   `WORKER_STACK_SIZE = 8388608` (Linux default, tamanho da fibra Crystal);
+>   `spawnWithStack`/`spawnJoinableWithStack`/`spawnThreadWithStack` +
+>   `stackAttrSized` em `std.thread`, `Dispatcher.stackSize` +
+>   `Dispatchers.createWithStack` em `std.coroutines`; cobertura em
+>   `thread_spawn_test.ei` (custom 8 MiB detached + joinable).
+> - [x] **T2 — `pthread_attr_t` sem destroy (DONE):** `pthreadAttrDestroy` exposto no
+>   `lib PosixThread/Win32Thread` + `ThreadOpsContract`/`NativeThread` e chamado após
+>   `pthreadCreate` em `Threads.spawnThread` e `Dispatcher.ensureStarted`
+>   (attrs são copiados pelo create; buffer de 128 B era leak por spawn/worker).
+
+---
+
+### Phase 99: Delinear report de exceção não-tratada em função por módulo (FUTURE / BACKLOG)
+> **Contexto:** o fix da issue #19 (`emitUnhandledReport` em `src/backend/llvm_emitter/statement.zig`)
+> emite o bloco de report inline em cada site de `throw` (cadeia de selects + strings por vtable).
+> Medido via chave A/B (2026-10-22): custo marginal de ~0.05s (~4%) no JIT de arquivo
+> throw-denso, ~0 em workload stdlib-pesado — teto do ganho, sem efeito em runtime
+> (o caminho executa 1x por crash). Não paga o churn agora; batch futuro com outras
+> dedupes do emissor.
+- [ ] **Task 99.1:** Gerar uma única `eiwa_report_unhandled(data, table)` por módulo (hook de
+  fim-de-módulo, após todos os corpos — vtables criadas sob demanda via `coerceToContract`
+  precisam existir antes da coleta) e emitir só um `call` por site.
+- [ ] **Verify:** `Unhandled exception report` do CI verde + suíte completa verde; `eiwac build`
+  smoke (split-mode: sem `duplicate symbol`).
 
 ---
 

@@ -677,6 +677,24 @@ pub fn inferGetExpr(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
                 .c_name = "",
             } };
             prop_type = fun_t;
+        } else if (std.mem.eql(u8, g.name, "truncate")) {
+            // truncate(newSize: Int): Void — sets the raw buffer size slot.
+            const fun_t = try self.allocator.create(EiwaType);
+            var params = try self.allocator.alloc(*const EiwaType, 1);
+
+            const int_t = try self.allocator.create(EiwaType);
+            int_t.* = .Int;
+            params[0] = int_t;
+
+            const void_t = try self.allocator.create(EiwaType);
+            void_t.* = .Void;
+
+            fun_t.* = .{ .Function = .{
+                .params = params,
+                .return_type = void_t,
+                .c_name = "",
+            } };
+            prop_type = fun_t;
         }
     }
 

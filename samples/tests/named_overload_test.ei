@@ -1,0 +1,41 @@
+// Named-arg overload resolution must not depend on position or nesting
+// (issue #18): probes bind named arguments by parameter NAME.
+type Calc() {
+    fun compute(x: Int = 0, y: Int = 0, mode: String = ""): String {
+        return "MODE:$mode"
+    }
+
+    fun compute(x: Int = 0, y: Int = 0, flag: Bool = false): String {
+        if (flag) {
+            return "FLAG:$x"
+        }
+        return "plain:$x"
+    }
+}
+
+fun Calc.top(): String {
+    return compute(flag = true, x = 1)
+}
+
+object StaticCalc {
+    fun compute(x: Int = 0, y: Int = 0, mode: String = ""): String {
+        return "MODE:$mode"
+    }
+
+    fun compute(x: Int = 0, y: Int = 0, flag: Bool = false): String {
+        if (flag) {
+            return "FLAG:$x"
+        }
+        return "plain:$x"
+    }
+}
+
+test "overload: named args resolve by name in method body" {
+    val c = Calc()
+    assert(c.top() == "FLAG:1")
+}
+
+test "overload: named args resolve by name in static call" {
+    assert(StaticCalc.compute(flag = true, x = 2) == "FLAG:2")
+    assert(StaticCalc.compute(mode = "m", y = 3) == "MODE:m")
+}

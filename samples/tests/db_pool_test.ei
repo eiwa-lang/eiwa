@@ -73,13 +73,13 @@ fun poolStress(pool: ConnectionPool<FakeConn>, rounds: Int): Int {
 
 test "db: pool survives threaded acquire/release storms" {
     val pool = ConnectionPool<FakeConn>({ FakeConn() }, 2)
-    val t1 = Threads.spawn {
+    val t1 = Threads.spawnJoinable {
         assert(poolStress(pool, 200) == 200, "t1")
     }
-    val t2 = Threads.spawn {
+    val t2 = Threads.spawnJoinable {
         assert(poolStress(pool, 200) == 200, "t2")
     }
-    val t3 = Threads.spawn {
+    val t3 = Threads.spawnJoinable {
         assert(poolStress(pool, 200) == 200, "t3")
     }
     t1.join()
@@ -106,4 +106,27 @@ test "db: pool releases slot when factory throws" {
     val c = pool.acquire()
     pool.release(c)
     assert(true, "recovered")
+}
+
+object ContractPool {
+    var pool: Connection? = null
+    fun connect(): Connection {
+        if (ContractPool.pool == null) {
+            ContractPool.pool = ConnectionPool<FakeConn>({ FakeConn() }, 1)
+        }
+        val p = ContractPool.pool
+        if (p == null) {
+            throw DbError("pool init failed")
+        }
+        return p
+    }
+}
+
+test "db: contract-typed object field holds generic pool" {
+    val db = ContractPool.connect()
+    val r = db.query("SELECT 1")
+    assert(r.rows().size() == 0)
+    ContractPool.pool = ConnectionPool<FakeConn>({ FakeConn() }, 1)
+    val db2 = ContractPool.connect()
+    assert(db2.query("SELECT 1").rows().size() == 0)
 }

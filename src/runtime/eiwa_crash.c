@@ -288,7 +288,43 @@ static void eiwa_crash_handler(int sig, siginfo_t *info, void *ctx) {
     raise(sig);
 }
 
+/* SA_ONSTACK is only useful with a registered alternate signal stack. Without
+   one, a SIGSEGV caused by stack exhaustion re-faults while the handler runs
+   on the very stack that overflowed, so the process dies silently (128+11, no
+   report). The stack is per-thread: the worker trampolines in std.thread and
+   std.coroutines call eiwa_install_crash_handler() to get their own. */
+#define EIWA_ALTSTACK_SIZE (64 * 1024)
+
+#if defined(_MSC_VER)
+#define EIWA_THREAD_LOCAL __declspec(thread)
+#else
+#define EIWA_THREAD_LOCAL __thread
+#endif
+
+static EIWA_THREAD_LOCAL char *eiwa_altstack_buf = NULL;
+
+static void eiwa_install_altstack(void) {
+    if (eiwa_altstack_buf != NULL) {
+        return;
+    }
+    char *buf = (char *)malloc(EIWA_ALTSTACK_SIZE);
+    if (buf == NULL) {
+        return;
+    }
+    stack_t ss;
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = buf;
+    ss.ss_size = EIWA_ALTSTACK_SIZE;
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, NULL) != 0) {
+        free(buf);
+        return;
+    }
+    eiwa_altstack_buf = buf;
+}
+
 void eiwa_install_crash_handler(void) {
+    eiwa_install_altstack();
     signal(SIGPIPE, SIG_IGN);
     struct sigaction act;
     memset(&act, 0, sizeof(act));

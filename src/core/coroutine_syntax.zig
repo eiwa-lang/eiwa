@@ -33,6 +33,10 @@ pub var defaultVoidType: EiwaType = .Void;
 pub fn isValueStatement(node: *ASTNode) bool {
     switch (node.data) {
         .int_literal, .double_literal, .string_literal, .string_template, .bool_literal, .identifier, .binary_expr, .unary_expr, .call_expr, .get_expr, .index_expr, .array_literal, .map_literal, .lambda_expr => return true,
+        // F2: `if`/`when` lower inline (emitter res slots), so a trailing one
+        // is the task result. `try`/`for`-value keep their dedicated loud
+        // rejections (res slot across states is unimplemented).
+        .if_expr, .when_expr => return true,
         else => return false,
     }
 }

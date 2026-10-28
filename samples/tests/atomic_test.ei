@@ -47,7 +47,7 @@ test "should get, set and modify AtomicInt" {
 test "should atomically increment counter across threads" {
     val counter = AtomicInt.create(0)
 
-    val t1 = Threads.spawn {
+    val t1 = Threads.spawnJoinable {
         var i = 0
         while (i < 100) {
             counter.incrementAndGet()
@@ -55,7 +55,7 @@ test "should atomically increment counter across threads" {
         }
     }
 
-    val t2 = Threads.spawn {
+    val t2 = Threads.spawnJoinable {
         var i = 0
         while (i < 100) {
             counter.incrementAndGet()

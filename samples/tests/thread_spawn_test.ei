@@ -1,0 +1,74 @@
+// `Threads.spawn` is fire-and-forget: the worker detaches itself and the OS
+// reclaims its stack when the block returns. `Threads.spawnJoinable` keeps the
+// thread joinable (the caller must call `join()`).
+import { assert } from "std.core"
+import { Threads } from "std.thread"
+import { AtomicInt } from "std.atomic"
+import { sleepMs } from "std.time"
+
+test "spawn: fire-and-forget runs the block without a join" {
+    val counter = AtomicInt.create(0)
+    var i = 0
+    while (i < 50) {
+        Threads.spawn {
+            counter.incrementAndGet()
+        }
+        i = i + 1
+    }
+    // Bounded wait: the caller never joins these threads.
+    var waited = 0
+    while (counter.get() < 50 && waited < 5000) {
+        sleepMs(5)
+        waited = waited + 5
+    }
+    assert(counter.get() == 50, "detached workers should all run")
+}
+
+test "spawnJoinable: join waits for the block" {
+    var result = 0
+    val t = Threads.spawnJoinable {
+        sleepMs(20)
+        result = 42
+    }
+    t.join()
+    assert(result == 42, "join should wait for the block")
+}
+
+test "spawn: many detached threads exit on their own" {
+    val done = AtomicInt.create(0)
+    var i = 0
+    while (i < 200) {
+        Threads.spawn {
+            done.incrementAndGet()
+        }
+        i = i + 1
+    }
+    var waited = 0
+    while (done.get() < 200 && waited < 10000) {
+        sleepMs(5)
+        waited = waited + 5
+    }
+    assert(done.get() == 200, "all detached workers should finish")
+}
+
+test "spawnJoinableWithStack: custom stack runs and joins" {
+    var result = 0
+    val t = Threads.spawnJoinableWithStack({
+        result = 7
+    }, 8388608)
+    t.join()
+    assert(result == 7, "custom stack joinable should run")
+}
+
+test "spawnWithStack: detached custom stack runs without join" {
+    val counter = AtomicInt.create(0)
+    Threads.spawnWithStack({
+        counter.incrementAndGet()
+    }, 8388608)
+    var waited = 0
+    while (counter.get() < 1 && waited < 5000) {
+        sleepMs(5)
+        waited = waited + 5
+    }
+    assert(counter.get() == 1, "custom stack detached should run")
+}

@@ -1,0 +1,31 @@
+// MUST NOT COMPILE (F2): a suspension inside the trailing result value
+// cannot cooperatively suspend from the done state — the compiler must fail
+// loud with a positioned diagnostic instead of silently dropping the result
+// (the pre-F2 silent-zero behavior). Suspension-free trailing `if`/`when`
+// values are fine (see task_trailing_value_test.ei).
+import { sleepMs } from "std.time"
+
+test "suspension inside trailing if-value is rejected" {
+    val t = task {
+        if (true) {
+            sleepMs(1)
+            10
+        } else {
+            20
+        }
+    }
+    assert(t.await() == 10)
+}
+
+test "suspension inside trailing when-value is rejected" {
+    val t = task {
+        when (1) {
+            1 -> {
+                sleepMs(1)
+                10
+            }
+            else -> 20
+        }
+    }
+    assert(t.await() == 10)
+}
