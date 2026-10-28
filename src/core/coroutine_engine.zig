@@ -1663,9 +1663,13 @@ fn analyzeSuspendCall(ctx: Ctx, call_node: *ASTNode) anyerror!?SuspendCallInfo {
     const cal = resolveSuspendCallee(ctx, call_node) orelse return null;
     if (cal.node.data != .fun_decl) return null;
     const f = &cal.node.data.fun_decl;
+    const annotated = hasSuspendAnnotation(f.annotations);
     // Empty bodies (contracts) stay blocking: a vacuous machine would leave
     // `result` null and crash the caller on `result!!`.
-    if (f.body.data == .block and f.body.data.block.statements.len == 0) return null;
+    if (f.body.data == .block and f.body.data.block.statements.len == 0) {
+        if (annotated) ctx.checker.reportWarning(call_node.line, call_node.column, "Suspend function '{s}' has no body to transform; this call will block the worker thread.", .{f.name});
+        return null;
+    }
     if (f.generic_params.len > 0) return null;
     const c = &call_node.data.call_expr;
     for (c.arguments) |a| {
