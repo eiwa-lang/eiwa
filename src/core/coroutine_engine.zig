@@ -1865,6 +1865,133 @@ fn suspendConditionError(ctx: Ctx, node: *ASTNode) anyerror {
     return error.TypeError;
 }
 
+/// Hoist user suspend calls nested inside an expression into preamble
+/// `val __suspendN = __SuspendCall(...)` markers (inner-first, left-to-right
+/// so evaluation order and arg cleaning match `analyzeSuspendCall`).
+/// Returns true when anything was hoisted; `expr` is rewritten in place.
+/// Lambdas are a coroutine boundary and are never entered. Void results have
+/// no value to substitute and are left for statement-level handling.
+fn hoistSuspendsFromExpr(ctx: Ctx, expr: *ASTNode, preamble: *ArrayList(*ASTNode)) !bool {
+    var hoisted = false;
+    try hoistSuspendsWalk(ctx, expr, preamble, &hoisted);
+    return hoisted;
+}
+
+fn hoistSuspendsWalk(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), hoisted: *bool) anyerror!void {
+    switch (node.data) {
+        .lambda_expr, .fun_decl => return,
+        .call_expr => {
+            const c = &node.data.call_expr;
+            try hoistSuspendsWalk(ctx, c.callee, preamble, hoisted);
+            for (c.arguments) |arg| {
+                try hoistSuspendsWalk(ctx, arg, preamble, hoisted);
+            }
+            if (syn.isTaskCall(node) or syn.isAwaitCall(node) or syn.isSuspendPrimitiveCall(node)) return;
+            if (!callSuspends(ctx, node)) return;
+            const info = try analyzeSuspendCall(ctx, node) orelse return;
+            if (isVoidRef(info.result)) return;
+            const n = ctx.counter.*;
+            ctx.counter.* += 1;
+            const tmp = try std.fmt.allocPrint(ctx.allocator, "__suspend{d}", .{n});
+            const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
+            try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = tmp });
+            const decl = syn.mkVarDecl(tmp, marker);
+            decl.data.var_decl.type_ref = info.result;
+            decl.line = node.line;
+            decl.column = node.column;
+            try preamble.append(decl);
+            const saved_line = node.line;
+            const saved_col = node.column;
+            node.data = .{ .identifier = .{ .name = tmp, .resolved_c_name = null } };
+            node.line = saved_line;
+            node.column = saved_col;
+            node.resolved_type = null;
+            node.expected_type = null;
+            hoisted.* = true;
+        },
+        .binary_expr => |*b| {
+            try hoistSuspendsWalk(ctx, b.left, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, b.right, preamble, hoisted);
+        },
+        .unary_expr => |*u| try hoistSuspendsWalk(ctx, u.operand, preamble, hoisted),
+        .get_expr => |*g| try hoistSuspendsWalk(ctx, g.object, preamble, hoisted),
+        .set_expr => |*s| {
+            try hoistSuspendsWalk(ctx, s.object, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, s.value, preamble, hoisted);
+        },
+        .index_expr => |*i| {
+            try hoistSuspendsWalk(ctx, i.object, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, i.index, preamble, hoisted);
+        },
+        .index_set_expr => |*i| {
+            try hoistSuspendsWalk(ctx, i.object, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, i.index, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, i.value, preamble, hoisted);
+        },
+        .array_literal => |*al| {
+            for (al.elements) |e| try hoistSuspendsWalk(ctx, e, preamble, hoisted);
+        },
+        .string_template => |*st| {
+            for (st.parts) |e| try hoistSuspendsWalk(ctx, e, preamble, hoisted);
+        },
+        .map_literal => |*ml| {
+            for (ml.elements) |e| try hoistSuspendsWalk(ctx, e, preamble, hoisted);
+        },
+        .named_arg => |*na| try hoistSuspendsWalk(ctx, na.value, preamble, hoisted),
+        .assignment => |*a| try hoistSuspendsWalk(ctx, a.value, preamble, hoisted),
+        .as_expr => |*a| try hoistSuspendsWalk(ctx, a.value, preamble, hoisted),
+        else => {},
+    }
+}
+
+/// Hoist suspends from a call's receiver/args only (not the call itself).
+/// Used by direct statement paths so `analyzeSuspendCall` sees clean args.
+/// Appends hoisted temps to `preamble`, returns true when anything hoisted.
+fn hoistCallSubs(ctx: Ctx, call_node: *ASTNode, preamble: *ArrayList(*ASTNode)) !bool {
+    if (call_node.data != .call_expr) return false;
+    const c = &call_node.data.call_expr;
+    var any = false;
+    // Receiver object (method calls): `getConn().read()`.
+    if (c.callee.data == .get_expr) {
+        var h = false;
+        try hoistSuspendsWalk(ctx, c.callee.data.get_expr.object, preamble, &h);
+        any = any or h;
+    } else {
+        var h = false;
+        try hoistSuspendsWalk(ctx, c.callee, preamble, &h);
+        any = any or h;
+    }
+    for (c.arguments) |arg| {
+        var h = false;
+        try hoistSuspendsWalk(ctx, arg, preamble, &h);
+        any = any or h;
+    }
+    return any;
+}
+
+/// Hoist nested suspends from `node` into `out`, appending preamble temps.
+/// Returns true when anything was hoisted (caller then appends its statement
+/// and returns). Single source of truth for the P1 operand/condition hoist.
+fn hoistPreamble(ctx: Ctx, node: *ASTNode, out: *ArrayList(*ASTNode)) !bool {
+    var preamble = ArrayList(*ASTNode).init(ctx.allocator);
+    defer preamble.deinit();
+    if (try hoistSuspendsFromExpr(ctx, node, &preamble)) {
+        try out.appendSlice(preamble.items);
+        return true;
+    }
+    return false;
+}
+
+/// Hoist a call's receiver/args into `out` (not the call itself), so direct
+/// statement paths (`val x = f(g())`) see clean args in `analyzeSuspendCall`.
+fn hoistSubsInto(ctx: Ctx, call_node: *ASTNode, out: *ArrayList(*ASTNode)) !void {
+    var sub = ArrayList(*ASTNode).init(ctx.allocator);
+    defer sub.deinit();
+    if (try hoistCallSubs(ctx, call_node, &sub)) {
+        try out.appendSlice(sub.items);
+    }
+}
+
 /// Pure detection for operand/condition positions: any suspend call found
 /// inside errors (operands cannot suspend mid-expression). Never expands.
 fn forbidSuspendExpr(ctx: Ctx, node: *ASTNode, in_condition: bool) anyerror!void {
@@ -1905,6 +2032,11 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
                         try out.append(stmt);
                         return;
                     }
+                    // Nested suspends in receiver/args hoist first
+                    // (`val x = f(g())` evaluates `g()` before `f()`).
+                    if (!syn.isAwaitCall(init) and !syn.isTaskCall(init)) {
+                        try hoistSubsInto(ctx, init, out);
+                    }
                     const info = try analyzeSuspendCall(ctx, init) orelse {
                         try out.append(stmt);
                         return;
@@ -1922,6 +2054,15 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
                     try out.append(stmt);
                     return;
                 }
+                // Operand hoist (P1): `val x = "PONG:" + f()` where f()
+                // suspends becomes `val __sN = f()` + `val x = "PONG:" + __sN`.
+                // Same transparent pattern as `hoistAwaitsFromExpr`.
+                if (exprHasSuspendCall(ctx, init)) {
+                    if (try hoistPreamble(ctx, init, out)) {
+                        try out.append(stmt);
+                        return;
+                    }
+                }
                 try forbidSuspendExpr(ctx, init, false);
             }
             try out.append(stmt);
@@ -1934,6 +2075,7 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
                 return;
             }
             if (callSuspends(ctx, stmt)) {
+                try hoistSubsInto(ctx, stmt, out);
                 const info = try analyzeSuspendCall(ctx, stmt) orelse {
                     try out.append(stmt);
                     return;
@@ -1943,6 +2085,13 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
                 try out.append(marker);
                 return;
             }
+            // Sync outer with suspend args: `print(f())` hoists `f()`.
+            if (exprHasSuspendCall(ctx, stmt)) {
+                if (try hoistPreamble(ctx, stmt, out)) {
+                    try out.append(stmt);
+                    return;
+                }
+            }
             try forbidSuspendExpr(ctx, stmt, false);
             try out.append(stmt);
         },
@@ -1950,6 +2099,7 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
             const r = &stmt.data.return_stmt;
             if (r.value) |val| {
                 if (val.data == .call_expr and callSuspends(ctx, val) and !syn.isSuspendPrimitiveCall(val)) {
+                    try hoistSubsInto(ctx, val, out);
                     const info = try analyzeSuspendCall(ctx, val) orelse {
                         try out.append(stmt);
                         return;
@@ -1966,12 +2116,27 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
                     try out.append(stmt);
                     return;
                 }
+                if (exprHasSuspendCall(ctx, val)) {
+                    if (try hoistPreamble(ctx, val, out)) {
+                        try out.append(stmt);
+                        return;
+                    }
+                }
                 try forbidSuspendExpr(ctx, val, false);
             }
             try out.append(stmt);
         },
         .if_expr => {
             const i = &stmt.data.if_expr;
+            // `if` condition runs once: safe to hoist suspends before it.
+            if (exprHasSuspendCall(ctx, i.condition)) {
+                if (try hoistPreamble(ctx, i.condition, out)) {
+                    try expandSuspendBranch(ctx, i.then_branch);
+                    if (i.else_branch) |e| try expandSuspendBranch(ctx, e);
+                    try out.append(stmt);
+                    return;
+                }
+            }
             try forbidSuspendExpr(ctx, i.condition, true);
             try expandSuspendBranch(ctx, i.then_branch);
             if (i.else_branch) |e| try expandSuspendBranch(ctx, e);
@@ -1985,6 +2150,16 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
         },
         .for_stmt => {
             const f = &stmt.data.for_stmt;
+            // Iterable runs once before the loop: safe to hoist.
+            if (exprHasSuspendCall(ctx, f.iterable)) {
+                if (try hoistPreamble(ctx, f.iterable, out)) {
+                    if (exprHasSuspendCall(ctx, f.body)) {
+                        return suspendOperandError(ctx, f.body);
+                    }
+                    try out.append(stmt);
+                    return;
+                }
+            }
             try forbidSuspendExpr(ctx, f.iterable, true);
             if (exprHasSuspendCall(ctx, f.body)) {
                 return suspendOperandError(ctx, f.body);
@@ -1999,7 +2174,21 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
         },
         .when_expr => {
             const w = &stmt.data.when_expr;
-            if (w.subject) |s| try forbidSuspendExpr(ctx, s, true);
+            // Subject runs once: safe to hoist. Case conds run until match,
+            // so they stay rejected (hoisting all would change semantics).
+            if (w.subject) |s| {
+                if (exprHasSuspendCall(ctx, s)) {
+                    if (try hoistPreamble(ctx, s, out)) {
+                        for (w.cases) |*case| {
+                            for (case.conds) |cond| try forbidSuspendExpr(ctx, cond, true);
+                            try expandSuspendBranch(ctx, case.body);
+                        }
+                        try out.append(stmt);
+                        return;
+                    }
+                }
+                try forbidSuspendExpr(ctx, s, true);
+            }
             for (w.cases) |*case| {
                 for (case.conds) |cond| try forbidSuspendExpr(ctx, cond, true);
                 try expandSuspendBranch(ctx, case.body);
@@ -2017,6 +2206,7 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
         .assignment => {
             const a = &stmt.data.assignment;
             if (a.value.data == .call_expr and callSuspends(ctx, a.value) and !syn.isSuspendPrimitiveCall(a.value)) {
+                try hoistSubsInto(ctx, a.value, out);
                 const info = try analyzeSuspendCall(ctx, a.value) orelse {
                     try out.append(stmt);
                     return;
@@ -2028,22 +2218,46 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
                 return;
             }
             if (exprHasSuspendCall(ctx, a.value)) {
+                if (try hoistPreamble(ctx, a.value, out)) {
+                    try out.append(stmt);
+                    return;
+                }
                 return suspendOperandError(ctx, a.value);
             }
             try out.append(stmt);
         },
         .break_stmt => {
             const b = &stmt.data.break_stmt;
-            if (b.value) |val| try forbidSuspendExpr(ctx, val, false);
+            if (b.value) |val| {
+                if (exprHasSuspendCall(ctx, val)) {
+                    if (try hoistPreamble(ctx, val, out)) {
+                        try out.append(stmt);
+                        return;
+                    }
+                }
+                try forbidSuspendExpr(ctx, val, false);
+            }
             try out.append(stmt);
         },
         .throw_stmt => {
             const t = &stmt.data.throw_stmt;
+            if (exprHasSuspendCall(ctx, t.expr)) {
+                if (try hoistPreamble(ctx, t.expr, out)) {
+                    try out.append(stmt);
+                    return;
+                }
+            }
             try forbidSuspendExpr(ctx, t.expr, false);
             try out.append(stmt);
         },
         .lambda_expr, .fun_decl => try out.append(stmt),
         else => {
+            if (exprHasSuspendCall(ctx, stmt)) {
+                if (try hoistPreamble(ctx, stmt, out)) {
+                    try out.append(stmt);
+                    return;
+                }
+            }
             try forbidSuspendExpr(ctx, stmt, false);
             try out.append(stmt);
         },
