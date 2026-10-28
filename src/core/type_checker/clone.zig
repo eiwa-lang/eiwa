@@ -41,8 +41,9 @@ pub fn cloneNode(self: *TypeChecker, node: *ASTNode) anyerror!*ASTNode {
     return self.cloneNodeWith(node, false);
 }
 
-/// Deep clone that optionally preserves resolved types (for coroutine
-/// machine generation, which must resolve nested suspend calls in the copy).
+/// Deep clone with optional type preservation (suspend machines must resolve
+/// nested calls in the copy). Typerefs always re-resolve; shared leaves keep
+/// types by aliasing and are never mutated.
 pub fn cloneNodeWith(self: *TypeChecker, node: *ASTNode, preserve_types: bool) anyerror!*ASTNode {
     const new_node = try self.allocator.create(ASTNode);
     new_node.* = node.*;
@@ -300,7 +301,7 @@ pub fn cloneNodeWith(self: *TypeChecker, node: *ASTNode, preserve_types: bool) a
                 .receiver_type = if (f.receiver_type) |rt| try self.cloneTypeRef(rt) else null,
             } };
         },
-        else => {}, // For identifiers and literals, shallow copy is fine as long as we cleared resolved_type
+        else => {}, // Shared leaves (never mutated).
     }
     
     return new_node;

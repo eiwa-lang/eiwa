@@ -1080,10 +1080,11 @@ fn run(init: std.process.Init) !void {
         // never leak internal error names for reachable user errors.
         const msg: ?[]const u8 = switch (err) {
             error.SuspendInCondition => "suspend call in condition is not supported inside task blocks (suspend calls can only be used as separate statements)",
-            error.SuspendInOperand => "suspend call as a value is not supported inside task blocks (suspend calls can only be used as separate statements)",
             error.CollectForInSuspend => "for used as a value is not supported inside suspend context yet",
             error.BreakInSuspendContext => "'leave' is not supported inside suspend context (synchronous code only)",
             error.InvalidTaskCall => "invalid task call (expected a lambda block)",
+            error.SuspendMarkerLost => "internal error: suspend marker lost during coroutine transform",
+            error.StateNotFound => "internal error: coroutine state not found during transform",
             else => null,
         };
         if (msg) |m| {

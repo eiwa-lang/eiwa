@@ -13,14 +13,18 @@ pub const Ctx = struct {
     counter: *usize,
     generated: *ArrayList(*ASTNode),
     registry: *tc_core.ModuleRegistry,
-    /// Suspend-function machine types already generated (by c_name), shared
-    /// across modules so std methods are generated once and reused.
+    /// Machine types generated so far, so std methods generate once and share.
     suspend_generated: *std.StringHashMap(void),
-    /// c_names currently being generated (recursion guard for suspend machines).
     suspend_generating: *ArrayList([]const u8),
-    /// Lowering data for `__SuspendCall` markers in the function currently
-    /// being built (keyed by marker call node).
+    /// Marker lowering data, accumulated across modules, keyed by marker node.
     suspend_sites: *ArrayList(SuspendSite),
+};
+
+pub const SuspendShared = struct {
+    registry: *tc_core.ModuleRegistry,
+    generated: *std.StringHashMap(void),
+    generating: *ArrayList([]const u8),
+    sites: *ArrayList(SuspendSite),
 };
 
 /// A free variable captured by a `task {}` block. Mutable captures share the
@@ -33,14 +37,13 @@ pub const CapturedVar = struct {
 
 pub const outer_this_field = "__outer_this";
 
-/// Lowering data for one `__SuspendCall` marker: the callee machine type and
-/// result type. Receiver and call args ride in the marker call itself so
-/// capture rewriting sees them. Keyed by marker call node (arena-stable).
+/// Lowering data for one marker: receiver and args ride in the marker call
+/// itself so capture rewriting still sees them.
 pub const SuspendSite = struct {
     marker: *ASTNode,
     machine: []const u8,
     result: *const ASTTypeRef,
-    /// Assignment target field, set for `val x =` / `x =` shapes (null = bare).
+    /// Assignment target field (null = bare call).
     target: ?[]const u8,
 };
 

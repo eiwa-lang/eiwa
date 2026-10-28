@@ -39,13 +39,19 @@ pub fn transformProgram(allocator: std.mem.Allocator, registry: *ModuleRegistry)
     defer suspend_generating.deinit();
     var suspend_sites = ArrayList(cctx.SuspendSite).init(allocator);
     defer suspend_sites.deinit();
+    var shared = cctx.SuspendShared{
+        .registry = registry,
+        .generated = &suspend_generated,
+        .generating = &suspend_generating,
+        .sites = &suspend_sites,
+    };
     for (registry.ordered_modules.items) |path| {
         const mod = registry.modules.get(path) orelse continue;
-        try transformModule(allocator, mod.checker, mod.ast_root, &counter, registry, &suspend_generated, &suspend_generating, &suspend_sites);
+        try transformModule(allocator, mod.checker, mod.ast_root, &counter, &shared);
     }
 }
 
-fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: *ASTNode, counter: *usize, registry: *ModuleRegistry, suspend_generated: *std.StringHashMap(void), suspend_generating: *ArrayList([]const u8), suspend_sites: *ArrayList(cctx.SuspendSite)) !void {
+fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: *ASTNode, counter: *usize, shared: *cctx.SuspendShared) !void {
     if (module.data != .program) return;
 
     for (module.data.program.statements) |stmt| {
@@ -62,7 +68,7 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
 
     var generated = ArrayList(*ASTNode).init(allocator);
     defer generated.deinit();
-    const ctx = Ctx{ .allocator = allocator, .checker = checker, .counter = counter, .generated = &generated, .registry = registry, .suspend_generated = suspend_generated, .suspend_generating = suspend_generating, .suspend_sites = suspend_sites };
+    const ctx = Ctx{ .allocator = allocator, .checker = checker, .counter = counter, .generated = &generated, .registry = shared.registry, .suspend_generated = shared.generated, .suspend_generating = shared.generating, .suspend_sites = shared.sites };
 
     for (module.data.program.statements) |stmt| {
         if (stmt.data == .fun_decl) {

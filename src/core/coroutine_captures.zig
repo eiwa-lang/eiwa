@@ -407,11 +407,7 @@ pub fn typeRefForVarDecl(ctx: Ctx, node: *ASTNode) !*const ast.ASTTypeRef {
 /// Zero-value for a promoted local's field; non-primitive/non-nullable types
 /// cannot be promoted (unsupported for now).
 pub fn makeNullableTypeRef(ctx: Ctx, ref: *const ASTTypeRef) !*const ASTTypeRef {
-    const copy = try ctx.allocator.create(ASTTypeRef);
-    copy.* = ref.*;
-    copy.is_nullable = true;
-    copy.resolved_type = null;
-    return copy;
+    return syn.makeNullableRef(ctx.allocator, ref);
 }
 
 pub fn isScalarPrimitiveName(name: []const u8) bool {
@@ -709,12 +705,9 @@ pub fn rewritePromotedRefs(ctx: Ctx, promoted: []const CapturedVar, node: *ASTNo
                     try rewritePromotedRefs(ctx, promoted, init);
                     return;
                 }
-                // Suspend markers keep `val` form: the state machine assigns
-                // the promoted field when the callee completes. Marker args
-                // are ordinary expressions and still need rewriting.
-                if (syn.isSuspendCallMarker(node)) {
-                    const c = &node.data.var_decl.initializer.?.data.call_expr;
-                    for (c.arguments) |arg| {
+                // Markers keep `val` form; the machine assigns the field.
+                if (syn.suspendMarkerCall(node)) |marker| {
+                    for (marker.data.call_expr.arguments) |arg| {
                         try rewritePromotedRefs(ctx, promoted, arg);
                     }
                     return;
