@@ -29,7 +29,7 @@ test "coop: idle connections do not starve new requests" {
     }
 
     var idle: MutableList<Socket> = MutableList<Socket>()
-    val dialer = Threads.spawn {
+    val dialer = Threads.spawnJoinable {
         var i = 0
         while (i < idleCount) {
             val c = SocketClient.connect("127.0.0.1", port)
