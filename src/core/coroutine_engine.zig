@@ -752,28 +752,28 @@ const Machine = struct {
     }
 };
 
-pub fn machineBuildStmts(m: *Machine, stmts: []const *ASTNode, after: usize) anyerror!usize {
+pub fn machineBuildStmts(m: *Machine, stmts: []const *ASTNode, after: usize, brk: ?usize) anyerror!usize {
     var k = after;
     var i: usize = stmts.len;
     while (i > 0) {
         i -= 1;
-        k = try machineBuildStmt(m, stmts[i], k);
+        k = try machineBuildStmt(m, stmts[i], k, brk);
     }
     return k;
 }
 
-pub fn machineBuildBranch(m: *Machine, branch: *ASTNode, after: usize) anyerror!usize {
-    if (branch.data == .block) return machineBuildStmts(m, branch.data.block.statements, after);
-    return machineBuildStmt(m, branch, after);
+pub fn machineBuildBranch(m: *Machine, branch: *ASTNode, after: usize, brk: ?usize) anyerror!usize {
+    if (branch.data == .block) return machineBuildStmts(m, branch.data.block.statements, after, brk);
+    return machineBuildStmt(m, branch, after, brk);
 }
 
-pub fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
+pub fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize, brk: ?usize) anyerror!usize {
     if (stmt.data == .for_stmt and stmt.data.for_stmt.collect) return error.CollectForInSuspend;
     switch (stmt.data) {
         .while_stmt => |w| {
             if (syn.containsTrueSuspend(w.condition)) return error.SuspendInCondition;
             const lcond = try m.newState();
-            const lbody = try machineBuildBranch(m, w.body, lcond);
+            const lbody = try machineBuildBranch(m, w.body, lcond, after);
             const then_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lbody)))});
             const else_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after)))});
             try m.append(lcond, syn.mkIfElse(w.condition, then_block, else_block));
@@ -781,8 +781,8 @@ pub fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usiz
         },
         .if_expr => |i| {
             if (syn.containsTrueSuspend(i.condition)) return error.SuspendInCondition;
-            const lthen = try machineBuildBranch(m, i.then_branch, after);
-            const lelse = if (i.else_branch) |e| try machineBuildBranch(m, e, after) else after;
+            const lthen = try machineBuildBranch(m, i.then_branch, after, brk);
+            const lelse = if (i.else_branch) |e| try machineBuildBranch(m, e, after, brk) else after;
             const entry = try m.newState();
             const then_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lthen)))});
             const else_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lelse)))});
@@ -852,11 +852,15 @@ pub fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usiz
             }
             return emitPlainStmt(m, stmt, after);
         },
-        .block => |b| return machineBuildStmts(m, b.statements, after),
-        .break_stmt => {
-            return error.BreakInSuspendContext;
+        .block => |b| return machineBuildStmts(m, b.statements, after, brk),
+        .break_stmt => |b| {
+            if (b.value != null) return error.BreakInSuspendContext;
+            const target = brk orelse return error.BreakInSuspendContext;
+            const entry = try m.newState();
+            try m.append(entry, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(target))));
+            return entry;
         },
-        .try_stmt => return machineBuildTryStmt(m, stmt, after),
+        .try_stmt => return machineBuildTryStmt(m, stmt, after, brk),
         else => {
             if (syn.isCoopAwaitMarker(stmt)) {
                 return machineBuildCoopAwait(m, stmt, after);
@@ -887,10 +891,10 @@ fn isStateSuspendOrReturn(node: *ASTNode) bool {
     }
 }
 
-pub fn buildCatchStates(m: *Machine, catches: []const ast.CatchBlock, after: usize) ![]usize {
+pub fn buildCatchStates(m: *Machine, catches: []const ast.CatchBlock, after: usize, brk: ?usize) ![]usize {
     const catch_labels = try m.allocator.alloc(usize, catches.len);
     for (catches, 0..) |cb, i| {
-        catch_labels[i] = try machineBuildBranch(m, cb.body, after);
+        catch_labels[i] = try machineBuildBranch(m, cb.body, after, brk);
     }
     return catch_labels;
 }
@@ -962,13 +966,13 @@ pub fn wrapStatesWithCatches(m: *Machine, catches: []const ast.CatchBlock, from:
     }
 }
 
-pub fn machineBuildTryStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
+pub fn machineBuildTryStmt(m: *Machine, stmt: *ASTNode, after: usize, brk: ?usize) anyerror!usize {
     const t = &stmt.data.try_stmt;
 
-    const catch_labels = try buildCatchStates(m, t.catches, after);
+    const catch_labels = try buildCatchStates(m, t.catches, after, brk);
 
     const states_before = m.states.items.len;
-    const try_entry = try machineBuildBranch(m, t.body, after);
+    const try_entry = try machineBuildBranch(m, t.body, after, brk);
     const states_after = m.states.items.len;
 
     try wrapStatesWithCatches(m, t.catches, states_before, states_after, catch_labels);
@@ -1078,7 +1082,7 @@ pub fn buildResumeStateMachine(ctx: Ctx, captures: []const CapturedVar, locals: 
     var m = Machine{ .allocator = ctx.allocator, .counter = ctx.counter, .states = ArrayList(MachineState).init(ctx.allocator), .ctx = ctx, .fields = body_fields, .is_callee = is_callee };
     defer m.states.deinit();
     const done_label = try m.newState();
-    const entry = try machineBuildStmts(&m, leading.items, done_label);
+    const entry = try machineBuildStmts(&m, leading.items, done_label, null);
     entry_out.* = entry;
 
     var completion: ArrayList(*ASTNode) = undefined;
