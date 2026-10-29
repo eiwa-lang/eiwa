@@ -394,6 +394,16 @@ pub fn mkWhile(condition: *ASTNode, body: *ASTNode) *ASTNode {
     return n;
 }
 
+pub fn mkBreak() *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .break_stmt = .{ .value = null } },
+    };
+    return n;
+}
+
 pub fn mkBinary(op: ast.TokenType, left: *ASTNode, right: *ASTNode) *ASTNode {
     const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
     n.* = .{

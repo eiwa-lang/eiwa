@@ -174,7 +174,7 @@ pub fn rewriteStatement(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode), coo
                 ctx.checker.reportError(stmt.line, stmt.column, "TypeError: for used as a value is not supported inside suspend context yet.", .{});
                 return error.TypeError;
             }
-            if (syn.containsTrueSuspend(f.body) or syn.containsAwait(f.body) or syn.containsTrueSuspend(f.iterable) or syn.containsAwait(f.iterable)) {
+            if (syn.containsTrueSuspend(f.body) or syn.containsAwait(f.body) or syn.containsTrueSuspend(f.iterable) or syn.containsAwait(f.iterable) or containsSuspendMarker(f.body) or containsSuspendMarker(f.iterable)) {
                 const n = ctx.counter.*;
                 ctx.counter.* += 1;
                 const arr_name = try std.fmt.allocPrint(ctx.allocator, "__for_arr{d}", .{n});
@@ -1103,6 +1103,78 @@ pub fn buildResumeStateMachine(ctx: Ctx, captures: []const CapturedVar, locals: 
 // Suspend-in-condition detection (G8)
 // ---------------------------------------------------------------------------
 
+/// True when a lowered `__SuspendCall` marker sits anywhere inside: the
+/// for→while desugar in `rewriteStatement` only triggers on primitives and
+/// awaits, so marker bodies need this explicit check to desugar as well.
+fn containsSuspendMarker(node: *ASTNode) bool {
+    if (syn.suspendMarkerCall(node) != null) return true;
+    switch (node.data) {
+        .if_expr => |i| {
+            if (containsSuspendMarker(i.then_branch)) return true;
+            if (i.else_branch) |e| if (containsSuspendMarker(e)) return true;
+            return containsSuspendMarker(i.condition);
+        },
+        .while_stmt => |w| {
+            if (containsSuspendMarker(w.condition)) return true;
+            return containsSuspendMarker(w.body);
+        },
+        .block => |b| {
+            for (b.statements) |s| if (containsSuspendMarker(s)) return true;
+            return false;
+        },
+        .lambda_expr, .fun_decl => return false,
+        .call_expr => |c| {
+            if (containsSuspendMarker(c.callee)) return true;
+            for (c.arguments) |a| if (containsSuspendMarker(a)) return true;
+            return false;
+        },
+        .for_stmt => |f| {
+            if (containsSuspendMarker(f.iterable)) return true;
+            return containsSuspendMarker(f.body);
+        },
+        .try_stmt => |t| {
+            if (containsSuspendMarker(t.body)) return true;
+            for (t.catches) |cb| if (containsSuspendMarker(cb.body)) return true;
+            return false;
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| if (containsSuspendMarker(s)) return true;
+            for (w.cases) |case| {
+                for (case.conds) |cond| if (containsSuspendMarker(cond)) return true;
+                if (containsSuspendMarker(case.body)) return true;
+            }
+            return false;
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| return containsSuspendMarker(init);
+            return false;
+        },
+        .return_stmt => |r| {
+            if (r.value) |val| return containsSuspendMarker(val);
+            return false;
+        },
+        .break_stmt => |b| {
+            if (b.value) |val| return containsSuspendMarker(val);
+            return false;
+        },
+        .assignment => |a| return containsSuspendMarker(a.value),
+        .binary_expr => |b| return containsSuspendMarker(b.left) or containsSuspendMarker(b.right),
+        .unary_expr => |u| return containsSuspendMarker(u.operand),
+        .get_expr => |g| return containsSuspendMarker(g.object),
+        .set_expr => |s| return containsSuspendMarker(s.object) or containsSuspendMarker(s.value),
+        .index_expr => |i| return containsSuspendMarker(i.object) or containsSuspendMarker(i.index),
+        .string_template => |st| {
+            for (st.parts) |e| if (containsSuspendMarker(e)) return true;
+            return false;
+        },
+        .array_literal => |al| {
+            for (al.elements) |e| if (containsSuspendMarker(e)) return true;
+            return false;
+        },
+        else => return false,
+    }
+}
+
 /// Backstop for primitives in conditions: the pre-pass only sees user calls.
 fn suspendConditionNode(node: *ASTNode) ?*ASTNode {
     switch (node.data) {
@@ -1976,6 +2048,34 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
         },
         .while_stmt => {
             const w = &stmt.data.while_stmt;
+            if (exprHasSuspendCall(ctx, w.condition)) {
+                var preamble = ArrayList(*ASTNode).init(ctx.allocator);
+                defer preamble.deinit();
+                if (try hoistSuspendsFromExpr(ctx, w.condition, &preamble)) {
+                    try expandSuspendBranch(ctx, w.body);
+                    const neg = syn.mkUnary(.bang, w.condition);
+                    neg.line = stmt.line;
+                    neg.column = stmt.column;
+                    const guard = syn.mkIf(neg, syn.mkBreak());
+                    guard.line = stmt.line;
+                    guard.column = stmt.column;
+                    guard.data.if_expr.then_branch.line = stmt.line;
+                    guard.data.if_expr.then_branch.column = stmt.column;
+                    var new_body = ArrayList(*ASTNode).init(ctx.allocator);
+                    defer new_body.deinit();
+                    try new_body.appendSlice(preamble.items);
+                    try new_body.append(guard);
+                    if (w.body.data == .block) {
+                        try new_body.appendSlice(w.body.data.block.statements);
+                    } else {
+                        try new_body.append(w.body);
+                    }
+                    w.condition = syn.mkBoolLit(true);
+                    w.body = syn.mkBlock(try new_body.toOwnedSlice());
+                    try out.append(stmt);
+                    return;
+                }
+            }
             try forbidSuspendExpr(ctx, w.condition, true);
             try expandSuspendBranch(ctx, w.body);
             try out.append(stmt);
@@ -1984,17 +2084,14 @@ fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerr
             const f = &stmt.data.for_stmt;
             if (exprHasSuspendCall(ctx, f.iterable)) {
                 if (try hoistPreamble(ctx, f.iterable, out)) {
-                    if (exprHasSuspendCall(ctx, f.body)) {
-                        return suspendOperandError(ctx, f.body);
-                    }
+                    try forbidSuspendExpr(ctx, f.iterable, true);
+                    try expandSuspendBranch(ctx, f.body);
                     try out.append(stmt);
                     return;
                 }
             }
             try forbidSuspendExpr(ctx, f.iterable, true);
-            if (exprHasSuspendCall(ctx, f.body)) {
-                return suspendOperandError(ctx, f.body);
-            }
+            try expandSuspendBranch(ctx, f.body);
             try out.append(stmt);
         },
         .try_stmt => {
