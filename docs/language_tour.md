@@ -2461,9 +2461,18 @@ fun example() {
 > cooperative suspension points (state machine): the worker is released to other tasks while the timer
 > hasn't fired. `await()` registers the caller on the waiter chain and resumes as soon as the result is ready.
 >
-> **Note:** cooperative rewriting only happens when the call is written **directly**
-> in the `task` body. A `sleep` called from inside a method invoked by the task executes as a
-> blocking `nanosleep` on the worker thread (works, but holds the thread).
+> Suspension propagates through ordinary methods: a method that (transitively)
+> calls a suspending stdlib operation (`Socket.read`/`write`, `accept`,
+> `sleep`, `yield`, `waitReadable`/`waitWritable`) suspends cooperatively
+> when called from a task — no annotation needed in user code, the compiler
+> infers it. Suspend calls also compose inside expressions, conditions and
+> loops (the compiler lifts them automatically), and recursive suspend
+> functions are supported.
+>
+> Calls through a `contract`-typed value resolve to the single known
+> implementor transparently. With zero or several implementors the call
+> stays blocking: a warning is issued for captured values, while a
+> contract-typed task-local is a compile-time error (use a concrete type).
 >
 > **`park()` never suspends** — not even inside `task`. Use it only in `main` (or on dedicated
 > threads) to park the process; inside a task, prefer `sleep`/`await`.

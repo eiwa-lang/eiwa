@@ -1,0 +1,22 @@
+import { assert } from "std.core"
+import { Coroutine } from "std.coroutines"
+
+fun countTo(n: Int): Int {
+    var i = 0
+    while (true) {
+        if (i >= n) {
+            leave
+        }
+        Coroutine.sleepMs(1)
+        i = i + 1
+    }
+    return i
+}
+
+test "leave in suspend fn loop" {
+    val t = task {
+        val v = countTo(3)
+        v
+    }
+    assert(t.await() == 3, "loop should exit at 3")
+}

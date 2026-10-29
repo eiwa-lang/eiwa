@@ -1,0 +1,30 @@
+import { assert } from "std.core"
+import { Coroutine } from "std.coroutines"
+
+contract Fetcher {
+    @Suspend
+    fun fetch(): Int
+}
+
+type A : Fetcher {
+    implement fun fetch(): Int {
+        Coroutine.sleepMs(1)
+        return 1
+    }
+}
+
+type B : Fetcher {
+    implement fun fetch(): Int {
+        Coroutine.sleepMs(1)
+        return 2
+    }
+}
+
+test "capture receiver warns but computes" {
+    val a: Fetcher = A()
+    val t = task {
+        val v = a.fetch()
+        v
+    }
+    assert(t.await() == 1, "blocking fallback computes")
+}

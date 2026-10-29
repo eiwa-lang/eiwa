@@ -1,0 +1,42 @@
+import { assert } from "std.core"
+import { Coroutine } from "std.coroutines"
+
+fun countdown(n: Int): Int {
+    if (n <= 0) {
+        return 0
+    }
+    Coroutine.sleepMs(1)
+    return countdown(n - 1) + 1
+}
+
+test "recursive suspend fn" {
+    val t = task {
+        val v = countdown(3)
+        v
+    }
+    assert(t.await() == 3, "3 levels of recursion")
+}
+
+fun isEven(n: Int): Bool {
+    if (n == 0) {
+        return true
+    }
+    Coroutine.sleepMs(1)
+    return isOdd(n - 1)
+}
+
+fun isOdd(n: Int): Bool {
+    if (n == 0) {
+        return false
+    }
+    Coroutine.sleepMs(1)
+    return isEven(n - 1)
+}
+
+test "mutual recursion suspend fns" {
+    val t = task {
+        val v = isEven(4)
+        v
+    }
+    assert(t.await() == true, "4 is even")
+}
