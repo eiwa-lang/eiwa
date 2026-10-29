@@ -19,6 +19,9 @@ pub const Ctx = struct {
     /// Marker lowering data, accumulated across modules, keyed by marker node.
     suspend_sites: *ArrayList(SuspendSite),
     suspend_memo: *std.AutoHashMap(u64, bool),
+    /// Declared names in the body being expanded. A contract call on a
+    /// task-local silently miscompiles (thin machine fields); error those.
+    task_locals: ?*std.StringHashMap(void),
 };
 
 pub const SuspendShared = struct {

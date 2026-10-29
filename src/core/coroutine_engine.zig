@@ -458,7 +458,8 @@ fn buildMachineResume(ctx: Ctx, captures: []const CapturedVar, locals: []const C
     });
 }
 
-fn finishContinuationType(ctx: Ctx, name: []const u8, props: *ArrayList(ast.ClassProp), methods: *ArrayList(*ASTNode), body_fields: *ArrayList(ast.ClassProp)) !*ASTNode {    try methods.append(syn.buildIsDone());
+fn finishContinuationType(ctx: Ctx, name: []const u8, props: *ArrayList(ast.ClassProp), methods: *ArrayList(*ASTNode), body_fields: *ArrayList(ast.ClassProp)) !*ASTNode {
+    try methods.append(syn.buildIsDone());
 
     const type_node = try ctx.allocator.create(ASTNode);
     type_node.* = .{
@@ -1300,6 +1301,84 @@ fn findMethodFn(ctx: Ctx, type_name: []const u8, method_name: []const u8) ?*ASTN
     return null;
 }
 
+fn claimsContract(contracts: []const []const u8, name: []const u8) bool {
+    for (contracts) |c| {
+        if (std.mem.eql(u8, c, name)) return true;
+    }
+    return false;
+}
+
+fn isContractName(ctx: Ctx, name: []const u8) bool {
+    var it = ctx.registry.modules.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.checker.contracts_ast.contains(name)) return true;
+    }
+    return false;
+}
+
+const Implementor = struct {
+    type_name: []const u8,
+    node: *ASTNode,
+    c_name: []const u8,
+};
+
+fn findSingleImplementor(ctx: Ctx, contract_name: []const u8, method_name: []const u8) ?Implementor {
+    var found: ?Implementor = null;
+    var it = ctx.registry.modules.iterator();
+    while (it.next()) |entry| {
+        const checker = entry.value_ptr.checker;
+        var cit = checker.classes_ast.iterator();
+        while (cit.next()) |centry| {
+            const t = centry.value_ptr.*;
+            if (t.data != .type_decl) continue;
+            const td = &t.data.type_decl;
+            if (!claimsContract(td.contracts, contract_name)) continue;
+            if (td.generic_params.len > 0) return null;
+            var method: ?*ASTNode = null;
+            for (td.methods) |m| {
+                if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, method_name)) {
+                    method = m;
+                    break;
+                }
+            }
+            if (method == null) return null;
+            if (found != null) return null;
+            const mn = method.?;
+            if (mn.data.fun_decl.generic_params.len > 0) return null;
+            found = .{
+                .type_name = td.name,
+                .node = mn,
+                .c_name = mn.data.fun_decl.resolved_c_name orelse mn.data.fun_decl.name,
+            };
+        }
+        var oit = checker.objects_ast.iterator();
+        while (oit.next()) |oentry| {
+            const o = oentry.value_ptr.*;
+            if (o.data != .object_decl) continue;
+            const od = &o.data.object_decl;
+            if (!claimsContract(od.contracts, contract_name)) continue;
+            var method: ?*ASTNode = null;
+            for (od.members) |m| {
+                if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, method_name)) {
+                    method = m;
+                    break;
+                }
+            }
+            if (method == null) return null;
+            if (found != null) return null;
+            const mn = method.?;
+            if (mn.data.fun_decl.generic_params.len > 0) return null;
+            const oname = od.name orelse return null;
+            found = .{
+                .type_name = oname,
+                .node = mn,
+                .c_name = mn.data.fun_decl.resolved_c_name orelse mn.data.fun_decl.name,
+            };
+        }
+    }
+    return found;
+}
+
 /// Resolve a call to its suspend-capable declaration, if any. Returns null
 /// for FFI/lib calls, unresolvable receivers and generic receivers (static
 /// dispatch unclear) — those keep blocking behavior.
@@ -1528,11 +1607,9 @@ fn libNameAnywhere(ctx: Ctx, name: []const u8) bool {
 fn ensureSuspendMachine(ctx: Ctx, callee: SuspendCallee) anyerror![]const u8 {
     const mname = try syn.suspendMachineName(ctx.allocator, callee.c_name);
     if (ctx.suspend_generated.contains(mname)) return mname;
+    // In-progress machine (recursive call): reference it, don't rebuild.
     for (ctx.suspend_generating.items) |g| {
-        if (std.mem.eql(u8, g, mname)) {
-            ctx.checker.reportError(callee.node.line, callee.node.column, "TypeError: recursive suspend calls are not supported (function '{s}' calls itself through suspend).", .{callee.c_name});
-            return error.TypeError;
-        }
+        if (std.mem.eql(u8, g, mname)) return mname;
     }
     try ctx.suspend_generating.append(mname);
     defer _ = ctx.suspend_generating.pop();
@@ -1746,21 +1823,77 @@ fn calleeResultType(ctx: Ctx, callee: SuspendCallee) *const EiwaType {
     return f.body.resolved_type orelse &syn.defaultVoidType;
 }
 
+fn clearCalleeResolution(call_node: *ASTNode) void {
+    if (call_node.data != .call_expr) return;
+    const c = &call_node.data.call_expr;
+    if (c.callee.data == .get_expr) {
+        c.callee.data.get_expr.resolved_c_name = null;
+    } else if (c.callee.data == .identifier) {
+        c.callee.data.identifier.resolved_c_name = null;
+    }
+}
+
+fn receiverIdentName(call_node: *ASTNode) ?[]const u8 {
+    if (call_node.data != .call_expr) return null;
+    const c = &call_node.data.call_expr;
+    if (c.callee.data != .get_expr) return null;
+    const o = c.callee.data.get_expr.object;
+    if (o.data != .identifier) return null;
+    return o.data.identifier.name;
+}
+
+fn isTaskLocal(ctx: Ctx, name: []const u8) bool {
+    if (std.mem.eql(u8, name, "this")) return false;
+    const tl = ctx.task_locals orelse return false;
+    return tl.contains(name);
+}
+
 fn analyzeSuspendCall(ctx: Ctx, call_node: *ASTNode) anyerror!?SuspendCallInfo {
     if (!callSuspends(ctx, call_node)) return null;
     if (syn.isSuspendPrimitiveCall(call_node)) return null;
     if (syn.isAwaitCall(call_node)) return null;
-    const cal = resolveSuspendCallee(ctx, call_node) orelse return null;
+    var cal = resolveSuspendCallee(ctx, call_node) orelse return null;
     if (cal.node.data != .fun_decl) return null;
-    const f = &cal.node.data.fun_decl;
-    const annotated = hasSuspendAnnotation(f.annotations);
-    // Empty bodies (contracts) stay blocking: a vacuous machine would leave
-    // `result` null and crash the caller on `result!!`.
+    var f = &cal.node.data.fun_decl;
+    var annotated = hasSuspendAnnotation(f.annotations);
     if (f.body.data == .block and f.body.data.block.statements.len == 0) {
-        if (annotated) ctx.checker.reportWarning(call_node.line, call_node.column, "Suspend function '{s}' has no body to transform; this call will block the worker thread.", .{f.name});
-        return null;
+        const c = &call_node.data.call_expr;
+        if (annotated and c.callee.data == .get_expr and cal.recv_type_name != null and isContractName(ctx, cal.recv_type_name.?)) {
+            if (findSingleImplementor(ctx, cal.recv_type_name.?, c.callee.data.get_expr.name)) |impl| {
+                cal = .{ .node = impl.node, .c_name = impl.c_name, .recv_type_name = impl.type_name, .is_method = true };
+                f = &cal.node.data.fun_decl;
+                annotated = hasSuspendAnnotation(f.annotations);
+            } else {
+                const recv_name = receiverIdentName(call_node);
+                const is_local = if (recv_name) |rn| isTaskLocal(ctx, rn) else false;
+                if (is_local) {
+                    ctx.checker.reportError(call_node.line, call_node.column, "TypeError: contract suspend call on task-local '{s}' is not supported inside task blocks (machine state cannot virtual-dispatch; capture a concrete value instead).", .{recv_name.?});
+                    return error.TypeError;
+                }
+                ctx.checker.reportWarning(call_node.line, call_node.column, "Suspend function '{s}' has no single implementor to transform; this call will block the worker thread.", .{f.name});
+                clearCalleeResolution(call_node);
+                return null;
+            }
+        } else {
+            if (annotated) ctx.checker.reportWarning(call_node.line, call_node.column, "Suspend function '{s}' has no body to transform; this call will block the worker thread.", .{f.name});
+            clearCalleeResolution(call_node);
+            return null;
+        }
     }
     if (f.generic_params.len > 0) return null;
+    if (!annotated) {
+        var visiting = ArrayList(*ASTNode).init(ctx.allocator);
+        defer visiting.deinit();
+        if (!funBodySuspends(ctx, cal.node, &visiting, .Any)) {
+            if (receiverIdentName(call_node)) |rn| {
+                if (isTaskLocal(ctx, rn)) {
+                    ctx.checker.reportError(call_node.line, call_node.column, "TypeError: contract suspend call on task-local '{s}' is not supported inside task blocks (machine state cannot virtual-dispatch; capture a concrete value instead).", .{rn});
+                    return error.TypeError;
+                }
+            }
+            return null;
+        }
+    }
     const c = &call_node.data.call_expr;
     for (c.arguments) |a| {
         if (syn.isAwaitCall(a) or syn.containsTrueSuspend(a) or callSuspends(ctx, a)) {
@@ -1870,6 +2003,7 @@ fn hoistSuspendsWalk(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), h
         .named_arg => |*na| try hoistSuspendsWalk(ctx, na.value, preamble, hoisted),
         .assignment => |*a| try hoistSuspendsWalk(ctx, a.value, preamble, hoisted),
         .as_expr => |*a| try hoistSuspendsWalk(ctx, a.value, preamble, hoisted),
+        .is_expr => |*i| try hoistSuspendsWalk(ctx, i.value, preamble, hoisted),
         else => {},
     }
 }
@@ -2215,32 +2349,37 @@ fn expandSuspendBranch(ctx: Ctx, branch: *ASTNode) anyerror!void {
 
 /// Marker temps must exist before locals promotion turns them into fields.
 pub fn expandSuspendCalls(ctx: Ctx, body: []const *ASTNode) anyerror![]*ASTNode {
+    var scoped = ctx;
+    var declared = std.StringHashMap(void).init(ctx.allocator);
+    defer declared.deinit();
+    for (body) |st| try caps.recordDeclaredNames(ctx, st, &declared);
+    scoped.task_locals = &declared;
     var out = ArrayList(*ASTNode).init(ctx.allocator);
     defer out.deinit();
     for (body, 0..) |st, idx| {
-        if (idx == body.len - 1 and st.data == .call_expr and callSuspends(ctx, st) and !syn.isSuspendPrimitiveCall(st) and !syn.isAwaitCall(st) and !syn.isTaskCall(st)) {
-            const info = try analyzeSuspendCall(ctx, st) orelse {
-                try expandSuspendStmt(ctx, st, &out);
+        if (idx == body.len - 1 and st.data == .call_expr and callSuspends(scoped, st) and !syn.isSuspendPrimitiveCall(st) and !syn.isAwaitCall(st) and !syn.isTaskCall(st)) {
+            const info = try analyzeSuspendCall(scoped, st) orelse {
+                try expandSuspendStmt(scoped, st, &out);
                 continue;
             };
             if (isVoidRef(info.result)) {
-                const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
-                try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = null });
+                const marker = try syn.mkSuspendCallMarker(scoped.allocator, info.recv, info.args);
+                try scoped.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = null });
                 try out.append(marker);
                 continue;
             }
-            const n = ctx.counter.*;
-            ctx.counter.* += 1;
-            const tmp_name = try std.fmt.allocPrint(ctx.allocator, "__strail{d}", .{n});
-            const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
-            try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = tmp_name });
+            const n = scoped.counter.*;
+            scoped.counter.* += 1;
+            const tmp_name = try std.fmt.allocPrint(scoped.allocator, "__strail{d}", .{n});
+            const marker = try syn.mkSuspendCallMarker(scoped.allocator, info.recv, info.args);
+            try scoped.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = tmp_name });
             const tmp_decl = syn.mkVarDecl(tmp_name, marker);
             tmp_decl.data.var_decl.type_ref = info.result;
             try out.append(tmp_decl);
             try out.append(syn.mkIdent(tmp_name));
             continue;
         }
-        try expandSuspendStmt(ctx, st, &out);
+        try expandSuspendStmt(scoped, st, &out);
     }
     return out.toOwnedSlice();
 }

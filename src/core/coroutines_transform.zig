@@ -71,7 +71,7 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
 
     var generated = ArrayList(*ASTNode).init(allocator);
     defer generated.deinit();
-    const ctx = Ctx{ .allocator = allocator, .checker = checker, .counter = counter, .generated = &generated, .registry = shared.registry, .suspend_generated = shared.generated, .suspend_generating = shared.generating, .suspend_sites = shared.sites, .suspend_memo = shared.memo };
+    const ctx = Ctx{ .allocator = allocator, .checker = checker, .counter = counter, .generated = &generated, .registry = shared.registry, .suspend_generated = shared.generated, .suspend_generating = shared.generating, .suspend_sites = shared.sites, .suspend_memo = shared.memo, .task_locals = null };
 
     for (module.data.program.statements) |stmt| {
         if (stmt.data == .fun_decl) {
