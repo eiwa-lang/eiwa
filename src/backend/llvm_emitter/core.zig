@@ -1076,7 +1076,7 @@ pub const LLVMEmitter = struct {
                 }
             }
 
-            const auto_contracts = [_][]const u8{ "Equatable", "Stringable", "Hashable" };
+            const auto_contracts = [_][]const u8{ "Equatable", "Stringable", "Hashable", "Annotable" };
             for (auto_contracts) |ac| {
                 if (!seen_c.contains(ac)) {
                     try seen_c.put(ac, {});

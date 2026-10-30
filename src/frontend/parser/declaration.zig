@@ -547,10 +547,10 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
                 try methods.append(try self.funDeclaration(member_annotations, modifiers, false));
             } else if (self.match(.kw_var)) {
                 // Body field: `var name: Type = expr` (mutable, not a ctor arg).
-                try body_fields.append(try self.parseBodyField(true, modifiers));
+                try body_fields.append(try self.parseBodyField(true, modifiers, member_annotations));
             } else if (self.match(.kw_val)) {
                 // Body field: `val name: Type = expr` (immutable, not a ctor arg).
-                try body_fields.append(try self.parseBodyField(false, modifiers));
+                try body_fields.append(try self.parseBodyField(false, modifiers, member_annotations));
             } else {
                 self.errorAtCurrent("Only methods and `var`/`val` fields are supported inside types.");
                 return error.ParseError;
@@ -577,7 +577,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
 ///   `var x: T = expr`   (non-null requires initializer; nullable may omit → null)
 ///   `val x: T = expr`   (initializer REQUIRED — Kotlin-style body property)
 /// Returns a `ClassProp` (is_property = true) that is NOT a constructor arg.
-pub fn parseBodyField(self: *Parser, is_mut: bool, modifiers: []const ast.TokenType) !ast.ClassProp {
+pub fn parseBodyField(self: *Parser, is_mut: bool, modifiers: []const ast.TokenType, annotations: []ast.Annotation) !ast.ClassProp {
     if (modifiers.len > 0) {
         self.errorAtCurrent("Modifiers not allowed on body fields.");
         return error.ParseError;
@@ -610,6 +610,7 @@ pub fn parseBodyField(self: *Parser, is_mut: bool, modifiers: []const ast.TokenT
         .type_ref = parsed_type,
         .is_property = true,
         .initializer = initializer,
+        .annotations = annotations,
     };
 }
 

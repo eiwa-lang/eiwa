@@ -2025,7 +2025,7 @@ println(s)
 
 Pass an explicit length (`String(ptr, len)`) only when the C side is not null-terminated or you need an exact byte count (e.g. truncating random bytes).
 
-*(Note: In the current phase, Annotations are structural compiler pragmas. In future phases, Eiwa will support declaring custom user-defined annotations natively).*
+*Compiler annotations (`@Alias`, `@Header`, `@Int32`, ...) are structural pragmas. User-defined annotations (`@Table`, `@Route`, ...) need no declaration — see §16.8.*
 
 ### 16.3 Compiler Options & Program Arguments
 
@@ -2151,6 +2151,49 @@ fun writeCallback(contents: Pointer, size: Int, nmemb: Int, userp: Pointer): Int
 - `Pointer is Type` **checks the runtime descriptor** at the address and smart-casts, so `when (ptr) { is SomeType -> ptr.field }` works.
 - `as` also performs **numeric casts** between `Int` and `Double` (`d as Int` truncates, `i as Double` converts) — no separate `.toInt()`/`.toDouble()` helper needed.
 - Combined with `funPointer { ... }` (§16.5) and `Memory.alloc` (§16.6), this lets you bind C libraries that use callbacks, structs and out-parameters with **zero glue C** — `std.http` now calls libcurl directly.
+
+### 16.8 User Annotations (`@Name` / `@Name("value")`)
+
+Any `@Name` or `@Name("value")` on a `type`, `object`, field or method is preserved — **no declaration needed**. The compiler synthesizes three query methods per `type`/`object` (via the auto-injected `Annotable` contract, like `toString`): pure compile-time codegen, no runtime reflection (§ADR 75).
+
+```kotlin
+@Table("users")
+@Route("/users")
+type User(val name: String) {
+    @Skip
+    val password: String = ""
+
+    @Validate("min=1")
+    fun save(): Bool {
+        return true
+    }
+}
+
+fun main() {
+    val u = User("leo")
+
+    // Type-level: value or "" — presence via != null
+    // (@Skip carries "" but is still present, unlike a missing entry)
+    val table = u.annotation("Table")?.value ?: ""
+    assert(table == "users")
+    assert(u.annotation("Missing") == null)
+
+    // Field-level (constructor properties and body fields alike)
+    assert(u.fieldAnnotation("password", "Skip") != null)
+    assert(u.fieldAnnotation("password", "Skip")?.value == "")
+    assert(u.fieldAnnotation("name", "Skip") == null)
+
+    // Method-level
+    assert(u.methodAnnotation("save", "Validate")?.value == "min=1")
+    assert(u.methodAnnotation("save", "Nope") == null)
+}
+```
+
+Rules:
+- **One value max:** `@X` or `@X("v")`. More than one argument on a user annotation is a `TypeError`. Compiler annotations keep their arities (`@Header` takes two, etc.).
+- **Reserved vs hidden:** `@Alias`, `@Embed`, `@Suspend`, `@Int32`, ... are compiler-known (exempt from the arity rule) and stay queryable — only `@Primitive` (backend layout) is hidden from the API.
+- **Same source as serde:** `@Alias("user_name")` both renames the wire field (§21.5) and answers `fieldAnnotation("userName", "Alias")?.value`.
+- **Override:** defining your own `implement fun annotation(name: String): Annotation?` wins over the generated one.
 
 ---
 
