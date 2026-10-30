@@ -32,6 +32,7 @@ fn isCoreAutoContract(name: []const u8) bool {
         std.mem.eql(u8, short_name, "Equatable") or
         std.mem.eql(u8, short_name, "Hashable") or
         std.mem.eql(u8, short_name, "Echoable") or
+        std.mem.eql(u8, short_name, "Annotable") or
         std.mem.eql(u8, short_name, "Serializable") or
         std.mem.eql(u8, short_name, "SerdeList") or
         std.mem.eql(u8, short_name, "SerdeMap");
@@ -3923,7 +3924,7 @@ fn emitExpressionRaw(
                                 break :blk false;
                             };
                             var is_match: llvm.LLVMValueRef = undefined;
-                            if (std.mem.endsWith(u8, target_c_name, "Stringable") or std.mem.endsWith(u8, target_c_name, "Equatable") or std.mem.endsWith(u8, target_c_name, "Hashable") or std.mem.endsWith(u8, target_c_name, "Echoable")) {
+                            if (std.mem.endsWith(u8, target_c_name, "Stringable") or std.mem.endsWith(u8, target_c_name, "Equatable") or std.mem.endsWith(u8, target_c_name, "Hashable") or std.mem.endsWith(u8, target_c_name, "Echoable") or std.mem.endsWith(u8, target_c_name, "Annotable")) {
                                 is_match = i1_true;
                             } else if (std.mem.eql(u8, target_c_name, "core_Null") or std.mem.eql(u8, target_c_name, "Null")) {
                                 is_match = llvm.LLVMBuildICmp(builder, llvm.LLVMIntEQ, subj_data, llvm.LLVMConstNull(ptr_type), "when_is_null");
