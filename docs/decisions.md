@@ -1368,3 +1368,117 @@ depende disso.
 `Custom` mista + `is`-`Custom` sobre double cru: método funciona, operador
 segue falso-false). Energia estrutural vai para resolução de módulos, o
 gargalo real.
+
+## ADR 75: Annotations de usuário via `contract Annotable` (codegen, sem reflexão)
+**Status:** Aprovado (testes)
+**Data:** Outubro 2026
+
+**Contexto:**
+1. Eiwa já tinha annotations de compilador (`@Primitive`, `@Alias`,
+   `@Embed`, `@Suspend`, `@Int32`...), mas nenhuma forma de o usuário
+   criar as suas sem declará-las — o pedido era o análogo do serde
+   (ADR 27): rápido em compile-time, formato padrão chave-valor,
+   buscável em objeto/type/método, sem reflexão em runtime.
+2. Requisitos fechados no brainstorm: sintaxe só-posicional MVP
+   (`@X` / `@X("v")`, tudo `String`, conversão no user-space);
+   retenção total (desconhecida nunca é erro); lookup
+   `user.annotation("Table")?.value` retornando `Annotation?`
+   (`null` = ausente, o que distingue `@Skip` presente de ausente).
+
+**Tentativa 1 (rejeitada): 6 métodos com `List<Annotation>`.**
+O desenho inicial incluía os plurais `annotations()`,
+`fieldAnnotations(f)`, `methodAnnotations(m)` retornando
+`List<Annotation>`. Quebrou o bootstrap; a cadeia, provada com
+instrumentação (`DBG mono`/`DBG notfound`/`DBG mismatch` temporários),
+é:
+1. O `contract Annotable` mora em `core.ei`. Só de declarar
+   `fun annotations(): List<Annotation>` ali, o checker do `core.ei`
+   — o mais cego do pipeline, zero imports — precisa resolver
+   `List<Annotation>` e monomorfiza o clone dentro dele.
+2. Inferir `List<Annotation>` puxa `MutableList<Annotation>`
+   (métodos de `List` referenciam `MutableList`, ex. skills
+   `Slicing`/`Appending`), e `MutableList` declara `: Serializable`.
+3. O codegen do serde (`generateSerdeFields`) dispara sobre o clone
+   e constrói o typeref `List<SerdeField>` + chamadas `SerdeField(...)`
+   num checker que nunca ouviu falar de serde:
+   `Type 'SerdeField' not found` / `Contract 'Serializable' not found`.
+4. Agravante: `monomorphizeClass` instalava os aliases genéricos
+   (`T → X`) e só os restaurava no caminho feliz. Como a inferência
+   aninhada falhava (`try inferTypeDecl` antes do restore), o `T`
+   vazado envenenava as validações seguintes do mesmo checker
+   (`Method 'get' returns Annotation but contract 'Indexed' requires
+   SerdeField` — `T` preso em `SerdeField` de um mono morto).
+   Um único erro raiz virava 6 erros mentirosos em arquivos errados
+   (posições `core.ei:213:2` em clones com linhas copiadas da base).
+5. Por que o serde nunca sofreu isso: `generateSerdeFields` só roda
+   para types `: Serializable`, e todo checker que enxerga um
+   `Serializable` enxerga o vocabulário serde junto (usuário importa
+   `std.serde` sempre; stds que usam serde importam explícito). O
+   `Annotable` auto-injetado em **tudo** (inclusive primitivos do
+   `core.ei`) quebrava esse invariante pela primeira vez.
+
+**Decisão (MVP):**
+1. `type Annotation(val name: String, val value: String)` + `contract
+   Annotable` moram em `std/core.ei` (mágicos como `String`, visíveis
+   em todo checker sem import).
+2. `Annotable` é auto-injetado em todo `type`/`object` (mesma lista que
+   `Stringable`/`Equatable`/`Hashable` em `auto_injected_contracts` +
+   vtable do emissor + `is ...` blanket) e declara só 3 lookups por
+   nome, **sem nenhum genérico**: `annotation(name): Annotation?`,
+   `fieldAnnotation(field, name): Annotation?`,
+   `methodAnnotation(method, name): Annotation?`. Uso:
+   `u.annotation("Table")?.value ?: ""`, presença via `!= null`.
+3. O compilador sintetiza os 3 corpos por type/object
+   (`generateAnnotMethods` em `infer_decl.zig`, no mesmo bloco
+   `serde_generated` para types; bloco próprio para objects, que só
+   recebem `Annotable` e não os demais auto-contracts): ternários
+   sobre literais + `Annotation(...)` + `null`, como `serdeFields`
+   mas sem coleção, sem `this`, sem helper calls. Funciona até no
+   checker do `core.ei`; override manual com `implement` prevalece
+   (detecção por nome: método existente não é regenerado).
+4. Retenção: qualquer `@X` / `@X("v")` é preservado sem declaração.
+   Só `@Primitive` é oculto da API (`isAnnotHidden`); `@Alias`,
+   `@Embed`, `@Suspend` etc. continuam visíveis. Aridade >1 em
+   annotation de usuário é `TypeError` (`validateAnnotArity`;
+   reservadas em `annot_reserved_names` mantêm as suas).
+5. Parser: `parseBodyField` passa a receber e guardar
+   `member_annotations` (antes eram parseadas e descartadas em
+   silêncio — `@Skip` em `val` de corpo sumia). Vale também para o
+   serde (`serdeWireName` lê o mesmo campo).
+6. Correção estrutural junto (bug real, independente do desenho):
+   `errdefer` restaurando aliases genéricos em caminho de erro em
+   `monomorphizeClass`/`monomorphizeFunction`
+   (`src/core/type_checker/monomorphize.zig`) — erro aninhado não
+   pode mais vazar `T` e envenenar validações seguintes.
+
+**Fase futura (plurais: `annotations(): List<Annotation>` etc.).**
+Motivação seria enumeração (iterar todas, duplicadas, debug) —
+query pontual já está coberta. Pré-requisitos, nesta ordem:
+1. Lookup de contrato com fallback de registry no caminho direto
+   do `validateContracts` (o reverso já tem, linhas ~966-975): clones
+   estrangeiros validados em checkers cegos precisam achar
+   `Serializable` e friends fora do `classes_ast` local.
+2. `checkGenericTypeArgs`/`findUndeclaredTypeArg` cientes do
+   registry (hoje só enxergam o checker local): sem isso,
+   `List<SerdeField>` resolvido no checker do `core.ei` morre em
+   `Type 'SerdeField' not found` (sintoma observado em 0:0).
+3. Auditoria de resolução de callee cross-checker para os corpos
+   gerados (`SerdeField(...)` inferido fora do módulo serde).
+4. Critério de aceite: suíte completa verde + um teste com um type
+   anotado em `core.ei`-visível exercitando `annotations()` sobre
+   `List<Annotation>` monomorfizado no checker do `core.ei`.
+Alternativas já rejeitadas: pular geração nos módulos std (buraco
+na vtable + API inconsistente — `str.annotations()` sumiria);
+opt-in `: Annotable` em vez de auto-injeção (resolve o bootstrap,
+mas troca conveniência total por atrito por type sem ganho no MVP).
+
+**Razão:**
+Query por nome cobre o caso de uso do MVP (customizar serde:
+`@Alias`/`@Skip`, config, routing) sem pagar o preço dos plurais.
+Opt-in por declaração de annotation foi rejeitado: atrito sem
+benefício quando a lookup já é total por nome. O desenho final não
+monomorfiza nada novo em nenhum checker — blast radius mínimo por
+construção, não por disciplina.
+Validação: `annotation_test.ei` 5/5 (type/ctor-field/body-field/
+method/object + ausências) + arity `TypeError` + override manual +
+suíte completa **936 PASSED** + `zig build test` verde.

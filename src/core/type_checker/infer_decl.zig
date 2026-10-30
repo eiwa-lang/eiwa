@@ -50,7 +50,7 @@ pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.sys
 pub const core_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions" };
 pub const core_fallback_modules = &[_][]const u8{ "io.ei", "system.ei", "exceptions.ei" };
 
-pub const auto_injected_contracts = &[_][]const u8{ "Stringable", "Equatable", "Hashable" };
+pub const auto_injected_contracts = &[_][]const u8{ "Stringable", "Equatable", "Hashable", "Annotable" };
 pub const auto_injected_skills = &[_][]const u8{"Echoable"};
 
 // Explicit imports displace transitive same-signature overloads from
@@ -522,6 +522,7 @@ pub fn inferTypeDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Eiwa
         try generateDefaultEquals(self, node, c);
         try generateSerdeFields(self, node, c);
         try generateSerdeDeserialize(self, node, c);
+        try generateAnnotMethods(self, node, c);
     }
 
     var class_scope = Scope.init(self.allocator, scope);
@@ -1501,6 +1502,25 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     }
 
     try self.objects_ast.put(actual_c_name, node);
+
+    {
+        var has_annot = false;
+        for (o.contracts) |cs| {
+            if (std.mem.eql(u8, cs, "Annotable")) {
+                has_annot = true;
+                break;
+            }
+        }
+        if (!has_annot) {
+            var nc = try self.allocator.alloc([]const u8, o.contracts.len + 1);
+            for (o.contracts, 0..) |item, i| {
+                nc[i] = item;
+            }
+            nc[o.contracts.len] = "Annotable";
+            o.contracts = nc;
+        }
+    }
+    try generateAnnotMethods(self, node, o);
 
     try composeSkills(self, node, o);
     try validateContracts(self, node, o);
@@ -3677,6 +3697,315 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
             new_methods[c.methods.len + i] = to_add[i].?;
         }
         c.methods = new_methods;
+    }
+}
+
+const annot_reserved_names = [_][]const u8{
+    "Primitive", "Alias", "Header", "Source", "Include", "Define", "Link",
+    "Int32", "Embed", "Suspend", "Coroutine",
+};
+
+fn isAnnotHidden(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Primitive");
+}
+
+fn isAnnotReserved(name: []const u8) bool {
+    for (annot_reserved_names) |r| {
+        if (std.mem.eql(u8, name, r)) return true;
+    }
+    return false;
+}
+
+fn annotArgValue(ann: ast.Annotation) []const u8 {
+    if (ann.arguments.len > 0) return ann.arguments[0];
+    return "";
+}
+
+fn validateAnnotArity(self: *TypeChecker, node: *ASTNode, annotations: []const ast.Annotation, what: []const u8) anyerror!void {
+    for (annotations) |ann| {
+        if (!isAnnotReserved(ann.name) and ann.arguments.len > 1) {
+            self.reportError(node.line, node.column, "TypeError: Annotation '@{s}' on {s} accepts at most one argument (got {}).", .{ ann.name, what, ann.arguments.len });
+            return error.TypeError;
+        }
+    }
+}
+
+fn makeAnnotNull(self: *TypeChecker, line: usize, col: usize) anyerror!*ASTNode {
+    const node = try self.allocator.create(ASTNode);
+    node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{ .null_literal = {} },
+    };
+    return node;
+}
+
+fn makeAnnotEq(self: *TypeChecker, line: usize, col: usize, var_name: []const u8, lit_val: []const u8) anyerror!*ASTNode {
+    const lhs = try makeIdent(self, line, col, var_name);
+    const rhs = try makeStringLiteral(self, line, col, lit_val);
+    const node = try self.allocator.create(ASTNode);
+    node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .binary_expr = .{
+                .op = .eq_eq,
+                .left = lhs,
+                .right = rhs,
+            },
+        },
+    };
+    return node;
+}
+
+fn makeAnnotTernary(self: *TypeChecker, line: usize, col: usize, cond: *ASTNode, then_b: *ASTNode, else_b: *ASTNode) anyerror!*ASTNode {
+    const node = try self.allocator.create(ASTNode);
+    node.* = .{
+        .line = line,
+        .column = col,
+        .resolved_type = null,
+        .expected_type = null,
+        .data = .{
+            .ternary_expr = .{
+                .condition = cond,
+                .then_branch = then_b,
+                .else_branch = else_b,
+            },
+        },
+    };
+    return node;
+}
+
+fn makeAnnotationCall(self: *TypeChecker, line: usize, col: usize, name: []const u8, value: []const u8) anyerror!*ASTNode {
+    const args = try self.allocator.alloc(*ASTNode, 2);
+    args[0] = try makeStringLiteral(self, line, col, name);
+    args[1] = try makeStringLiteral(self, line, col, value);
+    return try makeCall(self, line, col, "Annotation", args, &.{});
+}
+
+fn makeAnnotTypeRef(self: *TypeChecker, name: []const u8, nullable: bool, generic_args: []const *const ast.ASTTypeRef) anyerror!*ast.ASTTypeRef {
+    const tr = try self.allocator.create(ast.ASTTypeRef);
+    tr.* = .{
+        .name = name,
+        .generic_args = generic_args,
+        .is_array = false,
+        .is_nullable = nullable,
+    };
+    return tr;
+}
+
+fn annotLookupChain(self: *TypeChecker, node: *ASTNode, var_name: []const u8, anns: []const ast.Annotation) anyerror!*ASTNode {
+    var else_b = try makeAnnotNull(self, node.line, node.column);
+    var i: usize = anns.len;
+    while (i > 0) {
+        i -= 1;
+        const ann = anns[i];
+        if (isAnnotHidden(ann.name)) continue;
+        const cond = try makeAnnotEq(self, node.line, node.column, var_name, ann.name);
+        const then_b = try makeAnnotationCall(self, node.line, node.column, ann.name, annotArgValue(ann));
+        else_b = try makeAnnotTernary(self, node.line, node.column, cond, then_b, else_b);
+    }
+    return else_b;
+}
+
+fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!void {
+    const is_obj = comptime @hasField(@TypeOf(c.*), "members");
+    if (comptime !is_obj) {
+        if (!self.implementsContract(c.name, "Annotable")) return;
+        if (c.generic_params.len > 0) return;
+    } else {
+        var has_ann = false;
+        for (c.contracts) |cs| {
+            const actual = self.alias_map.get(cs) orelse cs;
+            if (std.mem.eql(u8, cs, "Annotable") or std.mem.eql(u8, actual, "Annotable") or std.mem.endsWith(u8, actual, "_Annotable")) {
+                has_ann = true;
+                break;
+            }
+        }
+        if (!has_ann) return;
+    }
+
+    const cur_methods: []const *ASTNode = if (is_obj) c.members else c.methods;
+
+    var has = [_]bool{false} ** 3;
+    const want = [_][]const u8{ "annotation", "fieldAnnotation", "methodAnnotation" };
+    for (cur_methods) |m| {
+        if (m.data != .fun_decl) continue;
+        for (want, 0..) |w, i| {
+            if (std.mem.eql(u8, m.data.fun_decl.name, w)) has[i] = true;
+        }
+    }
+
+    try validateAnnotArity(self, node, c.annotations, "type");
+    if (comptime !is_obj) {
+        for (c.primary_constructor) |prop| {
+            if (!prop.is_property) continue;
+            try validateAnnotArity(self, node, prop.annotations, "field");
+        }
+        for (c.body_fields) |prop| {
+            try validateAnnotArity(self, node, prop.annotations, "field");
+        }
+    }
+    for (cur_methods) |m| {
+        if (m.data != .fun_decl) continue;
+        var skip = false;
+        for (want) |w| {
+            if (std.mem.eql(u8, m.data.fun_decl.name, w)) {
+                skip = true;
+                break;
+            }
+        }
+        if (skip) continue;
+        try validateAnnotArity(self, m, m.data.fun_decl.annotations, "method");
+    }
+
+    const line = node.line;
+    const col = node.column;
+
+    const annot_opt_ret = try makeAnnotTypeRef(self, "Annotation", true, &.{});
+
+    var to_add = ArrayList(*ASTNode).init(self.allocator);
+    defer to_add.deinit();
+
+    const impl_mod = try self.allocator.alloc(ast.TokenType, 1);
+    impl_mod[0] = .kw_implement;
+
+    if (!has[0]) {
+        const p_tr = try makeAnnotTypeRef(self, "String", false, &.{});
+        const params = try self.allocator.alloc(ast.Param, 1);
+        params[0] = .{ .name = "name", .type_ref = p_tr, .initializer = null, .is_varargs = false };
+        const body = try annotLookupChain(self, node, "name", c.annotations);
+        const m = try self.allocator.create(ASTNode);
+        m.* = .{
+            .line = line, .column = col, .resolved_type = null, .expected_type = null,
+            .data = .{ .fun_decl = .{
+                .annotations = &.{}, .modifiers = impl_mod, .name = "annotation",
+                .generic_params = &[_][]const u8{}, .params = params,
+                .type_ref = annot_opt_ret, .body = body, .is_expr_body = true, .resolved_c_name = null,
+            } },
+        };
+        try to_add.append(m);
+    }
+
+    var field_names = ArrayList([]const u8).init(self.allocator);
+    defer field_names.deinit();
+    var field_anns = ArrayList([]const ast.Annotation).init(self.allocator);
+    defer field_anns.deinit();
+    if (comptime !is_obj) {
+        for (c.primary_constructor) |prop| {
+            if (!prop.is_property) continue;
+            try field_names.append(prop.name);
+            try field_anns.append(prop.annotations);
+        }
+        for (c.body_fields) |prop| {
+            try field_names.append(prop.name);
+            try field_anns.append(prop.annotations);
+        }
+    }
+
+    if (!has[1]) {
+        var else_b: *ASTNode = try makeAnnotNull(self, line, col);
+        var i: usize = field_names.items.len;
+        while (i > 0) {
+            i -= 1;
+            var any_user = false;
+            for (field_anns.items[i]) |ann| {
+                if (!isAnnotHidden(ann.name)) {
+                    any_user = true;
+                    break;
+                }
+            }
+            if (!any_user) continue;
+            const cond = try makeAnnotEq(self, line, col, "field", field_names.items[i]);
+            const then_b = try annotLookupChain(self, node, "name", field_anns.items[i]);
+            else_b = try makeAnnotTernary(self, line, col, cond, then_b, else_b);
+        }
+        const params = try self.allocator.alloc(ast.Param, 2);
+        const f_tr = try makeAnnotTypeRef(self, "String", false, &.{});
+        const n_tr = try makeAnnotTypeRef(self, "String", false, &.{});
+        params[0] = .{ .name = "field", .type_ref = f_tr, .initializer = null, .is_varargs = false };
+        params[1] = .{ .name = "name", .type_ref = n_tr, .initializer = null, .is_varargs = false };
+        const m = try self.allocator.create(ASTNode);
+        m.* = .{
+            .line = line, .column = col, .resolved_type = null, .expected_type = null,
+            .data = .{ .fun_decl = .{
+                .annotations = &.{}, .modifiers = impl_mod, .name = "fieldAnnotation",
+                .generic_params = &[_][]const u8{}, .params = params,
+                .type_ref = annot_opt_ret, .body = else_b, .is_expr_body = true, .resolved_c_name = null,
+            } },
+        };
+        try to_add.append(m);
+    }
+
+    var meth_names = ArrayList([]const u8).init(self.allocator);
+    defer meth_names.deinit();
+    var meth_anns = ArrayList([]const ast.Annotation).init(self.allocator);
+    defer meth_anns.deinit();
+    for (cur_methods) |m| {
+        if (m.data != .fun_decl) continue;
+        var skip = false;
+        for (want) |w| {
+            if (std.mem.eql(u8, m.data.fun_decl.name, w)) {
+                skip = true;
+                break;
+            }
+        }
+        if (skip) continue;
+        var any_user = false;
+        for (m.data.fun_decl.annotations) |ann| {
+            if (!isAnnotHidden(ann.name)) {
+                any_user = true;
+                break;
+            }
+        }
+        if (!any_user) continue;
+        try meth_names.append(m.data.fun_decl.name);
+        try meth_anns.append(m.data.fun_decl.annotations);
+    }
+
+    if (!has[2]) {
+        var else_b: *ASTNode = try makeAnnotNull(self, line, col);
+        var i: usize = meth_names.items.len;
+        while (i > 0) {
+            i -= 1;
+            const cond = try makeAnnotEq(self, line, col, "method", meth_names.items[i]);
+            const then_b = try annotLookupChain(self, node, "name", meth_anns.items[i]);
+            else_b = try makeAnnotTernary(self, line, col, cond, then_b, else_b);
+        }
+        const params = try self.allocator.alloc(ast.Param, 2);
+        const m_tr = try makeAnnotTypeRef(self, "String", false, &.{});
+        const n_tr = try makeAnnotTypeRef(self, "String", false, &.{});
+        params[0] = .{ .name = "method", .type_ref = m_tr, .initializer = null, .is_varargs = false };
+        params[1] = .{ .name = "name", .type_ref = n_tr, .initializer = null, .is_varargs = false };
+        const m = try self.allocator.create(ASTNode);
+        m.* = .{
+            .line = line, .column = col, .resolved_type = null, .expected_type = null,
+            .data = .{ .fun_decl = .{
+                .annotations = &.{}, .modifiers = impl_mod, .name = "methodAnnotation",
+                .generic_params = &[_][]const u8{}, .params = params,
+                .type_ref = annot_opt_ret, .body = else_b, .is_expr_body = true, .resolved_c_name = null,
+            } },
+        };
+        try to_add.append(m);
+    }
+
+    if (to_add.items.len > 0) {
+        const added = try to_add.toOwnedSlice();
+        if (is_obj) {
+            var new_members = try self.allocator.alloc(*ASTNode, cur_methods.len + added.len);
+            for (cur_methods, 0..) |m, idx| new_members[idx] = m;
+            for (added, 0..) |m, idx| new_members[cur_methods.len + idx] = m;
+            c.members = new_members;
+        } else {
+            var new_methods = try self.allocator.alloc(*ASTNode, cur_methods.len + added.len);
+            for (cur_methods, 0..) |m, idx| new_methods[idx] = m;
+            for (added, 0..) |m, idx| new_methods[cur_methods.len + idx] = m;
+            c.methods = new_methods;
+        }
     }
 }
 

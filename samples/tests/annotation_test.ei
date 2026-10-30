@@ -1,0 +1,83 @@
+import { assert } from "std.core"
+import { Serializable } from "std.serde"
+import { Json, serializeJson } from "std.json"
+
+// Annotable MVP: any `@Name` / `@Name("value")` is preserved; the compiler
+// synthesizes annotation()/fieldAnnotation()/methodAnnotation() per
+// type/object at compile time (no runtime reflection). Only @Primitive is
+// hidden; arity is 0..1 (more is a TypeError).
+
+@Table("users")
+@Route("/users")
+type AnnotatedUser(
+    @Tag("pk") val id: String,
+    val name: String
+) {
+    @Alias("full_name")
+    val displayName: String = ""
+
+    @Skip
+    val password: String = ""
+
+    @Validate("min=1")
+    fun save(): Bool {
+        return true
+    }
+}
+
+object AnnotatedConfig {
+    @Env("prod")
+    fun env(): String {
+        return "prod"
+    }
+}
+
+// Caso de uso fim-a-fim: o mesmo @Alias que o serde congela no JSON
+// é legível via fieldAnnotation em runtime.
+type AnnotatedPayload(
+    @Alias("user_name") val userName: String,
+    val age: Int
+) : Serializable + Json
+
+test "annotation: type-level lookup by name" {
+    val u = AnnotatedUser("u-1", "leo")
+    assert(u.annotation("Table")?.value == "users")
+    assert(u.annotation("Route")?.value == "/users")
+    assert(u.annotation("Missing") == null)
+}
+
+test "annotation: ctor field lookup" {
+    val u = AnnotatedUser("u-1", "leo")
+    assert(u.fieldAnnotation("id", "Tag")?.value == "pk")
+    assert(u.fieldAnnotation("name", "Tag") == null)
+}
+
+test "annotation: body field lookup" {
+    val u = AnnotatedUser("u-1", "leo")
+    assert(u.fieldAnnotation("displayName", "Alias")?.value == "full_name")
+    assert(u.fieldAnnotation("password", "Skip") != null)
+    assert(u.fieldAnnotation("password", "Skip")?.value == "")
+    assert(u.fieldAnnotation("password", "Nope") == null)
+    assert(u.fieldAnnotation("unknown", "Skip") == null)
+}
+
+test "annotation: method lookup" {
+    val u = AnnotatedUser("u-1", "leo")
+    assert(u.methodAnnotation("save", "Validate")?.value == "min=1")
+    assert(u.methodAnnotation("save", "Nope") == null)
+    assert(u.methodAnnotation("unknown", "Validate") == null)
+}
+
+test "annotation: object lookup" {
+    assert(AnnotatedConfig.methodAnnotation("env", "Env")?.value == "prod")
+    assert(AnnotatedConfig.annotation("Missing") == null)
+}
+
+test "annotation: @Alias drives serde and runtime query" {
+    val p = AnnotatedPayload("leo", 30)
+    // compile-time: serde congela o wire name no JSON
+    val json = serializeJson(p)
+    assert(json.indexOf("\"user_name\"") >= 0)
+    // runtime: a mesma annotation é legível via fieldAnnotation
+    assert(p.fieldAnnotation("userName", "Alias")?.value == "user_name")
+}
