@@ -205,6 +205,8 @@ pub fn collectFreeIdents(ctx: Ctx, node: *ASTNode, locals: *std.StringHashMap(vo
             for (ml.elements) |e| try collectFreeIdents(ctx, e, locals, captures);
         },
         .named_arg => |na| try collectFreeIdents(ctx, na.value, locals, captures),
+        .as_expr => |*a| try collectFreeIdents(ctx, a.value, locals, captures),
+        .is_expr => |*i| try collectFreeIdents(ctx, i.value, locals, captures),
         else => {},
     }
 }
@@ -360,6 +362,8 @@ pub fn rewriteCapturedRefs(ctx: Ctx, captures: []const CapturedVar, node: *ASTNo
             for (ml.elements) |e| try rewriteCapturedRefs(ctx, captures, e);
         },
         .named_arg => |na| try rewriteCapturedRefs(ctx, captures, na.value),
+        .as_expr => |*a| try rewriteCapturedRefs(ctx, captures, a.value),
+        .is_expr => |*i| try rewriteCapturedRefs(ctx, captures, i.value),
         else => {},
     }
 }
@@ -407,11 +411,7 @@ pub fn typeRefForVarDecl(ctx: Ctx, node: *ASTNode) !*const ast.ASTTypeRef {
 /// Zero-value for a promoted local's field; non-primitive/non-nullable types
 /// cannot be promoted (unsupported for now).
 pub fn makeNullableTypeRef(ctx: Ctx, ref: *const ASTTypeRef) !*const ASTTypeRef {
-    const copy = try ctx.allocator.create(ASTTypeRef);
-    copy.* = ref.*;
-    copy.is_nullable = true;
-    copy.resolved_type = null;
-    return copy;
+    return syn.makeNullableRef(ctx.allocator, ref);
 }
 
 pub fn isScalarPrimitiveName(name: []const u8) bool {
@@ -527,6 +527,8 @@ pub fn collectVarDecls(ctx: Ctx, node: *ASTNode, seen: *std.StringHashMap(void),
             }
         },
         .named_arg => |na| try collectVarDecls(ctx, na.value, seen, out),
+        .as_expr => |*a| try collectVarDecls(ctx, a.value, seen, out),
+        .is_expr => |*i| try collectVarDecls(ctx, i.value, seen, out),
         .array_literal => |al| {
             for (al.elements) |e| try collectVarDecls(ctx, e, seen, out);
         },
@@ -653,6 +655,8 @@ pub fn collectMachineryLocals(ctx: Ctx, node: *ASTNode, promoted_names: *std.Str
             }
         },
         .named_arg => |na| try collectMachineryLocals(ctx, na.value, promoted_names, out),
+        .as_expr => |*a| try collectMachineryLocals(ctx, a.value, promoted_names, out),
+        .is_expr => |*i| try collectMachineryLocals(ctx, i.value, promoted_names, out),
         .array_literal => |al| {
             for (al.elements) |e| try collectMachineryLocals(ctx, e, promoted_names, out);
         },
@@ -707,6 +711,13 @@ pub fn rewritePromotedRefs(ctx: Ctx, promoted: []const CapturedVar, node: *ASTNo
             if (v.initializer) |init| {
                 if (syn.isCoopAwaitCall(init)) {
                     try rewritePromotedRefs(ctx, promoted, init);
+                    return;
+                }
+                // Markers keep `val` form; the machine assigns the field.
+                if (syn.suspendMarkerCall(node)) |marker| {
+                    for (marker.data.call_expr.arguments) |arg| {
+                        try rewritePromotedRefs(ctx, promoted, arg);
+                    }
                     return;
                 }
                 if (!syn.isTaskCall(init) and !syn.isAwaitCall(init)) {
@@ -836,6 +847,8 @@ pub fn rewritePromotedRefs(ctx: Ctx, promoted: []const CapturedVar, node: *ASTNo
             for (ml.elements) |e| try rewritePromotedRefs(ctx, promoted, e);
         },
         .named_arg => |na| try rewritePromotedRefs(ctx, promoted, na.value),
+        .as_expr => |*a| try rewritePromotedRefs(ctx, promoted, a.value),
+        .is_expr => |*i| try rewritePromotedRefs(ctx, promoted, i.value),
         else => {},
     }
 }
@@ -981,6 +994,8 @@ fn findOuterScopeRefsInNode(node: *ASTNode, refs: *OuterScopeRefs, record_this: 
             findOuterScopeRefsInNode(i.value, refs, record_this);
         },
         .named_arg => |na| findOuterScopeRefsInNode(na.value, refs, record_this),
+        .as_expr => |*a| findOuterScopeRefsInNode(a.value, refs, record_this),
+        .is_expr => |*i| findOuterScopeRefsInNode(i.value, refs, record_this),
         else => {},
     }
 }

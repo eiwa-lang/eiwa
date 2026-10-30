@@ -1,0 +1,35 @@
+// MUST NOT COMPILE: a contract suspend call on a task-local with zero or
+// multiple known implementors cannot suspend (no machine to drive) and
+// cannot block safely either (machine fields lose dynamic dispatch and
+// would silently compute the wrong value). The compiler must fail loud
+// with a positioned diagnostic. If this file ever compiles it XPASSes.
+import { assert } from "std.core"
+import { Coroutine } from "std.coroutines"
+
+contract Fetcher {
+    @Suspend
+    fun fetch(): Int
+}
+
+type A : Fetcher {
+    implement fun fetch(): Int {
+        Coroutine.sleepMs(1)
+        return 1
+    }
+}
+
+type B : Fetcher {
+    implement fun fetch(): Int {
+        Coroutine.sleepMs(1)
+        return 2
+    }
+}
+
+test "contract suspend call on task-local is rejected" {
+    val t = task {
+        val a: Fetcher = A()
+        val v = a.fetch()
+        v
+    }
+    assert(t.await() == 1, "must not reach here")
+}

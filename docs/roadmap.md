@@ -1997,6 +1997,15 @@ Semântica alvo:
 
 ---
 
+### Phase 100: `@Suspend` CPS através de métodos + follow-ups (branch `cps/suspend-transform`, PR #23)
+> **Contexto:** antes, só chamadas escritas diretamente no corpo do `task` suspendiam; métodos que chamavam operações `@Suspend` (ex. `ServerConnection.readRequest` → `Socket.read` → `poll`) prendiam a worker até o watchdog (vide `coop_idle_conn_test`: 24 keep-alives idle matavam o probe). O compilador agora gera máquinas `__Suspend_*` com protocolo caller/callee, inferência transitiva (sem keyword no user-code) e devirt de implementador único.
+- [x] **Hoist:** suspend em operandos, args, returns, condições de `if`, iteráveis de `for` e subjects de `when` (padrão `hoistAwaitsFromExpr`); `while`-cond via desugar para guard-loop; `for`-body via desugar `for→while` existente.
+- [x] **`leave` nu** através de estados (alvo do loop threadado no builder); recursão direta/mútua (máquina em construção é referenciada, não reconstruída).
+- [x] **Dispatch por contrato:** 1 implementador desvirtualiza em silêncio; 0/vários com receiver captura avisa e bloqueia; com receiver local dá `TypeError` posicionado (campos de máquina perdem vtable — issue #21).
+- [x] **Perf/limpeza:** memo das checagens transitivas; removida a invocação do passo morto `detectSuspendFunctions`; helpers unificados; comentários aparados.
+- [x] **Verify:** suíte completa verde (945, +7 arquivos de teste + 1 xfail); `coop_idle_conn_test` verde; CI de build verde nas 5 plataformas.
+- [ ] **Fora de escopo (tracking):** issues #21 (vtable em campo de máquina) e #22 (`as` sintético no emitter); `when`-conds e `for`-valor seguem rejeitados; arquivo `coroutines.zig` morto.
+
 ### Phase 99: Delinear report de exceção não-tratada em função por módulo (FUTURE / BACKLOG)
 > **Contexto:** o fix da issue #19 (`emitUnhandledReport` em `src/backend/llvm_emitter/statement.zig`)
 > emite o bloco de report inline em cada site de `throw` (cadeia de selects + strings por vtable).

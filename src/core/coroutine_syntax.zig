@@ -122,6 +122,30 @@ pub fn mkCoopAwaitMarker(
     return marker;
 }
 
+pub fn suspendMachineName(allocator: std.mem.Allocator, c_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "__Suspend_{s}", .{c_name});
+}
+
+pub fn mkSuspendCallMarker(allocator: std.mem.Allocator, recv: ?*ASTNode, args: []const *ASTNode) !*ASTNode {
+    var all = try allocator.alloc(*ASTNode, args.len + 1);
+    all[0] = recv orelse mkNullLit();
+    for (args, 0..) |a, i| all[i + 1] = a;
+    return mkCall(mkIdent("__SuspendCall"), all);
+}
+
+pub fn suspendMarkerCall(node: *ASTNode) ?*ASTNode {
+    const call = switch (node.data) {
+        .var_decl => |v| v.initializer orelse return null,
+        .call_expr => node,
+        else => return null,
+    };
+    if (call.data != .call_expr) return null;
+    const c = &call.data.call_expr;
+    if (c.callee.data != .identifier) return null;
+    if (!std.mem.eql(u8, c.callee.data.identifier.name, "__SuspendCall")) return null;
+    return call;
+}
+
 pub fn mkIdent(name: []const u8) *ASTNode {
     const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
     n.* = .{
@@ -274,6 +298,16 @@ pub fn mkIndexExpr(object: *ASTNode, index: *ASTNode) *ASTNode {
     return n;
 }
 
+pub fn mkAs(value: *ASTNode, type_ref: *const ast.ASTTypeRef) *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .as_expr = .{ .value = value, .type_ref = type_ref } },
+    };
+    return n;
+}
+
 pub fn mkAssign(name: []const u8, value: *ASTNode) *ASTNode {
     const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
     n.* = .{
@@ -356,6 +390,16 @@ pub fn mkWhile(condition: *ASTNode, body: *ASTNode) *ASTNode {
             .condition = condition,
             .body = body,
         } },
+    };
+    return n;
+}
+
+pub fn mkBreak() *ASTNode {
+    const n = std.heap.page_allocator.create(ASTNode) catch unreachable;
+    n.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .break_stmt = .{ .value = null } },
     };
     return n;
 }
@@ -443,7 +487,7 @@ pub fn typeRefForEiwaType(allocator: std.mem.Allocator, t: *const EiwaType) !*co
         .String => return typeRefSimple("String"),
         .Void => return typeRefSimple("Void"),
         .Double => return typeRefSimple("Double"),
-        .Null => return typeRefSimple("Nothing?"),
+        .Null => return typeRefSimple("Null"),
         .Custom => |name| {
             return typeRefSimple(name);
         },
@@ -462,6 +506,13 @@ pub fn typeRefForEiwaType(allocator: std.mem.Allocator, t: *const EiwaType) !*co
             return ref;
         },
         .Union => |u| {
+            // A raw union typeref misbehaves downstream; collapse nullables.
+            if (u.right.* == .Null) {
+                return makeNullableRef(allocator, try typeRefForEiwaType(allocator, u.left));
+            }
+            if (u.left.* == .Null) {
+                return makeNullableRef(allocator, try typeRefForEiwaType(allocator, u.right));
+            }
             var parts = ArrayList(*const ASTTypeRef).init(allocator);
             try parts.append(try typeRefForEiwaType(allocator, u.left));
             try parts.append(try typeRefForEiwaType(allocator, u.right));
@@ -551,6 +602,14 @@ pub fn singleTypeArg(t: *const EiwaType) *const EiwaType {
         else => {},
     }
     return &defaultVoidType;
+}
+
+pub fn makeNullableRef(allocator: std.mem.Allocator, ref: *const ASTTypeRef) !*const ASTTypeRef {
+    const copy = try allocator.create(ASTTypeRef);
+    copy.* = ref.*;
+    copy.is_nullable = true;
+    copy.resolved_type = null;
+    return copy;
 }
 
 pub fn typeRefSimple(name: []const u8) *const ASTTypeRef {

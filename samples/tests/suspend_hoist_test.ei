@@ -1,0 +1,53 @@
+import { assert } from "std.core"
+import { Coroutine } from "std.coroutines"
+
+fun fetchVal(): Int {
+    Coroutine.sleepMs(1)
+    return 41
+}
+
+test "suspend hoist: binary operand" {
+    val t = task {
+        val x = 100 + fetchVal()
+        x
+    }
+    assert(t.await() == 141, "100 + fetchVal() should be 141")
+}
+
+test "suspend hoist: if condition" {
+    val t = task {
+        var r = 0
+        if (fetchVal() == 41) {
+            r = 10
+        } else {
+            r = 20
+        }
+        r
+    }
+    assert(t.await() == 10, "condition hoist should take then branch")
+}
+
+test "suspend hoist: call argument" {
+    val t = task {
+        val v = fetchVal()
+        v + 1
+    }
+    assert(t.await() == 42, "should be 42")
+}
+
+test "suspend hoist: nested suspend args" {
+    val t = task {
+        val x = fetchVal() + fetchVal()
+        x
+    }
+    assert(t.await() == 82, "41+41 should be 82")
+}
+
+test "suspend hoist: return expression" {
+    val t = task {
+        var r = 0
+        r = fetchVal() + 1
+        r
+    }
+    assert(t.await() == 42, "should be 42")
+}

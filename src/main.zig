@@ -6,7 +6,6 @@ const lexer = @import("frontend/lexer.zig");
 const parser = @import("frontend/parser/core.zig");
 const ast = @import("core/ast.zig");
 const type_checker = @import("core/type_checker/core.zig");
-const coroutines = @import("core/coroutines.zig");
 const coroutines_transform = @import("core/coroutines_transform.zig");
 const eiwa_home = @import("core/eiwa_home.zig");
 const case_checker = @import("core/case_checker.zig");
@@ -1057,21 +1056,6 @@ fn run(init: std.process.Init) !void {
         }
     }
 
-    // Coroutines (stackless, inference): mark suspend functions and suspension
-    // points before emission. The LLVM backend transforms marked functions.
-    var global_functions_ast = std.StringHashMap(*ast.ASTNode).init(arena.allocator());
-    for (registry.ordered_modules.items) |path| {
-        const mod = registry.modules.get(path).?;
-        var fn_it = mod.checker.functions_ast.iterator();
-        while (fn_it.next()) |entry| {
-            try global_functions_ast.put(entry.key_ptr.*, entry.value_ptr.*);
-        }
-    }
-    coroutines.detectSuspendFunctions(arena.allocator(), &registry, &global_functions_ast) catch |err| {
-        std.debug.print("Error: coroutine detection failed: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
-    };
-
     // Rewrite `val x = task { ... }` / `val x = r.await()` into the
     // stackless machinery (generated Continuation + Scheduler) before emission.
     coroutines_transform.transformProgram(arena.allocator(), &registry) catch |err| {
@@ -1080,10 +1064,11 @@ fn run(init: std.process.Init) !void {
         // never leak internal error names for reachable user errors.
         const msg: ?[]const u8 = switch (err) {
             error.SuspendInCondition => "suspend call in condition is not supported inside task blocks (suspend calls can only be used as separate statements)",
-            error.SuspendInOperand => "suspend call as a value is not supported inside task blocks (suspend calls can only be used as separate statements)",
             error.CollectForInSuspend => "for used as a value is not supported inside suspend context yet",
             error.BreakInSuspendContext => "'leave' is not supported inside suspend context (synchronous code only)",
             error.InvalidTaskCall => "invalid task call (expected a lambda block)",
+            error.SuspendMarkerLost => "internal error: suspend marker lost during coroutine transform",
+            error.StateNotFound => "internal error: coroutine state not found during transform",
             else => null,
         };
         if (msg) |m| {
