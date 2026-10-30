@@ -114,9 +114,6 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
         try self.alias_map.put(conc_name, conc_name);
     }
 
-    // A nested inferTypeDecl failure must not leak the in-progress generic
-    // aliases: later validations would resolve the same param names to the
-    // failed instantiation's concrete types (stale-T poisoning).
     errdefer {
         for (type_decl.generic_params) |param_name| {
             if (old_aliases.get(param_name)) |old_val| {
@@ -335,8 +332,6 @@ pub fn monomorphizeFunction(self: *TypeChecker, base_node: *ASTNode, type_args: 
         try self.alias_map.put(conc_name, conc_name);
     }
 
-    // Same stale-alias hygiene as monomorphizeClass: a failed nested
-    // inferFunDecl must not leak the in-progress generic aliases.
     errdefer {
         for (fun_decl.generic_params) |param_name| {
             if (old_aliases.get(param_name)) |old_val| {

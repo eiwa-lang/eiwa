@@ -82,10 +82,6 @@ contract Hashable {
     fun hashCode(): Int
 }
 
-// User annotations: any `@Name` / `@Name("value")` on a type, field or
-// method is preserved. The compiler synthesizes the Annotable methods per
-// type/object at compile time (like serdeFields) — no runtime reflection.
-// Lookup: `user.annotation("Table")?.value ?: ""`, presence via `!= null`.
 type Annotation(val name: String, val value: String)
 
 contract Annotable {

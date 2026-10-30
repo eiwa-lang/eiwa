@@ -1503,9 +1503,6 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
 
     try self.objects_ast.put(actual_c_name, node);
 
-    // Annotable for objects (MVP): contract + the 3 synthesized lookups.
-    // Unlike types, objects do not receive the other auto contracts here —
-    // only Annotable, so no new toString/equals/hashCode requirements appear.
     {
         var has_annot = false;
         for (o.contracts) |cs| {
@@ -3703,22 +3700,11 @@ fn generateSerdeFields(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror!
     }
 }
 
-// --- User annotations (Annotable, auto-injected like Stringable) ---
-// Any `@Name` / `@Name("value")` on a type, field or method is preserved.
-// The compiler synthesizes the 3 Annotable single-lookup methods per
-// type/object at compile time (same philosophy as serdeFields): pure
-// literals + ternary chains, no runtime reflection, no helper calls,
-// no generics. Unknown annotations with more than one argument are
-// rejected (compiler-reserved ones keep theirs).
-
-/// Annotations the compiler understands (arity rules don't apply).
 const annot_reserved_names = [_][]const u8{
     "Primitive", "Alias", "Header", "Source", "Include", "Define", "Link",
     "Int32", "Embed", "Suspend", "Coroutine",
 };
 
-/// Annotations hidden from the Annotable query API (pure layout directives).
-/// Everything else the user writes — including @Alias — stays queryable.
 fn isAnnotHidden(name: []const u8) bool {
     return std.mem.eql(u8, name, "Primitive");
 }
@@ -3854,7 +3840,6 @@ fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror
         }
     }
 
-    // Arity: at most one argument per user annotation.
     try validateAnnotArity(self, node, c.annotations, "type");
     if (comptime !is_obj) {
         for (c.primary_constructor) |prop| {
@@ -3867,7 +3852,6 @@ fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror
     }
     for (cur_methods) |m| {
         if (m.data != .fun_decl) continue;
-        // Skip the methods we are about to generate (empty annotations anyway).
         var skip = false;
         for (want) |w| {
             if (std.mem.eql(u8, m.data.fun_decl.name, w)) {
@@ -3882,11 +3866,6 @@ fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror
     const line = node.line;
     const col = node.column;
 
-    // NOTE: no List<...> typerefs anywhere in this feature. Generic
-    // instantiation inside vocabulary-blind std checkers (core.ei) triggers
-    // cross-module monomorphization cascades (List<Annotation> -> serde
-    // List<SerdeField> clones failing validation). The 3 single-lookup
-    // methods below are pure ternary chains over String/Annotation/null.
     const annot_opt_ret = try makeAnnotTypeRef(self, "Annotation", true, &.{});
 
     var to_add = ArrayList(*ASTNode).init(self.allocator);
@@ -3895,7 +3874,6 @@ fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror
     const impl_mod = try self.allocator.alloc(ast.TokenType, 1);
     impl_mod[0] = .kw_implement;
 
-    // 1. annotation(name: String): Annotation?
     if (!has[0]) {
         const p_tr = try makeAnnotTypeRef(self, "String", false, &.{});
         const params = try self.allocator.alloc(ast.Param, 1);
@@ -3913,8 +3891,6 @@ fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror
         try to_add.append(m);
     }
 
-    // Collect fields (primary ctor properties + body fields for types;
-    // objects carry no fields).
     var field_names = ArrayList([]const u8).init(self.allocator);
     defer field_names.deinit();
     var field_anns = ArrayList([]const ast.Annotation).init(self.allocator);
@@ -3931,7 +3907,6 @@ fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror
         }
     }
 
-    // 2. fieldAnnotation(field: String, name: String): Annotation?
     if (!has[1]) {
         var else_b: *ASTNode = try makeAnnotNull(self, line, col);
         var i: usize = field_names.items.len;
@@ -3966,7 +3941,6 @@ fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror
         try to_add.append(m);
     }
 
-    // Collect methods with user annotations.
     var meth_names = ArrayList([]const u8).init(self.allocator);
     defer meth_names.deinit();
     var meth_anns = ArrayList([]const ast.Annotation).init(self.allocator);
@@ -3993,7 +3967,6 @@ fn generateAnnotMethods(self: *TypeChecker, node: *ASTNode, c: anytype) anyerror
         try meth_anns.append(m.data.fun_decl.annotations);
     }
 
-    // 3. methodAnnotation(method: String, name: String): Annotation?
     if (!has[2]) {
         var else_b: *ASTNode = try makeAnnotNull(self, line, col);
         var i: usize = meth_names.items.len;
