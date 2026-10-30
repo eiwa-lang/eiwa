@@ -174,7 +174,7 @@ pub fn rewriteStatement(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode), coo
                 ctx.checker.reportError(stmt.line, stmt.column, "TypeError: for used as a value is not supported inside suspend context yet.", .{});
                 return error.TypeError;
             }
-            if (syn.containsTrueSuspend(f.body) or syn.containsAwait(f.body) or syn.containsTrueSuspend(f.iterable) or syn.containsAwait(f.iterable)) {
+            if (syn.containsTrueSuspend(f.body) or syn.containsAwait(f.body) or syn.containsTrueSuspend(f.iterable) or syn.containsAwait(f.iterable) or containsSuspendMarker(f.body) or containsSuspendMarker(f.iterable)) {
                 const n = ctx.counter.*;
                 ctx.counter.* += 1;
                 const arr_name = try std.fmt.allocPrint(ctx.allocator, "__for_arr{d}", .{n});
@@ -434,8 +434,55 @@ pub fn hoistTasksWalk(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), 
 // Generated type construction
 // ---------------------------------------------------------------------------
 
-pub fn buildTaskBlockType(ctx: Ctx, captures: []const CapturedVar, result_type: *const EiwaType, body: []const *ASTNode) !*ASTNode {
-    const type_name = try std.fmt.allocPrint(ctx.allocator, "__TaskBlock{d}", .{ctx.counter.*});
+fn buildMachineResume(ctx: Ctx, captures: []const CapturedVar, locals: []const CapturedVar, body: []const *ASTNode, result_type: *const EiwaType, methods: *ArrayList(*ASTNode), body_fields: *ArrayList(ast.ClassProp), is_callee: bool) !void {
+    for (locals) |l| {
+        const prop_type_ref = l.type_ref;
+        const default_init = syn.defaultInitializerForTypeRef(l.type_ref);
+        try body_fields.append(.{
+            .is_mut = true,
+            .name = l.name,
+            .type_ref = prop_type_ref,
+            .is_property = true,
+            .initializer = default_init,
+        });
+    }
+    var entry_label: usize = 0;
+    const resume_method = try buildResumeStateMachine(ctx, captures, locals, body, result_type, &entry_label, body_fields, is_callee);
+    try methods.append(resume_method);
+    try body_fields.append(.{
+        .is_mut = true,
+        .name = "label",
+        .type_ref = syn.typeRefSimple("Int"),
+        .is_property = true,
+        .initializer = syn.mkIntLit(@intCast(entry_label)),
+    });
+}
+
+fn finishContinuationType(ctx: Ctx, name: []const u8, props: *ArrayList(ast.ClassProp), methods: *ArrayList(*ASTNode), body_fields: *ArrayList(ast.ClassProp)) !*ASTNode {
+    try methods.append(syn.buildIsDone());
+
+    const type_node = try ctx.allocator.create(ASTNode);
+    type_node.* = .{
+        .line = 0,
+        .column = 0,
+        .data = .{ .type_decl = .{
+            .annotations = &.{},
+            .name = name,
+            .generic_params = &.{},
+            .primary_constructor = try props.toOwnedSlice(),
+            .methods = try methods.toOwnedSlice(),
+            .resolved_c_name = null,
+            .contracts = &.{"Continuation"},
+            .skills = &.{},
+            .body_fields = try body_fields.toOwnedSlice(),
+        } },
+    };
+
+    try registerGeneratedType(ctx, type_node);
+    return type_node;
+}
+
+pub fn buildTaskBlockType(ctx: Ctx, captures: []const CapturedVar, result_type: *const EiwaType, body: []const *ASTNode) !*ASTNode {    const type_name = try std.fmt.allocPrint(ctx.allocator, "__TaskBlock{d}", .{ctx.counter.*});
 
     var props = ArrayList(ast.ClassProp).init(ctx.allocator);
     defer props.deinit();
@@ -471,9 +518,23 @@ pub fn buildTaskBlockType(ctx: Ctx, captures: []const CapturedVar, result_type: 
             break;
         }
     }
+    if (!state_machine) {
+        for (body) |s| {
+            if (stmtHasSuspendCall(ctx, s)) {
+                state_machine = true;
+                break;
+            }
+        }
+    }
+
+    var work_body: []const *ASTNode = body;
+    if (state_machine) {
+        work_body = try narrowingFixupList(ctx, work_body);
+        work_body = try expandSuspendCalls(ctx, work_body);
+    }
 
     if (state_machine) {
-        for (body) |s| {
+        for (work_body) |s| {
             if (suspendConditionNode(s)) |bad| {
                 if (bad.data == .if_expr or bad.data == .while_stmt) {
                     ctx.checker.reportError(bad.line, bad.column, "TypeError: suspend call in condition is not supported inside task blocks (suspend calls can only be used as separate statements).", .{});
@@ -485,60 +546,14 @@ pub fn buildTaskBlockType(ctx: Ctx, captures: []const CapturedVar, result_type: 
         }
     }
 
-    var resume_method: *ASTNode = undefined;
     if (state_machine) {
-        const locals = try caps.collectPromotableLocals(ctx, body);
+        const locals = try caps.collectPromotableLocals(ctx, work_body);
         defer ctx.allocator.free(locals);
-        for (locals) |l| {
-            var prop_type_ref = l.type_ref;
-            var default_init = syn.defaultInitializerForTypeRef(l.type_ref);
-            if (default_init == null) {
-                const nullable_ref = try caps.makeNullableTypeRef(ctx, l.type_ref);
-                prop_type_ref = nullable_ref;
-                default_init = syn.mkNullLit();
-            }
-            try body_fields.append(.{
-                .is_mut = true,
-                .name = l.name,
-                .type_ref = prop_type_ref,
-                .is_property = true,
-                .initializer = default_init.?,
-            });
-        }
-        var entry_label: usize = 0;
-        resume_method = try buildResumeStateMachine(ctx, captures, locals, body, result_type, &entry_label, &body_fields);
-        try methods.append(resume_method);
-        try body_fields.append(.{
-            .is_mut = true,
-            .name = "label",
-            .type_ref = syn.typeRefSimple("Int"),
-            .is_property = true,
-            .initializer = syn.mkIntLit(@intCast(entry_label)),
-        });
+        try buildMachineResume(ctx, captures, locals, work_body, result_type, &methods, &body_fields, false);
     } else {
-        try methods.append(try buildResume(ctx, captures, body, result_type));
+        try methods.append(try buildResume(ctx, captures, work_body, result_type));
     }
-    try methods.append(syn.buildIsDone());
-
-    const type_node = try ctx.allocator.create(ASTNode);
-    type_node.* = .{
-        .line = 0,
-        .column = 0,
-        .data = .{ .type_decl = .{
-            .annotations = &.{},
-            .name = type_name,
-            .generic_params = &.{},
-            .primary_constructor = try props.toOwnedSlice(),
-            .methods = try methods.toOwnedSlice(),
-            .resolved_c_name = null,
-            .contracts = &.{"Continuation"},
-            .skills = &.{},
-            .body_fields = try body_fields.toOwnedSlice(),
-        } },
-    };
-
-    try registerGeneratedType(ctx, type_node);
-    return type_node;
+    return finishContinuationType(ctx, type_name, &props, &methods, &body_fields);
 }
 
 /// Completes a task: result store, done=true and waiter-chain drain under the
@@ -575,6 +590,89 @@ pub fn buildCompletionStmts(ctx: Ctx, result: ?*ASTNode) !ArrayList(*ASTNode) {
         while_body,
     ));
     return out;
+}
+
+fn buildSuspendCompletionStmts(ctx: Ctx, result: ?*ASTNode) !ArrayList(*ASTNode) {
+    var out = try buildCompletionStmts(ctx, result);
+    errdefer out.deinit();
+    const caller_get = syn.mkGetExpr(syn.mkIdent("this"), "caller");
+    const not_null = syn.mkBinary(.bang_eq, caller_get, syn.mkNullLit());
+    const schedule_call = syn.mkExprStmt(syn.mkCall(
+        syn.mkGetExpr(syn.mkIdent("Scheduler"), "schedule"),
+        &.{syn.mkUnary(.bang_bang, syn.mkGetExpr(syn.mkIdent("this"), "caller"))},
+    ));
+    try out.append(syn.mkIf(not_null, syn.mkBlock(&.{schedule_call})));
+    return out;
+}
+
+/// Void has no value: a Void-typed temp would emit an invalid void load.
+fn isVoidRef(ref: *const ast.ASTTypeRef) bool {
+    return ref.name.len == 4 and std.mem.eql(u8, ref.name, "Void") and !ref.is_nullable and ref.generic_args.len == 0;
+}
+
+fn suspendSiteOf(m: *Machine, marker: *ASTNode) ?*cctx.SuspendSite {
+    for (m.ctx.suspend_sites.items) |*s| {
+        if (s.marker == marker) return s;
+    }
+    return null;
+}
+
+fn declareSuspendSlot(m: *Machine, machine: []const u8) ![]const u8 {
+    const n = m.counter.*;
+    m.counter.* += 1;
+    const slot = try std.fmt.allocPrint(m.allocator, "__sm{d}", .{n});
+    const slot_ref = syn.typeRefSimple(machine);
+    const nullable_ref = try caps.makeNullableTypeRef(m.ctx, slot_ref);
+    try m.fields.append(.{
+        .is_mut = true,
+        .name = slot,
+        .type_ref = nullable_ref,
+        .is_property = true,
+        .initializer = syn.mkNullLit(),
+    });
+    return slot;
+}
+
+/// S_done runs exactly once: the callee schedules its caller on completion,
+/// even when it completed synchronously (continuing inline would run the
+/// continuation twice).
+fn buildSuspendProtocol(m: *Machine, site: *cctx.SuspendSite, after: usize) !usize {
+    const slot = try declareSuspendSlot(m, site.machine);
+    const s_run = try m.newState();
+    const s_done = try m.newState();
+
+    var ctor_args = ArrayList(*ASTNode).init(m.allocator);
+    defer ctor_args.deinit();
+    const handle_ctor = syn.mkCall(syn.mkIdent("StackTask"), &.{ syn.mkBoolLit(false), syn.mkNullLit(), syn.mkNullLit() });
+    {
+        const type_arg_refs = try m.allocator.alloc(*const ast.ASTTypeRef, 1);
+        type_arg_refs[0] = site.result;
+        handle_ctor.data.call_expr.type_args = type_arg_refs;
+    }
+    try ctor_args.append(handle_ctor);
+    // First marker arg is the receiver (null = free function).
+    const marker_call = site.marker.data.call_expr;
+    var ai: usize = 0;
+    for (marker_call.arguments) |a| {
+        if (ai > 0 or a.data != .null_literal) try ctor_args.append(a);
+        ai += 1;
+    }
+    try ctor_args.append(syn.mkIdent("this"));
+    const ctor = syn.mkCall(syn.mkIdent(site.machine), ctor_args.items);
+    try m.append(s_run, syn.mkSetExpr(syn.mkIdent("this"), slot, ctor));
+
+    const sm = syn.mkUnary(.bang_bang, syn.mkGetExpr(syn.mkIdent("this"), slot));
+    try m.append(s_run, syn.mkExprStmt(syn.mkCall(syn.mkGetExpr(sm, "resume"), &.{})));
+    try m.append(s_run, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(s_done))));
+    try m.append(s_run, syn.mkReturnVoid());
+
+    if (site.target) |t| {
+        const task_get = syn.mkGetExpr(syn.mkUnary(.bang_bang, syn.mkGetExpr(syn.mkIdent("this"), slot)), "task");
+        const result_get = syn.mkUnary(.bang_bang, syn.mkGetExpr(task_get, "result"));
+        try m.append(s_done, syn.mkSetExpr(syn.mkIdent("this"), t, result_get));
+    }
+    try m.append(s_done, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after))));
+    return s_run;
 }
 
 pub fn buildResume(ctx: Ctx, captures: []const CapturedVar, body: []const *ASTNode, result_type: *const EiwaType) !*ASTNode {
@@ -629,6 +727,10 @@ const Machine = struct {
     allocator: std.mem.Allocator,
     counter: *usize,
     states: ArrayList(MachineState),
+    ctx: Ctx,
+    fields: *ArrayList(ast.ClassProp),
+    /// Callee machines schedule their caller instead of draining task waiters.
+    is_callee: bool,
 
     fn newState(self: *Machine) !usize {
         const label = self.counter.*;
@@ -651,28 +753,28 @@ const Machine = struct {
     }
 };
 
-pub fn machineBuildStmts(m: *Machine, stmts: []const *ASTNode, after: usize) anyerror!usize {
+pub fn machineBuildStmts(m: *Machine, stmts: []const *ASTNode, after: usize, brk: ?usize) anyerror!usize {
     var k = after;
     var i: usize = stmts.len;
     while (i > 0) {
         i -= 1;
-        k = try machineBuildStmt(m, stmts[i], k);
+        k = try machineBuildStmt(m, stmts[i], k, brk);
     }
     return k;
 }
 
-pub fn machineBuildBranch(m: *Machine, branch: *ASTNode, after: usize) anyerror!usize {
-    if (branch.data == .block) return machineBuildStmts(m, branch.data.block.statements, after);
-    return machineBuildStmt(m, branch, after);
+pub fn machineBuildBranch(m: *Machine, branch: *ASTNode, after: usize, brk: ?usize) anyerror!usize {
+    if (branch.data == .block) return machineBuildStmts(m, branch.data.block.statements, after, brk);
+    return machineBuildStmt(m, branch, after, brk);
 }
 
-pub fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
+pub fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize, brk: ?usize) anyerror!usize {
     if (stmt.data == .for_stmt and stmt.data.for_stmt.collect) return error.CollectForInSuspend;
     switch (stmt.data) {
         .while_stmt => |w| {
             if (syn.containsTrueSuspend(w.condition)) return error.SuspendInCondition;
             const lcond = try m.newState();
-            const lbody = try machineBuildBranch(m, w.body, lcond);
+            const lbody = try machineBuildBranch(m, w.body, lcond, after);
             const then_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lbody)))});
             const else_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after)))});
             try m.append(lcond, syn.mkIfElse(w.condition, then_block, else_block));
@@ -680,8 +782,8 @@ pub fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usiz
         },
         .if_expr => |i| {
             if (syn.containsTrueSuspend(i.condition)) return error.SuspendInCondition;
-            const lthen = try machineBuildBranch(m, i.then_branch, after);
-            const lelse = if (i.else_branch) |e| try machineBuildBranch(m, e, after) else after;
+            const lthen = try machineBuildBranch(m, i.then_branch, after, brk);
+            const lelse = if (i.else_branch) |e| try machineBuildBranch(m, e, after, brk) else after;
             const entry = try m.newState();
             const then_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lthen)))});
             const else_block = syn.mkBlock(&.{syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(lelse)))});
@@ -698,31 +800,82 @@ pub fn machineBuildStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usiz
                 try m.append(entry, syn.mkReturnVoid());
                 return entry;
             }
-            if (syn.containsTrueSuspend(stmt)) return error.SuspendInOperand;
+            if (syn.suspendMarkerCall(stmt)) |marker| {
+                const site = suspendSiteOf(m, marker) orelse return error.SuspendMarkerLost;
+                return try buildSuspendProtocol(m, site, after);
+            }
+            if (syn.containsTrueSuspend(stmt) or stmtHasSuspendCall(m.ctx, stmt)) {
+                return suspendValueError(m, stmt);
+            }
+            return emitPlainStmt(m, stmt, after);
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| {
+                if (syn.isCoopAwaitMarker(stmt)) {
+                    return machineBuildCoopAwait(m, stmt, after);
+                }
+                if (syn.suspendMarkerCall(init) != null) {
+                    const site = suspendSiteOf(m, init) orelse return error.SuspendMarkerLost;
+                    return try buildSuspendProtocol(m, site, after);
+                }
+            }
+            if (syn.containsTrueSuspend(stmt) or stmtHasSuspendCall(m.ctx, stmt)) {
+                return suspendValueError(m, stmt);
+            }
+            return emitPlainStmt(m, stmt, after);
+        },
+        .return_stmt => {
+            const r = &stmt.data.return_stmt;
+            if (r.value) |val| {
+                if (syn.containsTrueSuspend(val) or exprHasSuspendCall(m.ctx, val)) {
+                    return suspendValueError(m, val);
+                }
+            }
             const entry = try m.newState();
-            try m.append(entry, stmt);
-            try m.append(entry, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after))));
+            var completion: ArrayList(*ASTNode) = undefined;
+            if (m.is_callee) {
+                completion = try buildSuspendCompletionStmts(m.ctx, r.value);
+            } else {
+                completion = try buildCompletionStmts(m.ctx, r.value);
+            }
+            defer completion.deinit();
+            for (completion.items) |s| try m.append(entry, s);
+            try m.append(entry, syn.mkReturnVoid());
             return entry;
         },
-        .block => |b| return machineBuildStmts(m, b.statements, after),
-        .break_stmt => {
-            return error.BreakInSuspendContext;
+        .set_expr => |se| {
+            if (syn.suspendMarkerCall(se.value) != null) {
+                const site = suspendSiteOf(m, se.value) orelse return error.SuspendMarkerLost;
+                return try buildSuspendProtocol(m, site, after);
+            }
+            if (syn.containsTrueSuspend(stmt) or stmtHasSuspendCall(m.ctx, stmt)) {
+                return suspendValueError(m, stmt);
+            }
+            return emitPlainStmt(m, stmt, after);
         },
-        .try_stmt => return machineBuildTryStmt(m, stmt, after),
+        .block => |b| return machineBuildStmts(m, b.statements, after, brk),
+        .break_stmt => |b| {
+            if (b.value != null) return error.BreakInSuspendContext;
+            const target = brk orelse return error.BreakInSuspendContext;
+            const entry = try m.newState();
+            try m.append(entry, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(target))));
+            return entry;
+        },
+        .try_stmt => return machineBuildTryStmt(m, stmt, after, brk),
         else => {
             if (syn.isCoopAwaitMarker(stmt)) {
                 return machineBuildCoopAwait(m, stmt, after);
             }
-            if (syn.containsTrueSuspend(stmt)) return error.SuspendInOperand;
-            const entry = try m.newState();
-            try m.append(entry, stmt);
-            try m.append(entry, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after))));
-            return entry;
+            if (syn.suspendMarkerCall(stmt) != null) return error.SuspendMarkerLost;
+            if (syn.containsTrueSuspend(stmt) or stmtHasSuspendCall(m.ctx, stmt)) {
+                return suspendValueError(m, stmt);
+            }
+            return emitPlainStmt(m, stmt, after);
         },
     }
 }
 
-pub fn isStateSuspendOrReturn(node: *ASTNode) bool {
+fn isStateSuspendOrReturn(node: *ASTNode) bool {
     switch (node.data) {
         .return_stmt => return true,
         .break_stmt => return true,
@@ -739,10 +892,10 @@ pub fn isStateSuspendOrReturn(node: *ASTNode) bool {
     }
 }
 
-pub fn buildCatchStates(m: *Machine, catches: []const ast.CatchBlock, after: usize) ![]usize {
+pub fn buildCatchStates(m: *Machine, catches: []const ast.CatchBlock, after: usize, brk: ?usize) ![]usize {
     const catch_labels = try m.allocator.alloc(usize, catches.len);
     for (catches, 0..) |cb, i| {
-        catch_labels[i] = try machineBuildBranch(m, cb.body, after);
+        catch_labels[i] = try machineBuildBranch(m, cb.body, after, brk);
     }
     return catch_labels;
 }
@@ -814,13 +967,13 @@ pub fn wrapStatesWithCatches(m: *Machine, catches: []const ast.CatchBlock, from:
     }
 }
 
-pub fn machineBuildTryStmt(m: *Machine, stmt: *ASTNode, after: usize) anyerror!usize {
+pub fn machineBuildTryStmt(m: *Machine, stmt: *ASTNode, after: usize, brk: ?usize) anyerror!usize {
     const t = &stmt.data.try_stmt;
 
-    const catch_labels = try buildCatchStates(m, t.catches, after);
+    const catch_labels = try buildCatchStates(m, t.catches, after, brk);
 
     const states_before = m.states.items.len;
-    const try_entry = try machineBuildBranch(m, t.body, after);
+    const try_entry = try machineBuildBranch(m, t.body, after, brk);
     const states_after = m.states.items.len;
 
     try wrapStatesWithCatches(m, t.catches, states_before, states_after, catch_labels);
@@ -896,7 +1049,7 @@ pub fn promoteMachineryLocals(ctx: Ctx, rewritten: []const *ASTNode, promoted: *
 
 /// Builds the state-machine `resume()`. Locals are promoted by the caller;
 /// locals created by the machinery rewrite are promoted here.
-pub fn buildResumeStateMachine(ctx: Ctx, captures: []const CapturedVar, locals: []const CapturedVar, body: []const *ASTNode, result_type: *const EiwaType, entry_out: *usize, body_fields: *ArrayList(ast.ClassProp)) !*ASTNode {
+pub fn buildResumeStateMachine(ctx: Ctx, captures: []const CapturedVar, locals: []const CapturedVar, body: []const *ASTNode, result_type: *const EiwaType, entry_out: *usize, body_fields: *ArrayList(ast.ClassProp), is_callee: bool) !*ASTNode {
     var promoted = ArrayList(CapturedVar).init(ctx.allocator);
     defer promoted.deinit();
     try promoted.appendSlice(captures);
@@ -927,13 +1080,18 @@ pub fn buildResumeStateMachine(ctx: Ctx, captures: []const CapturedVar, locals: 
     }
     try leading.appendSlice(rewritten.items);
 
-    var m = Machine{ .allocator = ctx.allocator, .counter = ctx.counter, .states = ArrayList(MachineState).init(ctx.allocator) };
+    var m = Machine{ .allocator = ctx.allocator, .counter = ctx.counter, .states = ArrayList(MachineState).init(ctx.allocator), .ctx = ctx, .fields = body_fields, .is_callee = is_callee };
     defer m.states.deinit();
     const done_label = try m.newState();
-    const entry = try machineBuildStmts(&m, leading.items, done_label);
+    const entry = try machineBuildStmts(&m, leading.items, done_label, null);
     entry_out.* = entry;
 
-    var completion = try buildCompletionStmts(ctx, trailing);
+    var completion: ArrayList(*ASTNode) = undefined;
+    if (is_callee) {
+        completion = try buildSuspendCompletionStmts(ctx, trailing);
+    } else {
+        completion = try buildCompletionStmts(ctx, trailing);
+    }
     defer completion.deinit();
     for (completion.items) |s| try m.append(done_label, s);
     try m.append(done_label, syn.mkReturnVoid());
@@ -946,8 +1104,80 @@ pub fn buildResumeStateMachine(ctx: Ctx, captures: []const CapturedVar, locals: 
 // Suspend-in-condition detection (G8)
 // ---------------------------------------------------------------------------
 
-/// Returns the innermost suspend-in-condition node, or null.
-pub fn suspendConditionNode(node: *ASTNode) ?*ASTNode {
+/// True when a lowered `__SuspendCall` marker sits anywhere inside: the
+/// for→while desugar in `rewriteStatement` only triggers on primitives and
+/// awaits, so marker bodies need this explicit check to desugar as well.
+fn containsSuspendMarker(node: *ASTNode) bool {
+    if (syn.suspendMarkerCall(node) != null) return true;
+    switch (node.data) {
+        .if_expr => |i| {
+            if (containsSuspendMarker(i.then_branch)) return true;
+            if (i.else_branch) |e| if (containsSuspendMarker(e)) return true;
+            return containsSuspendMarker(i.condition);
+        },
+        .while_stmt => |w| {
+            if (containsSuspendMarker(w.condition)) return true;
+            return containsSuspendMarker(w.body);
+        },
+        .block => |b| {
+            for (b.statements) |s| if (containsSuspendMarker(s)) return true;
+            return false;
+        },
+        .lambda_expr, .fun_decl => return false,
+        .call_expr => |c| {
+            if (containsSuspendMarker(c.callee)) return true;
+            for (c.arguments) |a| if (containsSuspendMarker(a)) return true;
+            return false;
+        },
+        .for_stmt => |f| {
+            if (containsSuspendMarker(f.iterable)) return true;
+            return containsSuspendMarker(f.body);
+        },
+        .try_stmt => |t| {
+            if (containsSuspendMarker(t.body)) return true;
+            for (t.catches) |cb| if (containsSuspendMarker(cb.body)) return true;
+            return false;
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| if (containsSuspendMarker(s)) return true;
+            for (w.cases) |case| {
+                for (case.conds) |cond| if (containsSuspendMarker(cond)) return true;
+                if (containsSuspendMarker(case.body)) return true;
+            }
+            return false;
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| return containsSuspendMarker(init);
+            return false;
+        },
+        .return_stmt => |r| {
+            if (r.value) |val| return containsSuspendMarker(val);
+            return false;
+        },
+        .break_stmt => |b| {
+            if (b.value) |val| return containsSuspendMarker(val);
+            return false;
+        },
+        .assignment => |a| return containsSuspendMarker(a.value),
+        .binary_expr => |b| return containsSuspendMarker(b.left) or containsSuspendMarker(b.right),
+        .unary_expr => |u| return containsSuspendMarker(u.operand),
+        .get_expr => |g| return containsSuspendMarker(g.object),
+        .set_expr => |s| return containsSuspendMarker(s.object) or containsSuspendMarker(s.value),
+        .index_expr => |i| return containsSuspendMarker(i.object) or containsSuspendMarker(i.index),
+        .string_template => |st| {
+            for (st.parts) |e| if (containsSuspendMarker(e)) return true;
+            return false;
+        },
+        .array_literal => |al| {
+            for (al.elements) |e| if (containsSuspendMarker(e)) return true;
+            return false;
+        },
+        else => return false,
+    }
+}
+
+/// Backstop for primitives in conditions: the pre-pass only sees user calls.
+fn suspendConditionNode(node: *ASTNode) ?*ASTNode {
     switch (node.data) {
         .if_expr => |i| {
             if (syn.containsTrueSuspend(i.condition)) return node;
@@ -1010,6 +1240,1523 @@ pub fn suspendConditionNode(node: *ASTNode) ?*ASTNode {
             return suspendConditionNode(a.value);
         },
         else => return null,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Suspend-function (CPS) machines: callees compile to their own Continuation
+// type (`__Suspend_<cname>`); callers drive them via `__SuspendCall` markers.
+// ---------------------------------------------------------------------------
+
+pub const SuspendCallee = struct {
+    node: *ASTNode,
+    c_name: []const u8,
+    recv_type_name: ?[]const u8,
+    is_method: bool,
+};
+
+fn hasSuspendAnnotation(annotations: []const ast.Annotation) bool {
+    for (annotations) |ann| {
+        if (std.mem.eql(u8, ann.name, "Suspend")) return true;
+    }
+    return false;
+}
+
+fn findFreeFn(ctx: Ctx, key: []const u8) ?*ASTNode {
+    var it = ctx.registry.modules.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.checker.functions_ast.get(key)) |n| {
+            if (n.data == .fun_decl) return n;
+        }
+    }
+    return null;
+}
+
+fn findMethodFn(ctx: Ctx, type_name: []const u8, method_name: []const u8) ?*ASTNode {
+    var it = ctx.registry.modules.iterator();
+    while (it.next()) |entry| {
+        const checker = entry.value_ptr.checker;
+        if (checker.classes_ast.get(type_name)) |t| {
+            if (t.data == .type_decl) {
+                for (t.data.type_decl.methods) |m| {
+                    if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, method_name)) return m;
+                }
+            }
+        }
+        if (checker.objects_ast.get(type_name)) |o| {
+            if (o.data == .object_decl) {
+                for (o.data.object_decl.members) |m| {
+                    if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, method_name)) return m;
+                }
+            }
+        }
+        if (checker.contracts_ast.get(type_name)) |c| {
+            if (c.data == .contract_decl) {
+                for (c.data.contract_decl.methods) |m| {
+                    if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, method_name)) return m;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn claimsContract(contracts: []const []const u8, name: []const u8) bool {
+    for (contracts) |c| {
+        if (std.mem.eql(u8, c, name)) return true;
+    }
+    return false;
+}
+
+fn isContractName(ctx: Ctx, name: []const u8) bool {
+    var it = ctx.registry.modules.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.checker.contracts_ast.contains(name)) return true;
+    }
+    return false;
+}
+
+const Implementor = struct {
+    type_name: []const u8,
+    node: *ASTNode,
+    c_name: []const u8,
+};
+
+fn findSingleImplementor(ctx: Ctx, contract_name: []const u8, method_name: []const u8) ?Implementor {
+    var found: ?Implementor = null;
+    var it = ctx.registry.modules.iterator();
+    while (it.next()) |entry| {
+        const checker = entry.value_ptr.checker;
+        var cit = checker.classes_ast.iterator();
+        while (cit.next()) |centry| {
+            const t = centry.value_ptr.*;
+            if (t.data != .type_decl) continue;
+            const td = &t.data.type_decl;
+            if (!claimsContract(td.contracts, contract_name)) continue;
+            if (td.generic_params.len > 0) return null;
+            var method: ?*ASTNode = null;
+            for (td.methods) |m| {
+                if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, method_name)) {
+                    method = m;
+                    break;
+                }
+            }
+            if (method == null) return null;
+            if (found != null) return null;
+            const mn = method.?;
+            if (mn.data.fun_decl.generic_params.len > 0) return null;
+            found = .{
+                .type_name = td.name,
+                .node = mn,
+                .c_name = mn.data.fun_decl.resolved_c_name orelse mn.data.fun_decl.name,
+            };
+        }
+        var oit = checker.objects_ast.iterator();
+        while (oit.next()) |oentry| {
+            const o = oentry.value_ptr.*;
+            if (o.data != .object_decl) continue;
+            const od = &o.data.object_decl;
+            if (!claimsContract(od.contracts, contract_name)) continue;
+            var method: ?*ASTNode = null;
+            for (od.members) |m| {
+                if (m.data == .fun_decl and std.mem.eql(u8, m.data.fun_decl.name, method_name)) {
+                    method = m;
+                    break;
+                }
+            }
+            if (method == null) return null;
+            if (found != null) return null;
+            const mn = method.?;
+            if (mn.data.fun_decl.generic_params.len > 0) return null;
+            const oname = od.name orelse return null;
+            found = .{
+                .type_name = oname,
+                .node = mn,
+                .c_name = mn.data.fun_decl.resolved_c_name orelse mn.data.fun_decl.name,
+            };
+        }
+    }
+    return found;
+}
+
+/// Resolve a call to its suspend-capable declaration, if any. Returns null
+/// for FFI/lib calls, unresolvable receivers and generic receivers (static
+/// dispatch unclear) — those keep blocking behavior.
+pub fn resolveSuspendCallee(ctx: Ctx, call_node: *ASTNode) ?SuspendCallee {
+    if (call_node.data != .call_expr) return null;
+    const c = &call_node.data.call_expr;
+    switch (c.callee.data) {
+        .identifier => |i| {
+            const key = i.resolved_c_name orelse i.name;
+            const n = findFreeFn(ctx, key) orelse findFreeFn(ctx, i.name) orelse return null;
+            return .{ .node = n, .c_name = key, .recv_type_name = null, .is_method = false };
+        },
+        .get_expr => |g| {
+            const recv = g.object.resolved_type orelse return null;
+            const base = ts.extractBaseType(recv).*;
+            const tname: []const u8 = switch (base) {
+                .Custom => |n| n,
+                // Generic receivers: static dispatch is unclear, keep blocking.
+                else => return null,
+            };
+            const n = findMethodFn(ctx, tname, g.name) orelse return null;
+            const cn = n.data.fun_decl.resolved_c_name orelse n.data.fun_decl.name;
+            return .{ .node = n, .c_name = cn, .recv_type_name = tname, .is_method = true };
+        },
+        else => return null,
+    }
+}
+
+const SuspendMode = enum { Any, UserOnly };
+
+fn memoKey(node: *ASTNode, mode: SuspendMode) u64 {
+    return (@as(u64, @intFromPtr(node)) << 1) | @as(u64, @intFromEnum(mode));
+}
+
+fn funBodySuspends(ctx: Ctx, fun_node: *ASTNode, visiting: *ArrayList(*ASTNode), mode: SuspendMode) bool {
+    if (fun_node.data != .fun_decl) return false;
+    if (visiting.items.len > 0) return funBodySuspendsInner(ctx, fun_node, visiting, mode);
+    const key = memoKey(fun_node, mode);
+    if (ctx.suspend_memo.get(key)) |cached| return cached;
+    const result = funBodySuspendsInner(ctx, fun_node, visiting, mode);
+    ctx.suspend_memo.put(key, result) catch {};
+    return result;
+}
+
+fn funBodySuspendsInner(ctx: Ctx, fun_node: *ASTNode, visiting: *ArrayList(*ASTNode), mode: SuspendMode) bool {
+    if (fun_node.data != .fun_decl) return false;
+    const f = &fun_node.data.fun_decl;
+    if (hasSuspendAnnotation(f.annotations)) return true;
+    for (visiting.items) |v| {
+        if (v == fun_node) return false;
+    }
+    visiting.append(fun_node) catch return false;
+    defer _ = visiting.pop();
+    switch (f.body.data) {
+        .block => |b| return stmtsSuspend(ctx, b.statements, visiting, mode),
+        else => return exprSuspends(ctx, f.body, visiting, mode),
+    }
+}
+
+fn stmtsSuspend(ctx: Ctx, stmts: []const *ASTNode, visiting: *ArrayList(*ASTNode), mode: SuspendMode) bool {
+    for (stmts) |s| {
+        if (stmtSuspends(ctx, s, visiting, mode)) return true;
+    }
+    return false;
+}
+
+fn stmtSuspends(ctx: Ctx, node: *ASTNode, visiting: *ArrayList(*ASTNode), mode: SuspendMode) bool {
+    switch (node.data) {
+        .call_expr => return exprSuspends(ctx, node, visiting, mode),
+        .var_decl => |v| {
+            if (v.initializer) |init| return exprSuspends(ctx, init, visiting, mode);
+            return false;
+        },
+        .assignment => |a| return exprSuspends(ctx, a.value, visiting, mode),
+        .return_stmt => |r| {
+            if (r.value) |val| return exprSuspends(ctx, val, visiting, mode);
+            return false;
+        },
+        .break_stmt => |b| {
+            if (b.value) |val| return exprSuspends(ctx, val, visiting, mode);
+            return false;
+        },
+        .block => |b| return stmtsSuspend(ctx, b.statements, visiting, mode),
+        .if_expr => |i| {
+            if (exprSuspends(ctx, i.condition, visiting, mode)) return true;
+            if (stmtSuspends(ctx, i.then_branch, visiting, mode)) return true;
+            if (i.else_branch) |e| return stmtSuspends(ctx, e, visiting, mode);
+            return false;
+        },
+        .while_stmt => |w| {
+            if (exprSuspends(ctx, w.condition, visiting, mode)) return true;
+            return stmtSuspends(ctx, w.body, visiting, mode);
+        },
+        .for_stmt => |f| {
+            if (exprSuspends(ctx, f.iterable, visiting, mode)) return true;
+            return stmtSuspends(ctx, f.body, visiting, mode);
+        },
+        .try_stmt => |t| {
+            if (stmtSuspends(ctx, t.body, visiting, mode)) return true;
+            for (t.catches) |cb| {
+                if (stmtSuspends(ctx, cb.body, visiting, mode)) return true;
+            }
+            return false;
+        },
+        .when_expr => |w| {
+            if (w.subject) |s| {
+                if (exprSuspends(ctx, s, visiting, mode)) return true;
+            }
+            for (w.cases) |case| {
+                for (case.conds) |cond| {
+                    if (exprSuspends(ctx, cond, visiting, mode)) return true;
+                }
+                if (stmtSuspends(ctx, case.body, visiting, mode)) return true;
+            }
+            return false;
+        },
+        .throw_stmt => |t| return exprSuspends(ctx, t.expr, visiting, mode),
+        // Closures are their own boundary.
+        .lambda_expr, .fun_decl => return false,
+        else => return exprSuspends(ctx, node, visiting, mode),
+    }
+}
+
+fn exprSuspends(ctx: Ctx, node: *ASTNode, visiting: *ArrayList(*ASTNode), mode: SuspendMode) bool {
+    switch (node.data) {
+        .call_expr => {
+            if (mode == .UserOnly) {
+                if (syn.isSuspendPrimitiveCall(node)) return false;
+                if (syn.isAwaitCall(node)) return false;
+                if (syn.isTaskCall(node)) return false;
+            } else {
+                if (syn.isSuspendPrimitiveCall(node)) return true;
+                if (syn.isAwaitCall(node)) return true;
+                // A task lambda is its own coroutine boundary.
+                if (syn.isTaskCall(node)) return false;
+            }
+            const c = &node.data.call_expr;
+            if (exprSuspends(ctx, c.callee, visiting, mode)) return true;
+            for (c.arguments) |a| {
+                if (exprSuspends(ctx, a, visiting, mode)) return true;
+            }
+            const cal = resolveSuspendCallee(ctx, node) orelse return false;
+            if (hasSuspendAnnotation(cal.node.data.fun_decl.annotations)) return true;
+            return funBodySuspends(ctx, cal.node, visiting, mode);
+        },
+        .lambda_expr, .fun_decl => return false,
+        .binary_expr => |b| return exprSuspends(ctx, b.left, visiting, mode) or exprSuspends(ctx, b.right, visiting, mode),
+        .unary_expr => |u| return exprSuspends(ctx, u.operand, visiting, mode),
+        .get_expr => |g| return exprSuspends(ctx, g.object, visiting, mode),
+        .set_expr => |s| return exprSuspends(ctx, s.object, visiting, mode) or exprSuspends(ctx, s.value, visiting, mode),
+        .index_expr => |i| return exprSuspends(ctx, i.object, visiting, mode) or exprSuspends(ctx, i.index, visiting, mode),
+        .index_set_expr => |i| return exprSuspends(ctx, i.object, visiting, mode) or exprSuspends(ctx, i.index, visiting, mode) or exprSuspends(ctx, i.value, visiting, mode),
+        .assignment => |a| return exprSuspends(ctx, a.value, visiting, mode),
+        .block => |b| return stmtsSuspend(ctx, b.statements, visiting, mode),
+        .if_expr => |i| {
+            if (exprSuspends(ctx, i.condition, visiting, mode)) return true;
+            if (stmtSuspends(ctx, i.then_branch, visiting, mode)) return true;
+            if (i.else_branch) |e| return stmtSuspends(ctx, e, visiting, mode);
+            return false;
+        },
+        .string_template => |st| {
+            for (st.parts) |p| {
+                if (exprSuspends(ctx, p, visiting, mode)) return true;
+            }
+            return false;
+        },
+        .array_literal => |al| {
+            for (al.elements) |e| {
+                if (exprSuspends(ctx, e, visiting, mode)) return true;
+            }
+            return false;
+        },
+        .map_literal => |ml| {
+            for (ml.elements) |e| {
+                if (exprSuspends(ctx, e, visiting, mode)) return true;
+            }
+            return false;
+        },
+        .named_arg => |na| return exprSuspends(ctx, na.value, visiting, mode),
+        .as_expr => |a| return exprSuspends(ctx, a.value, visiting, mode),
+        .is_expr => |i| return exprSuspends(ctx, i.value, visiting, mode),
+        .var_decl => |v| {
+            if (v.initializer) |init| return exprSuspends(ctx, init, visiting, mode);
+            return false;
+        },
+        .return_stmt => |r| {
+            if (r.value) |val| return exprSuspends(ctx, val, visiting, mode);
+            return false;
+        },
+        else => return false,
+    }
+}
+
+fn stmtHasSuspendCall(ctx: Ctx, node: *ASTNode) bool {
+    var visiting = ArrayList(*ASTNode).init(ctx.allocator);
+    defer visiting.deinit();
+    return stmtSuspends(ctx, node, &visiting, .UserOnly);
+}
+
+fn exprHasSuspendCall(ctx: Ctx, node: *ASTNode) bool {
+    var visiting = ArrayList(*ASTNode).init(ctx.allocator);
+    defer visiting.deinit();
+    return exprSuspends(ctx, node, &visiting, .UserOnly);
+}
+
+pub fn callSuspends(ctx: Ctx, call_node: *ASTNode) bool {
+    if (call_node.data != .call_expr) return false;
+    if (syn.isSuspendPrimitiveCall(call_node)) return true;
+    if (syn.isAwaitCall(call_node)) return true;
+    if (syn.isTaskCall(call_node)) return false;
+    const cal = resolveSuspendCallee(ctx, call_node) orelse return false;
+    if (hasSuspendAnnotation(cal.node.data.fun_decl.annotations)) return true;
+    var visiting = ArrayList(*ASTNode).init(ctx.allocator);
+    defer visiting.deinit();
+    return funBodySuspends(ctx, cal.node, &visiting, .Any);
+}
+
+fn libNameAnywhere(ctx: Ctx, name: []const u8) bool {
+    var it = ctx.registry.modules.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.checker.libs_ast.contains(name)) return true;
+    }
+    return false;
+}
+
+fn ensureSuspendMachine(ctx: Ctx, callee: SuspendCallee) anyerror![]const u8 {
+    const mname = try syn.suspendMachineName(ctx.allocator, callee.c_name);
+    if (ctx.suspend_generated.contains(mname)) return mname;
+    // In-progress machine (recursive call): reference it, don't rebuild.
+    for (ctx.suspend_generating.items) |g| {
+        if (std.mem.eql(u8, g, mname)) return mname;
+    }
+    try ctx.suspend_generating.append(mname);
+    defer _ = ctx.suspend_generating.pop();
+    const t = try buildSuspendFnType(ctx, callee, mname);
+    try ctx.generated.append(t);
+    try ctx.suspend_generated.put(mname, {});
+    return mname;
+}
+
+const RecvRewrite = enum { this_to_recv, property_to_recv };
+
+/// Receiver rewrite for suspend-machine bodies (`__recv` carries the
+/// caller's receiver). `this_to_recv` skips lambdas, where `this` rebinds;
+/// `property_to_recv` descends into them (nested tasks capture `__recv`).
+fn rewriteRecvRefs(node: *ASTNode, mode: RecvRewrite) void {
+    switch (node.data) {
+        .identifier => |*i| {
+            switch (mode) {
+                .this_to_recv => {
+                    if (std.mem.eql(u8, i.name, "this")) {
+                        i.name = "__recv";
+                        i.resolved_c_name = null;
+                    }
+                },
+                .property_to_recv => {
+                    if (i.is_class_property) {
+                        const name = i.name;
+                        node.data = .{ .get_expr = .{
+                            .object = syn.mkIdent("__recv"),
+                            .name = name,
+                            .is_safe = false,
+                            .is_boxed = false,
+                        } };
+                        node.resolved_type = null;
+                    }
+                },
+            }
+            return;
+        },
+        .fun_decl => return,
+        .lambda_expr => |*l| {
+            if (mode == .property_to_recv) {
+                for (l.body) |s| rewriteRecvRefs(s, mode);
+            }
+            return;
+        },
+        .call_expr => |*c| {
+            rewriteRecvRefs(c.callee, mode);
+            for (c.arguments) |a| rewriteRecvRefs(a, mode);
+        },
+        .binary_expr => |*b| {
+            rewriteRecvRefs(b.left, mode);
+            rewriteRecvRefs(b.right, mode);
+        },
+        .unary_expr => |*u| rewriteRecvRefs(u.operand, mode),
+        .get_expr => |*g| rewriteRecvRefs(g.object, mode),
+        .set_expr => |*s| {
+            rewriteRecvRefs(s.object, mode);
+            rewriteRecvRefs(s.value, mode);
+        },
+        .index_expr => |*i| {
+            rewriteRecvRefs(i.object, mode);
+            rewriteRecvRefs(i.index, mode);
+        },
+        .index_set_expr => |*i| {
+            rewriteRecvRefs(i.object, mode);
+            rewriteRecvRefs(i.index, mode);
+            rewriteRecvRefs(i.value, mode);
+        },
+        .block => |*b| {
+            for (b.statements) |s| rewriteRecvRefs(s, mode);
+        },
+        .var_decl => |*v| {
+            if (v.initializer) |init| rewriteRecvRefs(init, mode);
+        },
+        .assignment => |*a| rewriteRecvRefs(a.value, mode),
+        .return_stmt => |*r| {
+            if (r.value) |val| rewriteRecvRefs(val, mode);
+        },
+        .break_stmt => |*b| {
+            if (b.value) |val| rewriteRecvRefs(val, mode);
+        },
+        .if_expr => |*i| {
+            rewriteRecvRefs(i.condition, mode);
+            rewriteRecvRefs(i.then_branch, mode);
+            if (i.else_branch) |e| rewriteRecvRefs(e, mode);
+        },
+        .while_stmt => |*w| {
+            rewriteRecvRefs(w.condition, mode);
+            rewriteRecvRefs(w.body, mode);
+        },
+        .for_stmt => |*f| {
+            rewriteRecvRefs(f.iterable, mode);
+            rewriteRecvRefs(f.body, mode);
+        },
+        .try_stmt => |*t| {
+            rewriteRecvRefs(t.body, mode);
+            for (t.catches) |cb| rewriteRecvRefs(cb.body, mode);
+        },
+        .throw_stmt => |*t| rewriteRecvRefs(t.expr, mode),
+        .string_template => |*st| {
+            for (st.parts) |p| rewriteRecvRefs(p, mode);
+        },
+        .array_literal => |*al| {
+            for (al.elements) |e| rewriteRecvRefs(e, mode);
+        },
+        .map_literal => |*ml| {
+            for (ml.elements) |e| rewriteRecvRefs(e, mode);
+        },
+        .named_arg => |*na| rewriteRecvRefs(na.value, mode),
+        .as_expr => |*a| rewriteRecvRefs(a.value, mode),
+        .is_expr => |*i| rewriteRecvRefs(i.value, mode),
+        else => {},
+    }
+}
+
+fn buildSuspendFnType(ctx: Ctx, callee: SuspendCallee, mname: []const u8) anyerror!*ASTNode {
+    const f = &callee.node.data.fun_decl;
+    const result_type: *const EiwaType = calleeResultType(ctx, callee);
+
+    // Cloned with types so nested suspend calls still resolve; the original
+    // keeps blocking semantics for non-machine callers.
+    const body_src = try ctx.checker.cloneNodeWith(f.body, true);
+    var body_stmts: []const *ASTNode = undefined;
+    if (body_src.data == .block) {
+        body_stmts = body_src.data.block.statements;
+    } else {
+        const single = try ctx.allocator.alloc(*ASTNode, 1);
+        single[0] = body_src;
+        body_stmts = single;
+    }
+    if (callee.is_method) {
+        for (body_stmts) |s| {
+            rewriteRecvRefs(s, .this_to_recv);
+            rewriteRecvRefs(s, .property_to_recv);
+        }
+    }
+    const narrowed = try narrowingFixupList(ctx, body_stmts);
+    const expanded = try expandSuspendCalls(ctx, narrowed);
+
+    var explicit = ArrayList(CapturedVar).init(ctx.allocator);
+    defer explicit.deinit();
+    var param_names = std.StringHashMap(void).init(ctx.allocator);
+    defer param_names.deinit();
+    for (f.params) |p| {
+        const pt = p.type_ref orelse {
+            ctx.checker.reportError(callee.node.line, callee.node.column, "TypeError: suspend function '{s}' needs explicit parameter types.", .{f.name});
+            return error.TypeError;
+        };
+        try explicit.append(.{ .name = p.name, .type_ref = pt, .is_boxed = false });
+        try param_names.put(p.name, {});
+    }
+    if (callee.is_method) {
+        try explicit.append(.{ .name = "__recv", .type_ref = syn.typeRefSimple(callee.recv_type_name.?), .is_boxed = false });
+        try param_names.put("__recv", {});
+    }
+    const auto = try caps.collectCaptures(ctx, expanded);
+    defer ctx.allocator.free(auto);
+    for (auto) |c| {
+        if (param_names.contains(c.name)) continue;
+        if (caps.isGlobalName(ctx, c.name)) continue;
+        if (libNameAnywhere(ctx, c.name)) continue;
+        ctx.checker.reportError(callee.node.line, callee.node.column, "TypeError: suspend function '{s}' references '{s}' from outside its parameters (globals and enclosing locals are not supported).", .{ f.name, c.name });
+        return error.TypeError;
+    }
+
+    var props = ArrayList(ast.ClassProp).init(ctx.allocator);
+    defer props.deinit();
+    const task_ref = try syn.typeRefWithArgs(ctx.allocator, "StackTask", &.{result_type});
+    try props.append(.{ .is_mut = false, .name = "task", .type_ref = task_ref });
+    // `__recv` precedes params: ctor order is [task, __recv?, params, caller].
+    for (explicit.items) |c| {
+        if (std.mem.eql(u8, c.name, "__recv")) {
+            try props.append(.{ .is_mut = false, .name = c.name, .type_ref = c.type_ref });
+        }
+    }
+    for (explicit.items) |c| {
+        if (!std.mem.eql(u8, c.name, "__recv")) {
+            try props.append(.{ .is_mut = false, .name = c.name, .type_ref = c.type_ref });
+        }
+    }
+    try props.append(.{ .is_mut = false, .name = "caller", .type_ref = syn.typeRefSimple("Continuation") });
+
+    var methods = ArrayList(*ASTNode).init(ctx.allocator);
+    defer methods.deinit();
+    var body_fields = ArrayList(ast.ClassProp).init(ctx.allocator);
+    defer body_fields.deinit();
+
+    const locals = try caps.collectPromotableLocals(ctx, expanded);
+    defer ctx.allocator.free(locals);
+    try buildMachineResume(ctx, explicit.items, locals, expanded, result_type, &methods, &body_fields, true);
+    return finishContinuationType(ctx, mname, &props, &methods, &body_fields);
+}
+
+const SuspendCallInfo = struct {
+    machine: []const u8,
+    result: *const ast.ASTTypeRef,
+    recv: ?*ASTNode,
+    args: []const *ASTNode,
+};
+
+/// Declared return type wins: block inference misreads trailing try/return.
+fn calleeResultType(ctx: Ctx, callee: SuspendCallee) *const EiwaType {
+    const f = &callee.node.data.fun_decl;
+    if (f.type_ref) |tr| {
+        if (ctx.checker.resolveTypeRef(tr)) |rt| return rt else |_| {}
+    }
+    if (f.body.data == .block) {
+        return syn.blockReturnType(f.body.data.block.statements);
+    }
+    return f.body.resolved_type orelse &syn.defaultVoidType;
+}
+
+fn clearCalleeResolution(call_node: *ASTNode) void {
+    if (call_node.data != .call_expr) return;
+    const c = &call_node.data.call_expr;
+    if (c.callee.data == .get_expr) {
+        c.callee.data.get_expr.resolved_c_name = null;
+    } else if (c.callee.data == .identifier) {
+        c.callee.data.identifier.resolved_c_name = null;
+    }
+}
+
+fn receiverIdentName(call_node: *ASTNode) ?[]const u8 {
+    if (call_node.data != .call_expr) return null;
+    const c = &call_node.data.call_expr;
+    if (c.callee.data != .get_expr) return null;
+    const o = c.callee.data.get_expr.object;
+    if (o.data != .identifier) return null;
+    return o.data.identifier.name;
+}
+
+fn isTaskLocal(ctx: Ctx, name: []const u8) bool {
+    if (std.mem.eql(u8, name, "this")) return false;
+    const tl = ctx.task_locals orelse return false;
+    return tl.contains(name);
+}
+
+fn analyzeSuspendCall(ctx: Ctx, call_node: *ASTNode) anyerror!?SuspendCallInfo {
+    if (!callSuspends(ctx, call_node)) return null;
+    if (syn.isSuspendPrimitiveCall(call_node)) return null;
+    if (syn.isAwaitCall(call_node)) return null;
+    var cal = resolveSuspendCallee(ctx, call_node) orelse return null;
+    if (cal.node.data != .fun_decl) return null;
+    var f = &cal.node.data.fun_decl;
+    var annotated = hasSuspendAnnotation(f.annotations);
+    if (f.body.data == .block and f.body.data.block.statements.len == 0) {
+        const c = &call_node.data.call_expr;
+        if (annotated and c.callee.data == .get_expr and cal.recv_type_name != null and isContractName(ctx, cal.recv_type_name.?)) {
+            if (findSingleImplementor(ctx, cal.recv_type_name.?, c.callee.data.get_expr.name)) |impl| {
+                cal = .{ .node = impl.node, .c_name = impl.c_name, .recv_type_name = impl.type_name, .is_method = true };
+                f = &cal.node.data.fun_decl;
+                annotated = hasSuspendAnnotation(f.annotations);
+            } else {
+                const recv_name = receiverIdentName(call_node);
+                const is_local = if (recv_name) |rn| isTaskLocal(ctx, rn) else false;
+                if (is_local) {
+                    ctx.checker.reportError(call_node.line, call_node.column, "TypeError: contract suspend call on task-local '{s}' is not supported inside task blocks (machine state cannot virtual-dispatch; capture a concrete value instead).", .{recv_name.?});
+                    return error.TypeError;
+                }
+                ctx.checker.reportWarning(call_node.line, call_node.column, "Suspend function '{s}' has no single implementor to transform; this call will block the worker thread.", .{f.name});
+                clearCalleeResolution(call_node);
+                return null;
+            }
+        } else {
+            if (annotated) ctx.checker.reportWarning(call_node.line, call_node.column, "Suspend function '{s}' has no body to transform; this call will block the worker thread.", .{f.name});
+            clearCalleeResolution(call_node);
+            return null;
+        }
+    }
+    if (f.generic_params.len > 0) return null;
+    if (!annotated) {
+        var visiting = ArrayList(*ASTNode).init(ctx.allocator);
+        defer visiting.deinit();
+        if (!funBodySuspends(ctx, cal.node, &visiting, .Any)) {
+            if (receiverIdentName(call_node)) |rn| {
+                if (isTaskLocal(ctx, rn)) {
+                    ctx.checker.reportError(call_node.line, call_node.column, "TypeError: contract suspend call on task-local '{s}' is not supported inside task blocks (machine state cannot virtual-dispatch; capture a concrete value instead).", .{rn});
+                    return error.TypeError;
+                }
+            }
+            return null;
+        }
+    }
+    const c = &call_node.data.call_expr;
+    for (c.arguments) |a| {
+        if (syn.isAwaitCall(a) or syn.containsTrueSuspend(a) or callSuspends(ctx, a)) {
+            ctx.checker.reportError(a.line, a.column, "TypeError: suspend call as a value is not supported inside task blocks (suspend calls can only be used as separate statements).", .{});
+            return error.TypeError;
+        }
+    }
+    const mname = try ensureSuspendMachine(ctx, cal);
+    const result_ref = try syn.typeRefForEiwaType(ctx.allocator, calleeResultType(ctx, cal));
+    var recv: ?*ASTNode = null;
+    if (c.callee.data == .get_expr) {
+        recv = c.callee.data.get_expr.object;
+    }
+    return .{ .machine = mname, .result = result_ref, .recv = recv, .args = c.arguments };
+}
+
+fn suspendOperandError(ctx: Ctx, node: *ASTNode) anyerror {
+    ctx.checker.reportError(node.line, node.column, "TypeError: suspend call as a value is not supported inside task blocks (suspend calls can only be used as separate statements).", .{});
+    return error.TypeError;
+}
+
+fn suspendValueError(m: *Machine, node: *ASTNode) anyerror {
+    return suspendOperandError(m.ctx, node);
+}
+
+fn emitPlainStmt(m: *Machine, stmt: *ASTNode, after: usize) !usize {
+    const entry = try m.newState();
+    try m.append(entry, stmt);
+    try m.append(entry, syn.mkSetExpr(syn.mkIdent("this"), "label", syn.mkIntLit(@intCast(after))));
+    return entry;
+}
+
+fn suspendConditionError(ctx: Ctx, node: *ASTNode) anyerror {
+    ctx.checker.reportError(node.line, node.column, "TypeError: suspend call in condition is not supported inside task blocks (suspend calls can only be used as separate statements).", .{});
+    return error.TypeError;
+}
+
+/// Hoists nested suspend calls into preamble temps, inner-first so evaluation
+/// order is preserved. Call only from positions evaluated once per pass
+/// (never `while` conditions); lambdas are boundaries, Void stays put.
+fn hoistSuspendsFromExpr(ctx: Ctx, expr: *ASTNode, preamble: *ArrayList(*ASTNode)) !bool {
+    var hoisted = false;
+    try hoistSuspendsWalk(ctx, expr, preamble, &hoisted);
+    return hoisted;
+}
+
+fn hoistSuspendsWalk(ctx: Ctx, node: *ASTNode, preamble: *ArrayList(*ASTNode), hoisted: *bool) anyerror!void {
+    switch (node.data) {
+        .lambda_expr, .fun_decl => return,
+        .call_expr => {
+            const c = &node.data.call_expr;
+            try hoistSuspendsWalk(ctx, c.callee, preamble, hoisted);
+            for (c.arguments) |arg| {
+                try hoistSuspendsWalk(ctx, arg, preamble, hoisted);
+            }
+            if (syn.isTaskCall(node) or syn.isAwaitCall(node) or syn.isSuspendPrimitiveCall(node)) return;
+            if (!callSuspends(ctx, node)) return;
+            const info = try analyzeSuspendCall(ctx, node) orelse return;
+            if (isVoidRef(info.result)) return;
+            const n = ctx.counter.*;
+            ctx.counter.* += 1;
+            const tmp = try std.fmt.allocPrint(ctx.allocator, "__suspend{d}", .{n});
+            const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
+            try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = tmp });
+            const decl = syn.mkVarDecl(tmp, marker);
+            decl.data.var_decl.type_ref = info.result;
+            decl.line = node.line;
+            decl.column = node.column;
+            try preamble.append(decl);
+            const saved_line = node.line;
+            const saved_col = node.column;
+            node.data = .{ .identifier = .{ .name = tmp, .resolved_c_name = null } };
+            node.line = saved_line;
+            node.column = saved_col;
+            node.resolved_type = null;
+            node.expected_type = null;
+            hoisted.* = true;
+        },
+        .binary_expr => |*b| {
+            try hoistSuspendsWalk(ctx, b.left, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, b.right, preamble, hoisted);
+        },
+        .unary_expr => |*u| try hoistSuspendsWalk(ctx, u.operand, preamble, hoisted),
+        .get_expr => |*g| try hoistSuspendsWalk(ctx, g.object, preamble, hoisted),
+        .set_expr => |*s| {
+            try hoistSuspendsWalk(ctx, s.object, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, s.value, preamble, hoisted);
+        },
+        .index_expr => |*i| {
+            try hoistSuspendsWalk(ctx, i.object, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, i.index, preamble, hoisted);
+        },
+        .index_set_expr => |*i| {
+            try hoistSuspendsWalk(ctx, i.object, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, i.index, preamble, hoisted);
+            try hoistSuspendsWalk(ctx, i.value, preamble, hoisted);
+        },
+        .array_literal => |*al| {
+            for (al.elements) |e| try hoistSuspendsWalk(ctx, e, preamble, hoisted);
+        },
+        .string_template => |*st| {
+            for (st.parts) |e| try hoistSuspendsWalk(ctx, e, preamble, hoisted);
+        },
+        .map_literal => |*ml| {
+            for (ml.elements) |e| try hoistSuspendsWalk(ctx, e, preamble, hoisted);
+        },
+        .named_arg => |*na| try hoistSuspendsWalk(ctx, na.value, preamble, hoisted),
+        .assignment => |*a| try hoistSuspendsWalk(ctx, a.value, preamble, hoisted),
+        .as_expr => |*a| try hoistSuspendsWalk(ctx, a.value, preamble, hoisted),
+        .is_expr => |*i| try hoistSuspendsWalk(ctx, i.value, preamble, hoisted),
+        else => {},
+    }
+}
+
+fn hoistCallSubs(ctx: Ctx, call_node: *ASTNode, preamble: *ArrayList(*ASTNode)) !bool {
+    if (call_node.data != .call_expr) return false;
+    const c = &call_node.data.call_expr;
+    var any = false;
+    if (c.callee.data == .get_expr) {
+        var h = false;
+        try hoistSuspendsWalk(ctx, c.callee.data.get_expr.object, preamble, &h);
+        any = any or h;
+    } else {
+        var h = false;
+        try hoistSuspendsWalk(ctx, c.callee, preamble, &h);
+        any = any or h;
+    }
+    for (c.arguments) |arg| {
+        var h = false;
+        try hoistSuspendsWalk(ctx, arg, preamble, &h);
+        any = any or h;
+    }
+    return any;
+}
+
+fn hoistPreamble(ctx: Ctx, node: *ASTNode, out: *ArrayList(*ASTNode)) !bool {
+    var preamble = ArrayList(*ASTNode).init(ctx.allocator);
+    defer preamble.deinit();
+    if (try hoistSuspendsFromExpr(ctx, node, &preamble)) {
+        try out.appendSlice(preamble.items);
+        return true;
+    }
+    return false;
+}
+
+fn hoistSubsInto(ctx: Ctx, call_node: *ASTNode, out: *ArrayList(*ASTNode)) !void {
+    var sub = ArrayList(*ASTNode).init(ctx.allocator);
+    defer sub.deinit();
+    if (try hoistCallSubs(ctx, call_node, &sub)) {
+        try out.appendSlice(sub.items);
+    }
+}
+
+fn forbidSuspendExpr(ctx: Ctx, node: *ASTNode, in_condition: bool) anyerror!void {
+    if (exprHasSuspendCall(ctx, node)) {
+        if (in_condition) return suspendConditionError(ctx, node);
+        return suspendOperandError(ctx, node);
+    }
+}
+
+fn expandSuspendStmt(ctx: Ctx, stmt: *ASTNode, out: *ArrayList(*ASTNode)) anyerror!void {
+    switch (stmt.data) {
+        .var_decl => {
+            const v = &stmt.data.var_decl;
+            if (v.initializer) |init| {
+                // Readiness waits carry no timeout in suspend context.
+                if (init.data == .call_expr and syn.isSuspendPrimitiveCall(init)) {
+                    const cname = switch (init.data.call_expr.callee.data) {
+                        .get_expr => |g| g.name,
+                        .identifier => |i| i.name,
+                        else => "",
+                    };
+                    if (std.mem.eql(u8, cname, "waitReadable") or std.mem.eql(u8, cname, "waitWritable")) {
+                        v.initializer = syn.mkIntLit(1);
+                        v.type_ref = syn.typeRefSimple("Int");
+                        try out.append(init);
+                        try out.append(stmt);
+                        return;
+                    }
+                }
+                if (init.data == .call_expr and callSuspends(ctx, init)) {
+                    if (syn.isSuspendPrimitiveCall(init)) {
+                        try out.append(stmt);
+                        return;
+                    }
+                    if (!syn.isAwaitCall(init) and !syn.isTaskCall(init)) {
+                        try hoistSubsInto(ctx, init, out);
+                    }
+                    const info = try analyzeSuspendCall(ctx, init) orelse {
+                        try out.append(stmt);
+                        return;
+                    };
+                    if (isVoidRef(info.result)) {
+                        const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
+                        try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = null });
+                        try out.append(marker);
+                        return;
+                    }
+                    const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
+                    try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = v.name });
+                    v.initializer = marker;
+                    v.type_ref = info.result;
+                    try out.append(stmt);
+                    return;
+                }
+                if (exprHasSuspendCall(ctx, init)) {
+                    if (try hoistPreamble(ctx, init, out)) {
+                        try out.append(stmt);
+                        return;
+                    }
+                }
+                try forbidSuspendExpr(ctx, init, false);
+            }
+            try out.append(stmt);
+        },
+        .call_expr => {
+            if (syn.isSuspendPrimitiveCall(stmt) or syn.isAwaitCall(stmt) or syn.isTaskCall(stmt)) {
+                try out.append(stmt);
+                return;
+            }
+            if (callSuspends(ctx, stmt)) {
+                try hoistSubsInto(ctx, stmt, out);
+                const info = try analyzeSuspendCall(ctx, stmt) orelse {
+                    try out.append(stmt);
+                    return;
+                };
+                const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
+                try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = null });
+                try out.append(marker);
+                return;
+            }
+            if (exprHasSuspendCall(ctx, stmt)) {
+                if (try hoistPreamble(ctx, stmt, out)) {
+                    try out.append(stmt);
+                    return;
+                }
+            }
+            try forbidSuspendExpr(ctx, stmt, false);
+            try out.append(stmt);
+        },
+        .return_stmt => {
+            const r = &stmt.data.return_stmt;
+            if (r.value) |val| {
+                if (val.data == .call_expr and callSuspends(ctx, val) and !syn.isSuspendPrimitiveCall(val)) {
+                    try hoistSubsInto(ctx, val, out);
+                    const info = try analyzeSuspendCall(ctx, val) orelse {
+                        try out.append(stmt);
+                        return;
+                    };
+                    const n = ctx.counter.*;
+                    ctx.counter.* += 1;
+                    const tmp_name = try std.fmt.allocPrint(ctx.allocator, "__sret{d}", .{n});
+                    const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
+                    try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = tmp_name });
+                    const tmp_decl = syn.mkVarDecl(tmp_name, marker);
+                    tmp_decl.data.var_decl.type_ref = info.result;
+                    try out.append(tmp_decl);
+                    r.value = syn.mkIdent(tmp_name);
+                    try out.append(stmt);
+                    return;
+                }
+                if (exprHasSuspendCall(ctx, val)) {
+                    if (try hoistPreamble(ctx, val, out)) {
+                        try out.append(stmt);
+                        return;
+                    }
+                }
+                try forbidSuspendExpr(ctx, val, false);
+            }
+            try out.append(stmt);
+        },
+        .if_expr => {
+            const i = &stmt.data.if_expr;
+            if (exprHasSuspendCall(ctx, i.condition)) {
+                if (try hoistPreamble(ctx, i.condition, out)) {
+                    try expandSuspendBranch(ctx, i.then_branch);
+                    if (i.else_branch) |e| try expandSuspendBranch(ctx, e);
+                    try out.append(stmt);
+                    return;
+                }
+            }
+            try forbidSuspendExpr(ctx, i.condition, true);
+            try expandSuspendBranch(ctx, i.then_branch);
+            if (i.else_branch) |e| try expandSuspendBranch(ctx, e);
+            try out.append(stmt);
+        },
+        .while_stmt => {
+            const w = &stmt.data.while_stmt;
+            if (exprHasSuspendCall(ctx, w.condition)) {
+                var preamble = ArrayList(*ASTNode).init(ctx.allocator);
+                defer preamble.deinit();
+                if (try hoistSuspendsFromExpr(ctx, w.condition, &preamble)) {
+                    try expandSuspendBranch(ctx, w.body);
+                    const neg = syn.mkUnary(.bang, w.condition);
+                    neg.line = stmt.line;
+                    neg.column = stmt.column;
+                    const guard = syn.mkIf(neg, syn.mkBreak());
+                    guard.line = stmt.line;
+                    guard.column = stmt.column;
+                    guard.data.if_expr.then_branch.line = stmt.line;
+                    guard.data.if_expr.then_branch.column = stmt.column;
+                    var new_body = ArrayList(*ASTNode).init(ctx.allocator);
+                    defer new_body.deinit();
+                    try new_body.appendSlice(preamble.items);
+                    try new_body.append(guard);
+                    if (w.body.data == .block) {
+                        try new_body.appendSlice(w.body.data.block.statements);
+                    } else {
+                        try new_body.append(w.body);
+                    }
+                    w.condition = syn.mkBoolLit(true);
+                    w.body = syn.mkBlock(try new_body.toOwnedSlice());
+                    try out.append(stmt);
+                    return;
+                }
+            }
+            try forbidSuspendExpr(ctx, w.condition, true);
+            try expandSuspendBranch(ctx, w.body);
+            try out.append(stmt);
+        },
+        .for_stmt => {
+            const f = &stmt.data.for_stmt;
+            if (exprHasSuspendCall(ctx, f.iterable)) {
+                if (try hoistPreamble(ctx, f.iterable, out)) {
+                    try forbidSuspendExpr(ctx, f.iterable, true);
+                    try expandSuspendBranch(ctx, f.body);
+                    try out.append(stmt);
+                    return;
+                }
+            }
+            try forbidSuspendExpr(ctx, f.iterable, true);
+            try expandSuspendBranch(ctx, f.body);
+            try out.append(stmt);
+        },
+        .try_stmt => {
+            const t = &stmt.data.try_stmt;
+            try expandSuspendBranch(ctx, t.body);
+            for (t.catches) |*cb| try expandSuspendBranch(ctx, cb.body);
+            try out.append(stmt);
+        },
+        .when_expr => {
+            const w = &stmt.data.when_expr;
+            // Case conds evaluate until match: hoisting all would run them all.
+            if (w.subject) |s| {
+                if (exprHasSuspendCall(ctx, s)) {
+                    if (try hoistPreamble(ctx, s, out)) {
+                        for (w.cases) |*case| {
+                            for (case.conds) |cond| try forbidSuspendExpr(ctx, cond, true);
+                            try expandSuspendBranch(ctx, case.body);
+                        }
+                        try out.append(stmt);
+                        return;
+                    }
+                }
+                try forbidSuspendExpr(ctx, s, true);
+            }
+            for (w.cases) |*case| {
+                for (case.conds) |cond| try forbidSuspendExpr(ctx, cond, true);
+                try expandSuspendBranch(ctx, case.body);
+            }
+            try out.append(stmt);
+        },
+        .block => {
+            const b = &stmt.data.block;
+            var block_out = ArrayList(*ASTNode).init(ctx.allocator);
+            defer block_out.deinit();
+            for (b.statements) |s| try expandSuspendStmt(ctx, s, &block_out);
+            b.statements = try block_out.toOwnedSlice();
+            try out.append(stmt);
+        },
+        .assignment => {
+            const a = &stmt.data.assignment;
+            if (a.value.data == .call_expr and callSuspends(ctx, a.value) and !syn.isSuspendPrimitiveCall(a.value)) {
+                try hoistSubsInto(ctx, a.value, out);
+                const info = try analyzeSuspendCall(ctx, a.value) orelse {
+                    try out.append(stmt);
+                    return;
+                };
+                const marker = try syn.mkSuspendCallMarker(ctx.allocator, info.recv, info.args);
+                try ctx.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = a.name });
+                a.value = marker;
+                try out.append(stmt);
+                return;
+            }
+            if (exprHasSuspendCall(ctx, a.value)) {
+                if (try hoistPreamble(ctx, a.value, out)) {
+                    try out.append(stmt);
+                    return;
+                }
+                return suspendOperandError(ctx, a.value);
+            }
+            try out.append(stmt);
+        },
+        .break_stmt => {
+            const b = &stmt.data.break_stmt;
+            if (b.value) |val| {
+                if (exprHasSuspendCall(ctx, val)) {
+                    if (try hoistPreamble(ctx, val, out)) {
+                        try out.append(stmt);
+                        return;
+                    }
+                }
+                try forbidSuspendExpr(ctx, val, false);
+            }
+            try out.append(stmt);
+        },
+        .throw_stmt => {
+            const t = &stmt.data.throw_stmt;
+            if (exprHasSuspendCall(ctx, t.expr)) {
+                if (try hoistPreamble(ctx, t.expr, out)) {
+                    try out.append(stmt);
+                    return;
+                }
+            }
+            try forbidSuspendExpr(ctx, t.expr, false);
+            try out.append(stmt);
+        },
+        .lambda_expr, .fun_decl => try out.append(stmt),
+        else => {
+            if (exprHasSuspendCall(ctx, stmt)) {
+                if (try hoistPreamble(ctx, stmt, out)) {
+                    try out.append(stmt);
+                    return;
+                }
+            }
+            try forbidSuspendExpr(ctx, stmt, false);
+            try out.append(stmt);
+        },
+    }
+}
+
+fn expandSuspendBranch(ctx: Ctx, branch: *ASTNode) anyerror!void {
+    var branch_out = ArrayList(*ASTNode).init(ctx.allocator);
+    defer branch_out.deinit();
+    if (branch.data == .block) {
+        const b = &branch.data.block;
+        for (b.statements) |s| try expandSuspendStmt(ctx, s, &branch_out);
+        b.statements = try branch_out.toOwnedSlice();
+        return;
+    }
+    const line = branch.line;
+    const col = branch.column;
+    try expandSuspendStmt(ctx, branch, &branch_out);
+    if (branch_out.items.len == 1) {
+        branch.* = branch_out.items[0].*;
+        return;
+    }
+    const blk = syn.mkBlock(try branch_out.toOwnedSlice());
+    blk.line = line;
+    blk.column = col;
+    branch.* = blk.*;
+}
+
+/// Marker temps must exist before locals promotion turns them into fields.
+pub fn expandSuspendCalls(ctx: Ctx, body: []const *ASTNode) anyerror![]*ASTNode {
+    var scoped = ctx;
+    var declared = std.StringHashMap(void).init(ctx.allocator);
+    defer declared.deinit();
+    for (body) |st| try caps.recordDeclaredNames(ctx, st, &declared);
+    scoped.task_locals = &declared;
+    var out = ArrayList(*ASTNode).init(ctx.allocator);
+    defer out.deinit();
+    for (body, 0..) |st, idx| {
+        if (idx == body.len - 1 and st.data == .call_expr and callSuspends(scoped, st) and !syn.isSuspendPrimitiveCall(st) and !syn.isAwaitCall(st) and !syn.isTaskCall(st)) {
+            const info = try analyzeSuspendCall(scoped, st) orelse {
+                try expandSuspendStmt(scoped, st, &out);
+                continue;
+            };
+            if (isVoidRef(info.result)) {
+                const marker = try syn.mkSuspendCallMarker(scoped.allocator, info.recv, info.args);
+                try scoped.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = null });
+                try out.append(marker);
+                continue;
+            }
+            const n = scoped.counter.*;
+            scoped.counter.* += 1;
+            const tmp_name = try std.fmt.allocPrint(scoped.allocator, "__strail{d}", .{n});
+            const marker = try syn.mkSuspendCallMarker(scoped.allocator, info.recv, info.args);
+            try scoped.suspend_sites.append(.{ .marker = marker, .machine = info.machine, .result = info.result, .target = tmp_name });
+            const tmp_decl = syn.mkVarDecl(tmp_name, marker);
+            tmp_decl.data.var_decl.type_ref = info.result;
+            try out.append(tmp_decl);
+            try out.append(syn.mkIdent(tmp_name));
+            continue;
+        }
+        try expandSuspendStmt(scoped, st, &out);
+    }
+    return out.toOwnedSlice();
+}
+
+/// Narrowing tracks scope variables, not `this` fields: alias narrowed values
+/// into fresh locals so the narrowing survives promotion. `val`-only, stops
+/// at shadowing, never enters lambdas.
+fn narrowingFixupList(ctx: Ctx, stmts: []const *ASTNode) anyerror![]*ASTNode {
+    var out = ArrayList(*ASTNode).init(ctx.allocator);
+    defer out.deinit();
+    var i: usize = 0;
+    while (i < stmts.len) : (i += 1) {
+        const s = stmts[i];
+        if (s.data == .if_expr) {
+            const e = &s.data.if_expr;
+            try narrowingFixupBranch(ctx, e.then_branch);
+            if (e.else_branch) |eb| try narrowingFixupBranch(ctx, eb);
+            if (isNullCheck(e.condition)) |nc| {
+                if (nc.negated) {
+                    try aliasBranchTop(ctx, e.then_branch, .{ .bang = nc.name });
+                } else {
+                    if (e.else_branch) |eb| {
+                        try aliasBranchTop(ctx, eb, .{ .bang = nc.name });
+                    }
+                    if (e.else_branch == null and branchAlwaysReturns(e.then_branch) and !hasVarDecl(stmts, nc.name)) {
+                        const alias = try freshAlias(ctx);
+                        try out.append(s);
+                        const gdecl = syn.mkVarDecl(alias, syn.mkUnary(.bang_bang, syn.mkIdent(nc.name)));
+                        if (firstUseType(stmts[i + 1 ..], nc.name)) |t| {
+                            gdecl.data.var_decl.type_ref = try aliasAnn(ctx, t);
+                        }
+                        try out.append(gdecl);
+                        var j = i + 1;
+                        while (j < stmts.len) : (j += 1) {
+                            if (declaresName(stmts[j], nc.name)) break;
+                            try substituteNode(ctx, stmts[j], nc.name, alias);
+                        }
+                        continue;
+                    }
+                }
+            }
+            if (isIsCheck(e.condition)) |ic| {
+                if (!ic.negated) {
+                    try aliasBranchTop(ctx, e.then_branch, .{ .cast = .{ .name = ic.name, .target = ic.target } });
+                } else {
+                    if (e.else_branch) |eb| {
+                        try aliasBranchTop(ctx, eb, .{ .cast = .{ .name = ic.name, .target = ic.target } });
+                    }
+                }
+            }
+            try out.append(s);
+            continue;
+        }
+        if (s.data == .while_stmt) {
+            const w = &s.data.while_stmt;
+            if (isNullCheck(w.condition)) |nc| {
+                if (nc.negated) {
+                    try aliasBranchTop(ctx, w.body, .{ .bang = nc.name });
+                }
+            }
+            try narrowingFixupBranch(ctx, w.body);
+            try out.append(s);
+            continue;
+        }
+        if (s.data == .block) {
+            const b = &s.data.block;
+            b.statements = try narrowingFixupList(ctx, b.statements);
+            try out.append(s);
+            continue;
+        }
+        if (s.data == .try_stmt) {
+            const t = &s.data.try_stmt;
+            try narrowingFixupBranch(ctx, t.body);
+            for (t.catches) |*cb| try narrowingFixupBranch(ctx, cb.body);
+            try out.append(s);
+            continue;
+        }
+        try out.append(s);
+    }
+    return out.toOwnedSlice();
+}
+
+fn narrowingFixupBranch(ctx: Ctx, branch: *ASTNode) anyerror!void {
+    if (branch.data == .block) {
+        const b = &branch.data.block;
+        b.statements = try narrowingFixupList(ctx, b.statements);
+        return;
+    }
+    var single = [_]*ASTNode{branch};
+    const done = try narrowingFixupList(ctx, single[0..]);
+    if (done.len == 1) {
+        branch.* = done[0].*;
+    } else {
+        branch.* = syn.mkBlock(done).*;
+    }
+}
+
+const AliasInit = union(enum) {
+    bang: []const u8,
+    cast: struct {
+        name: []const u8,
+        target: *const ast.ASTTypeRef,
+    },
+};
+
+fn aliasBranchTop(ctx: Ctx, branch: *ASTNode, init: AliasInit) anyerror!void {
+    const alias = try freshAlias(ctx);
+    const name = switch (init) {
+        .bang => |n| n,
+        .cast => |c| c.name,
+    };
+    const init_expr = switch (init) {
+        .bang => |n| syn.mkUnary(.bang_bang, syn.mkIdent(n)),
+        .cast => |c| syn.mkAs(syn.mkIdent(c.name), c.target),
+    };
+    var probe = [_]*ASTNode{branch};
+    const ann = switch (init) {
+        .bang => if (firstUseType(probe[0..], name)) |t| try aliasAnn(ctx, t) else null,
+        .cast => |c| c.target,
+    };
+    if (branch.data != .block) {
+        const decl = syn.mkVarDecl(alias, init_expr);
+        if (ann) |a| decl.data.var_decl.type_ref = a;
+        const wrapped = syn.mkBlock(&.{ decl, branch });
+        branch.* = wrapped.*;
+    } else {
+        const b = &branch.data.block;
+        if (hasVarDecl(b.statements, name)) return;
+        const decl = syn.mkVarDecl(alias, init_expr);
+        if (ann) |a| decl.data.var_decl.type_ref = a;
+        const new_list = try ctx.allocator.alloc(*ASTNode, b.statements.len + 1);
+        new_list[0] = decl;
+        @memcpy(new_list[1..], b.statements);
+        b.statements = new_list;
+    }
+    const stmts = branch.data.block.statements[1..];
+    for (stmts) |st| {
+        if (declaresName(st, name)) break;
+        try substituteNode(ctx, st, name, alias);
+    }
+}
+
+/// Narrowing never applies to vars: aliasing one would turn today's compile
+/// error into a runtime throw.
+fn hasVarDecl(stmts: []const *ASTNode, name: []const u8) bool {
+    for (stmts) |st| {
+        if (st.data == .var_decl and std.mem.eql(u8, st.data.var_decl.name, name)) {
+            if (st.data.var_decl.is_mut) return true;
+        }
+    }
+    return false;
+}
+
+fn firstUseType(stmts: []const *ASTNode, name: []const u8) ?*const EiwaType {
+    for (stmts) |st| {
+        if (findUseType(st, name)) |t| return t;
+    }
+    return null;
+}
+
+fn findUseType(node: *ASTNode, name: []const u8) ?*const EiwaType {
+    switch (node.data) {
+        .identifier => |i| {
+            if (std.mem.eql(u8, i.name, name)) {
+                if (node.resolved_type) |t| return t;
+            }
+            return null;
+        },
+        .lambda_expr, .fun_decl => return null,
+        .call_expr => |c| {
+            if (findUseType(c.callee, name)) |t| return t;
+            for (c.arguments) |a| {
+                if (findUseType(a, name)) |t| return t;
+            }
+            return null;
+        },
+        .binary_expr => |b| {
+            if (findUseType(b.left, name)) |t| return t;
+            return findUseType(b.right, name);
+        },
+        .unary_expr => |u| return findUseType(u.operand, name),
+        .get_expr => |g| return findUseType(g.object, name),
+        .set_expr => |se| {
+            if (findUseType(se.object, name)) |t| return t;
+            return findUseType(se.value, name);
+        },
+        .block => |b| {
+            for (b.statements) |st| {
+                if (declaresName(st, name)) return null;
+                if (findUseType(st, name)) |t| return t;
+            }
+            return null;
+        },
+        .var_decl => |v| {
+            if (v.initializer) |init| {
+                if (findUseType(init, name)) |t| return t;
+            }
+            return null;
+        },
+        .return_stmt => |r| {
+            if (r.value) |val| return findUseType(val, name);
+            return null;
+        },
+        else => return null,
+    }
+}
+
+fn aliasAnn(ctx: Ctx, t: *const EiwaType) !*const ast.ASTTypeRef {
+    switch (t.*) {
+        .Union => |u| {
+            if (u.right.* == .Null) {
+                const inner = try aliasAnn(ctx, u.left);
+                return try caps.makeNullableTypeRef(ctx, inner);
+            }
+            return try syn.typeRefForEiwaType(ctx.allocator, t);
+        },
+        else => return try syn.typeRefForEiwaType(ctx.allocator, t),
+    }
+}
+
+fn freshAlias(ctx: Ctx) ![]const u8 {
+    const n = ctx.counter.*;
+    ctx.counter.* += 1;
+    return std.fmt.allocPrint(ctx.allocator, "__narrow{d}", .{n});
+}
+
+const NullCheck = struct {
+    name: []const u8,
+    negated: bool,
+};
+
+const IsCheck = struct {
+    name: []const u8,
+    target: *const ast.ASTTypeRef,
+    negated: bool,
+};
+
+fn isIsCheck(node: *ASTNode) ?IsCheck {
+    if (node.data != .is_expr) return null;
+    const e = &node.data.is_expr;
+    if (e.value.data != .identifier) return null;
+    return .{ .name = e.value.data.identifier.name, .target = e.type_ref, .negated = e.is_not };
+}
+
+fn isNullCheck(node: *ASTNode) ?NullCheck {
+    if (node.data != .binary_expr) return null;
+    const b = &node.data.binary_expr;
+    const is_eq = b.op == .eq_eq;
+    const is_ne = b.op == .bang_eq;
+    if (!is_eq and !is_ne) return null;
+    if (b.left.data == .identifier and b.right.data == .null_literal) {
+        return .{ .name = b.left.data.identifier.name, .negated = is_ne };
+    }
+    if (b.right.data == .identifier and b.left.data == .null_literal) {
+        return .{ .name = b.right.data.identifier.name, .negated = is_ne };
+    }
+    return null;
+}
+
+fn branchAlwaysReturns(node: *ASTNode) bool {
+    if (node.data == .block) {
+        const b = &node.data.block;
+        if (b.statements.len == 0) return false;
+        return lastStmtReturns(b.statements[b.statements.len - 1]);
+    }
+    return lastStmtReturns(node);
+}
+
+fn lastStmtReturns(node: *ASTNode) bool {
+    return switch (node.data) {
+        .return_stmt => true,
+        .block => |b| b.statements.len > 0 and lastStmtReturns(b.statements[b.statements.len - 1]),
+        else => false,
+    };
+}
+
+fn substituteIdent(ctx: Ctx, stmts: []const *ASTNode, name: []const u8, alias: []const u8) anyerror!void {
+    for (stmts) |st| {
+        if (declaresName(st, name)) return;
+        try substituteNode(ctx, st, name, alias);
+    }
+}
+
+fn declaresName(node: *ASTNode, name: []const u8) bool {
+    switch (node.data) {
+        .var_decl => |v| return std.mem.eql(u8, v.name, name),
+        .for_stmt => |f| {
+            if (f.index_name) |idx| {
+                if (std.mem.eql(u8, idx, name)) return true;
+            }
+            return std.mem.eql(u8, f.item_name, name);
+        },
+        else => return false,
+    }
+}
+
+fn substituteNode(ctx: Ctx, node: *ASTNode, name: []const u8, alias: []const u8) anyerror!void {
+    switch (node.data) {
+        .identifier => |*i| {
+            if (std.mem.eql(u8, i.name, name)) {
+                i.name = alias;
+                i.resolved_c_name = null;
+            }
+            return;
+        },
+        .lambda_expr, .fun_decl => return,
+        .call_expr => |*c| {
+            try substituteNode(ctx, c.callee, name, alias);
+            for (c.arguments) |a| try substituteNode(ctx, a, name, alias);
+        },
+        .binary_expr => |*b| {
+            try substituteNode(ctx, b.left, name, alias);
+            try substituteNode(ctx, b.right, name, alias);
+        },
+        .unary_expr => |*u| try substituteNode(ctx, u.operand, name, alias),
+        .get_expr => |*g| try substituteNode(ctx, g.object, name, alias),
+        .set_expr => |*s| {
+            try substituteNode(ctx, s.object, name, alias);
+            try substituteNode(ctx, s.value, name, alias);
+        },
+        .index_expr => |*i| {
+            try substituteNode(ctx, i.object, name, alias);
+            try substituteNode(ctx, i.index, name, alias);
+        },
+        .index_set_expr => |*i| {
+            try substituteNode(ctx, i.object, name, alias);
+            try substituteNode(ctx, i.index, name, alias);
+            try substituteNode(ctx, i.value, name, alias);
+        },
+        .block => |*b| {
+            for (b.statements) |st| {
+                if (declaresName(st, name)) return;
+                try substituteNode(ctx, st, name, alias);
+            }
+        },
+        .var_decl => |*v| {
+            if (v.initializer) |init| try substituteNode(ctx, init, name, alias);
+        },
+        .assignment => |*a| try substituteNode(ctx, a.value, name, alias),
+        .return_stmt => |*r| {
+            if (r.value) |val| try substituteNode(ctx, val, name, alias);
+        },
+        .break_stmt => |*b| {
+            if (b.value) |val| try substituteNode(ctx, val, name, alias);
+        },
+        .if_expr => |*i| {
+            try substituteNode(ctx, i.condition, name, alias);
+            try substituteNode(ctx, i.then_branch, name, alias);
+            if (i.else_branch) |e| try substituteNode(ctx, e, name, alias);
+        },
+        .while_stmt => |*w| {
+            try substituteNode(ctx, w.condition, name, alias);
+            try substituteNode(ctx, w.body, name, alias);
+        },
+        .for_stmt => |*f| {
+            if (declaresName(node, name)) return;
+            try substituteNode(ctx, f.iterable, name, alias);
+            try substituteNode(ctx, f.body, name, alias);
+        },
+        .try_stmt => |*t| {
+            try substituteNode(ctx, t.body, name, alias);
+            for (t.catches) |*cb| try substituteNode(ctx, cb.body, name, alias);
+        },
+        .throw_stmt => |*t| try substituteNode(ctx, t.expr, name, alias),
+        .string_template => |*st| {
+            for (st.parts) |p| try substituteNode(ctx, p, name, alias);
+        },
+        .array_literal => |*al| {
+            for (al.elements) |e| try substituteNode(ctx, e, name, alias);
+        },
+        .map_literal => |*ml| {
+            for (ml.elements) |e| try substituteNode(ctx, e, name, alias);
+        },
+        .named_arg => |*na| try substituteNode(ctx, na.value, name, alias),
+        .as_expr => |*a| try substituteNode(ctx, a.value, name, alias),
+        .is_expr => |*i| try substituteNode(ctx, i.value, name, alias),
+        else => {},
     }
 }
 

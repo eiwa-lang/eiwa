@@ -1,4 +1,5 @@
 import { MutableList } from "std.collections"
+import { Coroutine } from "std.coroutines"
 
 test "for loop with sleepMs suspension and implicit it inside task" {
     val t = task {
@@ -111,4 +112,33 @@ test "for loop directly over literal with suspension" {
     }
     val result = t.await()
     assert(result == 600, "literal array sum should be 600")
+}
+
+fun fetchVal(): Int {
+    Coroutine.sleepMs(1)
+    return 41
+}
+
+test "for body with user suspend call" {
+    val t = task {
+        val xs = [1, 2, 3]
+        var sum = 0
+        for (xs) { x ->
+            sum = sum + fetchVal() + x
+        }
+        sum
+    }
+    assert(t.await() == 129, "3*41 + 6")
+}
+
+test "for body with user suspend call and index" {
+    val t = task {
+        val xs = [10, 20]
+        var sum = 0
+        for (xs) { i, x ->
+            sum = sum + i + fetchVal()
+        }
+        sum
+    }
+    assert(t.await() == 83, "41 + 42")
 }

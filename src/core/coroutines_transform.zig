@@ -33,13 +33,28 @@ const clearResolvedTypes = cctx.clearResolvedTypes;
 
 pub fn transformProgram(allocator: std.mem.Allocator, registry: *ModuleRegistry) !void {
     var counter: usize = 0;
+    var suspend_generated = std.StringHashMap(void).init(allocator);
+    defer suspend_generated.deinit();
+    var suspend_generating = ArrayList([]const u8).init(allocator);
+    defer suspend_generating.deinit();
+    var suspend_sites = ArrayList(cctx.SuspendSite).init(allocator);
+    defer suspend_sites.deinit();
+    var suspend_memo = std.AutoHashMap(u64, bool).init(allocator);
+    defer suspend_memo.deinit();
+    var shared = cctx.SuspendShared{
+        .registry = registry,
+        .generated = &suspend_generated,
+        .generating = &suspend_generating,
+        .sites = &suspend_sites,
+        .memo = &suspend_memo,
+    };
     for (registry.ordered_modules.items) |path| {
         const mod = registry.modules.get(path) orelse continue;
-        try transformModule(allocator, mod.checker, mod.ast_root, &counter);
+        try transformModule(allocator, mod.checker, mod.ast_root, &counter, &shared);
     }
 }
 
-fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: *ASTNode, counter: *usize) !void {
+fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: *ASTNode, counter: *usize, shared: *cctx.SuspendShared) !void {
     if (module.data != .program) return;
 
     for (module.data.program.statements) |stmt| {
@@ -56,7 +71,7 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
 
     var generated = ArrayList(*ASTNode).init(allocator);
     defer generated.deinit();
-    const ctx = Ctx{ .allocator = allocator, .checker = checker, .counter = counter, .generated = &generated };
+    const ctx = Ctx{ .allocator = allocator, .checker = checker, .counter = counter, .generated = &generated, .registry = shared.registry, .suspend_generated = shared.generated, .suspend_generating = shared.generating, .suspend_sites = shared.sites, .suspend_memo = shared.memo, .task_locals = null };
 
     for (module.data.program.statements) |stmt| {
         if (stmt.data == .fun_decl) {

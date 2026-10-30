@@ -1,0 +1,79 @@
+// Idle keep-alive connections must not pin worker threads.
+// Mirrors the arest server: one task per accepted connection, the request is
+// read through a method (like ServerConnection.readRequest). Idle connections
+// that never send bytes must suspend their task, so a later request on a new
+// connection is still served promptly. Before the fix, workers blocked in
+// poll() on the idle sockets and the request stalled until the watchdog fired.
+import { assert } from "std.core"
+import { TCPServer, Socket, SocketClient } from "std.net"
+
+type Conn(val sock: Socket) {
+    fun readRequest(): String {
+        return this.sock.read(100)
+    }
+}
+
+test "coop: idle connections do not starve new requests" {
+    val port = 19533
+    val idleCount = 24
+    val server = TCPServer()
+    server.bind(port)
+
+    var done = false
+    val watchdog = Threads.spawn {
+        sleep(20)
+        if (!done) {
+            println("RED: request stalled behind idle connections")
+            Standard.exit(1)
+        }
+    }
+
+    var idle: MutableList<Socket> = MutableList<Socket>()
+    val dialer = Threads.spawnJoinable {
+        var i = 0
+        while (i < idleCount) {
+            val c = SocketClient.connect("127.0.0.1", port)
+            if (c != null) {
+                idle.add(c!!)
+            }
+            i = i + 1
+        }
+    }
+
+    var accepted = 0
+    while (accepted < idleCount) {
+        val c = server.accept()
+        if (c != null) {
+            accepted = accepted + 1
+            val conn = Conn(c)
+            task {
+                val msg = conn.readRequest()
+                conn.sock.write("PONG:$msg")
+                conn.sock.close()
+            }
+        }
+    }
+    dialer.join()
+
+    val probe = SocketClient.connect("127.0.0.1", port)
+    assert(probe != null, "probe client should connect")
+    var probeAccepted = false
+    while (!probeAccepted) {
+        val c = server.accept()
+        if (c != null) {
+            probeAccepted = true
+            val conn = Conn(c)
+            task {
+                val msg = conn.readRequest()
+                conn.sock.write("PONG:$msg")
+                conn.sock.close()
+            }
+        }
+    }
+
+    probe!!.write("PING")
+    val resp = probe!!.read(100)
+    done = true
+    assert(resp == "PONG:PING", "probe must be answered while idle connections stay open")
+    server.close()
+}

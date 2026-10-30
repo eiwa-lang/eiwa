@@ -1,0 +1,18 @@
+import { assert } from "std.core"
+import { Coroutine } from "std.coroutines"
+
+fun fetchVal(): Int {
+    Coroutine.sleepMs(1)
+    return 41
+}
+
+test "while condition suspends per check" {
+    val t = task {
+        var n = 0
+        while (fetchVal() + n < 100) {
+            n = n + 41
+        }
+        n
+    }
+    assert(t.await() == 82, "41+41, third check exits")
+}

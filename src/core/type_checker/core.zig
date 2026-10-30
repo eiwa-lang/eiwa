@@ -302,6 +302,7 @@ pub const TypeChecker = struct {
     pub const lookupGenericFunction = @import("monomorphize.zig").lookupGenericFunction;
     pub const makeListType = core_makeListType;
     pub const cloneNode = @import("clone.zig").cloneNode;
+    pub const cloneNodeWith = @import("clone.zig").cloneNodeWith;
     pub const validate = core_validate;
     pub const declareTypes = core_declareTypes;
     pub const declareSignatures = core_declareSignatures;

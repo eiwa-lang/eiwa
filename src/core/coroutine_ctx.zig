@@ -12,6 +12,24 @@ pub const Ctx = struct {
     checker: *TypeChecker,
     counter: *usize,
     generated: *ArrayList(*ASTNode),
+    registry: *tc_core.ModuleRegistry,
+    /// Machine types generated so far, so std methods generate once and share.
+    suspend_generated: *std.StringHashMap(void),
+    suspend_generating: *ArrayList([]const u8),
+    /// Marker lowering data, accumulated across modules, keyed by marker node.
+    suspend_sites: *ArrayList(SuspendSite),
+    suspend_memo: *std.AutoHashMap(u64, bool),
+    /// Declared names in the body being expanded. A contract call on a
+    /// task-local silently miscompiles (thin machine fields); error those.
+    task_locals: ?*std.StringHashMap(void),
+};
+
+pub const SuspendShared = struct {
+    registry: *tc_core.ModuleRegistry,
+    generated: *std.StringHashMap(void),
+    generating: *ArrayList([]const u8),
+    sites: *ArrayList(SuspendSite),
+    memo: *std.AutoHashMap(u64, bool),
 };
 
 /// A free variable captured by a `task {}` block. Mutable captures share the
@@ -23,6 +41,16 @@ pub const CapturedVar = struct {
 };
 
 pub const outer_this_field = "__outer_this";
+
+/// Lowering data for one marker: receiver and args ride in the marker call
+/// itself so capture rewriting still sees them.
+pub const SuspendSite = struct {
+    marker: *ASTNode,
+    machine: []const u8,
+    result: *const ASTTypeRef,
+    /// Assignment target field (null = bare call).
+    target: ?[]const u8,
+};
 
 /// Clears resolved types so re-inference descends into rewritten subtrees.
 /// NOTE: `expected_type` is intentionally PRESERVED (e.g. empty array literal

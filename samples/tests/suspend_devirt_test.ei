@@ -1,0 +1,28 @@
+import { assert } from "std.core"
+import { Coroutine } from "std.coroutines"
+
+contract Fetcher {
+    @Suspend
+    fun fetch(): Int
+}
+
+type DirectFetcher : Fetcher {
+    implement fun fetch(): Int {
+        Coroutine.sleepMs(1)
+        return 7
+    }
+}
+
+fun makeFetcher(): Fetcher {
+    Coroutine.sleepMs(1)
+    return DirectFetcher()
+}
+
+test "single implementor devirtualizes silently" {
+    val t = task {
+        val f: Fetcher = makeFetcher()
+        val v = f.fetch()
+        v
+    }
+    assert(t.await() == 7, "devirt drives the implementor machine")
+}
