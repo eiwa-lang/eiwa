@@ -67,6 +67,7 @@ pub const Parser = struct {
     pub const declaration = declaration_mod.declaration;
     pub const varDeclaration = declaration_mod.varDeclaration;
     pub const testDeclaration = declaration_mod.testDeclaration;
+    pub const initDeclarationAt = declaration_mod.initDeclarationAt;
     pub const importDeclaration = declaration_mod.importDeclaration;
     pub const funDeclaration = declaration_mod.funDeclaration;
     pub const typeDeclaration = declaration_mod.typeDeclaration;

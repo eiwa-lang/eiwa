@@ -91,6 +91,7 @@ pub fn visitEachNode(node: *ASTNode, ctx: anytype, comptime enter: fn (@TypeOf(c
             if (try visitEachNode(m, ctx, enter)) return true;
         },
         .test_decl => |t| if (try visitEachNode(t.body, ctx, enter)) return true,
+        .init_decl => |t| if (try visitEachNode(t.body, ctx, enter)) return true,
         .lib_decl => |l| for (l.functions) |f| {
             if (try visitEachNode(f, ctx, enter)) return true;
         },
@@ -1669,6 +1670,7 @@ fn collectUsedNamesInner(self: *TypeChecker, node: *ASTNode, used: *std.StringHa
         .union_decl => |u| for (u.members) |m| try used.put(m.name, {}),
         .lib_decl => |l| for (l.functions) |f| try collectUsedNamesInner(self, f, used, member_uses),
         .test_decl => |t| try collectUsedNamesInner(self, t.body, used, member_uses),
+        .init_decl => |t| try collectUsedNamesInner(self, t.body, used, member_uses),
         .as_expr => |a| {
             try collectUsedNamesInner(self, a.value, used, member_uses);
             try collectUsedTypeRef(a.type_ref, used);
@@ -1691,6 +1693,43 @@ fn collectUsedTypeRef(ref: *const ast.ASTTypeRef, used: *std.StringHashMap(void)
     for (ref.union_types) |u| try collectUsedTypeRef(u, used);
     if (ref.receiver_type) |rt| try collectUsedTypeRef(rt, used);
     if (ref.return_type) |rt| try collectUsedTypeRef(rt, used);
+}
+
+fn validateEntryBlocks(self: *TypeChecker, statements: []const *ASTNode) anyerror!void {
+    if (self.pass == .declaration) return;
+    var init_count: usize = 0;
+    var first_init: ?*ASTNode = null;
+    var main_node: ?*ASTNode = null;
+    var has_error = false;
+    for (statements) |stmt| {
+        if (stmt.data == .init_decl) {
+            init_count += 1;
+            if (first_init == null) first_init = stmt;
+            if (init_count > 1) {
+                self.reportError(stmt.line, stmt.column, "TypeError: Only one init {{}} block is allowed per file.", .{});
+                has_error = true;
+            }
+            if (self.module_prefix != null) {
+                self.reportError(stmt.line, stmt.column, "TypeError: init {{}} is only allowed in the entry file.", .{});
+                has_error = true;
+            }
+        } else if (stmt.data == .fun_decl) {
+            const f = stmt.data.fun_decl;
+            if (std.mem.eql(u8, f.name, "main") and f.receiver_type == null) {
+                main_node = stmt;
+            }
+        }
+    }
+    if (first_init != null and main_node != null) {
+        const m = main_node.?;
+        self.reportError(m.line, m.column, "TypeError: init {{}} cannot be combined with fun main(). Remove fun main() and keep init {{}}.", .{});
+        has_error = true;
+    }
+    if (main_node != null) {
+        const m = main_node.?;
+        self.reportWarning(m.line, m.column, "fun main() is deprecated, use init {{}} instead.", .{});
+    }
+    if (has_error) return error.TypeError;
 }
 
 fn checkUnusedImports(self: *TypeChecker, node: *ASTNode) anyerror!void {
@@ -1792,6 +1831,7 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
     const t = try self.allocator.create(EiwaType);
     switch (node.data) {
         .program => |p| {
+            try validateEntryBlocks(self, p.statements);
             for (p.statements) |stmt| {
                 if (stmt.data == .test_decl and !self.is_test_mode) continue;
                 _ = try self.inferNode(stmt, scope);
@@ -1799,6 +1839,14 @@ fn core_inferNode(self: *TypeChecker, node: *ASTNode, scope: *Scope) anyerror!*c
             t.* = .Void;
         },
         .test_decl => |td| {
+            if (self.pass == .declaration) {
+                t.* = .Void;
+                return t;
+            }
+            _ = try self.inferNode(td.body, scope);
+            t.* = .Void;
+        },
+        .init_decl => |td| {
             if (self.pass == .declaration) {
                 t.* = .Void;
                 return t;

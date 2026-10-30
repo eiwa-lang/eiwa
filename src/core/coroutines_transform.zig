@@ -44,10 +44,10 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
 
     for (module.data.program.statements) |stmt| {
         switch (stmt.data) {
-            .import_stmt, .fun_decl, .type_decl, .contract_decl, .skill_decl, .test_decl, .lib_decl, .object_decl, .enum_decl, .union_decl => {},
+            .import_stmt, .fun_decl, .type_decl, .contract_decl, .skill_decl, .test_decl, .init_decl, .lib_decl, .object_decl, .enum_decl, .union_decl => {},
             else => {
                 if (syn.hasTaskOrAwait(stmt)) {
-                    checker.reportError(stmt.line, stmt.column, "TypeError: task {{}} and await() cannot be used in top-level statements (they would silently do nothing). Wrap them in fun main() {{ ... }}.", .{});
+                    checker.reportError(stmt.line, stmt.column, "TypeError: task {{}} and await() cannot be used in top-level statements (they would silently do nothing). Wrap them in init {{ ... }}.", .{});
                     return error.TypeError;
                 }
             },
@@ -115,6 +115,32 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
                     _ = try checker.inferNode(stmt, &checker.global_scope);
                 } else {
                     td.body.data.block.statements = try test_stmts.toOwnedSlice();
+                }
+            }
+        } else if (stmt.data == .init_decl) {
+            // `init` is the program entry: task/await allowed, drain at end.
+            const td = &stmt.data.init_decl;
+            if (td.body.data == .block) {
+                var init_stmts = ArrayList(*ASTNode).init(allocator);
+                defer init_stmts.deinit();
+                const before = generated.items.len;
+                try eng.rewriteStatements(ctx, td.body.data.block.statements, &init_stmts, false);
+                if (generated.items.len > before or init_stmts.items.len != td.body.data.block.statements.len) {
+                    try syn.appendSchedulerDrain(&init_stmts);
+                    td.body.data.block.statements = try init_stmts.toOwnedSlice();
+                    try clearResolvedTypes(ctx, stmt);
+                    checker.pass = .validation;
+                    _ = try checker.inferNode(stmt, &checker.global_scope);
+                } else {
+                    td.body.data.block.statements = try init_stmts.toOwnedSlice();
+                    // Entry must still drain fire-and-forget tasks even without rewrite.
+                    if (syn.hasTaskOrAwait(stmt)) {
+                        try syn.appendSchedulerDrain(&init_stmts);
+                        td.body.data.block.statements = try init_stmts.toOwnedSlice();
+                        try clearResolvedTypes(ctx, stmt);
+                        checker.pass = .validation;
+                        _ = try checker.inferNode(stmt, &checker.global_scope);
+                    }
                 }
             }
         }
