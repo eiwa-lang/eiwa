@@ -49,6 +49,7 @@ fn typeContainsGenericParam(self: *TypeChecker, t: *const EiwaType, generic_para
 
 pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: []*const EiwaType, mangled_name: []const u8) !void {
     if (self.classes_ast.get(mangled_name) != null) return;
+    if (self.classes_ast.get(mangled_name) != null) return;
     self.monomorph_depth += 1;
     defer self.monomorph_depth -= 1;
     
@@ -111,6 +112,16 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
         _ = self.global_scope.define(conc_name, type_args[i], false, false) catch {};
         try self.alias_map.put(param_name, conc_name);
         try self.alias_map.put(conc_name, conc_name);
+    }
+
+    errdefer {
+        for (type_decl.generic_params) |param_name| {
+            if (old_aliases.get(param_name)) |old_val| {
+                self.alias_map.put(param_name, old_val) catch {};
+            } else {
+                _ = self.alias_map.remove(param_name);
+            }
+        }
     }
 
     var new_props = try self.allocator.alloc(ast.ClassProp, type_decl.primary_constructor.len);
@@ -319,6 +330,16 @@ pub fn monomorphizeFunction(self: *TypeChecker, base_node: *ASTNode, type_args: 
         _ = self.global_scope.define(conc_name, type_args[i], false, false) catch {};
         try self.alias_map.put(param_name, conc_name);
         try self.alias_map.put(conc_name, conc_name);
+    }
+
+    errdefer {
+        for (fun_decl.generic_params) |param_name| {
+            if (old_aliases.get(param_name)) |old_val| {
+                self.alias_map.put(param_name, old_val) catch {};
+            } else {
+                _ = self.alias_map.remove(param_name);
+            }
+        }
     }
 
     const new_node = try self.cloneNode(base_node);

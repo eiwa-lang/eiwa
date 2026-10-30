@@ -82,6 +82,14 @@ contract Hashable {
     fun hashCode(): Int
 }
 
+type Annotation(val name: String, val value: String)
+
+contract Annotable {
+    fun annotation(name: String): Annotation?
+    fun fieldAnnotation(field: String, name: String): Annotation?
+    fun methodAnnotation(method: String, name: String): Annotation?
+}
+
 contract Runnable {
     fun run()
 }

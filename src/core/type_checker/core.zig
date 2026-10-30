@@ -2052,7 +2052,8 @@ fn core_isAutoContract(typ: *const EiwaType) bool {
     if (typ.* != .Custom) return false;
     const n = typ.Custom;
     return std.mem.endsWith(u8, n, "Stringable") or std.mem.endsWith(u8, n, "Equatable") or
-        std.mem.endsWith(u8, n, "Hashable") or std.mem.endsWith(u8, n, "Echoable");
+        std.mem.endsWith(u8, n, "Hashable") or std.mem.endsWith(u8, n, "Echoable") or
+        std.mem.endsWith(u8, n, "Annotable");
 }
 
 fn core_conformsTo(self: *TypeChecker, actual_name: []const u8, target_name: []const u8) bool {
