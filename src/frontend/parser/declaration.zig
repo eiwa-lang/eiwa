@@ -538,6 +538,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
 
     var methods = ArrayList(*ASTNode).init(self.allocator);
     var body_fields = ArrayList(ast.ClassProp).init(self.allocator);
+    var init_blocks = ArrayList(*ASTNode).init(self.allocator);
     if (self.match(.l_brace)) {
         while (!self.check(.r_brace) and !self.check(.eof)) {
             const member_annotations = try self.parseAnnotations();
@@ -551,8 +552,35 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
             } else if (self.match(.kw_val)) {
                 // Body field: `val name: Type = expr` (immutable, not a ctor arg).
                 try body_fields.append(try self.parseBodyField(false, modifiers, member_annotations));
+            } else if (self.check(.identifier) and std.mem.eql(u8, self.current.lexeme, "init")) {
+                const saved_lexer = self.lexer;
+                const saved_current = self.current;
+                const saved_previous = self.previous;
+                const saved_rbrace = self.last_r_brace_line;
+                self.advance();
+                if (self.check(.l_brace)) {
+                    if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on init"); return error.ParseError; }
+                    if (member_annotations.len > 0) { self.errorAtCurrent("Annotations not allowed on init"); return error.ParseError; }
+                    const init_line = saved_current.line;
+                    const init_col = saved_current.column;
+                    try self.consume(.l_brace, "Expected '{' after init.");
+                    var stmts = ArrayList(*ASTNode).init(self.allocator);
+                    while (!self.check(.r_brace) and !self.check(.eof)) {
+                        try stmts.append(try self.declaration());
+                    }
+                    try self.consume(.r_brace, "Expected '}' after init block.");
+                    const body = try self.createNode(.{ .block = .{ .statements = try stmts.toOwnedSlice() } });
+                    try init_blocks.append(try self.createNodeAt(.{ .init_decl = .{ .body = body } }, init_line, init_col));
+                } else {
+                    self.lexer = saved_lexer;
+                    self.current = saved_current;
+                    self.previous = saved_previous;
+                    self.last_r_brace_line = saved_rbrace;
+                    self.errorAtCurrent("Only methods, `var`/`val` fields and `init {}` blocks are supported inside types.");
+                    return error.ParseError;
+                }
             } else {
-                self.errorAtCurrent("Only methods and `var`/`val` fields are supported inside types.");
+                self.errorAtCurrent("Only methods, `var`/`val` fields and `init {}` blocks are supported inside types.");
                 return error.ParseError;
             }
         }
@@ -569,6 +597,7 @@ pub fn typeDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!*A
         .contracts = try contracts.toOwnedSlice(),
         .skills = try skills.toOwnedSlice(),
         .body_fields = try body_fields.toOwnedSlice(),
+        .init_blocks = try init_blocks.toOwnedSlice(),
         .platform_targets = platform_targets,
     } }, line, col);
 }

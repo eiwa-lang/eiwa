@@ -1497,7 +1497,21 @@ suíte completa **936 PASSED** + `zig build test` verde.
 2. `fun main()` depreciado: warning `fun main() is deprecated, use init {} instead.` (via `diagnostics.printDiagnostic(.warning)`), sem remoção. `init {} + fun main()` no mesmo arquivo = `TypeError`.
 3. Parsing contextual (`identifier "init"` + `{`), não keyword — `init` segue válido como nome de param/variável.
 4. `task`/`await` permitidos em `init` (com drain do Scheduler, como `test`), proibidos em bare top-level (erro agora sugere `init`).
-5. `init` em `type` (estilo Kotlin) fica fora — fase futura própria.
+5. `init` em `type` (estilo Kotlin) — ver ADR 77 / Phase 101.
 
 **Razão:** Consistência (`init`/`test` como blocos, sem função mágica) com custo mínimo: semântica de runtime idêntica ao `main` atual (mesmo shim `main(argc,argv)` → `__eiwa_prog_main`), migração gradual via warning.
+
+## ADR 77: `init {}` em `type` (Kotlin-parity, construtor)
+**Status:** Phase 101 implementada
+**Data:** Novembro 2026
+
+**Contexto:** Com o entry `init {}` (ADR 76), o passo natural é o `init` de construtor Kotlin: validação e efeitos colaterais após campos, sem secondary constructors.
+
+**Decisão:**
+1. Um bloco `init {}` por `type`, executado após todos os fields (primary + body). Acesso via `this.` (como body-fields).
+2. Sem `return` (TypeError), sem `task`/`await`/`sleep` (TypeError — ctor é síncrono).
+3. Parsing contextual, sem keyword; genéricos clonados no monomorphize; reachability + `visitEachNode` cobrem init.
+4. `object`/`skill`/`contract` fora — só `type`.
+
+**Razão:** Cobre o caso real (validar invariantes, derivar estado, `require`) sem o custo do interleave total Kotlin (fields + inits intercalados) — follow-up se um caso exigir.
 

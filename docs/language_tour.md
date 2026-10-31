@@ -1235,6 +1235,28 @@ Rules (Kotlin-inspired):
 - `var`/`val` of **nullable** type may omit the initializer → defaults to `null`.
 - Assigning to a `val` body field is a compile-time error (`Cannot assign to constant property`).
 
+#### `init {}` blocks in `type`
+
+A `type` may declare `init {}` block (Kotlin-style). Use it for constructor logic — validate invariants, derive state, fail fast. It runs after all fields (primary + body) at construction, with `this` available:
+
+```kotlin
+type Counter(val base: Int) {
+    var count: Int = 0
+
+    init {
+        this.count = this.base + 1
+    }
+
+    init {
+        if (this.base < 0) {
+            throw InvalidError("base must be >= 0")
+        }
+    }
+}
+```
+
+Rules: no `return`, no `task`/`await`/`sleep` (ctors are synchronous); access fields via `this.`.
+
 ### 11.2 `contract` — Behavioral Capabilities
 
 A `contract` defines a pure API: method signatures only. No state, no constructors, no implementation, no instantiation. Contracts are how Eiwa does polymorphism.

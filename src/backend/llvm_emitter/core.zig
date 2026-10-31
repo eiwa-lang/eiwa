@@ -3024,6 +3024,7 @@ pub const LLVMEmitter = struct {
                 for (t.body_fields) |prop| {
                     if (prop.initializer) |init_node| try self.collectCallees(init_node, reachable, worklist);
                 }
+                for (t.init_blocks) |ib| try self.collectCallees(ib, reachable, worklist);
             },
             else => {},
         }
@@ -4071,7 +4072,8 @@ pub const LLVMEmitter = struct {
         // bound to the freshly allocated instance, storing into each field.
         // Constructor fields are also bound (by their names) so an initializer
         // can reference ctor params/properties, Kotlin-style.
-        if (t.body_fields.len > 0) {
+        // Type `init {}` blocks run after all fields, in declaration order.
+        if (t.body_fields.len > 0 or t.init_blocks.len > 0) {
             var this_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
             defer this_scope.deinit();
             const this_z = try self.allocator.dupeZ(u8, "this");
@@ -4101,6 +4103,18 @@ pub const LLVMEmitter = struct {
                 }
                 const field_ptr = llvm.LLVMBuildStructGEP2(self.builder, struct_type, raw_ptr, @intCast(field_idx), "bfield_gep");
                 _ = llvm.LLVMBuildStore(self.builder, init_val, field_ptr);
+            }
+
+            for (t.init_blocks) |ib| {
+                if (ib.data != .init_decl) continue;
+                const b = ib.data.init_decl.body;
+                if (b.data != .block) continue;
+                for (b.data.block.statements) |s| {
+                    try statement.emitStatement(self.context, mod, self.builder, ctor_val, &this_scope, &self.structs, &self.libs, s, null);
+                }
+                if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(self.builder)) != null) {
+                    break;
+                }
             }
         }
 

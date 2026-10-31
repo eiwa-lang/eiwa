@@ -225,6 +225,11 @@ pub fn monomorphizeClass(self: *TypeChecker, base_name: []const u8, type_args: [
     new_type_decl.primary_constructor = new_props;
     new_type_decl.body_fields = new_body_fields;
     new_type_decl.methods = new_methods;
+    var new_init_blocks = try self.allocator.alloc(*ast.ASTNode, type_decl.init_blocks.len);
+    for (type_decl.init_blocks, 0..) |ib, i| {
+        new_init_blocks[i] = try self.cloneNode(ib);
+    }
+    new_type_decl.init_blocks = new_init_blocks;
     new_type_decl.name = mangled_name;
     new_type_decl.resolved_c_name = mangled_name;
     new_type_decl.generic_params = &.{};

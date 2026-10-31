@@ -1,0 +1,10 @@
+// MUST NOT COMPILE: 'return' is not allowed in type init {}.
+type BadReturn {
+    init {
+        return 42
+    }
+}
+
+test "placeholder (never runs: file must not compile)" {
+    assert(true)
+}
