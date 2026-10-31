@@ -56,6 +56,22 @@ pub fn declaration(self: *Parser) anyerror!*ASTNode {
 
     if (self.match(.kw_import)) return try self.importDeclaration();
     if (self.match(.kw_test)) return try self.testDeclaration();
+    if (self.check(.identifier) and std.mem.eql(u8, self.current.lexeme, "init")) {
+        const saved_lexer = self.lexer;
+        const saved_current = self.current;
+        const saved_previous = self.previous;
+        const saved_rbrace = self.last_r_brace_line;
+        self.advance();
+        if (self.check(.l_brace)) {
+            if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on init"); return error.ParseError; }
+            if (annotations.len > 0) { self.errorAtCurrent("Annotations not allowed on init"); return error.ParseError; }
+            return try self.initDeclarationAt(saved_current.line, saved_current.column);
+        }
+        self.lexer = saved_lexer;
+        self.current = saved_current;
+        self.previous = saved_previous;
+        self.last_r_brace_line = saved_rbrace;
+    }
     if (self.match(.kw_while)) return try self.whileStatement();
     if (self.match(.kw_for)) return try self.forStatement();
     if (self.match(.kw_return)) return try self.returnStatement();
@@ -205,6 +221,20 @@ pub fn testDeclaration(self: *Parser) anyerror!*ASTNode {
 
     return try self.createNodeAt(.{ .test_decl = .{
         .name = name,
+        .body = body,
+    } }, line, col);
+}
+
+pub fn initDeclarationAt(self: *Parser, line: usize, col: usize) anyerror!*ASTNode {
+    try self.consume(.l_brace, "Expected '{' after init.");
+    var stmts = ArrayList(*ASTNode).init(self.allocator);
+    while (!self.check(.r_brace) and !self.check(.eof)) {
+        try stmts.append(try self.declaration());
+    }
+    try self.consume(.r_brace, "Expected '}' after init block.");
+    const body = try self.createNode(.{ .block = .{ .statements = try stmts.toOwnedSlice() } });
+
+    return try self.createNodeAt(.{ .init_decl = .{
         .body = body,
     } }, line, col);
 }

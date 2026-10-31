@@ -2019,6 +2019,12 @@ Semântica alvo:
 - [ ] **Verify:** `Unhandled exception report` do CI verde + suíte completa verde; `eiwac build`
   smoke (split-mode: sem `duplicate symbol`).
 
+### Phase 100: `init {}` como entry point (COMPLETED)
+- [x] **Task 100.1:** Parser contextual (`init` + `{`, sem keyword dura) → `ASTNode.init_decl`; `init` segue válido como identificador.
+- [x] **Task 100.2:** TypeChecker `validateEntryBlocks`: 1x `init` por arquivo, só entry file, `init + fun main` = `TypeError`, `fun main` = warning deprecado.
+- [x] **Task 100.3:** Emissor LLVM inline `init` no `main` em ordem fonte; `collectCallees` + `coroutines_transform` (task/await + drain) como `test`.
+- [x] **Verify:** `zig build` + `zig build test` verdes; suíte `eiwac test samples/tests/` 906 PASSED; `init` básico + `task` em `init` + warning `main` manuais.
+
 ---
 
 ## ✅ Known Bugs — Coroutines (Todos Resolvidos)

@@ -1519,7 +1519,7 @@ fn bodyHasNestedDecl(node: *ASTNode) bool {
 fn nestedDeclEnter(ctx: void, node: *ASTNode) anyerror!core.VisitAction {
     _ = ctx;
     switch (node.data) {
-        .type_decl, .object_decl, .contract_decl, .skill_decl, .enum_decl, .union_decl, .lib_decl, .test_decl, .fun_decl => return .stop,
+        .type_decl, .object_decl, .contract_decl, .skill_decl, .enum_decl, .union_decl, .lib_decl, .test_decl, .init_decl, .fun_decl => return .stop,
         .program, .import_stmt => return .prune,
         else => return .recurse,
     }

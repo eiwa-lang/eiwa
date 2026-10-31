@@ -63,19 +63,22 @@ Eiwa comes with a core module named `system.ei` which contains fundamental types
 
 ## 2. Top-Level Statements & Side-Effects
 
-Eiwa is designed to be highly fluid for quick scripts. Because of this, `fun main()` is **optional**. You can write statements directly at the root of your file.
+Eiwa is designed to be highly fluid for quick scripts. The canonical entry point is `init { ... }` (consistent with `test "..." { ... }`). Bare top-level statements also run, and legacy `fun main()` still works but emits a deprecation warning.
 
 ```kotlin
 // script.ei
 import { add } from "math"
 
-// This is perfectly valid Eiwa code
-val a = 10
-val b = 5
-print(add(a, b))
+init {
+    val a = 10
+    val b = 5
+    print(add(a, b))
+}
 ```
 
-If your code reaches the end of the file, it exits successfully (returning `0` to the OS). If you want to force an exit with an error code, you can use the built-in `exit(code)` function natively.
+Rules: one `init {}` per file, entry file only. `init {} + fun main()` in the same file is a `TypeError`. `task`/`await` are allowed inside `init` (with Scheduler drain), but not in bare top-level statements — wrap them in `init`.
+
+If your code reaches the end of the file, it exits successfully (returning `0` to the OS). If you want to force an exit with an error code, you can use the built-in `exit(code)` function natively. CLI args come from `Process.args()`.
 
 **The Golden Rule of Modules (No Side-Effects):**
 Top-level execution is **only allowed in your root file** (the one you pass to `eiwa run`). If an *imported* file tries to run top-level statements (like calling `print`), the compiler will strictly block it and throw an `ImportSideEffectsNotAllowed` error. 

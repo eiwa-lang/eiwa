@@ -274,6 +274,9 @@ pub const ASTNodeType = union(enum) {
         name: []const u8,
         body: *ASTNode,
     },
+    init_decl: struct {
+        body: *ASTNode,
+    },
     lib_decl: struct {
         annotations: []const Annotation,
         name: []const u8,

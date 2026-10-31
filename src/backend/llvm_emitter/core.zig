@@ -1399,12 +1399,20 @@ pub const LLVMEmitter = struct {
                 }
                 // Split mode: only the entry unit synthesizes `main` from
                 // top-level statements (the deps object must not define it).
-                if (m == ast_root and (!split or self.unitOwns(m)) and
-                    stmt.data != .fun_decl and stmt.data != .type_decl and stmt.data != .enum_decl and stmt.data != .union_decl and
-                    stmt.data != .contract_decl and stmt.data != .skill_decl and stmt.data != .object_decl and
-                    stmt.data != .lib_decl and stmt.data != .import_stmt and stmt.data != .test_decl)
-                {
-                    try top_level_stmts.append(stmt);
+                // `init {}` bodies are inlined in source order (entry only).
+                if (m == ast_root and (!split or self.unitOwns(m))) {
+                    if (stmt.data == .init_decl) {
+                        if (self.is_test_mode) continue;
+                        const b = stmt.data.init_decl.body;
+                        if (b.data == .block) {
+                            for (b.data.block.statements) |s| try top_level_stmts.append(s);
+                        }
+                    } else if (stmt.data != .fun_decl and stmt.data != .type_decl and stmt.data != .enum_decl and stmt.data != .union_decl and
+                        stmt.data != .contract_decl and stmt.data != .skill_decl and stmt.data != .object_decl and
+                        stmt.data != .lib_decl and stmt.data != .import_stmt and stmt.data != .test_decl)
+                    {
+                        try top_level_stmts.append(stmt);
+                    }
                 }
             }
         }
@@ -2789,6 +2797,7 @@ pub const LLVMEmitter = struct {
             .program => |p| for (p.statements) |s| try self.collectCallees(s, reachable, worklist),
             .block => |b| for (b.statements) |s| try self.collectCallees(s, reachable, worklist),
             .test_decl => |t| try self.collectCallees(t.body, reachable, worklist),
+            .init_decl => |t| try self.collectCallees(t.body, reachable, worklist),
             .fun_decl => |f| {
                 if (f.generic_params.len > 0) return;
                 if (f.is_expr_body) {

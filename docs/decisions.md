@@ -1482,3 +1482,22 @@ construção, não por disciplina.
 Validação: `annotation_test.ei` 5/5 (type/ctor-field/body-field/
 method/object + ausências) + arity `TypeError` + override manual +
 suíte completa **936 PASSED** + `zig build test` verde.
+
+## ADR 76: `init {}` como entry point (deprecando `fun main()`)
+**Status:** Phase 100 implementada (deprecate, não hard break)
+**Data:** Outubro 2026
+
+**Contexto:**
+1. `fun main()` é boilerplate herdado do C; Eiwa já permite statements soltos no topo (ADR 07, Phase 22), mas o híbrido (`main` + top-level) é ambíguo — top-level é silenciosamente ignorado quando `main` existe.
+2. `test "nome" {}` já é bloco nomeado; o entry deveria seguir o mesmo padrão visual em vez de função mágica `main`.
+3. `init` como identificador livre (`fun body(init: ...)` em samples) impede keyword dura sem quebrar código existente.
+
+**Decisão:**
+1. Novo bloco `init { ... }` top-level, único por arquivo, só no entry file. Sem params, sem retorno (`Process.args()` / `exit(code)` como hoje). Corpo inlined no LLVM `main` em ordem fonte com demais top-level statements.
+2. `fun main()` depreciado: warning `fun main() is deprecated, use init {} instead.` (via `diagnostics.printDiagnostic(.warning)`), sem remoção. `init {} + fun main()` no mesmo arquivo = `TypeError`.
+3. Parsing contextual (`identifier "init"` + `{`), não keyword — `init` segue válido como nome de param/variável.
+4. `task`/`await` permitidos em `init` (com drain do Scheduler, como `test`), proibidos em bare top-level (erro agora sugere `init`).
+5. `init` em `type` (estilo Kotlin) fica fora — fase futura própria.
+
+**Razão:** Consistência (`init`/`test` como blocos, sem função mágica) com custo mínimo: semântica de runtime idêntica ao `main` atual (mesmo shim `main(argc,argv)` → `__eiwa_prog_main`), migração gradual via warning.
+
