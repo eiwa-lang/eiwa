@@ -818,6 +818,7 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
     
     try self.consume(.l_brace, "Expected '{' before object body.");
     var members = ArrayList(*ASTNode).init(self.allocator);
+    var obj_inits = ArrayList(*ASTNode).init(self.allocator);
     while (!self.check(.r_brace) and !self.check(.eof)) {
         const member_annotations = try self.parseAnnotations();
         const modifiers = try self.parseModifiers();
@@ -833,8 +834,35 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
             if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on var"); return error.ParseError; }
             const v = try self.varDeclaration(true);
             try members.append(v);
+        } else if (self.check(.identifier) and std.mem.eql(u8, self.current.lexeme, "init")) {
+            const saved_lexer = self.lexer;
+            const saved_current = self.current;
+            const saved_previous = self.previous;
+            const saved_rbrace = self.last_r_brace_line;
+            self.advance();
+            if (self.check(.l_brace)) {
+                if (modifiers.len > 0) { self.errorAtCurrent("Modifiers not allowed on init"); return error.ParseError; }
+                if (member_annotations.len > 0) { self.errorAtCurrent("Annotations not allowed on init"); return error.ParseError; }
+                const init_line = saved_current.line;
+                const init_col = saved_current.column;
+                try self.consume(.l_brace, "Expected '{' after init.");
+                var stmts = ArrayList(*ASTNode).init(self.allocator);
+                while (!self.check(.r_brace) and !self.check(.eof)) {
+                    try stmts.append(try self.declaration());
+                }
+                try self.consume(.r_brace, "Expected '}' after init block.");
+                const body = try self.createNode(.{ .block = .{ .statements = try stmts.toOwnedSlice() } });
+                try obj_inits.append(try self.createNodeAt(.{ .init_decl = .{ .body = body } }, init_line, init_col));
+            } else {
+                self.lexer = saved_lexer;
+                self.current = saved_current;
+                self.previous = saved_previous;
+                self.last_r_brace_line = saved_rbrace;
+                self.errorAtCurrent("Expected function, variable or `init {}` inside object.");
+                return error.ParseError;
+            }
         } else {
-            self.errorAtCurrent("Expected function or variable declaration inside object.");
+            self.errorAtCurrent("Expected function, variable or `init {}` inside object.");
             return error.ParseError;
         }
     }
@@ -847,6 +875,7 @@ pub fn objectDeclaration(self: *Parser, annotations: []ast.Annotation) anyerror!
         .resolved_c_name = null,
         .contracts = try contracts.toOwnedSlice(),
         .skills = try skills.toOwnedSlice(),
+        .init_blocks = try obj_inits.toOwnedSlice(),
         .platform_targets = platform_targets,
     } }, line, col);
 }

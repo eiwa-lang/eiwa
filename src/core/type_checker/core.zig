@@ -100,8 +100,13 @@ pub fn visitEachNode(node: *ASTNode, ctx: anytype, comptime enter: fn (@TypeOf(c
         .lib_decl => |l| for (l.functions) |f| {
             if (try visitEachNode(f, ctx, enter)) return true;
         },
-        .object_decl => |o| for (o.members) |m| {
-            if (try visitEachNode(m, ctx, enter)) return true;
+        .object_decl => |o| {
+            for (o.members) |m| {
+                if (try visitEachNode(m, ctx, enter)) return true;
+            }
+            for (o.init_blocks) |ib| {
+                if (try visitEachNode(ib, ctx, enter)) return true;
+            }
         },
         .enum_decl => {},
         .union_decl => {},
@@ -1672,6 +1677,7 @@ fn collectUsedNamesInner(self: *TypeChecker, node: *ASTNode, used: *std.StringHa
             for (o.contracts) |c| try used.put(c, {});
             for (o.skills) |s| try used.put(s, {});
             for (o.members) |m| try collectUsedNamesInner(self, m, used, member_uses);
+            for (o.init_blocks) |ib| try collectUsedNamesInner(self, ib, used, member_uses);
         },
         .enum_decl => {},
         .union_decl => |u| for (u.members) |m| try used.put(m.name, {}),

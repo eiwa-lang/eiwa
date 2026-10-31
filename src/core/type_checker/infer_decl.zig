@@ -1580,6 +1580,26 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
     for (o.members) |member| {
         _ = try self.inferNode(member, &obj_scope);
     }
+    if (o.init_blocks.len > 1) {
+        const dup = o.init_blocks[1];
+        self.reportError(dup.line, dup.column, "TypeError: Only one init {{}} block is allowed per object.", .{});
+        return error.TypeError;
+    }
+    for (o.init_blocks) |init_node| {
+        if (init_node.data != .init_decl) continue;
+        if (try hasReturnStmt(init_node)) {
+            self.reportError(init_node.line, init_node.column, "TypeError: 'return' is not allowed in object init {{}}.", .{});
+            return error.TypeError;
+        }
+        const ib = init_node.data.init_decl.body;
+        if (ib.data == .block) {
+            for (ib.data.block.statements) |s| {
+                _ = try self.inferNode(s, &obj_scope);
+            }
+        } else {
+            _ = try self.inferNode(ib, &obj_scope);
+        }
+    }
     t.* = .Void;
 }
 

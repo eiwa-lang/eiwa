@@ -1,0 +1,21 @@
+import { assert } from "std.core"
+
+object AppConfig {
+    var mode: String = "dev"
+    var ready: Bool = false
+
+    init {
+        AppConfig.mode = "prod"
+        AppConfig.ready = true
+    }
+
+    fun status(): String {
+        return "${AppConfig.mode}:${AppConfig.ready}"
+    }
+}
+
+test "object init: runs once at startup after member vars" {
+    assert(AppConfig.mode == "prod")
+    assert(AppConfig.ready == true)
+    assert(AppConfig.status() == "prod:true")
+}

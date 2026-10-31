@@ -967,6 +967,9 @@ pub const LLVMEmitter = struct {
                                     }
                                 }
                             }
+                            for (stmt.data.object_decl.init_blocks) |ib| {
+                                try self.collectCallees(ib, &reachable, &worklist);
+                            }
                         }
                     }
                 }
@@ -2545,6 +2548,21 @@ pub const LLVMEmitter = struct {
                         }
                     } else {
                         if (verbose) std.debug.print("LLVM Debug: Object global NOT FOUND for {s}\n", .{var_name});
+                    }
+                }
+                // Object `init {}` runs once at startup after member vars.
+                if (obj.init_blocks.len > 0) {
+                    const cur_fn = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(self.builder));
+                    for (obj.init_blocks) |ib| {
+                        if (ib.data != .init_decl) continue;
+                        const b = ib.data.init_decl.body;
+                        if (b.data != .block) continue;
+                        for (b.data.block.statements) |s| {
+                            try statement.emitStatement(self.context, mod, self.builder, cur_fn, scope, &self.structs, &self.libs, s, null);
+                        }
+                        if (llvm.LLVMGetBasicBlockTerminator(llvm.LLVMGetInsertBlock(self.builder)) != null) {
+                            break;
+                        }
                     }
                 }
             }

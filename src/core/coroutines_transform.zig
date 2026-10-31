@@ -109,6 +109,12 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
             }
         } else if (stmt.data == .object_decl) {
             const o = &stmt.data.object_decl;
+            for (o.init_blocks) |ib| {
+                if (syn.hasTaskOrAwait(ib) or syn.containsTrueSuspend(ib)) {
+                    checker.reportError(ib.line, ib.column, "TypeError: task {{}} and await() cannot be used in object init {{}} (startup is synchronous).", .{});
+                    return error.TypeError;
+                }
+            }
             var obj_rewritten = false;
             for (o.members) |member| {
                 if (member.data != .fun_decl) continue;

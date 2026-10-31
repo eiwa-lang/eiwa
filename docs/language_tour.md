@@ -1245,9 +1245,6 @@ type Counter(val base: Int) {
 
     init {
         this.count = this.base + 1
-    }
-
-    init {
         if (this.base < 0) {
             throw InvalidError("base must be >= 0")
         }
@@ -1255,7 +1252,21 @@ type Counter(val base: Int) {
 }
 ```
 
-Rules: no `return`, no `task`/`await`/`sleep` (ctors are synchronous); access fields via `this.`.
+Rules: one `init` per `type`, no `return`, no `task`/`await`/`sleep` (ctors are synchronous); access fields via `this.` (`this.` optional).
+
+#### `init {}` in `object`
+
+An `object` may declare one `init {}` block for startup logic. It runs once at startup after member vars. No `this` in objects — access members qualified (`Config.mode`):
+
+```kotlin
+object Config {
+    var mode: String = "dev"
+
+    init {
+        Config.mode = "prod"
+    }
+}
+```
 
 ### 11.2 `contract` — Behavioral Capabilities
 
