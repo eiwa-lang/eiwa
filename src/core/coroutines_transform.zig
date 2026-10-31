@@ -88,6 +88,12 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
             // Same as above: skip the unvalidated generic template; its
             // monomorphized copies are transformed as concrete types.
             if (t.generic_params.len > 0) continue;
+            for (t.init_blocks) |ib| {
+                if (syn.hasTaskOrAwait(ib) or syn.containsTrueSuspend(ib)) {
+                    checker.reportError(ib.line, ib.column, "TypeError: task {{}} and await() cannot be used in type init {{}} (constructors are synchronous).", .{});
+                    return error.TypeError;
+                }
+            }
             var type_rewritten = false;
             for (t.methods) |m_node| {
                 if (m_node.data != .fun_decl) continue;
@@ -103,6 +109,12 @@ fn transformModule(allocator: std.mem.Allocator, checker: *TypeChecker, module: 
             }
         } else if (stmt.data == .object_decl) {
             const o = &stmt.data.object_decl;
+            for (o.init_blocks) |ib| {
+                if (syn.hasTaskOrAwait(ib) or syn.containsTrueSuspend(ib)) {
+                    checker.reportError(ib.line, ib.column, "TypeError: task {{}} and await() cannot be used in object init {{}} (startup is synchronous).", .{});
+                    return error.TypeError;
+                }
+            }
             var obj_rewritten = false;
             for (o.members) |member| {
                 if (member.data != .fun_decl) continue;

@@ -81,8 +81,13 @@ pub fn visitEachNode(node: *ASTNode, ctx: anytype, comptime enter: fn (@TypeOf(c
             if (v.initializer) |init| if (try visitEachNode(init, ctx, enter)) return true;
         },
         .fun_decl => |f| if (try visitEachNode(f.body, ctx, enter)) return true,
-        .type_decl => |t| for (t.methods) |m| {
-            if (try visitEachNode(m, ctx, enter)) return true;
+        .type_decl => |t| {
+            for (t.methods) |m| {
+                if (try visitEachNode(m, ctx, enter)) return true;
+            }
+            for (t.init_blocks) |ib| {
+                if (try visitEachNode(ib, ctx, enter)) return true;
+            }
         },
         .contract_decl => |c| for (c.methods) |m| {
             if (try visitEachNode(m, ctx, enter)) return true;
@@ -95,8 +100,13 @@ pub fn visitEachNode(node: *ASTNode, ctx: anytype, comptime enter: fn (@TypeOf(c
         .lib_decl => |l| for (l.functions) |f| {
             if (try visitEachNode(f, ctx, enter)) return true;
         },
-        .object_decl => |o| for (o.members) |m| {
-            if (try visitEachNode(m, ctx, enter)) return true;
+        .object_decl => |o| {
+            for (o.members) |m| {
+                if (try visitEachNode(m, ctx, enter)) return true;
+            }
+            for (o.init_blocks) |ib| {
+                if (try visitEachNode(ib, ctx, enter)) return true;
+            }
         },
         .enum_decl => {},
         .union_decl => {},
@@ -1656,6 +1666,7 @@ fn collectUsedNamesInner(self: *TypeChecker, node: *ASTNode, used: *std.StringHa
                 if (prop.initializer) |init| try collectUsedNamesInner(self, init, used, member_uses);
             }
             for (t.methods) |m| try collectUsedNamesInner(self, m, used, member_uses);
+            for (t.init_blocks) |ib| try collectUsedNamesInner(self, ib, used, member_uses);
         },
         .contract_decl => |c| for (c.methods) |m| try collectUsedNamesInner(self, m, used, member_uses),
         .skill_decl => |s| {
@@ -1666,6 +1677,7 @@ fn collectUsedNamesInner(self: *TypeChecker, node: *ASTNode, used: *std.StringHa
             for (o.contracts) |c| try used.put(c, {});
             for (o.skills) |s| try used.put(s, {});
             for (o.members) |m| try collectUsedNamesInner(self, m, used, member_uses);
+            for (o.init_blocks) |ib| try collectUsedNamesInner(self, ib, used, member_uses);
         },
         .enum_decl => {},
         .union_decl => |u| for (u.members) |m| try used.put(m.name, {}),

@@ -1,0 +1,12 @@
+// MUST NOT COMPILE: task {} / await() in type init {} is synchronous.
+type BadTask {
+    init {
+        val t = task {
+            print("dead: never scheduled")
+        }
+    }
+}
+
+test "placeholder (never runs: file must not compile)" {
+    assert(true)
+}

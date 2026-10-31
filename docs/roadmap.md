@@ -2025,6 +2025,12 @@ Semântica alvo:
 - [x] **Task 100.3:** Emissor LLVM inline `init` no `main` em ordem fonte; `collectCallees` + `coroutines_transform` (task/await + drain) como `test`.
 - [x] **Verify:** `zig build` + `zig build test` verdes; suíte `eiwac test samples/tests/` 906 PASSED; `init` básico + `task` em `init` + warning `main` manuais.
 
+### Phase 101: `init {}` em `type` e `object` (COMPLETED)
+- [x] **Task 101.1:** Parser `init` no corpo de `type` e `object` → `init_blocks` (1 bloco, contextual).
+- [x] **Task 101.2:** TypeChecker valida inits em class scope (`this` + fields); `return` e `task`/`await`/`sleep` = `TypeError`; monomorphize clona inits.
+- [x] **Task 101.3:** Emissor executa inits de `type` no ctor após fields; inits de `object` no startup após member vars; `hasTaskOrAwait`/`containsAwait`/`containsTrueSuspend` cobrem `init_decl`.
+- [x] **Verify:** `zig build` + `zig build test` verdes; manual single-init + genéricos + erros limpos + `object` qualificado.
+
 ---
 
 ## ✅ Known Bugs — Coroutines (Todos Resolvidos)

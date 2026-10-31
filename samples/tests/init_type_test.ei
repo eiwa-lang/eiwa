@@ -1,0 +1,55 @@
+import { assert } from "std.core"
+
+type Counter(val base: Int) {
+    var count: Int = 0
+    var doubled: Int = this.base * 2
+
+    init {
+        this.count = this.base + 1
+    }
+
+    fun describe(): String {
+        return "base=${this.base} count=${this.count} doubled=${this.doubled}"
+    }
+}
+
+type Ordered(val n: Int) {
+    var log: String = "start"
+
+    init {
+        this.log = this.log + "-a${this.n}-b"
+    }
+}
+
+type Box<T>(val v: T) {
+    var created: Bool = false
+
+    init {
+        this.created = true
+    }
+
+    fun get(): T {
+        return this.v
+    }
+}
+
+test "type init: runs after fields" {
+    val c = Counter(10)
+    assert(c.count == 11)
+    assert(c.doubled == 20)
+    assert(c.describe() == "base=10 count=11 doubled=20")
+}
+
+test "type init: single block" {
+    val w = Ordered(5)
+    assert(w.log == "start-a5-b")
+}
+
+test "type init: generic types" {
+    val b = Box(42)
+    assert(b.get() == 42)
+    assert(b.created == true)
+    val s = Box("hi")
+    assert(s.get() == "hi")
+    assert(s.created == true)
+}

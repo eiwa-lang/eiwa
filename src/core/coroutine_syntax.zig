@@ -709,6 +709,8 @@ pub fn hasTaskOrAwait(node: *ASTNode) bool {
             }
         },
         .var_decl => |v| return if (v.initializer) |init| hasTaskOrAwait(init) else false,
+        .test_decl => |t| return hasTaskOrAwait(t.body),
+        .init_decl => |t| return hasTaskOrAwait(t.body),
         else => {},
     }
     return false;
@@ -782,6 +784,8 @@ pub fn containsAwait(node: *ASTNode) bool {
             }
         },
         .var_decl => |v| return if (v.initializer) |init| containsAwait(init) else false,
+        .test_decl => |t| return containsAwait(t.body),
+        .init_decl => |t| return containsAwait(t.body),
         else => {},
     }
     return false;
@@ -856,6 +860,8 @@ pub fn containsTrueSuspend(node: *ASTNode) bool {
             }
         },
         .var_decl => |v| return if (v.initializer) |init| containsTrueSuspend(init) else false,
+        .test_decl => |t| return containsTrueSuspend(t.body),
+        .init_decl => |t| return containsTrueSuspend(t.body),
         else => {},
     }
     return false;

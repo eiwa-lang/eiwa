@@ -1,0 +1,17 @@
+init {
+    val c = Counter(10)
+    print(c.describe())
+}
+
+type Counter(val base: Int) {
+    var count: Int = 0
+    var doubled: Int = this.base * 2
+
+    init {
+        this.count = this.base + 1
+    }
+
+    fun describe(): String {
+        return "base=${this.base} count=${this.count} doubled=${this.doubled}"
+    }
+}
