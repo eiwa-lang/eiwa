@@ -1856,10 +1856,14 @@ fn analyzeSuspendCall(ctx: Ctx, call_node: *ASTNode) anyerror!?SuspendCallInfo {
     if (cal.node.data != .fun_decl) return null;
     var f = &cal.node.data.fun_decl;
     var annotated = hasSuspendAnnotation(f.annotations);
+    // SCRATCH (issue #22 RED): devirt downcast — wrap the contract receiver
+    // in a synthesized `as impl` inside the marker args.
+    var devirt_impl: ?Implementor = null;
     if (f.body.data == .block and f.body.data.block.statements.len == 0) {
         const c = &call_node.data.call_expr;
         if (annotated and c.callee.data == .get_expr and cal.recv_type_name != null and isContractName(ctx, cal.recv_type_name.?)) {
             if (findSingleImplementor(ctx, cal.recv_type_name.?, c.callee.data.get_expr.name)) |impl| {
+                devirt_impl = impl;
                 cal = .{ .node = impl.node, .c_name = impl.c_name, .recv_type_name = impl.type_name, .is_method = true };
                 f = &cal.node.data.fun_decl;
                 annotated = hasSuspendAnnotation(f.annotations);
@@ -1906,6 +1910,10 @@ fn analyzeSuspendCall(ctx: Ctx, call_node: *ASTNode) anyerror!?SuspendCallInfo {
     var recv: ?*ASTNode = null;
     if (c.callee.data == .get_expr) {
         recv = c.callee.data.get_expr.object;
+        // SCRATCH (issue #22 RED): devirt downcast of the contract receiver.
+        if (devirt_impl) |impl| {
+            recv = syn.mkAs(recv.?, syn.typeRefSimple(impl.type_name));
+        }
     }
     return .{ .machine = mname, .result = result_ref, .recv = recv, .args = c.arguments };
 }
