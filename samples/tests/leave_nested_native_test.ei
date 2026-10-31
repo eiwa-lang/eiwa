@@ -24,7 +24,7 @@ test "leave: nested two-level repeat exits inner loop" {
     assert(nestedLeaveCount() == 1250)
 }
 
-fun main() {
+init {
     assert(nestedLeaveCount() == 1250)
     println("NATIVE-LEAVE-OK")
 }

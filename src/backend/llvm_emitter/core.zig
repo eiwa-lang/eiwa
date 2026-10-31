@@ -32,10 +32,10 @@ fn resolveRepoPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 
 fn isDepTypePrefix(name: []const u8) bool {
     const prefixes = [_][]const u8{
-        "std_", "core_", "collections_", "serde_", "json_", "time_",
-        "math_", "fs_", "io_", "thread_", "atomic_", "random_", "uuid_", "ulid_",
-        "log_", "exceptions_", "coroutines_", "crypto_", "compress_",
-        "net_", "http_", "test_", "process_",
+        "std_",      "core_", "collections_", "serde_",      "json_",       "time_",
+        "math_",     "fs_",   "io_",          "thread_",     "atomic_",     "random_",
+        "uuid_",     "ulid_", "log_",         "exceptions_", "coroutines_", "crypto_",
+        "compress_", "net_",  "http_",        "test_",       "process_",
     };
     for (prefixes) |p| {
         if (std.mem.startsWith(u8, name, p) and !std.mem.startsWith(u8, name, "cli_src_")) return true;
@@ -45,10 +45,10 @@ fn isDepTypePrefix(name: []const u8) bool {
 
 fn stripModulePrefix(name: []const u8) ?[]const u8 {
     const prefixes = [_][]const u8{
-        "std_core_", "core_", "collections_", "serde_", "json_", "time_",
-        "math_", "fs_", "io_", "thread_", "atomic_", "random_", "uuid_", "ulid_",
-        "log_", "exceptions_", "coroutines_", "crypto_", "compress_",
-        "net_", "http_", "test_", "process_",
+        "std_core_", "core_", "collections_", "serde_",      "json_",       "time_",
+        "math_",     "fs_",   "io_",          "thread_",     "atomic_",     "random_",
+        "uuid_",     "ulid_", "log_",         "exceptions_", "coroutines_", "crypto_",
+        "compress_", "net_",  "http_",        "test_",       "process_",
     };
     for (prefixes) |p| {
         if (std.mem.startsWith(u8, name, p) and name.len > p.len) {
@@ -200,11 +200,11 @@ pub fn getJmpBufWords(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) usize {
     return switch (os) {
         .macos, .ios, .watchos, .tvos, .visionos => switch (arch) {
             .aarch64 => 24, // 192 bytes (_JBLEN = 48 ints)
-            .x86_64 => 19,  // 152 bytes (_JBLEN = 37 ints + 4-byte pad)
+            .x86_64 => 19, // 152 bytes (_JBLEN = 37 ints + 4-byte pad)
             else => 32,
         },
         .linux => switch (arch) {
-            .x86_64 => 25,  // 200 bytes (glibc __jmp_buf + __sigset_t)
+            .x86_64 => 25, // 200 bytes (glibc __jmp_buf + __sigset_t)
             .aarch64 => 39, // 312 bytes (glibc __jmp_buf + __sigset_t)
             .arm, .armeb => 33, // 264 bytes
             .riscv64 => 25,
@@ -214,7 +214,7 @@ pub fn getJmpBufWords(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) usize {
         .windows => switch (arch) {
             .x86_64 => 32, // 256 bytes (SETJMP_FLOAT128[16])
             .aarch64 => 24, // 192 bytes
-            .x86 => 8,     // 64 bytes
+            .x86 => 8, // 64 bytes
             else => 32,
         },
         .freebsd, .openbsd, .netbsd => 32,
@@ -410,11 +410,11 @@ pub const LLVMEmitter = struct {
     fn makeHelpersInternal(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) void {
         if (self.unit_modules == null) return;
         const names = [_][]const u8{
-            "GC_MALLOC",           "GC_REALLOC",          "eiwa_to_string",
-            "eiwa_str_replace",    "eiwa_string_equals",  "eiwa_char_at",
-            "eiwa_write_byte",     "eiwa_random_bytes",   "eiwa_now_millis",
-            "eiwa_load_int64",     "eiwa_store_int64",    "eiwa_read_byte",
-            "eiwa_atomic_cas_bool", "eiwa_atomic_cas_val", "eiwa_atomic_fetch_add",
+            "GC_MALLOC",                "GC_REALLOC",          "eiwa_to_string",
+            "eiwa_str_replace",         "eiwa_string_equals",  "eiwa_char_at",
+            "eiwa_write_byte",          "eiwa_random_bytes",   "eiwa_now_millis",
+            "eiwa_load_int64",          "eiwa_store_int64",    "eiwa_read_byte",
+            "eiwa_atomic_cas_bool",     "eiwa_atomic_cas_val", "eiwa_atomic_fetch_add",
             "eiwa_atomic_test_and_set",
         };
         for (names) |n| {
@@ -637,7 +637,6 @@ pub const LLVMEmitter = struct {
         var frame_fields = [_]llvm.LLVMTypeRef{ buf_type, ptr_type };
         llvm.LLVMStructSetBody(frame_struct, &frame_fields, 2, 0);
 
-
         // strlen prototype for lib `NativeString` and String concat.
         var strlen_params = [_]llvm.LLVMTypeRef{ptr_type};
         const strlen_type = llvm.LLVMFunctionType(size_t_type, &strlen_params, 1, 0);
@@ -833,7 +832,7 @@ pub const LLVMEmitter = struct {
             for (m.data.program.statements) |stmt| {
                 if (stmt.data == .fun_decl) {
                     // In test mode the entry point is `eiwa_test_main`, not a
-                    // user `fun main()`. Declaring a `main` from an imported
+                    // user `init`. Declaring a `main` from an imported
                     // module (e.g. the CLI binary imported by cli/test) would
                     // collide with the test-runner entry symbol.
                     if (self.is_test_mode and std.mem.eql(u8, stmt.data.fun_decl.resolved_c_name orelse stmt.data.fun_decl.name, "main")) continue;
@@ -906,7 +905,6 @@ pub const LLVMEmitter = struct {
                 }
             }
         }
-
 
         // Pass 2: Emit function bodies (top-level functions + type methods).
         // Only functions transitively reachable from the entry module's
@@ -1065,7 +1063,6 @@ pub const LLVMEmitter = struct {
             const own_vt = item.own;
             const t = stmt.data.type_decl;
             const type_c_name = t.resolved_c_name orelse t.name;
-
 
             var contract_list = ArrayList([]const u8).init(self.allocator);
             defer contract_list.deinit();
@@ -1425,13 +1422,13 @@ pub const LLVMEmitter = struct {
                 var c_it = ca.iterator();
                 while (c_it.next()) |entry| {
                     const c_node = entry.value_ptr.*;
-                if (c_node.data == .type_decl) {
-                    const stmt = c_node;
-                    if (stmt.data.type_decl.generic_params.len > 0) continue;
-                    const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
-                    // Dep-owned pool type: the deps object defines it.
-                    if (split and is_entry and dep_owned_types.contains(t_name)) continue;
-                    if (split) try owned_names.put(t_name, {});
+                    if (c_node.data == .type_decl) {
+                        const stmt = c_node;
+                        if (stmt.data.type_decl.generic_params.len > 0) continue;
+                        const t_name = stmt.data.type_decl.resolved_c_name orelse stmt.data.type_decl.name;
+                        // Dep-owned pool type: the deps object defines it.
+                        if (split and is_entry and dep_owned_types.contains(t_name)) continue;
+                        if (split) try owned_names.put(t_name, {});
                         for (stmt.data.type_decl.methods) |m_node| {
                             if (m_node.data != .fun_decl) continue;
                             if (m_node.data.fun_decl.generic_params.len > 0) continue;
@@ -1707,7 +1704,6 @@ pub const LLVMEmitter = struct {
                     _ = llvm.LLVMBuildCall2(self.builder, fflush_ft_opt.?, fflush_fn_opt.?, &null_arg, 1, "");
                 }
                 _ = llvm.LLVMBuildRet(self.builder, failed_final);
-
             } else {
                 std.debug.print("No tests found.\n", .{});
             }
@@ -1751,8 +1747,7 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "printf") or
                     std.mem.eql(u8, fn_name_s, "malloc") or
                     std.mem.eql(u8, fn_name_s, "realloc") or
-                    (prefer_gc_alloc and (
-                        std.mem.eql(u8, fn_name_s, "GC_malloc") or
+                    (prefer_gc_alloc and (std.mem.eql(u8, fn_name_s, "GC_malloc") or
                         std.mem.eql(u8, fn_name_s, "GC_malloc_atomic") or
                         std.mem.eql(u8, fn_name_s, "GC_malloc_uncollectable") or
                         std.mem.eql(u8, fn_name_s, "GC_realloc") or
@@ -1761,8 +1756,7 @@ pub const LLVMEmitter = struct {
                         std.mem.eql(u8, fn_name_s, "GC_get_stack_base") or
                         std.mem.eql(u8, fn_name_s, "GC_register_my_thread") or
                         std.mem.eql(u8, fn_name_s, "GC_unregister_my_thread") or
-                        std.mem.eql(u8, fn_name_s, "GC_add_roots")
-                    )) or
+                        std.mem.eql(u8, fn_name_s, "GC_add_roots"))) or
                     std.mem.eql(u8, fn_name_s, "setjmp") or
                     std.mem.eql(u8, fn_name_s, "_setjmp") or
                     std.mem.eql(u8, fn_name_s, "longjmp") or
@@ -1794,8 +1788,7 @@ pub const LLVMEmitter = struct {
                     std.mem.eql(u8, fn_name_s, "fprintf") or
                     // Real external symbol: must NOT get a no-op stub.
                     std.mem.eql(u8, fn_name_s, "eiwa_install_crash_handler") or
-                    (is_posix_target and (
-                        std.mem.eql(u8, fn_name_s, "socket") or
+                    (is_posix_target and (std.mem.eql(u8, fn_name_s, "socket") or
                         std.mem.eql(u8, fn_name_s, "setsockopt") or
                         std.mem.eql(u8, fn_name_s, "bind") or
                         std.mem.eql(u8, fn_name_s, "listen") or
@@ -1805,8 +1798,7 @@ pub const LLVMEmitter = struct {
                         std.mem.eql(u8, fn_name_s, "close") or
                         std.mem.eql(u8, fn_name_s, "sysconf") or
                         std.mem.eql(u8, fn_name_s, "gettimeofday") or
-                        std.mem.eql(u8, fn_name_s, "poll")
-                    ));
+                        std.mem.eql(u8, fn_name_s, "poll")));
                 if (!is_libc) {
                     // Split mode: deps unit never stubs symbols (leaves them as extern);
                     // entry unit only stubs non-dep symbols.
@@ -2112,7 +2104,7 @@ pub const LLVMEmitter = struct {
         }
         // eiwa_args_get(i) -> ptr.
         {
-            var p = [_]llvm.LLVMTypeRef{ i64_type };
+            var p = [_]llvm.LLVMTypeRef{i64_type};
             const fty = llvm.LLVMFunctionType(ptr_type, &p, 1, 0);
             const f = llvm.LLVMGetNamedFunction(mod, "eiwa_args_get") orelse llvm.LLVMAddFunction(mod, "eiwa_args_get", fty);
             if (llvm.LLVMCountBasicBlocks(f) == 0) {
@@ -2120,14 +2112,13 @@ pub const LLVMEmitter = struct {
                 llvm.LLVMPositionBuilderAtEnd(self.builder, bb);
                 const argv_ptr = llvm.LLVMBuildLoad2(self.builder, ptr_type, argv_global, "argv");
                 const idx = llvm.LLVMGetParam(f, 0);
-                var idxs = [_]llvm.LLVMValueRef{ idx };
+                var idxs = [_]llvm.LLVMValueRef{idx};
                 const slot = llvm.LLVMBuildGEP2(self.builder, ptr_type, argv_ptr, &idxs, 1, "slot");
                 const val = llvm.LLVMBuildLoad2(self.builder, ptr_type, slot, "arg");
                 _ = llvm.LLVMBuildRet(self.builder, val);
             }
         }
     }
-
 
     fn declareEnum(self: *LLVMEmitter, mod: llvm.LLVMModuleRef, node: *ast.ASTNode, define: bool) !void {
         const ed = node.data.enum_decl;
@@ -3113,7 +3104,7 @@ pub const LLVMEmitter = struct {
 
         // eiwa_load_int64(ptr) -> i64
         {
-            var params = [_]llvm.LLVMTypeRef{ ptr_t };
+            var params = [_]llvm.LLVMTypeRef{ptr_t};
             const fn_t = llvm.LLVMFunctionType(i64_t, &params, 1, 0);
             const func = llvm.LLVMGetNamedFunction(mod, "eiwa_load_int64") orelse llvm.LLVMAddFunction(mod, "eiwa_load_int64", fn_t);
             if (llvm.LLVMCountBasicBlocks(func) == 0) {
@@ -3363,8 +3354,6 @@ pub const LLVMEmitter = struct {
         llvm.LLVMPositionBuilderAtEnd(self.builder, str_bb);
         _ = llvm.LLVMBuildRet(self.builder, val);
     }
-
-
 
     /// Emits `eiwa_str_replace(i8* s, i8* old, i8* new) -> i8*` — replaces all
     /// occurrences of `old` with `new` in `s`, allocating with the active heap allocator.
@@ -3616,8 +3605,6 @@ pub const LLVMEmitter = struct {
         _ = llvm.LLVMBuildCall2(self.builder, rand_ft, rand_fn, &args, 2, "");
         _ = llvm.LLVMBuildRetVoid(self.builder);
     }
-
-
 
     fn emitAtomicHelpers(self: *LLVMEmitter, mod: llvm.LLVMModuleRef) !void {
         const ctx = self.context;
@@ -4886,7 +4873,7 @@ pub const LLVMEmitter = struct {
             try appendLinkDriverPrefix(&cc_argv, link_driver);
             try cc_argv.appendSlice(&[_][]const u8{ "-shared", "-fPIC", "-O0", "-fwrapv" });
             if (builtin.target.os.tag == .linux) {
-                try cc_argv.appendSlice(&[_][]const u8{ "-Wl,--no-as-needed" });
+                try cc_argv.appendSlice(&[_][]const u8{"-Wl,--no-as-needed"});
             }
             if (builtin.target.os.tag == .macos) {
                 const brew = if (builtin.target.cpu.arch == .aarch64) "/opt/homebrew" else "/usr/local";
@@ -5563,7 +5550,7 @@ pub const LLVMEmitter = struct {
         // No-op crash-handler mapping for JIT (without it the global ctor
         // calls a null pointer and segfaults the compiler itself).
         if (llvm.LLVMGetNamedFunction(mod, "eiwa_install_crash_handler")) |f| {
-            llvm.LLVMAddGlobalMapping(engine, f, @constCast(@ptrCast(&eiwa_noop_crash_install)));
+            llvm.LLVMAddGlobalMapping(engine, f, @ptrCast(@constCast(&eiwa_noop_crash_install)));
         }
 
         if (has_gc) {

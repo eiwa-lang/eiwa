@@ -1,6 +1,6 @@
 import { Postgres } from "postgres.postgres"
 
-fun main() {
+init {
     // --- Basic connect & execute ---
     val db = Postgres.connect("postgres://leodouglas@localhost/eiwa")
 

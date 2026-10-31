@@ -23,7 +23,7 @@ fun runNBodyStress(): Void {
     }
 }
 
-fun main(): Void {
+init {
     echo("Starting main loop with N-Body stress testing...")
 
     var lastEchoIn: Time = now()

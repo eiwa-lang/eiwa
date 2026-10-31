@@ -9,7 +9,7 @@ test "llvm backend lambda execution" {
     assert(sum == 42)
 }
 
-fun main(): Void {
+init {
     val sum = applyOp(15, 27, { x: Int, y: Int -> x + y })
     echo("sum = $sum")
     assert(sum == 42)

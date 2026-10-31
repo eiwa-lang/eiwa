@@ -130,7 +130,7 @@ jobs:
           fun Probe.describe(): String {
               return "n=${this.n}"
           }
-          fun main() {
+          init {
               val p: Probe? = null
               echo(p!!.describe())
           }
@@ -157,7 +157,7 @@ jobs:
           type Boom(val detail: String) : Throwable {
               implement fun message(): String = "boom:$detail"
           }
-          fun main() {
+          init {
               throw Boom("kablam")
           }
           EOF

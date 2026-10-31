@@ -46,7 +46,7 @@ test "sched: concurrent try hammers stay correct" {
     assert(b.await() == 5000, "b")
 }
 
-fun main() {
+init {
     val a = task {
         hammer5()
     }

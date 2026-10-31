@@ -13,7 +13,7 @@ type TinyCont(val name: String, var step: Int) : Continuation {
 
 type Box(var cont: Continuation)
 
-fun main() {
+init {
     echo("--- K2: Box(TinyCont) then overwrite NoopCont(dummy), schedule ---")
     val k = Box(TinyCont("k0", 0))
     k.cont = NoopCont(0)

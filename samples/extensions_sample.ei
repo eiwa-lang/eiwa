@@ -23,7 +23,7 @@ type Point(val x: Int, val y: Int)
 
 fun Point.manhattanDistance(): Int = this.x + this.y
 
-fun main() {
+init {
     print("Testing Extension Functions in Eiwa...")
 
     val greeting = "Hello Eiwa"

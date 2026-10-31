@@ -1,6 +1,6 @@
 type Person(val name: String, var age: Int)
 
-fun main() {
+init {
     val p = Person("Leo", 28)
     echo(p.name)
     echo(p.age)

@@ -1,4 +1,4 @@
-fun main() {
+init {
     var count = 0
     count = "One" // TypeError!
 }

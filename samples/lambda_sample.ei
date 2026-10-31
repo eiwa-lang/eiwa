@@ -14,7 +14,7 @@ fun html(init: HTMLBuilder.() -> Void): String {
     return "<html>${builder.content}</html>"
 }
 
-fun main() {
+init {
     print("--- Testando Lambdas e Closures no Eiwa ---")
     
     // Lambda com tipos explícitos

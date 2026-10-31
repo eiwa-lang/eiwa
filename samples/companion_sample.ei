@@ -13,7 +13,7 @@ type File(val path: String) {
     }
 }
 
-fun main() {
+init {
     // 1. Access static variable directly on File namespace
     val path = File.defaultPath
     print("Default Path: $path")

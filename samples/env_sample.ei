@@ -1,6 +1,6 @@
 import { Env } from "std.env"
 
-fun main() {
+init {
     print("--- Eiwa Environment Configuration Sample ---")
 
     // Try loading environment from .env file (optional, returns false if not found)

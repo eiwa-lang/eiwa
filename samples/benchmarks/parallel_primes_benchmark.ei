@@ -30,7 +30,7 @@ fun countPrimesInRange(startVal: Int, endVal: Int): Int {
     return count
 }
 
-fun main() {
+init {
     val cores = Threads.numCores()
     println("==================================================")
     println("  Eiwa Multi-Core Concurrency Benchmark (Primes)  ")

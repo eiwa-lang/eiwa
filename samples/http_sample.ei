@@ -1,7 +1,7 @@
 import { Client, HttpStatus, Server } from "std.http"
 import { TCPServer } from "std.net"
 
-fun main() {
+init {
     print("--- HTTP Client Demo ---")
     val client = Client()
     val response = client.get("https://httpbin.org/get")

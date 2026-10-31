@@ -8,7 +8,7 @@ type DatabaseException(val reason: String) : Throwable {
     }
 }
 
-fun main() {
+init {
     println("--- Standard Text Logger Demo ---")
     Log.setLevel(LogLevel.DEBUG)
 

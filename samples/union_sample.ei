@@ -1,7 +1,7 @@
 import { assert } from "std.core"
 import { MutableMap } from "std.collections"
 
-fun main() {
+init {
     print("=== General Union Types Sample ===")
 
     var value: String | Int = "Initial String"

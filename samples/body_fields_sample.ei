@@ -30,7 +30,7 @@ type Counter(val base: Int) {
     }
 }
 
-fun main() {
+init {
     val c = Counter(10)
     print("initial: ${c.describe()}")
     print("doubled: ${c.doubled}")

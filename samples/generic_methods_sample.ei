@@ -14,7 +14,7 @@ type Transformer() {
     }
 }
 
-fun main() {
+init {
     // Test generic functions
     printValue("Number", 42)
     printValue("Message", "Hello Eiwa!")

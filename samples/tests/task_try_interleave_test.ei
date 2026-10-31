@@ -44,7 +44,7 @@ fun runInterleave(): Void {
     a.await()
 }
 
-fun main() {
+init {
     runInterleave()
     println("L7-NATIVE-OK")
 }

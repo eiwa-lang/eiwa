@@ -1,6 +1,6 @@
 import { MutableMap } from "std.collections"
 
-fun main() {
+init {
     val capitals = [
         "Brazil" of "Brasília",
         "France" of "Paris"

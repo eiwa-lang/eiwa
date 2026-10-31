@@ -23,7 +23,7 @@ To use symbols from another file, you must explicitly declare exactly what you w
 // The .ei extension is optional and will be inferred automatically.
 import { add, Vector } from "math"
 
-fun main() {
+init {
     val v = Vector(1, 1)
     val r = add(5, 5)
 }
@@ -103,7 +103,7 @@ Eiwa uses an ergonomic **lambda-style `for` block** to iterate over `List<T>`, `
 - **Explicit typed parameter (`name: Type ->`)**: Optionally add type annotations.
 
 ```kotlin
-fun main() {
+init {
     val numbers = [1, 2, 3, 4, 5]
     
     // Implicit 'it' parameter
@@ -134,7 +134,7 @@ fun main() {
 Classic condition-based loops are fully supported:
 
 ```kotlin
-fun main() {
+init {
     var i = 0
     while (i < 5) {
         i = i + 1
@@ -146,7 +146,7 @@ fun main() {
 `leave` exits the innermost `while`/`for` loop early (no `continue` in Eiwa — skipping an iteration is written with `if`/`else`):
 
 ```kotlin
-fun main() {
+init {
     var i = 0
     var total = 0
     while (true) {
@@ -220,7 +220,7 @@ Eiwa's standard library (`std.system`, implicitly imported into every program) p
 Executes a block `count` times, passing the 0-indexed iteration count as `it` (or a named parameter):
 
 ```kotlin
-fun main() {
+init {
     // Passes 0, 1, 2 as 'it'
     repeat(3) {
         println("Iteration: " + it.toString())
@@ -237,7 +237,7 @@ fun main() {
 Executes an infinite loop (convenient wrapper for continuous worker loops and server tasks):
 
 ```kotlin
-fun main() {
+init {
     loop {
         println("Processing continuously...")
     }
@@ -248,7 +248,7 @@ fun main() {
 Executes a block up to `times` attempts, catching any `Throwable` exceptions before retrying:
 
 ```kotlin
-fun main() {
+init {
     retry(3) { attempt ->
         println("Attempt: " + attempt.toString())
         connectService()
@@ -383,7 +383,7 @@ Eiwa supports Kotlin-style backslash escape sequences inside double-quoted strin
 * `\$` – Escaped dollar sign (outputs a literal `$`, prevents template interpolation)
 
 ```kotlin
-fun main() {
+init {
     val escapedQuote = "He said \"Hi\""
     val backslash = "C:\\eiwa\\bin"
     val multiline = "First Line\nSecond Line"
@@ -433,7 +433,7 @@ type User(val id: Int, val name: String) : Stringable {
     implement fun toString(): String = "User(id=" + id + ", name=" + name + ")"
 }
 
-fun main() {
+init {
     val count: Int = 10
     val price: Double = 19.99
     val inStock: Bool = true
@@ -463,7 +463,7 @@ type Account(val id: Int, val holder: String, val balance: Double) : Stringable 
     implement fun toString(): String = "Account(id=$id, holder=$holder, balance=\$$balance)"
 }
 
-fun main() {
+init {
     val name = "Eiwa"
     val version = 1
     val greeting = "Welcome to $name v$version!"
@@ -520,7 +520,7 @@ Union types integrate natively with generic collections like `Map` and `MutableM
 ```kotlin
 import { MutableMap } from "std.collections"
 
-fun main() {
+init {
     // Map with values that can be String or Int
     val map: MutableMap<String, String | Int> = MutableMap()
     map["name"] = "Eiwa"
@@ -915,7 +915,7 @@ Eiwa collections are **immutable by default**. When you need to mutate a snapsho
 ```kotlin
 import { List } from "std.collections"
 
-fun main() {
+init {
     // Start with an immutable snapshot
     val base: List<Int> = [10, 20]
 
@@ -937,7 +937,7 @@ fun main() {
 ```kotlin
 import { Map } from "std.collections"
 
-fun main() {
+init {
     val seed: Map<String, Int> = ["a" of 1]
 
     val m = seed.mut()
@@ -960,7 +960,7 @@ fun main() {
 ```kotlin
 import { List, MutableList } from "std.collections"
 
-fun main() {
+init {
     // In-place append of another list (Kotlin: addAll)
     val allPosts = [1, 2].mut()
     val posts: List<Int> = [3, 4]
@@ -1006,7 +1006,7 @@ Rules:
 Both `List<T>` and `MutableList<T>` implement the `Slicable<T>` contract (`src/std/core.ei`), backed by the `Slicing` skill (`src/std/collections.ei`). `slice` is the single primitive — every other method delegates to it:
 
 ```kotlin
-fun main() {
+init {
     val posts = ["a", "b", "c", "d", "e"]
 
     assert(posts.slice(1, 3).toString() == "[b, c]")
@@ -1095,7 +1095,7 @@ type Vector(val x: Int, val y: Int) {
     }
 }
 
-fun main() {
+init {
     val v1 = Vector(1, 2)
     val v2 = Vector(3, 4)
     val v3 = v1 + v2 // Automatically calls v1.plus(v2)
@@ -1388,7 +1388,7 @@ Every user-defined `type` and `object` automatically implements `Stringable`, `E
 ```kotlin
 type Person(val name: String, var age: Int)
 
-fun main() {
+init {
     val p1 = Person("Alice", 30)
     val p2 = Person("Alice", 30)
 
@@ -1602,7 +1602,7 @@ object Database {
     }
 }
 
-fun main() {
+init {
     assert(Database.queryCount == 0)
     val result = Database.execute("SELECT * FROM users")
     assert(Database.queryCount == 1)
@@ -1631,7 +1631,7 @@ type File(val path: String) {
     }
 }
 
-fun main() {
+init {
     // Access static members directly on the type name
     val path = File.defaultPath
     val file = File.create(path)
@@ -1659,7 +1659,7 @@ object Configuration {
     }
 }
 
-fun main() {
+init {
     // Access static members on the object/type namespace
     assert(Configuration.loadCount == 0)
     val config = Configuration.createSystem("DB")
@@ -1700,7 +1700,7 @@ fun greet(name: String, greeting: String = "Hello", punctuation: String = "!"): 
 
 type Server(val host: String = "127.0.0.1", val port: Int = 8080)
 
-fun main() {
+init {
     // 1. Positional call using default values
     print(greet("Alice")) // "Hello, Alice!"
 
@@ -1847,7 +1847,7 @@ fun makeCounter(): () -> Int {
     }
 }
 
-fun main() {
+init {
     val counter = makeCounter()
     assert(counter() == 1)
     assert(counter() == 2)
@@ -1871,7 +1871,7 @@ fun html(init: HTMLBuilder.() -> Void): String {
     return "<html>" + builder.content + "</html>"
 }
 
-fun main() {
+init {
     // Parentheses are completely omitted for the trailing lambda
     val result = html {
         body {
@@ -1943,7 +1943,7 @@ type Point(val x: Int, val y: Int)
 
 fun Point.manhattanDistance(): Int = this.x + this.y
 
-fun main() {
+init {
     val lang = "Eiwa"
     assert(lang.lastChar() == "a")
 
@@ -2083,12 +2083,12 @@ Options:
 > hashes — unchanged builds ~0.01s, entry-only edits ~0.3s. Override the
 > cache root with `EIWA_CACHE_DIR`. See §30.7.
 
-**Program arguments.** Extra positional arguments after the file are forwarded to the program by `eiwac run`. Programs read them through `std.process` (Section 17.1) — this works whether the program defines `fun main()` or uses top-level statements:
+**Program arguments.** Extra positional arguments after the file are forwarded to the program by `eiwac run`. Programs read them through `std.process` (Section 17.1) — this works whether the program defines `init` or uses top-level statements:
 
 ```kotlin
 import { Process } from "std.process"
 
-fun main() {
+init {
     val args = Process.args() // List<String>
     for (args) {
         println(it)
@@ -2202,7 +2202,7 @@ type User(val name: String) {
     }
 }
 
-fun main() {
+init {
     val u = User("leo")
 
     // Type-level: value or "" — presence via != null
@@ -2239,7 +2239,7 @@ For example, manipulating Date and Time in Eiwa is done through the `std.time` p
 ```kotlin
 import { Time, Duration, now, date, hours, minutes, seconds } from "std.time"
 
-fun main() {
+init {
     // Current time (machine epoch)
     val today = now()
     
@@ -2268,7 +2268,7 @@ Process execution, program arguments and working-directory utilities. All intern
 ```kotlin
 import { Process } from "std.process"
 
-fun main() {
+init {
     // Run a shell command, returns the exit code
     val code = Process.exec("ls -la")
 
@@ -2296,7 +2296,7 @@ The `std.env` module provides tools to load environment variables from `.env` fi
 Use `Env.load()` to load an environment configuration. If no path is provided, Eiwa looks for `.env` in the current directory. This returns `false` silently if the file is not found.
 
 ```kotlin
-fun main() {
+init {
     // Loads .env from current directory (returns true if loaded, false if not found)
     Env.load()
     
@@ -2309,7 +2309,7 @@ fun main() {
 You can query variables using `Env.get`. If a get/check is performed before `Env.load()` is explicitly invoked, Eiwa automatically attempts to load the default `.env` file first.
 
 ```kotlin
-fun main() {
+init {
     // Nullable string retrieval
     val host: String? = Env.get("DB_HOST")
     
@@ -2324,7 +2324,7 @@ fun main() {
 For fast, zero-boilerplate configuration lookup, Eiwa provides overloaded global `env()` helper functions (which delegate directly to `Env.get`):
 
 ```kotlin
-fun main() {
+init {
     // Nullable string retrieval
     val host: String? = env("DB_HOST")
     
@@ -2339,7 +2339,7 @@ fun main() {
 Eiwa allows setting, unsetting, and checking for the existence of environment variables:
 
 ```kotlin
-fun main() {
+init {
     // Check if variable exists
     if (Env.exists("API_KEY") == false) {
         Env.set("API_KEY", "default-secret-key")
@@ -2396,7 +2396,7 @@ fun fetchConfig(): String {
     return "config-data"
 }
 
-fun main() {
+init {
     // Launch two tasks in parallel on the Dispatchers.Default threads
     val usersTask = task { fetchUsers() }
     val configTask = task { fetchConfig() }
@@ -2458,7 +2458,7 @@ val tDb = task(dbPool) {
 Tasks are distributed across the pool threads. The CPU truly executes them in parallel:
 
 ```kotlin
-fun main() {
+init {
     val t1 = task { 10 + 20 }
     val t2 = task { 30 + 40 }
 
@@ -2475,7 +2475,7 @@ fun main() {
 Tasks can contain other tasks. The inner `await()` suspends only the outer task's continuation, freeing the pool worker for other tasks:
 
 ```kotlin
-fun main() {
+init {
     val outer = task {
         val inner = task { 7 * 6 }
         inner.await() + 1
@@ -2490,7 +2490,7 @@ fun main() {
 Like plain lambdas, the `task { }` block captures variables from the surrounding lexical scope. Captured mutable variables are promoted to shared cells on the heap:
 
 ```kotlin
-fun main() {
+init {
     val multiplier = 10
     val t = task { multiplier * 5 }
     assert(t.await() == 50)
@@ -2506,7 +2506,7 @@ Eiwa follows the **structured concurrency** model: the runtime and dispatchers g
 The top-level forms (`std.system`, implicit, no import) for everyday use:
 
 ```kotlin
-fun main() {
+init {
     sleep(2)     // blocks the current thread for 2 SECONDS (nanosleep)
     sleepMs(500) // blocks the current thread for 500 MILLISECONDS
     yield()      // yields the current thread (sched_yield)
@@ -2645,7 +2645,7 @@ import { Yaml } from "std.yaml"
 
 type User(val name: String, val age: Int) : Serializable + Json + Yaml
 
-fun main() {
+init {
     val u = User("Ana", 30)
     print(u.toJson())   // {"name": "Ana", "age": 30}
     print(u.toYaml())   // name: "Ana"\nage: 30
@@ -2662,7 +2662,7 @@ import { Json } from "std.json"
 type Address(val city: String) : Serializable + Json
 type Person(val name: String, val addr: Address) : Serializable + Json
 
-fun main() {
+init {
     val p = Person("Bob", Address("SP"))
     print(p.toJson())
     // {"name": "Bob", "addr": {"city": "SP"}}
@@ -2678,7 +2678,7 @@ import { Json } from "std.json"
 
 type Team(val name: String, val members: List<String>) : Serializable + Json
 
-fun main() {
+init {
     val t = Team("A-Team", ["Alice", "Bob"])
     print(t.toJson())
     // {"name": "A-Team", "members": ["Alice", "Bob"]}
@@ -2695,7 +2695,7 @@ import { Json } from "std.json"
 type NotSerializable(val x: Int)
 type WithIgnored(val label: String, val ignored: NotSerializable) : Serializable + Json
 
-fun main() {
+init {
     val w = WithIgnored("visible", NotSerializable(42))
     print(w.toJson())
     // {"label": "visible"}    -- ignored field is absent
@@ -2715,7 +2715,7 @@ type PersonaDto(
     @Alias("created_at") val createdAt: String
 ) : Serializable + Json
 
-fun main() {
+init {
     val p = PersonaDto("p-1", "http://img/a.png", "2026-01-01")
     print(p.toJson())
     // {"id": "p-1", "avatar_url": "http://img/a.png", "created_at": "2026-01-01"}
@@ -2803,7 +2803,7 @@ The global `Log` object provides standard logging functions across all log level
 ```kotlin
 import { Log, LogLevel } from "std.log"
 
-fun main() {
+init {
     Log.info { "Application started" }
     Log.debug { "Debug info" }
     Log.warn { "Warning message" }
@@ -2872,7 +2872,7 @@ The library includes two built-in formatters:
 ```kotlin
 import { Log, JsonLogFormatter } from "std.log"
 
-fun main() {
+init {
     Log.setFormatter(JsonLogFormatter())
     Log.info { "User logged in" }
     // Output: {"timestamp":"2026-07-22 22:00:00","level":"INFO","message":"User logged in"}
@@ -2894,7 +2894,7 @@ fun identity<T>(x: T): T {
     return x
 }
 
-fun main() {
+init {
     assert(identity(42) == 42)           // inferred: identity<Int>
     assert(identity("hello") == "hello") // inferred: identity<String>
 }
@@ -2913,7 +2913,7 @@ fun pair<A, B>(a: A, b: B): Pair<A, B> {
 You can specify type arguments explicitly with `<Type>` immediately after the function name (before the argument parentheses):
 
 ```kotlin
-fun main() {
+init {
     val x = identity<Int>(42)
     val y = identity<String>("hello")
     val z = identity<String | Int>(42) // union type parameter
@@ -2931,7 +2931,7 @@ type Util {
     }
 }
 
-fun main() {
+init {
     val util = Util()
 
     // Explicit type args
@@ -2953,7 +2953,7 @@ Types can declare generic parameters, and the monomorphizer generates a dedicate
 ```kotlin
 type Box<T>(val value: T)
 
-fun main() {
+init {
     val intBox = Box(42)     // type: Box<Int>
     val strBox = Box("eiwa") // type: Box<String>
 
@@ -3049,7 +3049,7 @@ The `ConnectionPool<C>` type is generic over any connection type `C` implementin
 import { ConnectionPool, Connection } from "std.db"
 import { Postgres } from "std.postgres"
 
-fun main() {
+init {
     // Instantiate a Postgres pool with a max of 10 connections
     val pool = Postgres.pool("postgres://user:pass@localhost/mydb", maxConnections = 10)
 
@@ -3091,7 +3091,7 @@ Eiwa provides built-in support for 128-bit unique identifiers through the standa
 ```kotlin
 import { Uuid, Identifier } from "std.uuid"
 
-fun main() {
+init {
     // Generate UUID v7 (time-ordered, default)
     val id7 = Uuid.generate() // or Uuid.v7()
     println(id7.toString())   // e.g. "018f6c52-7b2a-7123-8abc-123456789abc"
@@ -3125,7 +3125,7 @@ fun main() {
 ```kotlin
 import { Ulid } from "std.ulid"
 
-fun main() {
+init {
     // Generate ULID
     val ulid = Ulid.generate()
     println(ulid.toString()) // e.g. "01KYR9VPX561EXNHG95R8REG8R" (26 chars)
@@ -3161,7 +3161,7 @@ Eiwa provides random generation functionality via `std.random`, which offers bot
 ```kotlin
 import { Random } from "std.random"
 
-fun main() {
+init {
     val roll = Random.nextInt(1, 6)
     val pct = Random.nextPercent()
     val d = Random.nextDouble() // Double between 0.0 and 1.0
@@ -3182,7 +3182,7 @@ fun main() {
 ```kotlin
 import { SeededRandom, Random } from "std.random"
 
-fun main() {
+init {
     // Create seeded generator directly or via Random.seeded(seed)
     val rng = SeededRandom(12345)
     // or: val rng = Random.seeded(12345)
@@ -3249,7 +3249,7 @@ The `std.math` package provides mathematical functions and utilities. Floating p
 ```kotlin
 import { Math, mod } from "std.math"
 
-fun main() {
+init {
     // Trigonometry
     val s = Math.sin(1.570796) // ~1.0
     val c = Math.cos(0.0)      // 1.0
@@ -3298,7 +3298,7 @@ Eiwa provides built-in support for exact financial calculations through the stan
 ```kotlin
 import { brl, usd, eur, jpy, Currencies, Money, Currency } from "std.money"
 
-fun main() {
+init {
     val m1 = brl(1050) // R$ 10,50 (1050 cents)
     val m2 = usd(2500) // $ 25.00 (2500 cents)
     val m3 = jpy(1000) // ¥ 1000 (0 decimal sub-units)
@@ -3862,7 +3862,7 @@ import { Json } from "std.json"
 
 type User(val id: Int, val name: String) : Serializable + Json
 
-fun main() {
+init {
     arest(8080) {
         health()                      // GET /health -> {"status":"ok"}
 
@@ -3918,7 +3918,7 @@ The **Model Context Protocol** is the open standard that connects AI assistants 
 ```kotlin
 import { mcpServer } from "arest.mcp.mcp_builder"
 
-fun main() {
+init {
     val server = mcpServer {
         name = "eiwa-database-tools"
         version = "1.0.0"
@@ -4023,7 +4023,7 @@ helpers (POSIX `dirent` / Windows `FindFirstFile`, same contract on both).
 ```kotlin
 import { File } from "std.fs"
 
-fun main() {
+init {
     File.write("/tmp/demo/hello.txt", "hi")
     println(File.read("/tmp/demo/hello.txt")) // "hi"
     assert(File.exists("/tmp/demo/hello.txt"))
@@ -4042,7 +4042,7 @@ Reading a missing file prints `Error opening file` and returns `""`;
 ```kotlin
 import { Dir } from "std.fs"
 
-fun main() {
+init {
     val names = Dir.names("/tmp/demo") // List<String>, no . / ..
     assert(names.contains("hello.txt"))
 }

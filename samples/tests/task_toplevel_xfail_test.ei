@@ -1,7 +1,7 @@
 // MUST NOT COMPILE: task {} / await() in top-level statements is silently
 // ignored (the coroutine transform only visits fun/test bodies, so the task
 // would never be scheduled). The compiler must fail loud with a positioned
-// diagnostic telling the user to wrap the code in fun main() { ... }.
+// diagnostic telling the user to wrap the code in init { ... }.
 task {
     println("dead: never scheduled")
 }

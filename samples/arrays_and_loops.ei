@@ -11,7 +11,7 @@ fun sumArray(arr: List<Int>): Int {
 
 fun getFirstElement(arr: List<String>) = arr[0]
 
-fun main() {
+init {
     val arr = [10, 20, 30]
     val sum = sumArray(arr)
     assert(sum == 60)

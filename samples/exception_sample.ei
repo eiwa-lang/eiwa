@@ -10,7 +10,7 @@ fun checkAge(age: Int) {
     }
 }
 
-fun main() {
+init {
     print("Starting age verification...")
     
     try {

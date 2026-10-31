@@ -30,7 +30,7 @@ fun getStatusMessage(code: Int): String {
     }
 }
 
-fun main() {
+init {
     print("--- Testing when with Subject ---")
     val status = getStatusMessage(404)
     print("Status 404: $status")

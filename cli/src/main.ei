@@ -773,7 +773,7 @@ fun initCommand() {
     Fs.mkdirP("src")
     Fs.mkdirP("test")
     if (File.exists("src/main.ei") == false) {
-        File.write("src/main.ei", "fun main() {\n    println(\"Hello, Eiwa!\")\n}\n")
+        File.write("src/main.ei", "init {\n    println(\"Hello, Eiwa!\")\n}\n")
     }
     println("Initialized project '" + name + "'")
 }
@@ -1170,7 +1170,7 @@ fun compilerCommand(cmd: String) {
     }
 }
 
-fun main() {
+init {
     val cmdOpt = Process.argAt(1)
     if (cmdOpt == null) {
         printHelp()

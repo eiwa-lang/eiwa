@@ -32,7 +32,7 @@ type Stats(val label: String) {
     }
 }
 
-fun main() {
+init {
     println("sum() = ${sum()}")
     println("sum(1,2,3) = ${sum(1, 2, 3)}")
     println("sum(10,20,30,40) = ${sum(10, 20, 30, 40)}")

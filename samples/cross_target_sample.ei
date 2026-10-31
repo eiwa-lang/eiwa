@@ -20,6 +20,6 @@ object CurrentOS : OSInfo {
     implement fun getPlatform(): String = "Target is Other OS"
 }
 
-fun main() {
+init {
     print(CurrentOS.getPlatform())
 }

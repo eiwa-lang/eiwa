@@ -39,7 +39,7 @@ test "lambdas: access class property inside lambda passed to higher-order functi
     assert(t.render("Home") == "Site | Home")
 }
 
-fun main(): Void {
+init {
     val g = Greeter("Hello")
     echo(g.greet("Eiwa"))
     assert(g.greet("Eiwa") == "Hello, Eiwa")

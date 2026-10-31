@@ -64,7 +64,7 @@ fun readConfig(path: String): String {
     throw IOException("cannot read file", path)
 }
 
-fun main() {
+init {
     val button = Button("OK")
 
     // Skill methods are available directly on the composing type

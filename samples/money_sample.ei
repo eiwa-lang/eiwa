@@ -1,6 +1,6 @@
 import { brl, usd, Currencies, Money } from "std.money"
 
-fun main() {
+init {
     // 1. Create money instances using minor unit (cents) constructors
     val item1 = brl(1050) // R$ 10,50
     val item2 = brl(450)  // R$ 4,50
