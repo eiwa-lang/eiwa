@@ -1,10 +1,1 @@
 type Person(val name: String, var age: Int)
-
-init {
-    val p = Person("Leo", 28)
-    echo(p.name)
-    echo(p.age)
-    
-    p.age = 29
-    echo(p.age)
-}

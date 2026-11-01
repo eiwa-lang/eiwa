@@ -154,6 +154,15 @@ pub fn clearResolvedTypes(ctx: Ctx, node: *ASTNode) !void {
             }
         },
         .named_arg => |na| try clearResolvedTypes(ctx, na.value),
+        .as_expr => |a| try clearResolvedTypes(ctx, a.value),
+        .is_expr => |i| try clearResolvedTypes(ctx, i.value),
+        .init_decl => |t| {
+            if (t.body.data == .block) {
+                for (t.body.data.block.statements) |s| {
+                    try clearResolvedTypes(ctx, s);
+                }
+            }
+        },
         .array_literal => |al| {
             for (al.elements) |e| try clearResolvedTypes(ctx, e);
         },
