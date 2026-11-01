@@ -1,0 +1,1171 @@
+import { File } from "std.fs"
+import { Env } from "std.env"
+import { Process } from "std.process"
+import { MutableList } from "std.collections"
+
+// TODO: converter este parser minimalista em um DTO tipado do manifesto
+// (eiwa.yaml) quando houver um parser YAML/serde disponivel em Eiwa.
+type Dependency(val name: String, var github: String = "", var gitlab: String = "", var git: String = "", var path: String = "", var branch: String = "", var tag: String = "", var commit: String = "")
+
+type ProjectContext(
+    val eiwac: String,
+    val repositoryRoot: String,
+    val resolutionsDir: String,
+    val resolutionsFile: String,
+    val manifest: String,
+    val deps: MutableList<Dependency>,
+    val hasFreeze: Bool
+)
+
+// Structured CLI arguments:
+// - positionals: commands, files and directories (non-dash args)
+// - flags:       boolean switches (e.g. --frozen, --release)
+// - keys/values: key-value options (e.g. --branch main, -o out, --backend=llvm)
+// - programArgs: arguments after `--` (forwarded to the program on run)
+type CliArgs(
+    val positionals: MutableList<String>,
+    val flags: MutableList<String>,
+    val keys: MutableList<String>,
+    val values: MutableList<String>,
+    val programArgs: MutableList<String>
+)
+
+// Options that consume the next argument as their value.
+fun isValueOption(arg: String): Bool {
+    return arg == "-o" || arg == "--branch" || arg == "--tag" || arg == "--commit" ||
+        arg == "--module-path" || arg == "--github" || arg == "--gitlab" || arg == "--git" || arg == "--path" ||
+        arg == "--target"
+}
+
+fun optionValue(args: CliArgs, key: String): String? {
+    var i = 0
+    while (i < args.keys.size()) {
+        if (args.keys[i] == key) {
+            return args.values[i]
+        }
+        i = i + 1
+    }
+    return null
+}
+
+fun hasFlag(args: CliArgs, flag: String): Bool {
+    var i = 0
+    while (i < args.flags.size()) {
+        if (args.flags[i] == flag) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fun positional(args: CliArgs, index: Int): String? {
+    if (index < args.positionals.size()) {
+        return args.positionals[index]
+    }
+    return null
+}
+
+// Parses all arguments after the command (index 2 onwards) into CliArgs.
+// `--key=value` and `--key value` both map to a key/value pair; `--` makes
+// every following argument a program argument (forwarded on run).
+fun parseArgs(): CliArgs {
+    val args = CliArgs(MutableList<String>(), MutableList<String>(), MutableList<String>(), MutableList<String>(), MutableList<String>())
+    var afterDoubleDash = false
+    var i = 2
+    while (i < Process.argsCount()) {
+        val argOpt = Process.argAt(i)
+        var consumedValue = false
+        if (argOpt != null) {
+            val arg = argOpt
+            if (afterDoubleDash) {
+                args.programArgs.add(arg)
+            } else if (arg == "--") {
+                afterDoubleDash = true
+            } else if (startsWith(arg, "-")) {
+                val eq = arg.indexOf("=")
+                if (eq != -1) {
+                    args.keys.add(arg.substring(0, eq))
+                    args.values.add(arg.substring(eq + 1, arg.length))
+                } else if (isValueOption(arg)) {
+                    val nextOpt = Process.argAt(i + 1)
+                    if (nextOpt != null) {
+                        args.keys.add(arg)
+                        args.values.add(nextOpt)
+                        consumedValue = true
+                    } else {
+                        args.flags.add(arg)
+                    }
+                } else {
+                    args.flags.add(arg)
+                }
+            } else {
+                args.positionals.add(arg)
+            }
+        }
+        i = i + 1
+        if (consumedValue) {
+            i = i + 1
+        }
+    }
+    return args
+}
+
+fun eiwacPath(): String {
+    val fromEnv = Env.get("EIWAC")
+    if (fromEnv != null) {
+        return fromEnv
+    }
+    val selfOpt = Process.argAt(0)
+    if (selfOpt != null) {
+        val self = selfOpt
+        var slash = -1
+        var i = 0
+        while (i < self.length) {
+            if (self.substring(i, i + 1) == "/") {
+                slash = i
+            }
+            i = i + 1
+        }
+        if (slash != -1) {
+            val candidate = self.substring(0, slash + 1) + "eiwac"
+            val resolved = Process.realpath(candidate)
+            if (resolved != null) {
+                return resolved
+            }
+            return candidate
+        }
+    }
+    return "eiwac"
+}
+
+fun trim(s: String): String {
+    var start = 0
+    var end = s.length
+    while (start < end && isSpace(s.substring(start, start + 1))) {
+        start = start + 1
+    }
+    while (end > start && isSpace(s.substring(end - 1, end))) {
+        end = end - 1
+    }
+    return s.substring(start, end)
+}
+
+fun isSpace(c: String): Bool {
+    return c == " " || c == "\t" || c == "\r" || c == "\n"
+}
+
+fun startsWith(s: String, prefix: String): Bool {
+    if (s.length < prefix.length) {
+        return false
+    }
+    return s.substring(0, prefix.length) == prefix
+}
+
+fun endsWith(s: String, suffix: String): Bool {
+    if (s.length < suffix.length) {
+        return false
+    }
+    return s.substring(s.length - suffix.length, s.length) == suffix
+}
+
+// Counts leading whitespace (spaces OR tabs) as indentation units.
+fun indentOf(line: String): Int {
+    var n = 0
+    while (n < line.length) {
+        val c = line.substring(n, n + 1)
+        if (c == " " || c == "\t") {
+            n = n + 1
+        } else {
+            return n
+        }
+    }
+    return n
+}
+
+// Removes a " # ..." trailing comment, respecting single/double quotes.
+fun stripInlineComment(s: String): String {
+    var inSingle = false
+    var inDouble = false
+    var i = 0
+    while (i < s.length) {
+        val c = s.substring(i, i + 1)
+        if (c == "'" && inDouble == false) {
+            inSingle = inSingle == false
+        } else if (c == "\"" && inSingle == false) {
+            inDouble = inDouble == false
+        } else if (c == "#" && inSingle == false && inDouble == false) {
+            if (i == 0 || s.substring(i - 1, i) == " " || s.substring(i - 1, i) == "\t") {
+                return s.substring(0, i)
+            }
+        }
+        i = i + 1
+    }
+    return s
+}
+
+// Strips matching surrounding quotes ('...' or "...") from a scalar value.
+fun unquote(s: String): String {
+    if (s.length >= 2) {
+        val first = s.substring(0, 1)
+        val last = s.substring(s.length - 1, s.length)
+        if ((first == "\"" && last == "\"") || (first == "'" && last == "'")) {
+            return s.substring(1, s.length - 1)
+        }
+    }
+    return s
+}
+
+fun parseScalar(s: String): String {
+    return unquote(trim(stripInlineComment(s)))
+}
+
+fun gitUrl(dep: Dependency): String {
+    if (dep.github != "") {
+        return "https://github.com/" + dep.github + ".git"
+    }
+    if (dep.gitlab != "") {
+        return "https://gitlab.com/" + dep.gitlab + ".git"
+    }
+    return dep.git
+}
+
+fun hasSource(dep: Dependency): Bool {
+    return dep.github != "" || dep.gitlab != "" || dep.git != "" || dep.path != ""
+}
+
+fun runOrFail(cmd: String) {
+    val code = Process.exec(cmd)
+    if (code != 0) {
+        println("Error: command failed: " + cmd)
+        exit(1)
+    }
+}
+
+contract FsContract {
+    fun mkdirP(path: String)
+    fun rmrf(dir: String): Int
+    fun tmpDir(): String
+    fun trueCmd(): String
+    fun pwd(): String
+}
+
+object("posix") Fs : FsContract {
+    implement fun mkdirP(path: String) {
+        runOrFail("mkdir -p " + path)
+    }
+    implement fun rmrf(dir: String): Int {
+        return Process.exec("rm -rf " + dir)
+    }
+    implement fun tmpDir(): String {
+        return "/tmp"
+    }
+    implement fun trueCmd(): String {
+        return "true"
+    }
+    implement fun pwd(): String {
+        return trim(Process.capture("pwd"))
+    }
+}
+
+object("windows") Fs : FsContract {
+    implement fun mkdirP(path: String) {
+        // `mkdir` errors if the directory already exists, so guard it. Uses
+        // backslashes because cmd treats '/' as a switch prefix.
+        val p = path.replace("/", "\\")
+        runOrFail("if not exist \"" + p + "\" mkdir \"" + p + "\"")
+    }
+    implement fun rmrf(dir: String): Int {
+        val p = dir.replace("/", "\\")
+        return Process.exec("if exist \"" + p + "\" rmdir /s /q \"" + p + "\"")
+    }
+    implement fun tmpDir(): String {
+        val t = Env.get("TEMP")
+        if (t != null) {
+            return t!!.replace("\\", "/")
+        }
+        val tt = Env.get("TMP")
+        if (tt != null) {
+            return tt!!.replace("\\", "/")
+        }
+        return "C:/Windows/Temp"
+    }
+    implement fun trueCmd(): String {
+        return "ver > NUL"
+    }
+    implement fun pwd(): String {
+        return trim(Process.capture("cd"))
+    }
+}
+
+fun lastPathSegment(p: String): String {
+    var slash = -1
+    var i = 0
+    while (i < p.length) {
+        val ch = p.substring(i, i + 1)
+        if (ch == "/" || ch == "\\") {
+            slash = i
+        }
+        i = i + 1
+    }
+    if (slash != -1) {
+        return p.substring(slash + 1, p.length)
+    }
+    return p
+}
+
+fun parseTopField(content: String, key: String): String? {
+    var rest = content
+    var looping = true
+    while (looping) {
+        val idx = rest.indexOf("\n")
+        val line = if (idx == -1) rest else rest.substring(0, idx)
+        val trimmed = trim(line)
+        if (trimmed != "" && indentOf(line) == 0 && startsWith(trimmed, key + ":")) {
+            val value = parseScalar(trimmed.substring(key.length + 1, trimmed.length))
+            if (value != "") {
+                return value
+            }
+        }
+        if (idx == -1) {
+            looping = false
+        } else {
+            rest = rest.substring(idx + 1, rest.length)
+        }
+    }
+    return null
+}
+
+fun parseManifest(content: String): MutableList<Dependency> {
+    val deps = MutableList<Dependency>()
+    var inDeps = false
+    var current: Dependency? = null
+    var depIndent = -1
+
+    var rest = content
+    var looping = true
+    while (looping) {
+        val idx = rest.indexOf("\n")
+        val line = if (idx == -1) rest else rest.substring(0, idx)
+        val trimmed = trim(line)
+
+        if (trimmed != "" && startsWith(trimmed, "#") == false) {
+            val indent = indentOf(line)
+            if (indent == 0) {
+                inDeps = trimmed == "dependencies:"
+                current = null
+                depIndent = -1
+            } else if (inDeps) {
+                // Relative indentation: the first indented line under
+                // `dependencies:` defines the dep-entry level; anything deeper
+                // is a field of the current dep. Tabs or any width work.
+                if (depIndent == -1) {
+                    depIndent = indent
+                }
+                if (indent == depIndent && endsWith(trimmed, ":")) {
+                    val name = trim(trimmed.substring(0, trimmed.length - 1))
+                    val dep = Dependency(name)
+                    deps.add(dep)
+                    current = dep
+                } else if (indent > depIndent && current != null) {
+                    val colon = trimmed.indexOf(":")
+                    if (colon != -1) {
+                        val key = trim(trimmed.substring(0, colon))
+                        val value = parseScalar(trimmed.substring(colon + 1, trimmed.length))
+                        val dep = current!!
+                        if (key == "github") {
+                            dep.github = value
+                        } else if (key == "gitlab") {
+                            dep.gitlab = value
+                        } else if (key == "git") {
+                            dep.git = value
+                        } else if (key == "path") {
+                            dep.path = value
+                        } else if (key == "branch") {
+                            dep.branch = value
+                        } else if (key == "tag") {
+                            dep.tag = value
+                        } else if (key == "commit") {
+                            dep.commit = value
+                        }
+                    }
+                }
+            }
+        }
+
+        if (idx == -1) {
+            looping = false
+        } else {
+            rest = rest.substring(idx + 1, rest.length)
+        }
+    }
+    return deps
+}
+
+fun resolveCommit(dep: Dependency) {
+    if (dep.path != "") {
+        return
+    }
+    if (dep.commit != "" && dep.branch == "" && dep.tag == "") {
+        return
+    }
+    val ref = if (dep.tag != "") dep.tag else if (dep.branch != "") dep.branch else "HEAD"
+    val url = gitUrl(dep)
+    val remoteCommit = trim(Process.capture("git ls-remote " + url + " " + ref))
+    if (remoteCommit == "") {
+        println("Error: could not resolve '" + ref + "' for dependency '" + dep.name + "'")
+        exit(1)
+    }
+    var commit = remoteCommit
+    val tabIdx = remoteCommit.indexOf("\t")
+    if (tabIdx != -1) {
+        commit = remoteCommit.substring(0, tabIdx)
+    }
+    dep.commit = commit
+}
+
+fun ensureCloned(dep: Dependency, repositoryRoot: String): String {
+    val dest = repositoryRoot + "/" + dep.name + "/" + dep.commit
+    if (File.exists(dest + "/eiwa.yaml") == false) {
+        val url = gitUrl(dep)
+        Fs.mkdirP(repositoryRoot + "/" + dep.name)
+        runOrFail("git clone --quiet " + url + " " + dest)
+        runOrFail("git -C " + dest + " checkout --quiet " + dep.commit)
+    }
+    return dest
+}
+
+fun serializeSource(dep: Dependency): String {
+    if (dep.path != "") {
+        return "    path: " + dep.path + "\n"
+    }
+    if (dep.github != "") {
+        return "    github: " + dep.github + "\n"
+    }
+    if (dep.gitlab != "") {
+        return "    gitlab: " + dep.gitlab + "\n"
+    }
+    if (dep.git != "") {
+        return "    git: " + dep.git + "\n"
+    }
+    return ""
+}
+
+fun serializeResolutions(deps: MutableList<Dependency>): String {
+    var out = "dependencies:\n"
+    var i = 0
+    while (i < deps.size()) {
+        val dep = deps[i]
+        if (dep.path == "") {
+            out = out + "  " + dep.name + ":\n"
+            out = out + serializeSource(dep)
+            if (dep.branch != "") {
+                out = out + "    branch: " + dep.branch + "\n"
+            }
+            if (dep.tag != "") {
+                out = out + "    tag: " + dep.tag + "\n"
+            }
+            out = out + "    commit: " + dep.commit + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fun serializeFreeze(deps: MutableList<Dependency>): String {
+    var out = "dependencies:\n"
+    var i = 0
+    while (i < deps.size()) {
+        val dep = deps[i]
+        if (dep.path == "") {
+            out = out + "  " + dep.name + ":\n"
+            out = out + serializeSource(dep)
+            out = out + "    commit: " + dep.commit + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fun printHelp() {
+    println("eiwa - Eiwa developer CLI")
+    println("")
+    println("Usage: eiwa <command> [project-dir|file.ei] [options]")
+    println("")
+    println("Commands:")
+    println("  init       Create a new project (eiwa init [dir])")
+    println("  add        Add a dependency (eiwa add <name> <source> [--branch|--tag|--commit <ref>] | --path <dir>)")
+    println("  remove     Remove a dependency (eiwa remove <name>)")
+    println("  build      Compile the project (src/main.ei) to a native binary")
+    println("  run        Compile and execute the project")
+    println("  test       Run all test blocks found in the project")
+    println("  freeze     Pin resolved dependency commits into eiwa.freeze")
+    println("  update     Re-resolve dependencies (or one: eiwa update <name>)")
+    println("")
+    println("  build|run|test <file.ei>  Compile/run/test a standalone .ei file")
+    println("                            directly (delegates to the eiwac backend,")
+    println("                            no eiwa.yaml required)")
+    println("")
+    println("Arguments:")
+    println("  project-dir  Project directory (default: current directory)")
+    println("  file.ei      Standalone Eiwa source file (delegated to eiwac)")
+    println("")
+    println("Options:")
+    println("  -o <name>       Output binary name/path (build)")
+    println("  --release       Optimized build (-O3), projects and files")
+    println("  --target <t>    Target platform / triple (e.g. windows, linux, macos, wasm)")
+    println("  --module-path <d>  Extra directory to resolve imports (repeatable)")
+    println("  --no-cache      Disable the incremental build cache")
+    println("  -h, --help      Show this help")
+    println("  --frozen        Fail if eiwa.freeze does not exist (for CI)")
+    println("")
+    println("Incremental cache: `run` and `build` reuse cached native artifacts")
+    println("keyed by content hashes (EIWA_CACHE_DIR, default ~/.eiwa/cache).")
+    println("Warm runs/builds on unchanged code cost ~0.01-0.1s.")
+    println("")
+    println("Use `--` to forward every following argument to the program (run).")
+    println("")
+    println("Environment:")
+    println("  EIWAC           Path to the eiwac compiler (default: eiwac next to the eiwa binary)")
+    println("  EIWA_CACHE_DIR  Cache root (default: ~/.eiwa)")
+}
+
+fun enterProjectDir(arg: String?) {
+    if (arg != null && Process.chdir(arg) == false) {
+        println("Error: cannot enter directory: " + arg)
+        exit(1)
+    }
+}
+
+fun loadProject(eiwacResolved: String): ProjectContext {
+    if (File.exists("eiwa.yaml") == false) {
+        println("Error: eiwa.yaml not found in current directory.")
+        exit(1)
+    }
+
+    val homeOpt = Env.get("HOME")
+    if (homeOpt == null) {
+        println("Error: HOME not set.")
+        exit(1)
+    }
+    val home = homeOpt!!
+    val repositoryRoot = home + "/.eiwa/repository"
+
+    val manifest = File.read("eiwa.yaml")
+    val manifestDeps = parseManifest(manifest)
+    var deps = manifestDeps
+
+    val resolutionsDir = home + "/.eiwa/resolutions"
+    val resolutionsFile = resolutionsDir + "/" + manifest.hashCode().toString() + ".yaml"
+    val hasFreeze = File.exists("eiwa.freeze")
+
+    if (hasFreeze) {
+        deps = mergeResolvedDeps(manifestDeps, parseManifest(File.read("eiwa.freeze")))
+        resolveMissing(deps)
+    } else if (File.exists(resolutionsFile)) {
+        deps = mergeResolvedDeps(manifestDeps, parseManifest(File.read(resolutionsFile)))
+        resolveMissing(deps)
+    } else {
+        resolveAll(deps)
+        if (deps.size() > 0) {
+            Fs.mkdirP(resolutionsDir)
+            File.write(resolutionsFile, serializeResolutions(deps))
+        }
+    }
+
+    val ctx = ProjectContext(eiwacResolved, repositoryRoot, resolutionsDir, resolutionsFile, manifest, deps, hasFreeze)
+    checkFrozen(ctx)
+    return ctx
+}
+
+// git deps (name) come from freeze/resolution cache; path deps always come
+// from the manifest (they are never frozen, ADR 61).
+fun mergeResolvedDeps(manifestDeps: MutableList<Dependency>, resolvedDeps: MutableList<Dependency>): MutableList<Dependency> {
+    val out = MutableList<Dependency>()
+    var i = 0
+    while (i < manifestDeps.size()) {
+        val dep = manifestDeps[i]
+        if (dep.path != "") {
+            out.add(dep)
+        } else {
+            var merged: Dependency? = null
+            var j = 0
+            while (j < resolvedDeps.size()) {
+                if (resolvedDeps[j].name == dep.name) {
+                    merged = resolvedDeps[j]
+                }
+                j = j + 1
+            }
+            if (merged != null) {
+                out.add(merged!!)
+            } else {
+                out.add(dep)
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fun resolveMissing(deps: MutableList<Dependency>) {
+    var j = 0
+    while (j < deps.size()) {
+        val dep = deps[j]
+        if (dep.path == "" && hasSource(dep) && dep.commit == "") {
+            println("Resolving new dependency '" + dep.name + "' (not in eiwa.freeze)...")
+            resolveCommit(dep)
+        }
+        j = j + 1
+    }
+}
+
+fun resolveAll(deps: MutableList<Dependency>) {
+    var j = 0
+    while (j < deps.size()) {
+        val dep = deps[j]
+        if (hasSource(dep)) {
+            resolveCommit(dep)
+        }
+        j = j + 1
+    }
+}
+
+fun checkFrozen(ctx: ProjectContext) {
+    if (hasFlag(parseArgs(), "--frozen") && ctx.hasFreeze == false) {
+        println("Error: --frozen requires an eiwa.freeze file. Run 'eiwa freeze' first.")
+        exit(1)
+    }
+}
+
+fun freezeCommand() {
+    val eiwacResolved = eiwacPath()
+    enterProjectDir(Process.argAt(2))
+    val ctx = loadProject(eiwacResolved)
+    // Freeze pins what the refs point to NOW, so re-resolve from the manifest
+    // instead of trusting the (possibly stale) resolutions cache.
+    val deps = parseManifest(ctx.manifest)
+    var j = 0
+    while (j < deps.size()) {
+        val dep = deps[j]
+        if (dep.path == "" && hasSource(dep)) {
+            resolveCommit(dep)
+        }
+        j = j + 1
+    }
+    if (deps.size() == 0) {
+        println("No dependencies to freeze.")
+        exit(0)
+    }
+    File.write("eiwa.freeze", serializeFreeze(deps))
+    Fs.mkdirP(ctx.resolutionsDir)
+    File.write(ctx.resolutionsFile, serializeResolutions(deps))
+    println("Wrote eiwa.freeze:")
+    print(serializeFreeze(deps))
+}
+
+fun updateCommand() {
+    val eiwacResolved = eiwacPath()
+    val args = parseArgs()
+    var updateTarget: String? = null
+    if (args.positionals.size() > 0) {
+        val first = args.positionals[0]
+        if (Process.chdir(first) == false) {
+            updateTarget = first
+        }
+    }
+
+    val ctx = loadProject(eiwacResolved)
+    val deps = parseManifest(ctx.manifest)
+    if (deps.size() == 0) {
+        println("No dependencies to update.")
+        exit(0)
+    }
+
+    var matched = updateTarget == null
+    var k = 0
+    while (k < deps.size()) {
+        val dep = deps[k]
+        if (dep.path != "") {
+            if (dep.name == updateTarget) {
+                println("Error: dependency '" + dep.name + "' is a path dependency and cannot be updated.")
+                exit(1)
+            }
+            k = k + 1
+        } else {
+            var old = ""
+            var m = 0
+            while (m < ctx.deps.size()) {
+                if (ctx.deps[m].name == dep.name) {
+                    old = ctx.deps[m].commit
+                }
+                m = m + 1
+            }
+            if (updateTarget == null || dep.name == updateTarget!!) {
+                matched = true
+                if (hasSource(dep) == false) {
+                    println("Error: dependency '" + dep.name + "' is not a git dependency")
+                    exit(1)
+                }
+                resolveCommit(dep)
+                if (old == dep.commit) {
+                    println(dep.name + " already up to date (" + dep.commit + ")")
+                } else if (old == "") {
+                    println(dep.name + " resolved: " + dep.commit)
+                } else {
+                    println(dep.name + " updated: " + old + " -> " + dep.commit)
+                }
+            } else {
+                // Keep the already-resolved commit for deps that were NOT the
+                // update target — otherwise serializing them with an empty commit
+                // makes the next build try to re-clone them (and fail).
+                dep.commit = old
+            }
+            k = k + 1
+        }
+    }
+    if (matched == false) {
+        println("Error: dependency not found: " + updateTarget!!)
+        exit(1)
+    }
+
+    Fs.mkdirP(ctx.resolutionsDir)
+    File.write(ctx.resolutionsFile, serializeResolutions(deps))
+    if (ctx.hasFreeze) {
+        File.write("eiwa.freeze", serializeFreeze(deps))
+        println("eiwa.freeze updated.")
+    }
+}
+
+fun hasDependenciesSection(content: String): Bool {
+    var rest = content
+    var looping = true
+    while (looping) {
+        val idx = rest.indexOf("\n")
+        val line = if (idx == -1) rest else rest.substring(0, idx)
+        if (trim(line) == "dependencies:" && indentOf(line) == 0) {
+            return true
+        }
+        if (idx == -1) {
+            looping = false
+        } else {
+            rest = rest.substring(idx + 1, rest.length)
+        }
+    }
+    return false
+}
+
+fun initCommand() {
+    val args = parseArgs()
+    if (args.positionals.size() > 0) {
+        val dirOpt = args.positionals[0]
+        Fs.mkdirP(dirOpt)
+        if (Process.chdir(dirOpt) == false) {
+            println("Error: cannot enter directory: " + dirOpt)
+            exit(1)
+        }
+    }
+    if (File.exists("eiwa.yaml")) {
+        println("Error: eiwa.yaml already exists.")
+        exit(1)
+    }
+    val name = lastPathSegment(Fs.pwd())
+    File.write("eiwa.yaml", "name: " + name + "\nversion: 0.1.0\n")
+    Fs.mkdirP("src")
+    Fs.mkdirP("test")
+    if (File.exists("src/main.ei") == false) {
+        File.write("src/main.ei", "init {\n    println(\"Hello, Eiwa!\")\n}\n")
+    }
+    println("Initialized project '" + name + "'")
+}
+
+fun extractRepoName(urlOrPath: String): String {
+    var s = urlOrPath
+    if (endsWith(s, ".git")) {
+        s = s.substring(0, s.length - 4)
+    }
+    var slash = -1
+    var i = 0
+    while (i < s.length) {
+        if (s.substring(i, i + 1) == "/") {
+            slash = i
+        }
+        i = i + 1
+    }
+    if (slash != -1) {
+        return s.substring(slash + 1, s.length)
+    }
+    return s
+}
+
+fun parseDepSpec(rawSpec: String, explicitName: String?): Dependency {
+    var spec = rawSpec
+    var ref = ""
+    val atIdx = spec.indexOf("@")
+    if (atIdx != -1) {
+        ref = spec.substring(atIdx + 1, spec.length)
+        spec = spec.substring(0, atIdx)
+    }
+
+    var depName = ""
+    var github = ""
+    var gitlab = ""
+    var gitUrl = ""
+    var pathUrl = ""
+
+    if (startsWith(spec, "path:")) {
+        pathUrl = spec.substring(5, spec.length)
+        depName = extractRepoName(pathUrl)
+    } else if (startsWith(spec, "github:")) {
+        github = spec.substring(7, spec.length)
+        depName = extractRepoName(github)
+    } else if (startsWith(spec, "gitlab:")) {
+        gitlab = spec.substring(7, spec.length)
+        depName = extractRepoName(gitlab)
+    } else if (startsWith(spec, "http://") || startsWith(spec, "https://") || startsWith(spec, "git@")) {
+        gitUrl = spec
+        depName = extractRepoName(gitUrl)
+    } else if (startsWith(spec, "/") || startsWith(spec, "\\") || startsWith(spec, "./") || startsWith(spec, ".\\") || startsWith(spec, "../") || startsWith(spec, "..\\") || startsWith(spec, ".git") || endsWith(spec, ".git") || (spec.length >= 3 && spec.substring(1, 2) == ":" && (spec.substring(2, 3) == "/" || spec.substring(2, 3) == "\\"))) {
+        // Local path (or .git URL): a real git URL, not an org/repo shorthand.
+        gitUrl = spec
+        depName = extractRepoName(gitUrl)
+    } else if (spec.indexOf("/") != -1) {
+        github = spec
+        depName = extractRepoName(github)
+    } else {
+        github = "eiwa-lang/" + spec
+        depName = spec
+    }
+
+    if (explicitName != null && explicitName != "") {
+        depName = explicitName
+    }
+
+    val dep = Dependency(depName, github, gitlab, gitUrl, pathUrl)
+    if (ref != "" && pathUrl == "") {
+        if (startsWith(ref, "v") || startsWith(ref, "0") || startsWith(ref, "1") || startsWith(ref, "2") || startsWith(ref, "3") || startsWith(ref, "4") || startsWith(ref, "5") || startsWith(ref, "6") || startsWith(ref, "7") || startsWith(ref, "8") || startsWith(ref, "9")) {
+            dep.tag = ref
+        } else {
+            dep.branch = ref
+        }
+    } else if (pathUrl == "") {
+        dep.branch = "main"
+    }
+
+    return dep
+}
+
+fun addCommand() {
+    val args = parseArgs()
+    val firstOpt = positional(args, 0)
+    if (firstOpt == null) {
+        println("Usage: eiwa add <package[@version]> [source] [--branch <b> | --tag <t> | --commit <c> | --path <dir>]")
+        println("Examples:")
+        println("  eiwa add eiwa-lang/arest")
+        println("  eiwa add eiwa-lang/arest@v1.0.0")
+        println("  eiwa add eiwa-lang/arest@main")
+        println("  eiwa add gitlab:org/repo@v2.0")
+        println("  eiwa add custom_name eiwa-lang/arest@v1.0.0")
+        println("  eiwa add mylib --path ../mylib")
+        exit(1)
+    }
+    if (File.exists("eiwa.yaml") == false) {
+        println("Error: eiwa.yaml not found. Run 'eiwa init' first.")
+        exit(1)
+    }
+
+    val first = firstOpt!!
+    val secondOpt = positional(args, 1)
+
+    var dep = Dependency("")
+    if (secondOpt != null) {
+        dep = parseDepSpec(secondOpt, first)
+    } else {
+        val eqIdx = first.indexOf("=")
+        if (eqIdx != -1) {
+            val alias = first.substring(0, eqIdx)
+            val spec = first.substring(eqIdx + 1, first.length)
+            dep = parseDepSpec(spec, alias)
+        } else {
+            dep = parseDepSpec(first, null)
+        }
+    }
+
+    // Flag overrides if supplied
+    val githubOpt = optionValue(args, "--github")
+    val gitlabOpt = optionValue(args, "--gitlab")
+    val gitOpt = optionValue(args, "--git")
+    val pathOpt = optionValue(args, "--path")
+    if (pathOpt != null) {
+        dep.path = pathOpt
+        dep.github = ""
+        dep.gitlab = ""
+        dep.git = ""
+        dep.branch = ""
+        dep.tag = ""
+        dep.commit = ""
+    }
+    if (githubOpt != null) {
+        dep.github = githubOpt
+        dep.gitlab = ""
+        dep.git = ""
+    }
+    if (gitlabOpt != null) {
+        dep.gitlab = gitlabOpt
+        dep.github = ""
+        dep.git = ""
+    }
+    if (gitOpt != null) {
+        dep.git = gitOpt
+        dep.github = ""
+        dep.gitlab = ""
+    }
+
+    val branchOpt = optionValue(args, "--branch")
+    val tagOpt = optionValue(args, "--tag")
+    val commitOpt = optionValue(args, "--commit")
+    if (branchOpt != null) {
+        dep.branch = branchOpt
+        dep.tag = ""
+    }
+    if (tagOpt != null) {
+        dep.tag = tagOpt
+        dep.branch = ""
+    }
+    if (commitOpt != null) {
+        dep.commit = commitOpt
+    }
+
+    // A path dependency has no branch/tag/commit.
+    if (dep.path != "") {
+        dep.branch = ""
+        dep.tag = ""
+        dep.commit = ""
+    }
+
+    val content = File.read("eiwa.yaml")
+    val existing = parseManifest(content)
+    var j = 0
+    while (j < existing.size()) {
+        if (existing[j].name == dep.name) {
+            println("Error: dependency already exists: " + dep.name)
+            exit(1)
+        }
+        j = j + 1
+    }
+
+    var entry = "  " + dep.name + ":\n" + serializeSource(dep)
+    if (dep.branch != "") {
+        entry = entry + "    branch: " + dep.branch + "\n"
+    }
+    if (dep.tag != "") {
+        entry = entry + "    tag: " + dep.tag + "\n"
+    }
+    if (dep.commit != "") {
+        entry = entry + "    commit: " + dep.commit + "\n"
+    }
+
+    var updated = content
+    if (updated.length > 0 && endsWith(updated, "\n") == false) {
+        updated = updated + "\n"
+    }
+    if (hasDependenciesSection(updated)) {
+        updated = updated + entry
+    } else {
+        updated = updated + "\ndependencies:\n" + entry
+    }
+    File.write("eiwa.yaml", updated)
+    println("Added " + dep.name)
+}
+
+fun removeCommand() {
+    val args = parseArgs()
+    if (args.positionals.size() == 0) {
+        println("Usage: eiwa remove <name>")
+        exit(1)
+    }
+    if (File.exists("eiwa.yaml") == false) {
+        println("Error: eiwa.yaml not found in current directory.")
+        exit(1)
+    }
+    val name = args.positionals[0]
+    val content = File.read("eiwa.yaml")
+
+    var out = ""
+    var inDeps = false
+    var skipBlock = false
+    var found = false
+    var depIndent = -1
+
+    var rest = content
+    var looping = true
+    while (looping) {
+        val idx = rest.indexOf("\n")
+        val line = if (idx == -1) rest else rest.substring(0, idx)
+        val trimmed = trim(line)
+        var emit = true
+
+        if (trimmed != "") {
+            val indent = indentOf(line)
+            if (indent == 0) {
+                skipBlock = false
+                inDeps = trimmed == "dependencies:"
+                depIndent = -1
+            } else if (inDeps) {
+                if (depIndent == -1) {
+                    depIndent = indent
+                }
+                if (indent == depIndent && endsWith(trimmed, ":")) {
+                    skipBlock = trim(trimmed.substring(0, trimmed.length - 1)) == name
+                    if (skipBlock) {
+                        found = true
+                        emit = false
+                    }
+                } else if (indent > depIndent && skipBlock) {
+                    emit = false
+                } else if (indent == depIndent) {
+                    skipBlock = false
+                }
+            }
+        }
+
+        if (emit) {
+            out = out + line + "\n"
+        }
+
+        if (idx == -1) {
+            looping = false
+        } else {
+            rest = rest.substring(idx + 1, rest.length)
+        }
+    }
+
+    if (found == false) {
+        println("Error: dependency not found: " + name)
+        exit(1)
+    }
+    File.write("eiwa.yaml", out)
+    println("Removed " + name)
+}
+
+fun delegateToEiwac(cmd: String) {
+    val eiwacResolved = eiwacPath()
+    var fullCmd = eiwacResolved + " " + cmd
+    var i = 2
+    while (i < Process.argsCount()) {
+        fullCmd = fullCmd + " " + Process.argAt(i)!!
+        i = i + 1
+    }
+    val code = Process.exec(fullCmd)
+    if (code != 0) {
+        exit(1)
+    }
+}
+
+fun hasEiwaFileArg(): Bool {
+    val args = parseArgs()
+    var i = 0
+    while (i < args.positionals.size()) {
+        if (endsWith(args.positionals[i], ".ei")) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fun compilerCommand(cmd: String) {
+    if (hasEiwaFileArg()) {
+        delegateToEiwac(cmd)
+        return
+    }
+    val eiwacResolved = eiwacPath()
+    val args = parseArgs()
+    val target: String? = positional(args, 0)
+    enterProjectDir(target)
+    if (File.exists("eiwa.yaml") == false) {
+        if (cmd == "test") {
+            delegateToEiwac(cmd)
+            return
+        }
+    }
+    val ctx = loadProject(eiwacResolved)
+
+    val entry = "src/main.ei"
+    if (cmd != "test" && File.exists(entry) == false) {
+        println("Error: entry point not found: " + entry)
+        exit(1)
+    }
+
+    val nameOpt = parseTopField(ctx.manifest, "name")
+    val projectName = if (nameOpt == null) "app" else nameOpt
+    val cliOutputOpt = optionValue(args, "-o")
+    val manifestOutputOpt = parseTopField(ctx.manifest, "output")
+    val finalOutput = if (cliOutputOpt != null) cliOutputOpt else if (manifestOutputOpt != null) manifestOutputOpt else "bin/" + projectName
+
+    if (cmd != "test") {
+        var slash = -1
+        var probe = finalOutput.indexOf("/")
+        while (probe != -1) {
+            slash = probe
+            probe = finalOutput.indexOf("/", probe + 1)
+        }
+        if (slash > 0) {
+            Fs.mkdirP(finalOutput.substring(0, slash))
+        }
+    }
+
+    // Forward eiwac flags/options supplied on the CLI: --release,
+    // --target, extra --module-path entries and user program args (after `--` on run).
+    var extraFlags = ""
+    if (hasFlag(args, "--release")) {
+        extraFlags = extraFlags + " --release"
+    }
+    // Run via the AOT binary cache (build-if-stale + exec) instead of the JIT:
+    // warm runs cost ~0.01s. See docs/perf-plan-incremental-cache.md.
+    if (cmd == "run") {
+        extraFlags = extraFlags + " --aot"
+    }
+    val targetVal = optionValue(args, "--target")
+    if (targetVal != null) {
+        extraFlags = extraFlags + " --target " + targetVal
+    }
+    var userModulePaths = ""
+    var i = 0
+    while (i < args.keys.size()) {
+        if (args.keys[i] == "--module-path") {
+            userModulePaths = userModulePaths + " --module-path " + args.values[i]
+        }
+        i = i + 1
+    }
+
+    var modulePaths = ""
+    i = 0
+    while (i < ctx.deps.size()) {
+        val dep = ctx.deps[i]
+        if (dep.path != "") {
+            modulePaths = modulePaths + " --module-path " + dep.path + "/src"
+        } else if (hasSource(dep)) {
+            val dest = ensureCloned(dep, ctx.repositoryRoot)
+            modulePaths = modulePaths + " --module-path " + dest + "/src"
+        }
+        i = i + 1
+    }
+
+    var fullCmd = ""
+    if (cmd == "test") {
+        fullCmd = ctx.eiwac + " test" + extraFlags + userModulePaths + modulePaths
+    } else {
+        fullCmd = ctx.eiwac + " " + cmd + extraFlags + userModulePaths + modulePaths + " -o " + finalOutput + " " + entry
+    }
+    if (cmd == "run") {
+        i = 0
+        while (i < args.programArgs.size()) {
+            fullCmd = fullCmd + " " + args.programArgs[i]
+            i = i + 1
+        }
+    }
+    val code = Process.exec(fullCmd)
+    if (code != 0) {
+        exit(1)
+    }
+}
