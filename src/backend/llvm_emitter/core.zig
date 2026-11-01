@@ -1225,6 +1225,7 @@ pub const LLVMEmitter = struct {
                     if (llvm.LLVMGetTypeKind(et) == llvm.LLVMStructTypeKind and
                         llvm.LLVMCountStructElementTypes(et) == 0)
                     {
+                        std.debug.print("DBGVTABLE dropping empty stub {s}\n", .{vtable_name});
                         llvm.LLVMDeleteGlobal(existing);
                     }
                 }

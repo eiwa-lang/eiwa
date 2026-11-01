@@ -6028,6 +6028,7 @@ pub fn coerceToContract(
     const vtable_ptr = vtable_global orelse blk: {
         const vname = try std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}_vtable\x00", .{ concrete_c_name, contract_c_name });
         defer std.heap.page_allocator.free(vname);
+        std.debug.print("DBGSTUB creating empty stub {s}\n", .{vname[0 .. vname.len - 1]});
         const empty_struct = llvm.LLVMStructTypeInContext(ctx, null, 0, 0);
         const g = llvm.LLVMAddGlobal(mod, empty_struct, vname.ptr);
         llvm.LLVMSetInitializer(g, llvm.LLVMConstNull(empty_struct));
