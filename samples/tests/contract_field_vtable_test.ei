@@ -1,0 +1,34 @@
+import { assert } from "std.core"
+import { Coroutine } from "std.coroutines"
+
+contract Getter {
+    fun get(): Int
+}
+
+type A : Getter {
+    implement fun get(): Int {
+        return 1
+    }
+}
+
+type Holder {
+    var g: Getter = A()
+
+    fun get(): Int {
+        return this.g.get()
+    }
+}
+
+test "contract local virtual call in machine, sync method" {
+    val t = task {
+        Coroutine.sleepMs(1)
+        val a: Getter = A()
+        a.get()
+    }
+    assert(t.await() == 1, "machine field virtual dispatch")
+}
+
+test "contract body field with concrete init" {
+    val h = Holder()
+    assert(h.get() == 1, "ctor body field virtual dispatch")
+}

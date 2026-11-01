@@ -1046,7 +1046,40 @@ fn emitExpressionRaw(
                                 }
                                 return val;
                             }
-                            if (storeValue(val, s_info.field_types[f_idx])) |sv| {
+                            var field_val = val;
+                            if (llvm.LLVMGetTypeKind(s_info.field_types[f_idx]) == llvm.LLVMStructTypeKind and
+                                llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(val)) != llvm.LLVMStructTypeKind and
+                                f_idx < s_info.field_eiwa_types.len)
+                            {
+                                if (s_info.field_eiwa_types[f_idx]) |field_rt| {
+                                    if (types_mapping.isRegisteredUnion(field_rt.*, global_unions_ast_ptr)) {
+                                        if (set.value.resolved_type) |vrt| {
+                                            if (concreteCNameForVtable(vrt)) |cn| {
+                                                field_val = coerceToUnion(ctx, mod, builder, val, cn) catch val;
+                                            }
+                                        }
+                                    }
+                                    if (types_mapping.isContractType(field_rt.*, global_contracts_ast_ptr)) {
+                                        const stripped = ts.stripNull(field_rt);
+                                        const contract_name = switch (stripped.*) {
+                                            .Custom => |n| n,
+                                            .GenericInstance => |gi| gi.base_name,
+                                            else => "",
+                                        };
+                                        if (contract_name.len > 0) {
+                                            if (set.value.resolved_type) |vrt| {
+                                                const v_stripped = ts.stripNull(vrt);
+                                                if (!types_mapping.isContractType(v_stripped.*, global_contracts_ast_ptr) and v_stripped.* != .Null) {
+                                                    if (concreteCNameForVtable(v_stripped)) |cn| {
+                                                        field_val = try coerceToContract(ctx, mod, builder, val, cn, contract_name);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (storeValue(field_val, s_info.field_types[f_idx])) |sv| {
                                 _ = llvm.LLVMBuildStore(builder, sv, field_ptr);
                             }
                             return val;

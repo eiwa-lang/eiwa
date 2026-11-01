@@ -19,6 +19,7 @@ pub const StructInfo = struct {
     struct_type: llvm.LLVMTypeRef,
     field_names: [][]const u8,
     field_types: []llvm.LLVMTypeRef,
+    field_eiwa_types: []?*const ts.EiwaType = &.{},
 };
 
 /// Resolves a repo-relative `src/...` path against the eiwa source tree
@@ -1219,9 +1220,23 @@ pub const LLVMEmitter = struct {
                     var dummy = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(self.context), identity, 0)};
                     break :blk llvm.LLVMConstStructInContext(self.context, &dummy, 1, 0);
                 } else llvm.LLVMConstStructInContext(self.context, vtable_funcs.items.ptr, @intCast(vtable_funcs.items.len), 0);
+                var shadowed_stub: ?llvm.LLVMValueRef = null;
+                if (llvm.LLVMGetNamedGlobal(mod, vtable_name_z.ptr)) |existing| {
+                    const et = llvm.LLVMGlobalGetValueType(existing);
+                    if (llvm.LLVMGetTypeKind(et) == llvm.LLVMStructTypeKind and
+                        llvm.LLVMCountStructElementTypes(et) == 0)
+                    {
+                        shadowed_stub = existing;
+                    }
+                }
                 const vtable_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(vtable_const), vtable_name_z.ptr);
                 llvm.LLVMSetInitializer(vtable_global, vtable_const);
                 llvm.LLVMSetGlobalConstant(vtable_global, 1);
+                if (shadowed_stub) |stub| {
+                    llvm.LLVMReplaceAllUsesWith(stub, vtable_global);
+                    llvm.LLVMDeleteGlobal(stub);
+                    llvm.LLVMSetValueName2(vtable_global, vtable_name_z.ptr, vtable_name.len);
+                }
 
                 var alt_names = ArrayList([]const u8).init(self.allocator);
                 defer alt_names.deinit();
@@ -4103,6 +4118,34 @@ pub const LLVMEmitter = struct {
                 const field_idx = ctor_param_count + i;
                 const field_type = field_types_owned[field_idx];
                 var init_val = try expression.emitExpression(self.context, mod, self.builder, &this_scope, &self.structs, &self.libs, init_node);
+                if (prop.resolved_type) |frt| {
+                    const f_stripped = ts.stripNull(frt);
+                    const is_union_target = types_mapping.isRegisteredUnion(f_stripped.*, expression.global_unions_ast_ptr);
+                    const is_contract_target = types_mapping.isContractType(f_stripped.*, expression.global_contracts_ast_ptr);
+                    if ((is_union_target or is_contract_target) and
+                        llvm.LLVMTypeOf(init_val) != field_type)
+                    {
+                        if (init_node.resolved_type) |irt| {
+                            const i_stripped = ts.stripNull(irt);
+                            if (!types_mapping.isContractType(i_stripped.*, expression.global_contracts_ast_ptr) and i_stripped.* != .Null) {
+                                if (expression.concreteCNameForVtable(i_stripped)) |cn| {
+                                    if (is_union_target) {
+                                        init_val = expression.coerceToUnion(self.context, mod, self.builder, init_val, cn) catch init_val;
+                                    } else {
+                                        const contract_name = switch (f_stripped.*) {
+                                            .Custom => |n| n,
+                                            .GenericInstance => |gi| gi.base_name,
+                                            else => "",
+                                        };
+                                        if (contract_name.len > 0) {
+                                            init_val = expression.coerceToContract(self.context, mod, self.builder, init_val, cn, contract_name) catch init_val;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if (llvm.LLVMTypeOf(init_val) != field_type) {
                     init_val = expression.coerceArg(self.builder, init_val, field_type);
                 }
@@ -4137,6 +4180,7 @@ pub const LLVMEmitter = struct {
 
         var field_names = ArrayList([]const u8).init(self.allocator);
         var field_types = ArrayList(llvm.LLVMTypeRef).init(self.allocator);
+        var field_eiwa = ArrayList(?*const ts.EiwaType).init(self.allocator);
 
         for (t.primary_constructor) |prop| {
             try field_names.append(prop.name);
@@ -4145,6 +4189,7 @@ pub const LLVMEmitter = struct {
                 // Boxed capture: the field stores a pointer to the shared heap
                 // value cell (mutable capture propagating to the outer var).
                 try field_types.append(ptr_type_fallback);
+                try field_eiwa.append(null);
                 continue;
             }
             const f_llvm_type = if (prop.resolved_type) |rt|
@@ -4163,6 +4208,7 @@ pub const LLVMEmitter = struct {
                 break :blk ptr_type_fallback;
             };
             try field_types.append(f_llvm_type);
+            try field_eiwa.append(prop.resolved_type);
         }
 
         // Body fields (declared in the type body, not ctor args) are part of
@@ -4175,6 +4221,7 @@ pub const LLVMEmitter = struct {
             else
                 llvm.LLVMPointerTypeInContext(self.context, 0);
             try field_types.append(f_llvm_type);
+            try field_eiwa.append(prop.resolved_type);
         }
         const ctor_param_count = t.primary_constructor.len;
 
@@ -4182,11 +4229,13 @@ pub const LLVMEmitter = struct {
 
         const field_names_owned = try field_names.toOwnedSlice();
         const field_types_owned = try field_types.toOwnedSlice();
+        const field_eiwa_owned = try field_eiwa.toOwnedSlice();
 
         try self.structs.put(name, .{
             .struct_type = struct_type,
             .field_names = field_names_owned,
             .field_types = field_types_owned,
+            .field_eiwa_types = field_eiwa_owned,
         });
         if (verbose) std.debug.print(">>> REGISTER_STRUCT: name='{s}'\n", .{name});
         if (!std.mem.eql(u8, name, t.name)) {
@@ -4194,6 +4243,7 @@ pub const LLVMEmitter = struct {
                 .struct_type = struct_type,
                 .field_names = field_names_owned,
                 .field_types = field_types_owned,
+                .field_eiwa_types = field_eiwa_owned,
             });
             if (verbose) std.debug.print(">>> REGISTER_STRUCT_SHORT: name='{s}'\n", .{t.name});
         }
