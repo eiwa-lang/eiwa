@@ -1220,11 +1220,6 @@ pub const LLVMEmitter = struct {
                     var dummy = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(self.context), identity, 0)};
                     break :blk llvm.LLVMConstStructInContext(self.context, &dummy, 1, 0);
                 } else llvm.LLVMConstStructInContext(self.context, vtable_funcs.items.ptr, @intCast(vtable_funcs.items.len), 0);
-                // An early thin-store coercion (e.g. ctor bodies, emitted
-                // before vtables) may have materialized an empty placeholder
-                // under this name. Point its uses at the real table before
-                // dropping it, so fat values built earlier stay valid on
-                // every object format (a bare delete leaves them dangling).
                 var shadowed_stub: ?llvm.LLVMValueRef = null;
                 if (llvm.LLVMGetNamedGlobal(mod, vtable_name_z.ptr)) |existing| {
                     const et = llvm.LLVMGlobalGetValueType(existing);
