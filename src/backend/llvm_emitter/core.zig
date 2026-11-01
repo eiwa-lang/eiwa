@@ -1220,18 +1220,28 @@ pub const LLVMEmitter = struct {
                     var dummy = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(self.context), identity, 0)};
                     break :blk llvm.LLVMConstStructInContext(self.context, &dummy, 1, 0);
                 } else llvm.LLVMConstStructInContext(self.context, vtable_funcs.items.ptr, @intCast(vtable_funcs.items.len), 0);
+                // An early thin-store coercion (e.g. ctor bodies, emitted
+                // before vtables) may have materialized an empty placeholder
+                // under this name. Point its uses at the real table before
+                // dropping it, so fat values built earlier stay valid on
+                // every object format (a bare delete leaves them dangling).
+                var shadowed_stub: ?llvm.LLVMValueRef = null;
                 if (llvm.LLVMGetNamedGlobal(mod, vtable_name_z.ptr)) |existing| {
                     const et = llvm.LLVMGlobalGetValueType(existing);
                     if (llvm.LLVMGetTypeKind(et) == llvm.LLVMStructTypeKind and
                         llvm.LLVMCountStructElementTypes(et) == 0)
                     {
-                        std.debug.print("DBGVTABLE dropping empty stub {s}\n", .{vtable_name});
-                        llvm.LLVMDeleteGlobal(existing);
+                        shadowed_stub = existing;
                     }
                 }
                 const vtable_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(vtable_const), vtable_name_z.ptr);
                 llvm.LLVMSetInitializer(vtable_global, vtable_const);
                 llvm.LLVMSetGlobalConstant(vtable_global, 1);
+                if (shadowed_stub) |stub| {
+                    llvm.LLVMReplaceAllUsesWith(stub, vtable_global);
+                    llvm.LLVMDeleteGlobal(stub);
+                    llvm.LLVMSetValueName2(vtable_global, vtable_name_z.ptr, vtable_name.len);
+                }
 
                 var alt_names = ArrayList([]const u8).init(self.allocator);
                 defer alt_names.deinit();
