@@ -60,7 +60,7 @@ RUN case "$TARGETARCH" in \
     && [ "$EXPECTED" = "$ACTUAL" ] || { echo "checksum mismatch for $TARBALL" >&2; exit 1; } \
     && mkdir -p /opt/eiwa \
     && tar -xzf "/tmp/${TARBALL}" -C /opt/eiwa --strip-components=1 \
-    && chmod +x /opt/eiwa/bin/eiwac /opt/eiwa/bin/eiwa \
+    && chmod +x /opt/eiwa/bin/eiwac /opt/eiwa/bin/eiwa /opt/eiwa/bin/eiwa-lsp \
     && rm -f "/tmp/${TARBALL}" "/tmp/${TARBALL}.sha256"
 
 # Shipped layout: <bin>/eiwac + <src>/ side by side, exactly like the release

@@ -14,6 +14,7 @@ This document tracks the historical progress, current status, and future roadmap
 > **Phase 72 — Lacunas do ADR 31 no backend LLVM** (campos de receiver em lambdas sem `this.`; safe-calls encadeados `?.`) — **concluída**. **Phase 98** (allocas em loops + sigaltstack por thread) — **concluída** (2026-10-20).
 > **Phase 69 — Dispatchers & Thread Pool** (paralelismo real multi-core estilo Kotlin `Dispatchers`, `task {}` eager em thread pool de N cores, `std.thread`/`std.atomic`, `sync`, `Mutex`) — **concluída** (ADR 51).
 > **Phase 68 — Coroutines Stackless** (async/await Kotlin-style; remoção do backend C + neco) — **concluída** (ADR 48).
+> **Phase 99 — LSP em Eiwa (MVP stdio)** — **concluída** (2026-11-05): servidor `lsp/` 100% Eiwa (framing Content-Length, didOpen/didChange/didSave/didClose, publishDiagnostics via `eiwac check`, hover/completion/definition/documentSymbol same-file); `Stdin.readLine/readExact` em `std.io` + trampolim C `eiwa_stdio`; `eiwac check`/`eiwa check` (typecheck sem codegen, ~0.05s); 9 testes nativos `lsp/test/analysis_test.ei` verdes (layout cli: `src/` + `test/`, imports `.lsp.src.*`). Follow-ups: overlay de buffer não-salvo, goto/symbols cross-file, transporte TCP, clientes VSCode/Zed.
 
 ---
 

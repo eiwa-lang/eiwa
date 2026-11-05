@@ -13,7 +13,7 @@ init {
         "--help", "-h" -> {
             printHelp()
         }
-        "build", "run", "test" -> {
+        "build", "run", "test", "check" -> {
             compilerCommand(cmd)
         }
         "init" -> {

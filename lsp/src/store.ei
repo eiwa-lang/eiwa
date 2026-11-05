@@ -1,0 +1,65 @@
+// store.ei
+// In-memory store of open documents (uri -> full text + version).
+
+import { MutableMap } from "std.collections"
+
+type OpenDoc(val uri: String, var text: String, var version: Int)
+
+object DocStore {
+    val docs: MutableMap<String, OpenDoc> = MutableMap<String, OpenDoc>()
+
+    fun open(uri: String, text: String, version: Int) {
+        if (DocStore.docs.contains(uri)) {
+            val d = DocStore.docs[uri]
+            if (d != null) {
+                d.text = text
+                d.version = version
+            }
+        } else {
+            DocStore.docs.put(uri, OpenDoc(uri, text, version))
+        }
+    }
+
+    fun change(uri: String, text: String, version: Int) {
+        DocStore.open(uri, text, version)
+    }
+
+    fun close(uri: String) {
+        // MutableMap has no remove yet: blank the entry so later
+        // lookups treat it as closed.
+        if (DocStore.docs.contains(uri)) {
+            val d = DocStore.docs[uri]
+            if (d != null) {
+                d.text = ""
+                d.version = -1
+            }
+        }
+    }
+
+    fun get(uri: String): OpenDoc? {
+        val d = DocStore.docs[uri]
+        if (d == null) {
+            return null
+        }
+        if (d.version == -1) {
+            return null
+        }
+        return d
+    }
+
+    fun textOf(uri: String): String? {
+        val d = DocStore.get(uri)
+        if (d == null) {
+            return null
+        }
+        return d.text
+    }
+}
+
+// `file:///tmp/x.ei` -> `/tmp/x.ei`. Returns "" for non-file URIs.
+fun uriToPath(uri: String): String {
+    if (uri.startsWith("file://")) {
+        return uri.substring(7, uri.length)
+    }
+    return ""
+}

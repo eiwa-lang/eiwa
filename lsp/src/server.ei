@@ -1,0 +1,317 @@
+// server.ei
+// JSON-RPC dispatch for the Eiwa language server (LSP 3.17, stdio).
+
+import { parseJson, jsonEscape, JsonValue } from "std.json"
+import { File } from "std.fs"
+import { writeMessage } from "transport"
+import { DocStore, uriToPath } from "store"
+import { scanSymbols, findSymbol, wordAt, lineAt, lspKeywords } from "analysis"
+import { publishDiagnostics, publishEmptyDiagnostics } from "diagnostics"
+
+object Server {
+    var shutdownRequested: Bool = false
+}
+
+fun respond(id: JsonValue, resultJson: String) {
+    writeMessage("{\"jsonrpc\":\"2.0\",\"id\":" + id.write() + ",\"result\":" + resultJson + "}")
+}
+
+fun respondError(id: JsonValue, code: Int, message: String) {
+    writeMessage("{\"jsonrpc\":\"2.0\",\"id\":" + id.write() + ",\"error\":{\"code\":" + code.toString() + ",\"message\":\"" + jsonEscape(message) + "\"}}")
+}
+
+fun getString(node: JsonValue?, key: String): String {
+    if (node == null) {
+        return ""
+    }
+    val v = node.get(key)
+    if (v == null || v.isString() == false) {
+        return ""
+    }
+    return v.asString()
+}
+
+fun getInt(node: JsonValue?, key: String): Int {
+    if (node == null) {
+        return 0
+    }
+    val v = node.get(key)
+    if (v == null || v.isNumber() == false) {
+        return 0
+    }
+    return v.asNumber().toInt()
+}
+
+fun getNode(node: JsonValue?, key: String): JsonValue? {
+    if (node == null) {
+        return null
+    }
+    return node.get(key)
+}
+
+fun bufferOrFile(uri: String): String? {
+    val text = DocStore.textOf(uri)
+    if (text != null) {
+        return text
+    }
+    val path = uriToPath(uri)
+    if (path != "" && File.exists(path)) {
+        return File.read(path)
+    }
+    return null
+}
+
+fun completionKind(kind: String): Int {
+    return when (kind) {
+        "fun" -> 3
+        "type" -> 7
+        "contract" -> 8
+        "skill" -> 5
+        "object" -> 6
+        "enum" -> 13
+        else -> 6
+    }
+}
+
+fun handleInitialize(id: JsonValue) {
+    respond(id, "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"documentSymbolProvider\":true},\"serverInfo\":{\"name\":\"eiwa-lsp\",\"version\":\"0.1.0\"}}")
+}
+
+fun handleDidOpen(params: JsonValue?) {
+    val td = getNode(params, "textDocument")
+    val uri = getString(td, "uri")
+    val text = getString(td, "text")
+    val version = getInt(td, "version")
+    if (uri == "") {
+        return
+    }
+    DocStore.open(uri, text, version)
+    publishDiagnostics(uri)
+}
+
+fun handleDidChange(params: JsonValue?) {
+    val td = getNode(params, "textDocument")
+    val uri = getString(td, "uri")
+    val version = getInt(td, "version")
+    if (uri == "") {
+        return
+    }
+    val changes = getNode(params, "contentChanges")
+    if (changes == null || changes.isArray() == false) {
+        return
+    }
+    val first = changes.getIndex(0)
+    if (first == null) {
+        return
+    }
+    val text = getString(first, "text")
+    DocStore.change(uri, text, version)
+}
+
+fun handleDidSave(params: JsonValue?) {
+    val td = getNode(params, "textDocument")
+    val uri = getString(td, "uri")
+    if (uri == "") {
+        return
+    }
+    publishDiagnostics(uri)
+}
+
+fun handleDidClose(params: JsonValue?) {
+    val td = getNode(params, "textDocument")
+    val uri = getString(td, "uri")
+    if (uri == "") {
+        return
+    }
+    DocStore.close(uri)
+    publishEmptyDiagnostics(uri)
+}
+
+fun handleHover(id: JsonValue, params: JsonValue?) {
+    val uri = getString(getNode(params, "textDocument"), "uri")
+    val pos = getNode(params, "position")
+    val line = getInt(pos, "line")
+    val character = getInt(pos, "character")
+    val text = bufferOrFile(uri)
+    if (text == null) {
+        respond(id, "null")
+        return
+    }
+    val word = wordAt(lineAt(text, line), character)
+    if (word == "") {
+        respond(id, "null")
+        return
+    }
+    val sym = findSymbol(scanSymbols(text), word)
+    if (sym == null) {
+        respond(id, "null")
+        return
+    }
+    val value = "```eiwa\n" + sym.detail + "\n```\n_" + sym.kind + " • line " + (sym.line + 1).toString() + "_"
+    respond(id, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"" + jsonEscape(value) + "\"}}")
+}
+
+fun handleCompletion(id: JsonValue, params: JsonValue?) {
+    val uri = getString(getNode(params, "textDocument"), "uri")
+    val pos = getNode(params, "position")
+    val line = getInt(pos, "line")
+    val character = getInt(pos, "character")
+    val text = bufferOrFile(uri)
+    var prefix = ""
+    if (text != null) {
+        val lineText = lineAt(text, line)
+        val upto = if (character < lineText.length) lineText.substring(0, character) else lineText
+        var i = upto.length
+        while (i > 0) {
+            if ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789".indexOf(upto.charAt(i - 1)) == -1) {
+                leave
+            }
+            i = i - 1
+        }
+        prefix = upto.substring(i, upto.length)
+    }
+    var items = ""
+    var count = 0
+    val kws = lspKeywords()
+    var k = 0
+    while (k < kws.size()) {
+        val kw = kws.get(k)
+        if (prefix == "" || kw.startsWith(prefix)) {
+            if (count > 0) {
+                items = items + ","
+            }
+            items = items + "{\"label\":\"" + kw + "\",\"kind\":14}"
+            count = count + 1
+        }
+        k = k + 1
+    }
+    if (text != null) {
+        val syms = scanSymbols(text)
+        var s = 0
+        while (s < syms.size()) {
+            val sym = syms.get(s)
+            if (sym.name.startsWith(prefix)) {
+                if (count > 0) {
+                    items = items + ","
+                }
+                items = items + "{\"label\":\"" + jsonEscape(sym.name) + "\",\"kind\":" + completionKind(sym.kind).toString() + "}"
+                count = count + 1
+            }
+            s = s + 1
+        }
+    }
+    respond(id, "{\"isIncomplete\":false,\"items\":[" + items + "]}")
+}
+
+fun handleDefinition(id: JsonValue, params: JsonValue?) {
+    val uri = getString(getNode(params, "textDocument"), "uri")
+    val pos = getNode(params, "position")
+    val line = getInt(pos, "line")
+    val character = getInt(pos, "character")
+    val text = bufferOrFile(uri)
+    if (text == null) {
+        respond(id, "null")
+        return
+    }
+    val word = wordAt(lineAt(text, line), character)
+    if (word == "") {
+        respond(id, "null")
+        return
+    }
+    val sym = findSymbol(scanSymbols(text), word)
+    if (sym == null) {
+        respond(id, "null")
+        return
+    }
+    respond(id, "{\"uri\":\"" + jsonEscape(uri) + "\",\"range\":{\"start\":{\"line\":" + sym.line.toString() + ",\"character\":0},\"end\":{\"line\":" + sym.line.toString() + ",\"character\":0}}}")
+}
+
+fun handleDocumentSymbol(id: JsonValue, params: JsonValue?) {
+    val uri = getString(getNode(params, "textDocument"), "uri")
+    val text = bufferOrFile(uri)
+    if (text == null) {
+        respond(id, "null")
+        return
+    }
+    val syms = scanSymbols(text)
+    var arr = ""
+    var s = 0
+    while (s < syms.size()) {
+        val sym = syms.get(s)
+        if (s > 0) {
+            arr = arr + ","
+        }
+        arr = arr + "{\"name\":\"" + jsonEscape(sym.name) + "\",\"kind\":" + completionKind(sym.kind).toString() + ",\"range\":{\"start\":{\"line\":" + sym.line.toString() + ",\"character\":0},\"end\":{\"line\":" + sym.line.toString() + ",\"character\":0}},\"selectionRange\":{\"start\":{\"line\":" + sym.line.toString() + ",\"character\":0},\"end\":{\"line\":" + sym.line.toString() + ",\"character\":0}}}"
+        s = s + 1
+    }
+    respond(id, "[" + arr + "]")
+}
+
+fun handleMessage(raw: String) {
+    val root = parseJson(raw)
+    val methodVal = root.get("method")
+    if (methodVal == null || methodVal.isString() == false) {
+        return
+    }
+    val method = methodVal.asString()
+    val id = root.get("id")
+    val params = root.get("params")
+
+    when (method) {
+        "initialize" -> {
+            if (id != null) {
+                handleInitialize(id)
+            }
+        }
+        "initialized" -> {}
+        "shutdown" -> {
+            Server.shutdownRequested = true
+            if (id != null) {
+                respond(id, "null")
+            }
+        }
+        "exit" -> {
+            if (Server.shutdownRequested) {
+                exit(0)
+            }
+            exit(1)
+        }
+        "textDocument/didOpen" -> {
+            handleDidOpen(params)
+        }
+        "textDocument/didChange" -> {
+            handleDidChange(params)
+        }
+        "textDocument/didSave" -> {
+            handleDidSave(params)
+        }
+        "textDocument/didClose" -> {
+            handleDidClose(params)
+        }
+        "textDocument/hover" -> {
+            if (id != null) {
+                handleHover(id, params)
+            }
+        }
+        "textDocument/completion" -> {
+            if (id != null) {
+                handleCompletion(id, params)
+            }
+        }
+        "textDocument/definition" -> {
+            if (id != null) {
+                handleDefinition(id, params)
+            }
+        }
+        "textDocument/documentSymbol" -> {
+            if (id != null) {
+                handleDocumentSymbol(id, params)
+            }
+        }
+        else -> {
+            if (id != null) {
+                respondError(id, -32601, "method not found: " + method)
+            }
+        }
+    }
+}

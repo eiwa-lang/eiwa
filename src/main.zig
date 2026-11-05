@@ -452,6 +452,7 @@ fn run(init: std.process.Init) !void {
             \\  run        Compile and execute the program
             \\  build      Compile to a native binary
             \\  test       Run test blocks ("test \"name\" {{ ... }}")
+            \\  check      Type-check the program without emitting code (fast, for editors/CI)
             \\
             \\Options:
             \\  --release            Optimized build
@@ -484,12 +485,13 @@ fn run(init: std.process.Init) !void {
         return;
     }
 
-    if (args.len < 2 or (!std.mem.eql(u8, args[1], "run") and !std.mem.eql(u8, args[1], "build") and !std.mem.eql(u8, args[1], "test"))) {
-        std.debug.print("Usage: eiwac <run|build|test> [options] [file.ei]  (see eiwac --help)\n", .{});
+    if (args.len < 2 or (!std.mem.eql(u8, args[1], "run") and !std.mem.eql(u8, args[1], "build") and !std.mem.eql(u8, args[1], "test") and !std.mem.eql(u8, args[1], "check"))) {
+        std.debug.print("Usage: eiwac <run|build|test|check> [options] [file.ei]  (see eiwac --help)\n", .{});
         return;
     }
     const is_build = std.mem.eql(u8, args[1], "build");
     const is_test = std.mem.eql(u8, args[1], "test");
+    const is_check = std.mem.eql(u8, args[1], "check");
 
     var source_alloc = ArrayList(u8).init(allocator);
     defer source_alloc.deinit();
@@ -1004,6 +1006,13 @@ fn run(init: std.process.Init) !void {
         mod.checker.validate(mod.ast_root) catch {
             std.process.exit(1);
         };
+    }
+
+    // `check`: semantic analysis passed — report success without codegen.
+    // Diagnostics (if any) were already printed inline by the passes above.
+    if (is_check) {
+        std.debug.print("OK {s}\n", .{filename});
+        return;
     }
 
     // Consolidate classes, objects, contracts, and aliases for the CTranspiler

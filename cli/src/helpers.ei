@@ -499,10 +499,11 @@ fun printHelp() {
     println("  build      Compile the project (src/main.ei) to a native binary")
     println("  run        Compile and execute the project")
     println("  test       Run all test blocks found in the project")
+    println("  check      Type-check the project without emitting code (fast, for editors/CI)")
     println("  freeze     Pin resolved dependency commits into eiwa.freeze")
     println("  update     Re-resolve dependencies (or one: eiwa update <name>)")
     println("")
-    println("  build|run|test <file.ei>  Compile/run/test a standalone .ei file")
+    println("  build|run|test|check <file.ei>  Compile/run/test/check a standalone .ei file")
     println("                            directly (delegates to the eiwac backend,")
     println("                            no eiwa.yaml required)")
     println("")
@@ -1154,6 +1155,8 @@ fun compilerCommand(cmd: String) {
     var fullCmd = ""
     if (cmd == "test") {
         fullCmd = ctx.eiwac + " test" + extraFlags + userModulePaths + modulePaths
+    } else if (cmd == "check") {
+        fullCmd = ctx.eiwac + " check" + extraFlags + userModulePaths + modulePaths + " " + entry
     } else {
         fullCmd = ctx.eiwac + " " + cmd + extraFlags + userModulePaths + modulePaths + " -o " + finalOutput + " " + entry
     }

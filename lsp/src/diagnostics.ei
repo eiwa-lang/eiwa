@@ -1,0 +1,132 @@
+// diagnostics.ei
+// Publishes `eiwac check` diagnostics as LSP notifications.
+// MVP policy: checks the file on disk on didOpen/didSave (correct module
+// resolution); unsaved-buffer overlays are a follow-up.
+
+import { List, MutableList } from "std.collections"
+import { File } from "std.fs"
+import { Process } from "std.process"
+import { Env } from "std.env"
+import { jsonEscape } from "std.json"
+import { split } from "std.string"
+import { writeMessage } from "transport"
+import { uriToPath } from "store"
+
+type Diag(val file: String, val line: Int, val col: Int, val severity: Int, val message: String)
+
+fun eiwacBin(): String {
+    val configured = Env.get("EIWAC")
+    if (configured == null) {
+        return "eiwac"
+    }
+    if (configured == "") {
+        return "eiwac"
+    }
+    return configured
+}
+
+fun lastIndexOfChar(s: String, needle: String): Int {
+    var found = -1
+    var probe = s.indexOf(needle)
+    while (probe != -1) {
+        found = probe
+        probe = s.indexOf(needle, probe + 1)
+    }
+    return found
+}
+
+// Parses one `  --> path:line:col` trailer. Columns are 1-based in eiwac.
+fun parseTrailer(trailer: String): Diag? {
+    val lastColon = lastIndexOfChar(trailer, ":")
+    if (lastColon == -1) {
+        return null
+    }
+    val col = trailer.substring(lastColon + 1, trailer.length).trim().toInt()
+    val head = trailer.substring(0, lastColon)
+    val lineColon = lastIndexOfChar(head, ":")
+    if (lineColon == -1) {
+        return null
+    }
+    val line = head.substring(lineColon + 1, head.length).trim().toInt()
+    val file = head.substring(0, lineColon)
+    return Diag(file, line, col, 1, "")
+}
+
+fun checkOutputToDiags(output: String): List<Diag> {
+    val out: MutableList<Diag> = MutableList<Diag>()
+    val lines = output.split("\n")
+    var i = 0
+    while (i < lines.size()) {
+        val t = lines.get(i).trim()
+        var sev = 0
+        var msg = ""
+        if (t.startsWith("error:")) {
+            sev = 1
+            msg = t.substring(6, t.length).trim()
+        } else if (t.startsWith("warning:")) {
+            sev = 2
+            msg = t.substring(8, t.length).trim()
+        }
+        if (sev != 0) {
+            var j = i + 1
+            var matched = false
+            while (j < lines.size()) {
+                val u = lines.get(j).trim()
+                if (u.startsWith("-->")) {
+                    val d = parseTrailer(u.substring(3, u.length).trim())
+                    if (d != null) {
+                        out.add(Diag(d.file, d.line, d.col, sev, msg))
+                    }
+                    matched = true
+                    j = lines.size()
+                } else if (u.startsWith("error:") || u.startsWith("warning:")) {
+                    j = lines.size()
+                } else {
+                    j = j + 1
+                }
+            }
+            if (matched == false) {
+                out.add(Diag("", 1, 1, sev, msg))
+            }
+        }
+        i = i + 1
+    }
+    return out.freeze()
+}
+
+fun diagToJson(d: Diag): String {
+    val line = if (d.line > 0) d.line - 1 else 0
+    val col = if (d.col > 0) d.col - 1 else 0
+    return "{\"range\":{\"start\":{\"line\":" + line.toString() + ",\"character\":" + col.toString() + "},\"end\":{\"line\":" + line.toString() + ",\"character\":" + col.toString() + "}},\"severity\":" + d.severity.toString() + ",\"source\":\"eiwac\",\"message\":\"" + jsonEscape(d.message) + "\"}"
+}
+
+fun publishDiagnostics(uri: String) {
+    val path = uriToPath(uri)
+    if (path == "") {
+        return
+    }
+    if (File.exists(path) == false) {
+        return
+    }
+    val raw = Process.capture(eiwacBin() + " check " + path + " 2>&1")
+    val diags = checkOutputToDiags(raw)
+    var arr = ""
+    var count = 0
+    var i = 0
+    while (i < diags.size()) {
+        val d = diags.get(i)
+        if (d.file == "" || d.file == path) {
+            if (count > 0) {
+                arr = arr + ","
+            }
+            arr = arr + diagToJson(d)
+            count = count + 1
+        }
+        i = i + 1
+    }
+    writeMessage("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"" + jsonEscape(uri) + "\",\"diagnostics\":[" + arr + "]}}")
+}
+
+fun publishEmptyDiagnostics(uri: String) {
+    writeMessage("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"" + jsonEscape(uri) + "\",\"diagnostics\":[]}}")
+}

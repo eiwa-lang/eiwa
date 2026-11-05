@@ -1,0 +1,14 @@
+// main.ei — eiwa-lsp entry point (stdio transport).
+
+import { readMessage } from "transport"
+import { handleMessage } from "server"
+
+init {
+    while (true) {
+        val raw = readMessage()
+        if (raw == null) {
+            leave
+        }
+        handleMessage(raw)
+    }
+}

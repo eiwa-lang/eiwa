@@ -5,6 +5,80 @@ lib Console {
     fun fflush(stream: Pointer): Int
 }
 
+@Header("src/runtime/third_party/eiwa_stdio/stdio_helpers.h")
+@Source("src/runtime/third_party/eiwa_stdio/stdio_helpers.c")
+lib NativeStdin {
+    @Alias("eiwa_stdin")
+    fun stdinStream(): Pointer
+
+    fun fgets(buffer: Pointer, size: Int, stream: Pointer): Pointer
+
+    fun fread(buffer: Pointer, size: Int, count: Int, stream: Pointer): Int
+}
+
+object Stdin {
+    fun readLine(): String? {
+        val stream = NativeStdin.stdinStream()
+        if (stream == null) {
+            return null
+        }
+        val sb = StringBuilder()
+        var got = false
+        var more = true
+        while (more) {
+            val buf = Standard.gcMallocAtomic(4097)
+            if (NativeStdin.fgets(buf, 4096, stream) == null) {
+                more = false
+            } else {
+                got = true
+                val len = NativeString.strlen(buf)
+                sb.append(String(buf, len))
+                if (len == 0 || NativeMemory.readByte(buf, len - 1) == 10) {
+                    more = false
+                }
+            }
+        }
+        if (got == false) {
+            return null
+        }
+        val line = sb.toString()
+        var end = line.length
+        var stripping = true
+        while (stripping) {
+            if (end <= 0) {
+                stripping = false
+            } else {
+                val c = NativeMemory.readByte(line.ptr, end - 1)
+                if (c == 10 || c == 13) {
+                    end = end - 1
+                } else {
+                    stripping = false
+                }
+            }
+        }
+        return line.substring(0, end)
+    }
+
+    fun readExact(n: Int): String {
+        val stream = NativeStdin.stdinStream()
+        if (stream == null || n <= 0) {
+            return ""
+        }
+        val buf = Standard.gcMallocAtomic(n + 1)
+        var off = 0
+        while (off < n) {
+            val got = NativeStdin.fread(buf + off, 1, n - off, stream)
+            if (got <= 0) {
+                NativeMemory.writeByte(buf, off, 0)
+                return String(buf, off)
+            }
+            off = off + got
+        }
+        NativeMemory.writeByte(buf, n, 0)
+        return String(buf, n)
+    }
+}
+
 skill Echoable : Stringable {
     fun echo() {
         println(this.toString())

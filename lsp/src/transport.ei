@@ -1,0 +1,50 @@
+// transport.ei
+// LSP message framing over stdio (Content-Length headers).
+// Spec: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#headerPart
+
+fun headerValue(line: String): String? {
+    val idx = line.indexOf(":")
+    if (idx == -1) {
+        return null
+    }
+    return line.substring(idx + 1, line.length).trim()
+}
+
+fun isContentLength(line: String): Bool {
+    if (line.length < 14) {
+        return false
+    }
+    return line.substring(0, 14).lowercase() == "content-length"
+}
+
+// Reads one full LSP message body. Returns null on EOF.
+fun readMessage(): String? {
+    var length = -1
+    var more = true
+    while (more) {
+        val line = Stdin.readLine()
+        if (line == null) {
+            return null
+        }
+        if (line.isEmpty()) {
+            more = false
+        } else if (isContentLength(line)) {
+            val v = headerValue(line)
+            if (v != null) {
+                length = v.toInt()
+            }
+        }
+    }
+    if (length < 0) {
+        return null
+    }
+    if (length == 0) {
+        return ""
+    }
+    return Stdin.readExact(length)
+}
+
+// Writes one LSP message with its Content-Length framing.
+fun writeMessage(body: String) {
+    print("Content-Length: " + body.length.toString() + "\r\n\r\n" + body)
+}

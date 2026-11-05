@@ -1,0 +1,91 @@
+// analysis_test.ei — unit tests for the LSP text analysis helpers.
+
+import { scanSymbols, wordAt, takeName, findSymbol, lineAt, declKeyword } from ".lsp.src.analysis"
+import { uriToPath } from ".lsp.src.store"
+import { headerValue, isContentLength } from ".lsp.src.transport"
+import { parseTrailer, checkOutputToDiags } from ".lsp.src.diagnostics"
+
+test "takeName extracts identifiers" {
+    assert(takeName("Counter(val x: Int)") == "Counter")
+    assert(takeName("inc(): Int {") == "inc")
+    assert(takeName("_hidden123 rest") == "_hidden123")
+    assert(takeName("  spaced") == "")
+}
+
+test "declKeyword detects declaration kinds" {
+    assert(declKeyword("fun foo()") == "fun")
+    assert(declKeyword("type Bar {") == "type")
+    assert(declKeyword("contract C {") == "contract")
+    assert(declKeyword("skill S {") == "skill")
+    assert(declKeyword("object O {") == "object")
+    assert(declKeyword("enum E {") == "enum")
+    assert(declKeyword("val x = 1") == "val")
+    assert(declKeyword("var y = 2") == "var")
+    assert(declKeyword("println(x)") == "")
+    assert(declKeyword("functional()") == "")
+}
+
+test "scanSymbols finds declarations with 0-based lines" {
+    val text = "type Counter(val base: Int) {\n    fun inc(): Int {\n        return this.base\n    }\n}"
+    val syms = scanSymbols(text)
+    assert(syms.size() == 2)
+    assert(syms.get(0).name == "Counter")
+    assert(syms.get(0).line == 0)
+    assert(syms.get(1).name == "inc")
+    assert(syms.get(1).line == 1)
+    val found = findSymbol(syms, "inc")
+    assert(found != null && found.line == 1)
+    assert(findSymbol(syms, "missing") == null)
+}
+
+test "wordAt extracts the word under the cursor" {
+    assert(wordAt("    fun inc(): Int {", 9) == "inc")
+    assert(wordAt("    fun inc(): Int {", 4) == "fun")
+    assert(wordAt("type Counter(val", 7) == "Counter")
+    assert(wordAt("", 0) == "")
+    assert(wordAt("   ", 1) == "")
+}
+
+test "lineAt indexes lines safely" {
+    val text = "a\nb\nc"
+    assert(lineAt(text, 0) == "a")
+    assert(lineAt(text, 2) == "c")
+    assert(lineAt(text, 5) == "")
+}
+
+test "uriToPath strips the file scheme" {
+    assert(uriToPath("file:///tmp/x.ei") == "/tmp/x.ei")
+    assert(uriToPath("untitled:Untitled-1") == "")
+}
+
+test "transport header parsing" {
+    assert(isContentLength("Content-Length: 42") == true)
+    assert(isContentLength("content-length: 42") == true)
+    assert(isContentLength("Content-Type: foo") == false)
+    val v = headerValue("Content-Length: 42")
+    assert(v != null && v == "42")
+    assert(headerValue("no-colon") == null)
+}
+
+test "parseTrailer splits file, line and column" {
+    val d = parseTrailer("/tmp/err.ei:2:6")
+    if (d != null) {
+        assert(d.file == "/tmp/err.ei")
+        assert(d.line == 2)
+        assert(d.col == 6)
+    } else {
+        assert(false)
+    }
+    assert(parseTrailer("no-colons-here") == null)
+}
+
+test "checkOutputToDiags parses eiwac output" {
+    val raw = "\nerror: Expected Int but found String for variable 'x'.\n  --> /tmp/err.ei:2:6\n   |\n 2 |     val x: Int = \"hello\"\n   |      ^\n   |\n\n"
+    val diags = checkOutputToDiags(raw)
+    assert(diags.size() == 1)
+    assert(diags.get(0).severity == 1)
+    assert(diags.get(0).line == 2)
+    assert(diags.get(0).col == 6)
+    assert(diags.get(0).message == "Expected Int but found String for variable 'x'.")
+    assert(checkOutputToDiags("OK /tmp/ok.ei\n").size() == 0)
+}

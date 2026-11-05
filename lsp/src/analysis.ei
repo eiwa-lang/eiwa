@@ -1,0 +1,148 @@
+// analysis.ei
+// Lightweight same-file analysis: declaration scanner, word lookup,
+// keyword completion. No compiler internals — pure text scanning so hover,
+// completion, goto and symbols work even when the file has type errors.
+
+import { List, MutableList } from "std.collections"
+import { split } from "std.string"
+
+type Symbol(val name: String, val kind: String, val line: Int, val detail: String)
+
+fun isNameStartChar(c: String): Bool {
+    return "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_".indexOf(c) != -1
+}
+
+fun isNameChar(c: String): Bool {
+    if (isNameStartChar(c)) {
+        return true
+    }
+    return "0123456789".indexOf(c) != -1
+}
+
+// Takes the identifier at the start of `s` (already trimmed of keyword).
+fun takeName(s: String): String {
+    var out = ""
+    var i = 0
+    var scanning = true
+    while (scanning) {
+        if (i >= s.length) {
+            scanning = false
+        } else {
+            val c = s.charAt(i)
+            if (out.isEmpty() && isNameStartChar(c)) {
+                out = out + c
+            } else if (out.isEmpty() == false && isNameChar(c)) {
+                out = out + c
+            } else {
+                scanning = false
+            }
+        }
+        if (scanning) {
+            i = i + 1
+        }
+    }
+    return out
+}
+
+fun symbolKindLabel(kind: String): String {
+    return when (kind) {
+        "fun" -> "Function"
+        "type" -> "Type"
+        "contract" -> "Contract"
+        "skill" -> "Skill"
+        "object" -> "Object"
+        "enum" -> "Enum"
+        "val" -> "Variable"
+        "var" -> "Variable"
+        else -> "Symbol"
+    }
+}
+
+// Scans `text` line by line for top-level and member declarations.
+// Returns symbols with 0-based line numbers.
+fun scanSymbols(text: String): List<Symbol> {
+    val out: MutableList<Symbol> = MutableList<Symbol>()
+    val lines = text.split("\n")
+    var i = 0
+    while (i < lines.size()) {
+        val t = lines.get(i).trim()
+        val kw = declKeyword(t)
+        if (kw != "") {
+            val name = takeName(t.substring(kw.length, t.length).trim())
+            if (name != "") {
+                out.add(Symbol(name, kw, i, t))
+            }
+        }
+        i = i + 1
+    }
+    return out.freeze()
+}
+
+fun declKeyword(t: String): String {
+    if (t.startsWith("fun ")) { return "fun" }
+    if (t.startsWith("type ")) { return "type" }
+    if (t.startsWith("contract ")) { return "contract" }
+    if (t.startsWith("skill ")) { return "skill" }
+    if (t.startsWith("object ")) { return "object" }
+    if (t.startsWith("enum ")) { return "enum" }
+    if (t.startsWith("val ")) { return "val" }
+    if (t.startsWith("var ")) { return "var" }
+    return ""
+}
+
+// LSP character (UTF-16 units; == bytes for ASCII) -> word under cursor.
+fun wordAt(lineText: String, character: Int): String {
+    if (lineText.isEmpty()) {
+        return ""
+    }
+    var pos = character
+    if (pos > lineText.length) {
+        pos = lineText.length
+    }
+    var start = pos
+    while (start > 0) {
+        if (isNameChar(lineText.charAt(start - 1))) {
+            start = start - 1
+        } else {
+            leave
+        }
+    }
+    var end = pos
+    while (end < lineText.length) {
+        if (isNameChar(lineText.charAt(end))) {
+            end = end + 1
+        } else {
+            leave
+        }
+    }
+    if (start >= end) {
+        return ""
+    }
+    return lineText.substring(start, end)
+}
+
+fun findSymbol(symbols: List<Symbol>, name: String): Symbol? {
+    var i = 0
+    while (i < symbols.size()) {
+        if (symbols.get(i).name == name) {
+            return symbols.get(i)
+        }
+        i = i + 1
+    }
+    return null
+}
+
+fun lineAt(text: String, line: Int): String {
+    val lines = text.split("\n")
+    if (line < 0 || line >= lines.size()) {
+        return ""
+    }
+    return lines.get(line)
+}
+
+fun lspKeywords(): List<String> {
+    return ["type", "contract", "skill", "object", "enum", "fun", "val", "var",
+        "import", "if", "else", "when", "is", "for", "while", "leave", "return",
+        "try", "catch", "throw", "task", "init", "test", "implement", "operator",
+        "in", "of", "as", "null", "true", "false", "this", "it"]
+}

@@ -1,0 +1,3 @@
+name: eiwa-lsp
+version: 0.1.0
+output: bin/eiwa-lsp

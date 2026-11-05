@@ -2,8 +2,8 @@
 # Eiwa installer — `curl -fsSL https://eiwa.dev/install.sh | sh`
 #
 # Downloads the latest Eiwa release from GitHub Releases and installs it to
-# ~/.local/share/eiwa (override with EIWA_INSTALL_DIR), symlinking `eiwa` and
-# `eiwac` into ~/.local/bin (override with EIWA_BIN_DIR).
+# ~/.local/share/eiwa (override with EIWA_INSTALL_DIR), symlinking `eiwa`,
+# `eiwac` and `eiwa-lsp` into ~/.local/bin (override with EIWA_BIN_DIR).
 #
 # Prerequisites (not bundled — the binaries link them dynamically):
 #   - LLVM 21+   (Linux: sudo apt install llvm-21-dev | macOS: brew install llvm@21)
@@ -75,11 +75,12 @@ say "Installing Eiwa $VERSION to $INSTALL_DIR"
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$TMP_DIR/$TARBALL" -C "$INSTALL_DIR" --strip-components=1
-chmod +x "$INSTALL_DIR/bin/eiwac" "$INSTALL_DIR/bin/eiwa"
+chmod +x "$INSTALL_DIR/bin/eiwac" "$INSTALL_DIR/bin/eiwa" "$INSTALL_DIR/bin/eiwa-lsp"
 
 # --- symlink into bin dir ---
 ln -sf "$INSTALL_DIR/bin/eiwac" "$BIN_DIR/eiwac"
 ln -sf "$INSTALL_DIR/bin/eiwa" "$BIN_DIR/eiwa"
+ln -sf "$INSTALL_DIR/bin/eiwa-lsp" "$BIN_DIR/eiwa-lsp"
 
 # --- create env helper ---
 cat << EOF > "$INSTALL_DIR/env"

@@ -95,6 +95,15 @@ jobs:
             EIWA_BASELINE_CPU=1 ./bin/eiwac build -o bin/eiwa cli/src/main.ei
           fi
 
+      - name: Build eiwa-lsp
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EIWA_BASELINE_CPU=1 ./bin/eiwac.exe build -o bin/eiwa-lsp.exe lsp/src/main.ei
+          else
+            EIWA_BASELINE_CPU=1 ./bin/eiwac build -o bin/eiwa-lsp lsp/src/main.ei
+          fi
+
       - name: Package tarball & zip
         shell: bash
         run: |
@@ -107,9 +116,10 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             [ -f bin/eiwac.exe ] && cp bin/eiwac.exe "$STAGE/bin/" || cp bin/eiwac "$STAGE/bin/eiwac.exe"
             [ -f bin/eiwa.exe ] && cp bin/eiwa.exe "$STAGE/bin/" || cp bin/eiwa "$STAGE/bin/eiwa.exe"
+            [ -f bin/eiwa-lsp.exe ] && cp bin/eiwa-lsp.exe "$STAGE/bin/" || cp bin/eiwa-lsp "$STAGE/bin/eiwa-lsp.exe"
             [ -f install.ps1 ] && cp install.ps1 "$STAGE/"
           else
-            cp bin/eiwac bin/eiwa "$STAGE/bin/"
+            cp bin/eiwac bin/eiwa bin/eiwa-lsp "$STAGE/bin/"
             [ -f install.sh ] && cp install.sh "$STAGE/"
           fi
 
