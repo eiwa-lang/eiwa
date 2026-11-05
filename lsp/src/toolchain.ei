@@ -1,0 +1,46 @@
+// toolchain.ei
+// Locating the Eiwa toolchain: the compiler binary itself is the single
+// source of truth for the stdlib sources (`eiwac --print-std-dir`, like
+// `rustc --print sysroot` / `go env GOROOT`). `EIWA_SRC` remains as a manual
+// override (rust-analyzer `RUST_SRC_PATH` style).
+
+import { File } from "std.fs"
+import { Process } from "std.process"
+import { Env } from "std.env"
+import { split } from "std.string"
+
+fun eiwacBin(): String {
+    val configured = Env.get("EIWAC")
+    if (configured == null) {
+        return "eiwac"
+    }
+    if (configured == "") {
+        return "eiwac"
+    }
+    return configured
+}
+
+object Toolchain {
+    var stdDir: String = ""
+    var probed: Bool = false
+}
+
+// Standard library source directory, probed once and cached.
+// "" when the toolchain cannot say (eiwac missing from PATH, no sources).
+fun probeStdDir(): String {
+    if (Toolchain.probed) {
+        return Toolchain.stdDir
+    }
+    Toolchain.probed = true
+    val override = Env.get("EIWA_SRC")
+    if (override != null && override != "") {
+        Toolchain.stdDir = override
+        return Toolchain.stdDir
+    }
+    val raw = Process.capture(eiwacBin() + " --print-std-dir 2>&1")
+    val first = raw.split("\n").get(0).trim()
+    if (first != "" && File.exists(first + "/core.ei")) {
+        Toolchain.stdDir = first
+    }
+    return Toolchain.stdDir
+}

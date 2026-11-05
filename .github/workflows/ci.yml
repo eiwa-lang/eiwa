@@ -111,6 +111,19 @@ jobs:
             ./bin/eiwac test
           fi
 
+      - name: LSP end-to-end (stdio JSON-RPC)
+        shell: bash
+        run: |
+          # EIWAC lets the language server (and its checks) find the
+          # just-built compiler regardless of PATH.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EIWA_BASELINE_CPU=1 ./bin/eiwac.exe build -o lsp/bin/eiwa-lsp.exe lsp/src/main.ei
+            EIWAC="$PWD/bin/eiwac.exe" python lsp/test/e2e_lsp.py lsp/bin/eiwa-lsp.exe
+          else
+            EIWA_BASELINE_CPU=1 ./bin/eiwac build -o lsp/bin/eiwa-lsp lsp/src/main.ei
+            EIWAC="$PWD/bin/eiwac" python3 lsp/test/e2e_lsp.py lsp/bin/eiwa-lsp
+          fi
+
       - name: Smoke test (run sample)
         shell: bash
         run: |

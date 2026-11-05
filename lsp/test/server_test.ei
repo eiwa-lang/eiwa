@@ -1,0 +1,121 @@
+// server_test.ei — unit tests for server dispatch helpers, the document
+// store and label mappings. The JSON-RPC loop itself is covered by the
+// stdio end-to-end script (lsp/test/e2e_lsp.py).
+
+import { DocStore, uriToPath, pathToUri, canonicalPath, Workspace } from ".lsp.src.store"
+import { scanSymbols, findBestSymbol, symbolKindLabel, quotedName } from ".lsp.src.analysis"
+import { resolveMemberTarget, findCrossFile, completionKind } from ".lsp.src.server"
+import { File } from "std.fs"
+import { Dir } from "std.fs"
+
+test "DocStore tracks open documents" {
+    DocStore.open("file:///a.ei", "hello", 1)
+    val d = DocStore.get("file:///a.ei")
+    if (d == null) {
+        assert(false)
+    } else {
+        assert(d.text == "hello")
+        assert(d.version == 1)
+    }
+    assert(DocStore.textOf("file:///a.ei") == "hello")
+    DocStore.change("file:///a.ei", "bye", 2)
+    assert(DocStore.textOf("file:///a.ei") == "bye")
+    DocStore.close("file:///a.ei")
+    assert(DocStore.get("file:///a.ei") == null)
+    assert(DocStore.textOf("file:///missing.ei") == null)
+}
+
+test "uriToPath and pathToUri round-trip" {
+    assert(uriToPath("file:///tmp/x.ei") == "/tmp/x.ei")
+    assert(uriToPath("untitled:1") == "")
+    assert(pathToUri("/tmp/x.ei") == "file:///tmp/x.ei")
+}
+
+test "canonicalPath falls back and resolves" {
+    assert(canonicalPath("/nonexistent-eiwa-xyz") == "/nonexistent-eiwa-xyz")
+    assert(canonicalPath("/tmp").endsWith("tmp"))
+}
+
+test "symbolKindLabel covers every kind" {
+    assert(symbolKindLabel("fun") == "Function")
+    assert(symbolKindLabel("implement") == "Method")
+    assert(symbolKindLabel("type") == "Type")
+    assert(symbolKindLabel("contract") == "Contract")
+    assert(symbolKindLabel("skill") == "Skill")
+    assert(symbolKindLabel("object") == "Object")
+    assert(symbolKindLabel("enum") == "Enum")
+    assert(symbolKindLabel("union") == "Union")
+    assert(symbolKindLabel("lib") == "Library")
+    assert(symbolKindLabel("test") == "Test")
+    assert(symbolKindLabel("variant") == "Variant")
+    assert(symbolKindLabel("val") == "Variable")
+    assert(symbolKindLabel("other") == "Symbol")
+}
+
+test "completionKind is stable" {
+    assert(completionKind("fun") == 3)
+    assert(completionKind("type") == 7)
+    assert(completionKind("contract") == 8)
+    assert(completionKind("object") == 6)
+    assert(completionKind("enum") == 13)
+    assert(completionKind("unknown-kind") == 6)
+}
+
+test "quotedName extracts test names" {
+    assert(quotedName("test \"flight delay\" {") == "flight delay")
+    assert(quotedName("println(x)") == "")
+    assert(quotedName("test \"oops {") == "")
+}
+
+test "resolveMemberTarget finds same-file members" {
+    val text = "type Box {\n    fun open(): Bool {\n        return true\n    }\n}\ninit {\n    val b = Box()\n    println(b.open())\n}\n"
+    val hit = resolveMemberTarget(text, "file:///m.ei", 7, 18, "open")
+    assert(hit.found)
+    assert(hit.uri == "file:///m.ei")
+    assert(hit.line == 1)
+    assert(hit.kind == "fun")
+}
+
+test "resolveMemberTarget infers local receiver types" {
+    val text = "type Bag {\n    fun take(): Int {\n        return 1\n    }\n}\nfun use(b: Bag) {\n    b.take()\n}\n"
+    val hit = resolveMemberTarget(text, "file:///m.ei", 6, 7, "take")
+    assert(hit.found)
+    assert(hit.uri == "file:///m.ei")
+    assert(hit.line == 1)
+}
+
+test "resolveMemberTarget ignores non-dotted words" {
+    val text = "fun open(): Bool {\n    return true\n}\n"
+    assert(resolveMemberTarget(text, "file:///m.ei", 0, 6, "open").found == false)
+    assert(resolveMemberTarget(text, "file:///m.ei", 0, 6, "missing") == false)
+    assert(resolveMemberTarget("x.read()", "file:///m.ei", 0, 4, "read").found == false)
+}
+
+test "findCrossFile jumps to synthesized contract methods" {
+    Workspace.root = ""
+    val text = "init {\n    val n = 42\n    println(n.toString())\n}\n"
+    val hit = findCrossFile(text, "file:///m.ei", "toString")
+    assert(hit.found)
+    assert(hit.uri.endsWith("std/core.ei"))
+    assert(hit.kind == "fun")
+    assert(hit.detail.contains("toString"))
+    assert(findCrossFile(text, "file:///m.ei", "zzz_nope").found == false)
+}
+
+test "findCrossFile resolves cross-file members" {
+    if (Dir.exists("/tmp/lspcross/libs/mylib/src") == false) {
+        Dir.mkdir("/tmp/lspcross")
+        Dir.mkdir("/tmp/lspcross/libs")
+        Dir.mkdir("/tmp/lspcross/libs/mylib")
+        Dir.mkdir("/tmp/lspcross/libs/mylib/src")
+    }
+    File.write("/tmp/lspcross/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
+    File.write("/tmp/lspcross/libs/mylib/src/mylib.ei", "type Box {\n    fun open(): Bool {\n        return true\n    }\n}\n")
+    Workspace.root = "/tmp/lspcross"
+    val text = "import { Box } from \"mylib\"\ninit {\n    val b = Box()\n    println(b.open())\n}\n"
+    val hit = findCrossFile(text, "file:///tmp/lspcross/src/main.ei", "open")
+    assert(hit.found)
+    assert(hit.uri.endsWith("/tmp/lspcross/libs/mylib/src/mylib.ei"))
+    assert(hit.line == 1)
+    Workspace.root = ""
+}

@@ -1,9 +1,18 @@
 // analysis_test.ei — unit tests for the LSP text analysis helpers.
 
-import { scanSymbols, wordAt, takeName, findSymbol, lineAt, declKeyword } from ".lsp.src.analysis"
+import { scanSymbols, wordAt, takeName, findSymbol, findBestSymbol, findTopLevel, findContract, findContractMethod, findMember, receiverAt, isCapitalized, indexOfWord, inferReceiverType, enclosingHolder, findImplementations, containsWord, scanImports, resolveModule, resolveInRoot, lineAt, declKeyword } from ".lsp.src.analysis"
+import { implicitModule, synthesisContract } from ".lsp.src.index"
 import { uriToPath } from ".lsp.src.store"
 import { headerValue, isContentLength } from ".lsp.src.transport"
 import { parseTrailer, checkOutputToDiags } from ".lsp.src.diagnostics"
+import { probeStdDir } from ".lsp.src.toolchain"
+import { scanDeps, depSrcDirs, extraRoots, findModuleFile, importFileTarget } from ".lsp.src.deps"
+import { strLess } from ".lsp.src.index"
+import { contractFile } from ".lsp.src.index"
+import { uriToPath, Workspace } from ".lsp.src.store"
+import { File } from "std.fs"
+import { Dir } from "std.fs"
+import { Env } from "std.env"
 
 test "takeName extracts identifiers" {
     assert(takeName("Counter(val x: Int)") == "Counter")
@@ -12,6 +21,128 @@ test "takeName extracts identifiers" {
     assert(takeName("  spaced") == "")
 }
 
+test "receiverAt extracts dotted receivers" {
+    assert(receiverAt("    val f = File.read(path)", 18) == "File")
+    assert(receiverAt("    val f = File.read(path)", 12) == "")
+    assert(receiverAt("x.read()", 6) == "x")
+    assert(receiverAt("println(x)", 5) == "")
+}
+
+test "isCapitalized detects types" {
+    assert(isCapitalized("File"))
+    assert(isCapitalized("file") == false)
+    assert(isCapitalized("") == false)
+}
+
+test "findMember stays inside the holder body" {
+    val text = "type Counter(val base: Int) {\n    var count: Int = 0\n    fun inc(): Int {\n        return 1\n    }\n}\ntype Other {\n    fun inc(): Int {\n        return 2\n    }\n}"
+    val syms = scanSymbols(text)
+    val m = findMember(syms, 0, "inc")
+    if (m != null) {
+        assert(m.line == 2)
+    } else {
+        assert(false)
+    }
+    assert(findMember(syms, 0, "missing") == null)
+}
+
+test "scanSymbols registers variants and tests" {
+    val syms = scanSymbols("enum LogLevel {\n    DEBUG,\n    INFO\n}\ntest \"ok\" {\n}")
+    assert(findSymbol(syms, "DEBUG") != null)
+    assert(findSymbol(syms, "INFO") != null)
+    assert(findSymbol(syms, "LogLevel") != null)
+    assert(findSymbol(syms, "ok") != null)
+}
+test "synthesisContract maps generated methods" {
+    assert(synthesisContract("toString") == "Stringable")
+    assert(synthesisContract("equals") == "Equatable")
+    assert(synthesisContract("hashCode") == "Hashable")
+    assert(synthesisContract("draw") == "")
+}
+
+test "strLess orders byte-wise" {
+    assert(strLess("abc", "abd"))
+    assert(strLess("abc", "abcd"))
+    assert(strLess("core.ei", "uuid.ei"))
+    assert(strLess("a", "b"))
+    assert(strLess("a", "a") == false)
+}
+
+test "contractFile locates declaring files" {
+    assert(contractFile("Stringable").endsWith("std/core.ei"))
+    assert(contractFile("Awaitable").endsWith("std/core.ei"))
+    assert(contractFile("Nope") == "")
+}
+
+test "findContract locates contracts by name" {
+    val text = "contract Drawable {\n    fun draw()\n}\ntype Button : Drawable {\n    implement fun draw() {\n    }\n}"
+    val syms = scanSymbols(text)
+    val c = findContract(syms, "Drawable")
+    if (c != null) {
+        assert(c.line == 0)
+    } else {
+        assert(false)
+    }
+    assert(findContract(syms, "Missing") == null)
+}
+
+test "findContractMethod locates the method inside the contract" {
+    val text = "contract Drawable {\n    fun draw()\n}\ntype Button : Drawable {\n    implement fun draw() {\n    }\n}"
+    val syms = scanSymbols(text)
+    val m = findContractMethod(syms, "Drawable", "draw")
+    if (m != null) {
+        assert(m.line == 1)
+        assert(m.kind == "fun")
+    } else {
+        assert(false)
+    }
+    assert(findContractMethod(syms, "Drawable", "missing") == null)
+    assert(findContractMethod(syms, "Missing", "draw") == null)
+}
+
+test "declKeyword detects implement" {
+    assert(declKeyword("implement fun draw()") == "implement")
+}
+
+test "scanSymbols detects implement methods" {
+    val text = "contract Drawable {\n    fun draw()\n}\ntype Button : Drawable {\n    implement fun draw() {\n        println(\"b\")\n    }\n}"
+    val syms = scanSymbols(text)
+    var found = false
+    var i = 0
+    while (i < syms.size()) {
+        if (syms.get(i).name == "draw" && syms.get(i).kind == "implement") {
+            found = true
+        }
+        i = i + 1
+    }
+    assert(found)
+}
+
+test "findImplementations resolves contract methods" {
+    val text = "contract Drawable {\n    fun draw()\n}\ntype Button : Drawable {\n    implement fun draw() {\n    }\n}\ntype Label : Drawable {\n    implement fun draw() {\n    }\n}"
+    val syms = scanSymbols(text)
+    val impls = findImplementations(syms, "draw")
+    assert(impls.size() == 2)
+    assert(impls.get(0).line == 4)
+    assert(impls.get(1).line == 8)
+    assert(findImplementations(syms, "missing").size() == 0)
+}
+
+test "findImplementations resolves contract to types" {
+    val text = "contract Drawable {\n    fun draw()\n}\ntype Button : Drawable {\n}\ntype Plain {\n}"
+    val syms = scanSymbols(text)
+    val impls = findImplementations(syms, "Drawable")
+    assert(impls.size() == 1)
+    assert(impls.get(0).name == "Button")
+}
+
+test "containsWord respects identifier boundaries" {
+    assert(containsWord("type Button : Drawable + Shadow {", "Drawable"))
+    assert(containsWord("Drawable2", "Drawable") == false)
+    assert(containsWord("MyDrawable", "Drawable") == false)
+    assert(containsWord("Drawable", "Drawable"))
+    assert(containsWord("", "Drawable") == false)
+}
 test "declKeyword detects declaration kinds" {
     assert(declKeyword("fun foo()") == "fun")
     assert(declKeyword("type Bar {") == "type")
@@ -23,6 +154,239 @@ test "declKeyword detects declaration kinds" {
     assert(declKeyword("var y = 2") == "var")
     assert(declKeyword("println(x)") == "")
     assert(declKeyword("functional()") == "")
+}
+
+test "scanImports parses single-line imports" {
+    val imps = scanImports("import { add, Vector } from \"math\"\ninit {\n}")
+    assert(imps.size() == 1)
+    assert(imps.get(0).path == "math")
+    assert(imps.get(0).names.size() == 2)
+    assert(imps.get(0).names.get(0) == "add")
+    assert(imps.get(0).names.get(1) == "Vector")
+}
+
+test "scanImports parses wrapped imports" {
+    val imps = scanImports("import { trim, isSpace,\n    parseTopField } from \"helpers\"\n")
+    assert(imps.size() == 1)
+    assert(imps.get(0).path == "helpers")
+    assert(imps.get(0).names.size() == 3)
+    assert(scanImports("println(x)").size() == 0)
+}
+
+test "resolveModule follows Eiwa path rules" {
+    assert(resolveModule("/proj/src/main.ei", "util.helpers", "/proj") == "/proj/src/util/helpers.ei")
+    assert(resolveModule("/proj/src/main.ei", ".consts", "/proj") == "/proj/consts.ei")
+    assert(resolveModule("/proj/src/main.ei", ".lib.strings", "/proj") == "/proj/lib/strings.ei")
+    assert(resolveModule("/proj/src/main.ei", ".consts", "") == "")
+    assert(resolveModule("/proj/src/main.ei", "", "/proj") == "")
+    val stdPath = resolveModule("/proj/src/main.ei", "std.collections", "/proj")
+    assert(stdPath == "" || stdPath.endsWith("std/collections.ei"))
+}
+
+test "probeStdDir finds real std sources" {
+    val dir = probeStdDir()
+    assert(dir == "" || File.exists(dir + "/core.ei"))
+}
+
+test "findTopLevel ignores members" {
+    val syms = scanSymbols("type Box {\n    fun open(): Bool {\n        return true\n    }\n}\n")
+    assert(findTopLevel(syms, "open") == null)
+    assert(findTopLevel(syms, "Box") != null)
+    assert(findTopLevel(syms, "missing") == null)
+}
+
+test "implicitModule prefers top-level declarations" {
+    assert(implicitModule("sleep") == "std.system")
+    assert(implicitModule("println") == "std.io")
+    assert(implicitModule("toString") == "")
+    assert(implicitModule("parseJson") == "std.json")
+}
+
+test "multiline headers keep the container" {
+    val text = "type TaskScheduler(\n    val mutex: Int\n) {\n    fun sleep(): Int {\n        return 1\n    }\n}\nfun top() {\n}\n"
+    val syms = scanSymbols(text)
+    val m = findBestSymbol(syms, "sleep")
+    if (m != null) {
+        assert(m.container == "TaskScheduler")
+    } else {
+        assert(false)
+    }
+    val top = findBestSymbol(syms, "top")
+    if (top != null) {
+        assert(top.container == "")
+    } else {
+        assert(false)
+    }
+}
+
+test "comments do not reset the container" {
+    val text = "type A {\n// standalone comment\n    fun f(): Int {\n        return 1\n    }\n}\n"
+    val syms = scanSymbols(text)
+    val m = findBestSymbol(syms, "f")
+    if (m != null) {
+        assert(m.container == "A")
+    } else {
+        assert(false)
+    }
+}
+test "implicitModule maps stdlib names" {
+    assert(implicitModule("repeat") == "std.system")
+    assert(implicitModule("task") == "std.coroutines")
+    assert(implicitModule("println") == "std.io")
+    assert(implicitModule("Console") == "std.io")
+    assert(implicitModule("File") == "std.fs")
+    assert(implicitModule("NativeFS") == "std.fs")
+    assert(implicitModule("Socket") == "std.net")
+    assert(implicitModule("NativeProcess") == "std.process")
+    assert(implicitModule("SerdeInt") == "std.serde")
+    assert(implicitModule("YamlParser") == "std.yaml")
+    assert(implicitModule("it") == "")
+    assert(implicitModule("myVar") == "")
+}
+
+test "implicitModule is derived from sources, not a list" {
+    assert(implicitModule("daysInMonth") == "std.time")
+    assert(implicitModule("xyzzy") == "")
+    assert(synthesisContract("await") == "Awaitable")
+    assert(synthesisContract("parseJson") == "")
+}
+
+test "scanSymbols tracks containers" {
+    val syms = scanSymbols("type Counter {\n    fun inc(): Int {\n        return 1\n    }\n}\nfun top() {\n}\n")
+    val inc = findSymbol(syms, "inc")
+    if (inc != null) {
+        assert(inc.container == "Counter")
+        assert(inc.kind == "fun")
+    } else {
+        assert(false)
+    }
+    val top = findSymbol(syms, "top")
+    if (top != null) {
+        assert(top.container == "")
+    } else {
+        assert(false)
+    }
+    assert(findSymbol(syms, "Counter") != null)
+}
+
+test "declKeyword detects lib and qualified object" {
+    assert(declKeyword("lib Console {") == "lib")
+    assert(declKeyword("lib(\"posix\") PosixProcess {") == "lib")
+    assert(declKeyword("object(\"posix\") NativeProcess : X {") == "object")
+    val syms = scanSymbols("object(\"posix\") NativeProcess : X {\n}\nlib NativeFS {\n}")
+    assert(findSymbol(syms, "NativeProcess") != null)
+    assert(findSymbol(syms, "NativeFS") != null)
+}
+
+test "declKeyword detects union" {
+    assert(declKeyword("union Step {") == "union")
+}
+
+test "findBestSymbol prefers callables over locals" {
+    val text = "fun task() {\n}\nval task = 1"
+    val syms = scanSymbols(text)
+    val best = findBestSymbol(syms, "task")
+    if (best != null) {
+        assert(best.kind == "fun")
+        assert(best.line == 0)
+    } else {
+        assert(false)
+    }
+    assert(findBestSymbol(syms, "missing") == null)
+}
+
+test "indexOfWord respects boundaries and offsets" {
+    assert(indexOfWord("val b = Box()", "b", 0) == 4)
+    assert(indexOfWord("b b", "b", 1) == 2)
+    assert(indexOfWord("abc", "b", 5) == -1)
+    assert(indexOfWord("abc", "", 0) == -1)
+}
+
+test "inferReceiverType reads declarations" {
+    val text = "fun f(b: Box) {\n    b.open()\n}\nval p: Pair = Pair()\nprintln(p)\nval n = 5\nprintln(n)\nif (x == y) {\n}\n"
+    assert(inferReceiverType(text, 1, "b") == "Box")
+    assert(inferReceiverType(text, 4, "p") == "Pair")
+    assert(inferReceiverType(text, 6, "n") == "")
+    assert(inferReceiverType(text, 7, "x") == "")
+    assert(inferReceiverType(text, 7, "y") == "")
+    assert(inferReceiverType(text, 1, "this") == "")
+    assert(inferReceiverType(text, 1, "") == "")
+}
+
+test "enclosingHolder finds the lexically enclosing type" {
+    val text = "type A {\n    fun f() {\n        println(this.g())\n    }\n}\ntype B {\n}\n"
+    assert(enclosingHolder(text, 2) == "A")
+    assert(enclosingHolder(text, 6) == "B")
+    assert(enclosingHolder("init {\n}\n", 0) == "")
+}
+test "scanDeps parses freeze manifests" {
+    val raw = "dependencies:\n  html:\n    github: eiwa-lang/html\n    branch: main\n    commit: abc123\n  local:\n    path: ../libs/local\n"
+    val deps = scanDeps(raw)
+    assert(deps.size() == 2)
+    assert(deps.get(0).name == "html")
+    assert(deps.get(0).commit == "abc123")
+    assert(deps.get(0).path == "")
+    assert(deps.get(1).name == "local")
+    assert(deps.get(1).path == "../libs/local")
+    assert(scanDeps("name: app\n").size() == 0)
+}
+
+test "resolveInRoot maps dotted paths" {
+    assert(resolveInRoot("arest.arest", "/r/html/abc/src") == "/r/html/abc/src/arest/arest.ei")
+    assert(resolveInRoot("html", "/r/html/abc/src") == "/r/html/abc/src/html.ei")
+    assert(resolveInRoot("", "/r") == "")
+}
+
+test "extraRoots reads EIWA_MODULE_PATH" {
+    Env.unset("EIWA_MODULE_PATH")
+    assert(extraRoots().size() == 0)
+    Env.set("EIWA_MODULE_PATH", "/tmp/a:/tmp/b")
+    assert(extraRoots().size() == 2)
+    assert(extraRoots().get(1) == "/tmp/b")
+    Env.unset("EIWA_MODULE_PATH")
+    assert(extraRoots().size() == 0)
+}
+
+test "findModuleFile falls back to EIWA_MODULE_PATH" {
+    if (Dir.exists("/tmp/lspmod_extra") == false) {
+        Dir.mkdir("/tmp/lspmod_extra")
+    }
+    File.write("/tmp/lspmod_extra/utilx.ei", "fun utilx(): Int {\n    return 1\n}\n")
+    Env.set("EIWA_MODULE_PATH", "/tmp/lspmod_extra")
+    assert(findModuleFile("/tmp/lspmod/a.ei", "utilx", "") == "/tmp/lspmod_extra/utilx.ei")
+    assert(findModuleFile("/tmp/lspmod/a.ei", "missing", "") == "")
+    Env.unset("EIWA_MODULE_PATH")
+}
+
+test "depSrcDirs resolves path deps against the project root" {
+    if (Dir.exists("/tmp/lspproj/libs/mylib/src") == false) {
+        Dir.mkdir("/tmp/lspproj")
+        Dir.mkdir("/tmp/lspproj/libs")
+        Dir.mkdir("/tmp/lspproj/libs/mylib")
+        Dir.mkdir("/tmp/lspproj/libs/mylib/src")
+    }
+    File.write("/tmp/lspproj/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
+    File.write("/tmp/lspproj/libs/mylib/src/mylib.ei", "fun hello(): String {\n    return \"hi\"\n}\n")
+    val dirs = depSrcDirs("/tmp/lspproj", "mylib")
+    assert(dirs.size() == 1)
+    assert(dirs.get(0) == "/tmp/lspproj/libs/mylib/src")
+    assert(findModuleFile("/tmp/lspproj/src/main.ei", "mylib", "/tmp/lspproj") == "/tmp/lspproj/libs/mylib/src/mylib.ei")
+}
+
+test "importFileTarget opens the imported module" {
+    if (Dir.exists("/tmp/lspproj2/libs/mylib/src") == false) {
+        Dir.mkdir("/tmp/lspproj2")
+        Dir.mkdir("/tmp/lspproj2/libs")
+        Dir.mkdir("/tmp/lspproj2/libs/mylib")
+        Dir.mkdir("/tmp/lspproj2/libs/mylib/src")
+    }
+    File.write("/tmp/lspproj2/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
+    File.write("/tmp/lspproj2/libs/mylib/src/mylib.ei", "fun hello(): String {\n    return \"hi\"\n}\n")
+    Workspace.root = "/tmp/lspproj2"
+    val text = "import { hello } from \"mylib\"\ninit {\n    println(hello())\n}\n"
+    assert(importFileTarget(text, "file:///tmp/lspproj2/src/main.ei", "mylib") == "/tmp/lspproj2/libs/mylib/src/mylib.ei")
+    assert(importFileTarget(text, "file:///tmp/lspproj2/src/main.ei", "other") == "")
+    Workspace.root = ""
 }
 
 test "scanSymbols finds declarations with 0-based lines" {

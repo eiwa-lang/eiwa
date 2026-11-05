@@ -1,0 +1,214 @@
+// deps.ei
+// Project dependency resolution for go-to-definition into ecosystem packages.
+// Mirrors the `eiwa` CLI layout: `path:` deps resolve against the project
+// root, pinned (`commit:`) deps against `$HOME/.eiwa/repository/<name>/<commit>/src`.
+// Unpinned deps fall back to whichever commit checkouts contain the module.
+// `EIWA_MODULE_PATH` (colon-separated, `;` on Windows paths) adds extra roots.
+
+import { List, MutableList } from "std.collections"
+import { File, Dir } from "std.fs"
+import { Env } from "std.env"
+import { split } from "std.string"
+import { resolveModule, resolveInRoot, scanImports } from "analysis"
+import { Workspace, uriToPath } from "store"
+
+type Dep(val name: String, var path: String, var commit: String)
+
+fun unquote(s: String): String {
+    if (s.length >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
+        return s.substring(1, s.length - 1)
+    }
+    return s
+}
+
+// Minimal parser for the `dependencies:` section of `eiwa.yaml`/`eiwa.freeze`:
+// two-space `  name:` entries with four-space `path:`/`commit:` fields.
+fun scanDeps(text: String): List<Dep> {
+    val out: MutableList<Dep> = MutableList<Dep>()
+    val lines = text.split("\n")
+    var inDeps = false
+    var i = 0
+    while (i < lines.size()) {
+        val raw = lines.get(i)
+        val t = raw.trim()
+        if (t == "dependencies:") {
+            inDeps = true
+        } else if (inDeps) {
+            if (raw.startsWith("    ")) {
+                val c = t.indexOf(":")
+                if (c != -1 && out.size() > 0) {
+                    val key = t.substring(0, c).trim()
+                    val value = unquote(t.substring(c + 1, t.length).trim())
+                    val cur = out.get(out.size() - 1)
+                    if (key == "path") {
+                        cur.path = value
+                    }
+                    if (key == "commit") {
+                        cur.commit = value
+                    }
+                }
+            } else if (raw.startsWith("  ") && t.endsWith(":") && t.contains(" ") == false) {
+                out.add(Dep(t.substring(0, t.length - 1), "", ""))
+            } else if (raw.startsWith(" ") == false && t != "" && t.indexOf(":") != -1) {
+                inDeps = false
+            }
+        }
+        i = i + 1
+    }
+    return out.freeze()
+}
+
+fun repoRoot(): String {
+    val home = Env.get("HOME")
+    if (home != null) {
+        if (home != "") {
+            return home + "/.eiwa/repository"
+        }
+    }
+    val profile = Env.get("USERPROFILE")
+    if (profile != null) {
+        if (profile != "") {
+            return profile + "/.eiwa/repository"
+        }
+    }
+    return ""
+}
+
+// Extra module roots from the environment (same role as the compiler's
+// repeated `--module-path` flag).
+fun extraRoots(): List<String> {
+    val out: MutableList<String> = MutableList<String>()
+    val extra = Env.get("EIWA_MODULE_PATH")
+    if (extra != null) {
+        if (extra != "") {
+            val sep = if (extra.contains(";")) ";" else ":"
+            val parts = extra.split(sep)
+            var i = 0
+            while (i < parts.size()) {
+                val p = parts.get(i).trim()
+                if (p != "") {
+                    out.add(p)
+                }
+                i = i + 1
+            }
+        }
+    }
+    return out.freeze()
+}
+
+fun manifestFile(root: String): String {
+    if (root == "") {
+        return ""
+    }
+    if (File.exists(root + "/eiwa.freeze")) {
+        return root + "/eiwa.freeze"
+    }
+    if (File.exists(root + "/eiwa.yaml")) {
+        return root + "/eiwa.yaml"
+    }
+    return ""
+}
+
+// Candidate `src/` dirs that can provide `pkg` (an ecosystem dependency).
+fun depSrcDirs(root: String, pkg: String): List<String> {
+    val out: MutableList<String> = MutableList<String>()
+    if (root == "" || pkg == "") {
+        return out.freeze()
+    }
+    val manifest = manifestFile(root)
+    if (manifest == "") {
+        return out.freeze()
+    }
+    val deps = scanDeps(File.read(manifest))
+    var d = 0
+    while (d < deps.size()) {
+        val dep = deps.get(d)
+        if (dep.name == pkg) {
+            if (dep.path != "") {
+                out.add(root + "/" + dep.path + "/src")
+            } else if (dep.commit != "") {
+                val repo = repoRoot()
+                if (repo != "") {
+                    out.add(repo + "/" + pkg + "/" + dep.commit + "/src")
+                }
+            } else {
+                val repo = repoRoot()
+                if (repo != "") {
+                    val base = repo + "/" + pkg
+                    val commits = Dir.names(base)
+                    var c = 0
+                    while (c < commits.size()) {
+                        out.add(base + "/" + commits.get(c) + "/src")
+                        c = c + 1
+                    }
+                }
+            }
+        }
+        d = d + 1
+    }
+    return out.freeze()
+}
+
+// Resolves a bare `a.b.c` module against one file + all known roots,
+// returning the first path that exists on disk ("" when none does).
+fun findModuleFile(currentPath: String, mod: String, root: String): String {
+    if (currentPath == "" || mod == "") {
+        return ""
+    }
+    if (mod.startsWith(".") || mod.startsWith("std.")) {
+        val cand = resolveModule(currentPath, mod, root)
+        if (cand != "" && File.exists(cand)) {
+            return cand
+        }
+        return ""
+    }
+    val direct = resolveModule(currentPath, mod, root)
+    if (direct != "" && File.exists(direct)) {
+        return direct
+    }
+    val extras = extraRoots()
+    var i = 0
+    while (i < extras.size()) {
+        val cand = resolveInRoot(mod, extras.get(i))
+        if (cand != "" && File.exists(cand)) {
+            return cand
+        }
+        i = i + 1
+    }
+    val dot = mod.indexOf(".")
+    val pkg = if (dot == -1) mod else mod.substring(0, dot)
+    val rest = if (dot == -1) mod else mod.substring(dot + 1, mod.length).replace(".", "/")
+    val dirs = depSrcDirs(root, pkg)
+    var j = 0
+    while (j < dirs.size()) {
+        val cand = dirs.get(j) + "/" + rest + ".ei"
+        if (File.exists(cand)) {
+            return cand
+        }
+        j = j + 1
+    }
+    return ""
+}
+
+// Resolves a click on a module path segment (`"std"` in `from "std.fs"`)
+// to the module file itself. Callers jump to line 0.
+fun importFileTarget(text: String, uri: String, word: String): String {
+    val path = uriToPath(uri)
+    if (path == "" || word == "") {
+        return ""
+    }
+    val imports = scanImports(text)
+    var i = 0
+    while (i < imports.size()) {
+        val segs = imports.get(i).path.split(".")
+        var s = 0
+        while (s < segs.size()) {
+            if (segs.get(s) == word) {
+                return findModuleFile(path, imports.get(i).path, Workspace.root)
+            }
+            s = s + 1
+        }
+        i = i + 1
+    }
+    return ""
+}

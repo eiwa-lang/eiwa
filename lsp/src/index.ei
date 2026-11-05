@@ -1,0 +1,160 @@
+// index.ei
+// Stdlib symbol index, derived from the real `std/*.ei` sources at startup
+// (single source of truth — no hand-written name tables to rot).
+// Powers implicit-name lookup (`repeat`, `File`, `parseJson`…) the same way
+// explicit imports power qualified lookup, plus contract-method mapping
+// (`toString` -> `Stringable`) derived from contract bodies.
+
+import { MutableList } from "std.collections"
+import { File, Dir } from "std.fs"
+import { scanSymbols } from "analysis"
+import { probeStdDir } from "toolchain"
+
+object StdIndex {
+    var ready: Bool = false
+    val files: MutableMap<String, String> = MutableMap<String, String>()
+    val contracts: MutableMap<String, String> = MutableMap<String, String>()
+    val contractFiles: MutableMap<String, String> = MutableMap<String, String>()
+}
+
+// Scans every `std/*.ei` once per process, in alphabetical order so ties
+// always resolve the same way. Only top-level declarations (empty container)
+// feed the module map, so bare calls resolve to free functions and types —
+// never to a coincidental same-named member.
+fun ensureStdIndex() {
+    if (StdIndex.ready) {
+        return
+    }
+    StdIndex.ready = true
+    val dir = probeStdDir()
+    if (dir == "") {
+        return
+    }
+    val ordered: MutableList<String> = MutableList<String>()
+    val entries = Dir.names(dir)
+    var e = 0
+    while (e < entries.size()) {
+        val f = entries.get(e)
+        if (f.endsWith(".ei")) {
+            ordered.add(f)
+        }
+        e = e + 1
+    }
+    sortStrings(ordered)
+    var s = 0
+    while (s < ordered.size()) {
+        val f = ordered.get(s)
+        indexModuleFile(dir + "/" + f, "std." + f.substring(0, f.length - 3))
+        s = s + 1
+    }
+}
+
+// Byte-wise `<` on strings (no stdlib sort exists).
+fun strLess(a: String, b: String): Bool {
+    var n = a.length
+    if (b.length < n) {
+        n = b.length
+    }
+    var i = 0
+    while (i < n) {
+        val ca = NativeMemory.readByte(a.ptr, i)
+        val cb = NativeMemory.readByte(b.ptr, i)
+        if (ca != cb) {
+            return ca < cb
+        }
+        i = i + 1
+    }
+    return a.length < b.length
+}
+
+fun sortStrings(list: MutableList<String>) {
+    var i = 1
+    while (i < list.size()) {
+        val key = list.get(i)
+        var j = i
+        var move = true
+        while (move) {
+            if (j <= 0) {
+                move = false
+            } else if (strLess(key, list.get(j - 1))) {
+                list.set(j, list.get(j - 1))
+                j = j - 1
+            } else {
+                move = false
+            }
+        }
+        list.set(j, key)
+        i = i + 1
+    }
+}
+
+fun indexModuleFile(path: String, mod: String) {
+    val text = File.read(path)
+    if (text == "") {
+        return
+    }
+    indexModuleText(text, path, mod)
+}
+
+// path is the file the text was read from (used to locate contracts).
+fun indexModuleText(text: String, path: String, mod: String) {
+    val syms = scanSymbols(text)
+    val contracts: MutableList<String> = MutableList<String>()
+    var i = 0
+    while (i < syms.size()) {
+        if (syms.get(i).kind == "contract") {
+            contracts.add(syms.get(i).name)
+            if (StdIndex.contractFiles.contains(syms.get(i).name) == false) {
+                StdIndex.contractFiles.put(syms.get(i).name, path)
+            }
+        }
+        i = i + 1
+    }
+    var j = 0
+    while (j < syms.size()) {
+        val sym = syms.get(j)
+        if (sym.name != "" && sym.container == "" && StdIndex.files.contains(sym.name) == false) {
+            StdIndex.files.put(sym.name, mod)
+        }
+        if (sym.kind == "fun" && contracts.contains(sym.container)) {
+            if (StdIndex.contracts.contains(sym.name) == false) {
+                StdIndex.contracts.put(sym.name, sym.container)
+            }
+        }
+        j = j + 1
+    }
+    return
+}
+
+// Home module of a bare stdlib name (`repeat` -> `std.system`), "" when
+// unknown. Derived from the shipped sources, not a manual list.
+fun implicitModule(word: String): String {
+    ensureStdIndex()
+    val m = StdIndex.files[word]
+    if (m == null) {
+        return ""
+    }
+    return m
+}
+
+// Contract behind an auto-synthesized method (`toString` -> `Stringable`),
+// derived from contract bodies. "" when the method is hand-written everywhere.
+fun synthesisContract(method: String): String {
+    ensureStdIndex()
+    val c = StdIndex.contracts[method]
+    if (c == null) {
+        return ""
+    }
+    return c
+}
+
+// File declaring a contract (`Stringable` -> `.../std/core.ei`), "" when
+// unknown. Used to jump to synthesized members at their contract.
+fun contractFile(contractName: String): String {
+    ensureStdIndex()
+    val f = StdIndex.contractFiles[contractName]
+    if (f == null) {
+        return ""
+    }
+    return f
+}

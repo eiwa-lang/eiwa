@@ -2,6 +2,7 @@
 // In-memory store of open documents (uri -> full text + version).
 
 import { MutableMap } from "std.collections"
+import { Process } from "std.process"
 
 type OpenDoc(val uri: String, var text: String, var version: Int)
 
@@ -62,4 +63,25 @@ fun uriToPath(uri: String): String {
         return uri.substring(7, uri.length)
     }
     return ""
+}
+
+// `/tmp/x.ei` -> `file:///tmp/x.ei`.
+fun pathToUri(path: String): String {
+    return "file://" + path
+}
+
+// Canonical absolute path (resolves `..`, symlinks). Falls back to input.
+fun canonicalPath(path: String): String {
+    val rp = Process.realpath(path)
+    if (rp == null) {
+        return path
+    }
+    return rp
+}
+
+// Workspace root (project dir) from `initialize`, used to resolve
+// root-relative (`.x`) module paths and project dependencies.
+// Empty until initialized.
+object Workspace {
+    var root: String = ""
 }

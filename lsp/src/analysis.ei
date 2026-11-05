@@ -5,8 +5,11 @@
 
 import { List, MutableList } from "std.collections"
 import { split } from "std.string"
+import { probeStdDir } from "toolchain"
 
-type Symbol(val name: String, val kind: String, val line: Int, val detail: String)
+type Symbol(val name: String, val kind: String, val line: Int, val detail: String, val container: String)
+
+type Import(val names: List<String>, val path: String)
 
 fun isNameStartChar(c: String): Bool {
     return "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_".indexOf(c) != -1
@@ -47,44 +50,160 @@ fun takeName(s: String): String {
 fun symbolKindLabel(kind: String): String {
     return when (kind) {
         "fun" -> "Function"
+        "implement" -> "Method"
         "type" -> "Type"
         "contract" -> "Contract"
         "skill" -> "Skill"
         "object" -> "Object"
         "enum" -> "Enum"
+        "union" -> "Union"
+        "lib" -> "Library"
+        "test" -> "Test"
+        "variant" -> "Variant"
         "val" -> "Variable"
         "var" -> "Variable"
         else -> "Symbol"
     }
 }
 
-// Scans `text` line by line for top-level and member declarations.
-// Returns symbols with 0-based line numbers.
+// Scans `text` line by line for top-level and member declarations,
+// enum/union variants and `test` blocks. Tracks the enclosing holder
+// (`container`) of every symbol.
 fun scanSymbols(text: String): List<Symbol> {
     val out: MutableList<Symbol> = MutableList<Symbol>()
     val lines = text.split("\n")
+    var inVariants = false
+    var container = ""
     var i = 0
     while (i < lines.size()) {
-        val t = lines.get(i).trim()
+        val raw = lines.get(i)
+        val t = raw.trim()
+        val atTop = raw.length == t.length
         val kw = declKeyword(t)
-        if (kw != "") {
-            val name = takeName(t.substring(kw.length, t.length).trim())
-            if (name != "") {
-                out.add(Symbol(name, kw, i, t))
+        if (kw == "enum" || kw == "union") {
+            val name = registerDecl(out, kw, t, i, "")
+            scanVariantList(out, t, i, name)
+            if (t.contains("}")) {
+                inVariants = false
+                container = ""
+            } else {
+                inVariants = true
+                container = name
             }
+        } else if (kw == "test") {
+            val name = quotedName(t)
+            if (name != "") {
+                out.add(Symbol(name, kw, i, t, ""))
+            }
+            inVariants = false
+            container = ""
+        } else if (kw == "type" || kw == "contract" || kw == "skill" || kw == "object" || kw == "lib") {
+            container = registerDecl(out, kw, t, i, "")
+            inVariants = false
+        } else if (kw != "") {
+            if (atTop) {
+                container = ""
+            }
+            registerDecl(out, kw, t, i, container)
+            inVariants = false
+        } else if (inVariants) {
+            scanVariantList(out, t, i, container)
+            if (t.contains("}")) {
+                inVariants = false
+                container = ""
+            }
+        } else if (atTop && t == "}") {
+            container = ""
         }
         i = i + 1
     }
     return out.freeze()
 }
 
+// Registers one declaration; returns its name ("" when anonymous).
+// Strips modifier prefixes (`implement`, `operator`) before the keyword,
+// so `implement operator fun equals` registers `equals` as `implement`.
+fun registerDecl(out: MutableList<Symbol>, kw: String, t: String, line: Int, container: String): String {
+    var rest = t.trim()
+    var kind = kw
+    if (rest.startsWith("implement ")) {
+        rest = rest.substring(9, rest.length).trim()
+        kind = "implement"
+    }
+    if (rest.startsWith("operator ")) {
+        rest = rest.substring(9, rest.length).trim()
+    }
+    if (rest.startsWith("fun ")) {
+        rest = rest.substring(4, rest.length).trim()
+        if (kind != "implement") {
+            kind = "fun"
+        }
+    } else {
+        val inner = declKeyword(rest)
+        if (inner != "") {
+            rest = rest.substring(inner.length, rest.length).trim()
+        }
+    }
+    if (rest.startsWith("(")) {
+        val close = rest.indexOf(")")
+        if (close != -1) {
+            rest = rest.substring(close + 1, rest.length).trim()
+        }
+    }
+    val name = takeName(rest)
+    if (name != "") {
+        out.add(Symbol(name, kind, line, t, container))
+    }
+    return name
+}
+
+// `"flight delay"` -> `flight delay`. "" when no quoted string.
+fun quotedName(t: String): String {
+    val open = t.indexOf("\"")
+    if (open == -1) {
+        return ""
+    }
+    val close = t.indexOf("\"", open + 1)
+    if (close == -1) {
+        return ""
+    }
+    return t.substring(open + 1, close)
+}
+
+// Registers comma-separated `A, B` member names on enum/union (body) lines.
+fun scanVariantList(out: MutableList<Symbol>, t: String, line: Int, container: String) {
+    var body = t
+    val open = body.indexOf("{")
+    if (open != -1) {
+        body = body.substring(open + 1, body.length)
+    }
+    val close = body.indexOf("}")
+    if (close != -1) {
+        body = body.substring(0, close)
+    }
+    val parts = body.split(",")
+    var p = 0
+    while (p < parts.size()) {
+        val name = takeName(parts.get(p).trim())
+        if (name != "") {
+            out.add(Symbol(name, "variant", line, parts.get(p).trim(), container))
+        }
+        p = p + 1
+    }
+}
+
 fun declKeyword(t: String): String {
+    if (t.startsWith("implement ")) { return "implement" }
+    if (t.startsWith("operator ")) { return "fun" }
     if (t.startsWith("fun ")) { return "fun" }
     if (t.startsWith("type ")) { return "type" }
     if (t.startsWith("contract ")) { return "contract" }
     if (t.startsWith("skill ")) { return "skill" }
-    if (t.startsWith("object ")) { return "object" }
+    if (t.startsWith("object ") || t.startsWith("object(")) { return "object" }
     if (t.startsWith("enum ")) { return "enum" }
+    if (t.startsWith("union ")) { return "union" }
+    if (t.startsWith("lib ") || t.startsWith("lib(")) { return "lib" }
+    if (t.startsWith("test ")) { return "test" }
     if (t.startsWith("val ")) { return "val" }
     if (t.startsWith("var ")) { return "var" }
     return ""
@@ -132,6 +251,278 @@ fun findSymbol(symbols: List<Symbol>, name: String): Symbol? {
     return null
 }
 
+fun symbolRank(kind: String): Int {
+    return when (kind) {
+        "implement" -> 0
+        "fun" -> 1
+        "lib" -> 1
+        else -> 2
+    }
+}
+
+// Best-match lookup for go-to-definition/hover: prefers implementations,
+// then functions, then anything else (a same-named local `val` never shadows
+// the callable). Ties keep document order.
+// Best top-level match (`fun`, `type`, `object`, … at column 0).
+// Used for cross-file jumps so members never shadow real declarations.
+fun findTopLevel(symbols: List<Symbol>, name: String): Symbol? {
+    var i = 0
+    while (i < symbols.size()) {
+        val sym = symbols.get(i)
+        if (sym.name == name && sym.container == "") {
+            return symbols.get(i)
+        }
+        i = i + 1
+    }
+    return null
+}
+
+fun findBestSymbol(symbols: List<Symbol>, name: String): Symbol? {
+    var best: Symbol? = null
+    var bestRank = 99
+    var i = 0
+    while (i < symbols.size()) {
+        val sym = symbols.get(i)
+        if (sym.name == name) {
+            val r = symbolRank(sym.kind)
+            if (r < bestRank) {
+                best = sym
+                bestRank = r
+            }
+        }
+        i = i + 1
+    }
+    return best
+}
+
+fun findContract(symbols: List<Symbol>, name: String): Symbol? {
+    var i = 0
+    while (i < symbols.size()) {
+        val sym = symbols.get(i)
+        if (sym.kind == "contract" && sym.name == name) {
+            return symbols.get(i)
+        }
+        i = i + 1
+    }
+    return null
+}
+
+// Method declared inside a contract body (`fun toString` in `Stringable`).
+// This is the jump target for auto-synthesized methods: the callable the
+// programmer can read, not the contract header.
+fun findContractMethod(symbols: List<Symbol>, contractName: String, method: String): Symbol? {
+    var i = 0
+    while (i < symbols.size()) {
+        val sym = symbols.get(i)
+        if (sym.kind == "fun" && sym.name == method && sym.container == contractName) {
+            return symbols.get(i)
+        }
+        i = i + 1
+    }
+    return null
+}
+
+// Member lookup inside a holder declared at `holderLine`: the first
+// `fun`/`implement fun` with `name` before the next sibling declaration
+// (body `val`/`var` fields don't end the holder).
+fun findMember(symbols: List<Symbol>, holderLine: Int, name: String): Symbol? {
+    var i = 0
+    while (i < symbols.size()) {
+        val sym = symbols.get(i)
+        if (sym.line > holderLine) {
+            if (sym.kind == "fun" || sym.kind == "implement") {
+                if (sym.name == name) {
+                    return symbols.get(i)
+                }
+            } else if (sym.kind == "type" || sym.kind == "contract" || sym.kind == "skill" || sym.kind == "object" || sym.kind == "enum" || sym.kind == "union" || sym.kind == "lib") {
+                return null
+            }
+        }
+        i = i + 1
+    }
+    return null
+}
+
+// First whole-word occurrence of `word` at/after `startPos`, or -1.
+fun indexOfWord(text: String, word: String, startPos: Int): Int {
+    if (word == "") {
+        return -1
+    }
+    var start = startPos
+    if (start < 0) {
+        start = 0
+    }
+    var probe = text.indexOf(word, start)
+    while (probe != -1) {
+        val beforeOk = if (probe == 0) true else isNameChar(text.charAt(probe - 1)) == false
+        val afterPos = probe + word.length
+        val afterOk = if (afterPos >= text.length) true else isNameChar(text.charAt(afterPos)) == false
+        if (beforeOk && afterOk) {
+            return probe
+        }
+        probe = text.indexOf(word, probe + 1)
+    }
+    return -1
+}
+
+// Infers a local's type from its nearest preceding declaration
+// (`val b = Box()` / `val b: Box` / `fun f(b: Box)` / `catch (e: Foo)`).
+// Returns "" when it cannot be established textually.
+fun inferReceiverType(text: String, line: Int, recv: String): String {
+    if (recv == "" || recv == "this" || recv == "it") {
+        return ""
+    }
+    val lines = text.split("\n")
+    var found = ""
+    var i = 0
+    while (i < line && i < lines.size()) {
+        val t = lines.get(i).trim()
+        var p = indexOfWord(t, recv, 0)
+        while (p != -1) {
+            var q = p + recv.length
+            while (q < t.length && t.charAt(q) == " ") {
+                q = q + 1
+            }
+            if (q < t.length && t.charAt(q) == ":") {
+                var r = q + 1
+                while (r < t.length && t.charAt(r) == " ") {
+                    r = r + 1
+                }
+                val cand = takeName(t.substring(r, t.length))
+                if (cand != "" && isCapitalized(cand)) {
+                    found = cand
+                }
+            } else if (q < t.length && t.charAt(q) == "=") {
+                if (q + 1 < t.length && t.charAt(q + 1) == "=") {
+                    // `==` comparison, not an assignment: ignore.
+                } else {
+                    var r = q + 1
+                    while (r < t.length && t.charAt(r) == " ") {
+                        r = r + 1
+                    }
+                    val cand = takeName(t.substring(r, t.length))
+                    if (cand != "" && isCapitalized(cand)) {
+                        found = cand
+                    }
+                }
+            }
+            p = indexOfWord(t, recv, p + 1)
+        }
+        i = i + 1
+    }
+    return found
+}
+
+// Nearest enclosing holder (`type`/`object`/`skill`…) above `line` — the
+// meaning of `this` at the cursor.
+fun enclosingHolder(text: String, line: Int): String {
+    val syms = scanSymbols(text)
+    var holder = ""
+    var i = 0
+    while (i < syms.size()) {
+        val sym = syms.get(i)
+        if (sym.line < line && (sym.kind == "type" || sym.kind == "object" || sym.kind == "skill" || sym.kind == "contract" || sym.kind == "enum" || sym.kind == "union" || sym.kind == "lib")) {
+            holder = sym.name
+        }
+        i = i + 1
+    }
+    return holder
+}
+
+// `recv` in `recv.method` at cursor, or "" when the cursor is not on the
+// method side of a dotted call.
+fun receiverAt(lineText: String, character: Int): String {
+    if (lineText.isEmpty()) {
+        return ""
+    }
+    var i = character
+    if (i > lineText.length) {
+        i = lineText.length
+    }
+    while (i > 0) {
+        if (isNameChar(lineText.charAt(i - 1))) {
+            i = i - 1
+        } else {
+            leave
+        }
+    }
+    if (i == 0 || lineText.charAt(i - 1) != ".") {
+        return ""
+    }
+    var j = i - 1
+    while (j > 0) {
+        if (isNameChar(lineText.charAt(j - 1))) {
+            j = j - 1
+        } else {
+            leave
+        }
+    }
+    return lineText.substring(j, i - 1)
+}
+
+fun isCapitalized(word: String): Bool {
+    if (word.isEmpty()) {
+        return false
+    }
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(word.charAt(0)) != -1
+}
+
+// True when `word` appears in `haystack` as a whole identifier
+// (so "Drawable" does not match "Drawable2").
+fun containsWord(haystack: String, word: String): Bool {
+    if (word == "") {
+        return false
+    }
+    var probe = haystack.indexOf(word)
+    while (probe != -1) {
+        val beforeOk = if (probe == 0) true else isNameChar(haystack.charAt(probe - 1)) == false
+        val afterPos = probe + word.length
+        val afterOk = if (afterPos >= haystack.length) true else isNameChar(haystack.charAt(afterPos)) == false
+        if (beforeOk && afterOk) {
+            return true
+        }
+        probe = haystack.indexOf(word, probe + 1)
+    }
+    return false
+}
+
+// Composition-aware "go to implementation" (same file):
+// - cursor on a method -> every `implement fun <name>`;
+// - cursor on a contract -> every `type` whose header implements it.
+fun findImplementations(symbols: List<Symbol>, name: String): List<Symbol> {
+    val out: MutableList<Symbol> = MutableList<Symbol>()
+    var i = 0
+    while (i < symbols.size()) {
+        val sym = symbols.get(i)
+        if (sym.kind == "implement" && sym.name == name) {
+            out.add(sym)
+        }
+        i = i + 1
+    }
+    if (out.size() == 0) {
+        var isContract = false
+        var j = 0
+        while (j < symbols.size()) {
+            val sym = symbols.get(j)
+            if (sym.kind == "contract" && sym.name == name) {
+                isContract = true
+            }
+            j = j + 1
+        }
+        if (isContract) {
+            var k = 0
+            while (k < symbols.size()) {
+                val sym = symbols.get(k)
+                if (sym.kind == "type" && sym.detail.contains(":") && containsWord(sym.detail, name)) {
+                    out.add(sym)
+                }
+                k = k + 1
+            }
+        }
+    }
+    return out.freeze()
+}
+
 fun lineAt(text: String, line: Int): String {
     val lines = text.split("\n")
     if (line < 0 || line >= lines.size()) {
@@ -140,9 +531,117 @@ fun lineAt(text: String, line: Int): String {
     return lines.get(line)
 }
 
+// Parses `import { A, B } from "mod.path"` headers (single-line and wrapped
+// across lines). Returns the imported names with the raw module path.
+fun scanImports(text: String): List<Import> {
+    val out: MutableList<Import> = MutableList<Import>()
+    val lines = text.split("\n")
+    var i = 0
+    while (i < lines.size()) {
+        val t = lines.get(i).trim()
+        if (t.startsWith("import ")) {
+            var chunk = t
+            var j = i
+            while (chunk.indexOf("from \"") == -1 && j + 1 < lines.size()) {
+                j = j + 1
+                chunk = chunk + " " + lines.get(j).trim()
+            }
+            val imp = parseImportChunk(chunk)
+            if (imp != null) {
+                out.add(imp)
+            }
+            i = j
+        }
+        i = i + 1
+    }
+    return out.freeze()
+}
+
+fun parseImportChunk(chunk: String): Import? {
+    val lb = chunk.indexOf("{")
+    val rb = chunk.indexOf("}")
+    val fpos = chunk.indexOf("from \"")
+    if (lb == -1 || rb == -1 || fpos == -1 || rb < lb) {
+        return null
+    }
+    val names = MutableList<String>()
+    val rawNames = chunk.substring(lb + 1, rb).split(",")
+    var n = 0
+    while (n < rawNames.size()) {
+        val nm = rawNames.get(n).trim()
+        if (nm != "") {
+            names.add(nm)
+        }
+        n = n + 1
+    }
+    if (names.size() == 0) {
+        return null
+    }
+    val pstart = fpos + 6
+    val pend = chunk.indexOf("\"", pstart)
+    if (pend == -1) {
+        return null
+    }
+    return Import(names.freeze(), chunk.substring(pstart, pend))
+}
+
+// Directory of a file path (`/a/b/c.ei` -> `/a/b`). "" when none.
+fun dirOf(path: String): String {
+    var slash = -1
+    var probe = path.indexOf("/")
+    while (probe != -1) {
+        slash = probe
+        probe = path.indexOf("/", probe + 1)
+    }
+    if (slash <= 0) {
+        return ""
+    }
+    return path.substring(0, slash)
+}
+
+// Resolves `mod` (no leading dot) under an explicit root dir.
+fun resolveInRoot(modulePath: String, rootDir: String): String {
+    if (modulePath == "" || rootDir == "") {
+        return ""
+    }
+    var mod = modulePath
+    if (mod.startsWith(".")) {
+        mod = mod.substring(1, mod.length)
+    }
+    return rootDir + "/" + mod.replace(".", "/") + ".ei"
+}
+
+// Resolves an Eiwa module path against the importing file:
+// `.x` -> workspace root, `std.x` -> EIWA_SRC checkout ("" when unset),
+// bare `x` -> importing file's directory. Returns "" when unresolvable.
+fun resolveModule(currentPath: String, modulePath: String, root: String): String {
+    if (modulePath == "") {
+        return ""
+    }
+    if (modulePath.startsWith(".")) {
+        if (root == "") {
+            return ""
+        }
+        return root + "/" + modulePath.substring(1, modulePath.length).replace(".", "/") + ".ei"
+    }
+    if (modulePath.startsWith("std.")) {
+        val dir = probeStdDir()
+        if (dir == "") {
+            return ""
+        }
+        return dir + "/" + modulePath.substring(4, modulePath.length).replace(".", "/") + ".ei"
+    }
+    val dir = dirOf(currentPath)
+    if (dir == "") {
+        return ""
+    }
+    return dir + "/" + modulePath.replace(".", "/") + ".ei"
+}
+
 fun lspKeywords(): List<String> {
     return ["type", "contract", "skill", "object", "enum", "fun", "val", "var",
         "import", "if", "else", "when", "is", "for", "while", "leave", "return",
         "try", "catch", "throw", "task", "init", "test", "implement", "operator",
-        "in", "of", "as", "null", "true", "false", "this", "it"]
+        "union", "lib", "in", "of", "as", "null", "true", "false", "this", "it"]
 }
+

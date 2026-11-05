@@ -4,8 +4,10 @@
 import { parseJson, jsonEscape, JsonValue } from "std.json"
 import { File } from "std.fs"
 import { writeMessage } from "transport"
-import { DocStore, uriToPath } from "store"
-import { scanSymbols, findSymbol, wordAt, lineAt, lspKeywords } from "analysis"
+import { DocStore, uriToPath, pathToUri, canonicalPath, Workspace } from "store"
+import { scanSymbols, findBestSymbol, findTopLevel, findContract, findContractMethod, findImplementations, findMember, receiverAt, isCapitalized, inferReceiverType, enclosingHolder, scanImports, wordAt, lineAt, lspKeywords } from "analysis"
+import { implicitModule, synthesisContract, contractFile } from "index"
+import { findModuleFile, importFileTarget } from "deps"
 import { publishDiagnostics, publishEmptyDiagnostics } from "diagnostics"
 
 object Server {
@@ -64,17 +66,167 @@ fun bufferOrFile(uri: String): String? {
 fun completionKind(kind: String): Int {
     return when (kind) {
         "fun" -> 3
+        "implement" -> 3
         "type" -> 7
         "contract" -> 8
         "skill" -> 5
         "object" -> 6
         "enum" -> 13
+        "union" -> 7
+        "lib" -> 5
         else -> 6
     }
 }
 
-fun handleInitialize(id: JsonValue) {
-    respond(id, "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"documentSymbolProvider\":true},\"serverInfo\":{\"name\":\"eiwa-lsp\",\"version\":\"0.1.0\"}}")
+fun handleInitialize(id: JsonValue, params: JsonValue?) {
+    val rootUri = getString(params, "rootUri")
+    if (rootUri != "") {
+        Workspace.root = uriToPath(rootUri)
+    } else {
+        val rootPath = getString(params, "rootPath")
+        if (rootPath != "") {
+            Workspace.root = rootPath
+        }
+    }
+    respond(id, "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"implementationProvider\":true,\"documentSymbolProvider\":true},\"serverInfo\":{\"name\":\"eiwa-lsp\",\"version\":\"0.1.0\"}}")
+}
+
+// Finds the on-disk module file a used name was imported from.
+// Falls back to implicit stdlib names (`repeat`, `task`, `String`…).
+// Returns "" when the name is not resolvable.
+fun resolveImportTarget(text: String, uri: String, word: String): String {
+    val path = uriToPath(uri)
+    if (path == "" || word == "") {
+        return ""
+    }
+    val imports = scanImports(text)
+    var i = 0
+    while (i < imports.size()) {
+        if (imports.get(i).names.contains(word)) {
+            val cand = findModuleFile(path, imports.get(i).path, Workspace.root)
+            if (cand != "") {
+                return cand
+            }
+        }
+        i = i + 1
+    }
+    val implicit = implicitModule(word)
+    if (implicit != "") {
+        val cand = findModuleFile(path, implicit, Workspace.root)
+        if (cand != "") {
+            return cand
+        }
+    }
+    return ""
+}
+
+// Cross-file lookup order: explicitly imported or implicit top-level
+// declaration first (lexical scope wins), then synthesized methods at
+// their contract, then any imported module declaring the name.
+fun findCrossFile(text: String, uri: String, word: String): MemberHit {
+    val tpath = resolveImportTarget(text, uri, word)
+    if (tpath != "" && File.exists(tpath)) {
+        val ttext = bufferOrFile(pathToUri(tpath))
+        if (ttext != null) {
+            val tsym = findTopLevel(scanSymbols(ttext), word)
+            if (tsym != null) {
+                return MemberHit(pathToUri(canonicalPath(tpath)), tsym.line, tsym.kind, tsym.detail, true)
+            }
+        }
+    }
+    val contractName = synthesisContract(word)
+    if (contractName != "") {
+        val cfile = contractFile(contractName)
+        if (cfile != "" && File.exists(cfile)) {
+            val ctext = bufferOrFile(pathToUri(cfile))
+            if (ctext != null) {
+                val csyms = scanSymbols(ctext)
+                val cmeth = findContractMethod(csyms, contractName, word)
+                if (cmeth != null) {
+                    return MemberHit(pathToUri(canonicalPath(cfile)), cmeth.line, cmeth.kind, cmeth.detail, true)
+                }
+                val csym = findContract(csyms, contractName)
+                if (csym != null) {
+                    return MemberHit(pathToUri(canonicalPath(cfile)), csym.line, csym.kind, csym.detail, true)
+                }
+            }
+        }
+    }
+    return findInImports(text, uri, word)
+}
+
+// Best-effort: first imported module (in order) declaring `word`.
+// Used when the name itself was never imported (e.g. a method reached
+// through its holder: `import { Box }` + `b.open()` with unknown `b`).
+fun findInImports(text: String, uri: String, word: String): MemberHit {
+    val path = uriToPath(uri)
+    if (path == "" || word == "") {
+        return MemberHit(uri, 0, "", "", false)
+    }
+    val imports = scanImports(text)
+    var i = 0
+    while (i < imports.size()) {
+        val cand = findModuleFile(path, imports.get(i).path, Workspace.root)
+        if (cand != "" && File.exists(cand)) {
+            val ttext = bufferOrFile(pathToUri(cand))
+            if (ttext != null) {
+                val tsym = findBestSymbol(scanSymbols(ttext), word)
+                if (tsym != null) {
+                    return MemberHit(pathToUri(canonicalPath(cand)), tsym.line, tsym.kind, tsym.detail, true)
+                }
+            }
+        }
+        i = i + 1
+    }
+    return MemberHit(uri, 0, "", "", false)
+}
+
+type MemberHit(val uri: String, val line: Int, val kind: String, val detail: String, val found: Bool)
+
+// Resolves `Recv.method` calls. The holder is the capitalized `Recv` itself,
+// `this` (enclosing holder), or a local inferred from its declaration
+// (`val b = Box()` / `val b: Box` / `fun f(b: Box)`). Falls back to a miss
+// so plain name lookup still applies.
+fun resolveMemberTarget(text: String, uri: String, line: Int, character: Int, word: String): MemberHit {
+    val recv = receiverAt(lineAt(text, line), character)
+    if (recv == "") {
+        return MemberHit(uri, 0, "", "", false)
+    }
+    var holder = ""
+    if (recv == "this") {
+        holder = enclosingHolder(text, line)
+    } else if (isCapitalized(recv)) {
+        holder = recv
+    } else {
+        holder = inferReceiverType(text, line, recv)
+    }
+    if (holder == "") {
+        return MemberHit(uri, 0, "", "", false)
+    }
+    val syms = scanSymbols(text)
+    val h = findBestSymbol(syms, holder)
+    if (h != null) {
+        val m = findMember(syms, h.line, word)
+        if (m != null) {
+            return MemberHit(uri, m.line, m.kind, m.detail, true)
+        }
+        return MemberHit(uri, 0, "", "", false)
+    }
+    val tpath = resolveImportTarget(text, uri, holder)
+    if (tpath != "" && File.exists(tpath)) {
+        val ttext = bufferOrFile(pathToUri(tpath))
+        if (ttext != null) {
+            val tsyms = scanSymbols(ttext)
+            val th = findBestSymbol(tsyms, holder)
+            if (th != null) {
+                val m = findMember(tsyms, th.line, word)
+                if (m != null) {
+                    return MemberHit(pathToUri(canonicalPath(tpath)), m.line, m.kind, m.detail, true)
+                }
+            }
+        }
+    }
+    return MemberHit(uri, 0, "", "", false)
 }
 
 fun handleDidOpen(params: JsonValue?) {
@@ -142,8 +294,26 @@ fun handleHover(id: JsonValue, params: JsonValue?) {
         respond(id, "null")
         return
     }
-    val sym = findSymbol(scanSymbols(text), word)
+    val hit = resolveMemberTarget(text, uri, line, character, word)
+    if (hit.found) {
+        val hvalue = "```eiwa\n" + hit.detail + "\n```\n_" + hit.kind + " • " + hit.uri + ":" + (hit.line + 1).toString() + "_"
+        respond(id, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"" + jsonEscape(hvalue) + "\"}}")
+        return
+    }
+    val sym = findBestSymbol(scanSymbols(text), word)
     if (sym == null) {
+        val xhit = findCrossFile(text, uri, word)
+        if (xhit.found) {
+            val value = "```eiwa\n" + xhit.detail + "\n```\n_" + xhit.kind + " • " + xhit.uri + ":" + (xhit.line + 1).toString() + "_"
+            respond(id, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"" + jsonEscape(value) + "\"}}")
+            return
+        }
+        val modFile = importFileTarget(text, uri, word)
+        if (modFile != "") {
+            val mvalue = "`" + word + "` → `" + modFile + "`"
+            respond(id, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"" + jsonEscape(mvalue) + "\"}}")
+            return
+        }
         respond(id, "null")
         return
     }
@@ -218,12 +388,67 @@ fun handleDefinition(id: JsonValue, params: JsonValue?) {
         respond(id, "null")
         return
     }
-    val sym = findSymbol(scanSymbols(text), word)
-    if (sym == null) {
+    val hit = resolveMemberTarget(text, uri, line, character, word)
+    if (hit.found) {
+        respond(id, "{\"uri\":\"" + jsonEscape(hit.uri) + "\",\"range\":{\"start\":{\"line\":" + hit.line.toString() + ",\"character\":0},\"end\":{\"line\":" + hit.line.toString() + ",\"character\":0}}}")
+        return
+    }
+    val sym = findBestSymbol(scanSymbols(text), word)
+    if (sym != null) {
+        respond(id, "{\"uri\":\"" + jsonEscape(uri) + "\",\"range\":{\"start\":{\"line\":" + sym.line.toString() + ",\"character\":0},\"end\":{\"line\":" + sym.line.toString() + ",\"character\":0}}}")
+        return
+    }
+    val cross = findCrossFile(text, uri, word)
+    if (cross.found) {
+        respond(id, "{\"uri\":\"" + jsonEscape(cross.uri) + "\",\"range\":{\"start\":{\"line\":" + cross.line.toString() + ",\"character\":0},\"end\":{\"line\":" + cross.line.toString() + ",\"character\":0}}}")
+        return
+    }
+    val modFile = importFileTarget(text, uri, word)
+    if (modFile != "") {
+        respond(id, "{\"uri\":\"" + jsonEscape(pathToUri(canonicalPath(modFile))) + "\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}")
+        return
+    }
+    respond(id, "null")
+}
+
+fun handleImplementation(id: JsonValue, params: JsonValue?) {
+    val uri = getString(getNode(params, "textDocument"), "uri")
+    val pos = getNode(params, "position")
+    val line = getInt(pos, "line")
+    val character = getInt(pos, "character")
+    val text = bufferOrFile(uri)
+    if (text == null) {
         respond(id, "null")
         return
     }
-    respond(id, "{\"uri\":\"" + jsonEscape(uri) + "\",\"range\":{\"start\":{\"line\":" + sym.line.toString() + ",\"character\":0},\"end\":{\"line\":" + sym.line.toString() + ",\"character\":0}}}")
+    val word = wordAt(lineAt(text, line), character)
+    if (word == "") {
+        respond(id, "null")
+        return
+    }
+    var turi = uri
+    var impls = findImplementations(scanSymbols(text), word)
+    if (impls.size() == 0) {
+        val tpath = resolveImportTarget(text, uri, word)
+        if (tpath != "" && File.exists(tpath)) {
+            val ttext = bufferOrFile(pathToUri(tpath))
+            if (ttext != null) {
+                impls = findImplementations(scanSymbols(ttext), word)
+                turi = pathToUri(canonicalPath(tpath))
+            }
+        }
+    }
+    var arr = ""
+    var s = 0
+    while (s < impls.size()) {
+        if (s > 0) {
+            arr = arr + ","
+        }
+        val ln = impls.get(s).line
+        arr = arr + "{\"uri\":\"" + jsonEscape(turi) + "\",\"range\":{\"start\":{\"line\":" + ln.toString() + ",\"character\":0},\"end\":{\"line\":" + ln.toString() + ",\"character\":0}}}"
+        s = s + 1
+    }
+    respond(id, "[" + arr + "]")
 }
 
 fun handleDocumentSymbol(id: JsonValue, params: JsonValue?) {
@@ -260,7 +485,7 @@ fun handleMessage(raw: String) {
     when (method) {
         "initialize" -> {
             if (id != null) {
-                handleInitialize(id)
+                handleInitialize(id, params)
             }
         }
         "initialized" -> {}
@@ -301,6 +526,11 @@ fun handleMessage(raw: String) {
         "textDocument/definition" -> {
             if (id != null) {
                 handleDefinition(id, params)
+            }
+        }
+        "textDocument/implementation" -> {
+            if (id != null) {
+                handleImplementation(id, params)
             }
         }
         "textDocument/documentSymbol" -> {

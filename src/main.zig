@@ -463,6 +463,9 @@ fn run(init: std.process.Init) !void {
             \\                       it instead of JIT (used by eiwa run on projects)
             \\  --no-cache           Disable the incremental build cache
             \\  -I, -L, -l, -D       Extra flags forwarded to the C compiler
+            \\  --print-std-dir      Print the standard library source directory
+            \\                       and exit (editors resolve `std.*` against it,
+            \\                       like `rustc --print sysroot`)
             \\  -h, --help           Show this help
             \\
             \\Extra positional arguments after the file are forwarded to
@@ -482,6 +485,14 @@ fn run(init: std.process.Init) !void {
             \\                       allocation, restoring plain GC_malloc
             \\
         , .{});
+        return;
+    }
+
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--print-std-dir")) {
+        eiwa_home.io = init.io;
+        const home = eiwa_home.resolve(allocator);
+        const std_dir = try std.fmt.allocPrint(allocator, "{s}/std", .{home});
+        std.debug.print("{s}\n", .{std_dir});
         return;
     }
 

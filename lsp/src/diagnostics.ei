@@ -6,24 +6,13 @@
 import { List, MutableList } from "std.collections"
 import { File } from "std.fs"
 import { Process } from "std.process"
-import { Env } from "std.env"
 import { jsonEscape } from "std.json"
 import { split } from "std.string"
 import { writeMessage } from "transport"
 import { uriToPath } from "store"
+import { eiwacBin } from "toolchain"
 
 type Diag(val file: String, val line: Int, val col: Int, val severity: Int, val message: String)
-
-fun eiwacBin(): String {
-    val configured = Env.get("EIWAC")
-    if (configured == null) {
-        return "eiwac"
-    }
-    if (configured == "") {
-        return "eiwac"
-    }
-    return configured
-}
 
 fun lastIndexOfChar(s: String, needle: String): Int {
     var found = -1
