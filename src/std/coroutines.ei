@@ -138,9 +138,9 @@ type TaskScheduler(
         this.mutex.unlock()
     }
 
-    // Registers `cont` to be re-scheduled after `ms` virtual milliseconds.
     fun sleep(cont: Continuation, ms: Int): Bool {
         this.mutex.lock()
+        this.now = NativeMemory.nowMillis()
         val deadline = this.now + ms
         var node = TimerNode(deadline, cont, null)
         node.excState = NativeExc.excCurrentGet()
@@ -315,9 +315,13 @@ type TaskScheduler(
     // Blocking pop for worker threads in a thread pool
     fun popBlocking(): ContNode? {
         this.mutex.lock()
+        if (this.timerHead != null) {
+            this.now = NativeMemory.nowMillis()
+        }
         var waiting = this.head == null && !this.isShutdown
         while (waiting) {
             if (this.timerHead != null) {
+                this.now = NativeMemory.nowMillis()
                 val first = this.timerHead!!
                 val delta = first.deadline - this.now
                 if (delta <= 0) {
@@ -334,7 +338,7 @@ type TaskScheduler(
                     this.mutex.unlock()
                     this.waitMs(2)
                     this.mutex.lock()
-                    this.now = this.now + 2
+                    this.now = NativeMemory.nowMillis()
                     this.fireTimersLocked()
                 } else if (this.timerHead != null) {
                     val first = this.timerHead!!
@@ -350,7 +354,7 @@ type TaskScheduler(
                         this.mutex.unlock()
                         this.waitMs(slice)
                         this.mutex.lock()
-                        this.now = this.now + slice
+                        this.now = NativeMemory.nowMillis()
                     }
                     this.fireTimersLocked()
                 } else {
@@ -433,6 +437,7 @@ type TaskScheduler(
         this.mutex.lock()
         if (this.head == null) {
             if (this.timerHead != null) {
+                this.now = NativeMemory.nowMillis()
                 val first = this.timerHead!!
                 val delta = first.deadline - this.now
                 if (delta > 0 && this.ioHead == null) {
@@ -442,8 +447,10 @@ type TaskScheduler(
                     if (slice > 10) {
                         slice = 10
                     }
+                    this.mutex.unlock()
                     this.waitMs(slice)
-                    this.now = this.now + slice
+                    this.mutex.lock()
+                    this.now = NativeMemory.nowMillis()
                 }
                 this.fireTimersLocked()
             }
@@ -478,7 +485,9 @@ type TaskScheduler(
     fun create(): TaskScheduler {
         val m = RawMutex.create()
         val c = CondVar.create()
-        return TaskScheduler(m, c)
+        val s = TaskScheduler(m, c)
+        s.now = NativeMemory.nowMillis()
+        return s
     }
 }
 
@@ -643,8 +652,11 @@ object Coroutine {
         return NativeSched.schedYield()
     }
 
+    // Blocking nanosleep primitive (internal building block). Prefer
+    // `sleep(seconds)` / `sleepMs(ms)`: same names work blocking outside
+    // tasks and cooperatively inside `task {}` bodies.
     @Suspend
-    fun sleep(nanosecs: Int): Int {
+    fun sleepNanos(nanosecs: Int): Int {
         val ts = Standard.malloc(16)
         var sec = nanosecs / 1000000000
         var nsec = mod(nanosecs, 1000000000)
@@ -662,8 +674,13 @@ object Coroutine {
     }
 
     @Suspend
+    fun sleep(seconds: Int): Int {
+        return Coroutine.sleepNanos(seconds * 1000000000)
+    }
+
+    @Suspend
     fun sleepMs(ms: Int): Int {
-        return Coroutine.sleep(ms * 1000000)
+        return Coroutine.sleepNanos(ms * 1000000)
     }
 }
 

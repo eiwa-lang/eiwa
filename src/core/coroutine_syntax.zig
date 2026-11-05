@@ -51,6 +51,7 @@ pub fn isSuspendPrimitiveCall(node: *ASTNode) bool {
     };
     return std.mem.eql(u8, name, "sleep") or
         std.mem.eql(u8, name, "sleepMs") or
+        std.mem.eql(u8, name, "sleepNanos") or
         std.mem.eql(u8, name, "yield") or
         std.mem.eql(u8, name, "waitReadable") or
         std.mem.eql(u8, name, "waitWritable");

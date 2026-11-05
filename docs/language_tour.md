@@ -2528,7 +2528,8 @@ import { Coroutine, EventLoop } from "std.coroutines"
 fun example() {
     Coroutine.yield()
     Coroutine.sleepMs(1)
-    Coroutine.sleep(2000000000) // nanoseconds!
+    Coroutine.sleep(2)         // seconds, like the top-level form
+    Coroutine.sleepNanos(2000000000) // nanoseconds (low-level primitive)
 
     // Wait for socket/FD readiness (poll).
     EventLoop.waitReadable(fd)

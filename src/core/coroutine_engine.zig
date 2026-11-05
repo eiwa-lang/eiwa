@@ -997,10 +997,23 @@ pub fn buildSuspendCall(stmt: *ASTNode) anyerror!*ASTNode {
     if (std.mem.eql(u8, gname, "waitWritable")) {
         return syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "waitWritable"), &.{ syn.mkIdent("this"), c.arguments[0] });
     }
+
+    if (c.callee.data == .get_expr) {
+        const g = c.callee.data.get_expr;
+        if (g.object.data == .identifier) {
+            const oname = g.object.data.identifier.name;
+            if (std.mem.eql(u8, oname, "Scheduler") and std.mem.eql(u8, gname, "sleep")) {
+                return stmt;
+            }
+        }
+    }
+
     const ms_arg = if (std.mem.eql(u8, gname, "sleepMs"))
         c.arguments[0]
+    else if (std.mem.eql(u8, gname, "sleepNanos"))
+        syn.mkBinary(.slash, c.arguments[0], syn.mkIntLit(1000000))
     else
-        syn.mkBinary(.slash, c.arguments[0], syn.mkIntLit(1000000));
+        syn.mkBinary(.star, c.arguments[0], syn.mkIntLit(1000));
     return syn.mkCall(syn.mkGetExpr(syn.mkIdent("Scheduler"), "sleep"), &.{ syn.mkIdent("this"), ms_arg });
 }
 

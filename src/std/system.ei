@@ -57,7 +57,7 @@ fun retry(times: Int, block: (Int) -> Void) {
 }
 
 fun sleep(seconds: Int): Void {
-    Coroutine.sleep(seconds * 1000000000)
+    Coroutine.sleep(seconds)
 }
 
 fun sleepMs(ms: Int): Void {
