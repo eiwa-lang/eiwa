@@ -11,6 +11,9 @@ type Symbol(val name: String, val kind: String, val line: Int, val detail: Strin
 
 type Import(val names: List<String>, val path: String)
 
+// A module path occurrence with its document position, for documentLink.
+type ImportPath(val path: String, val line: Int, val start: Int, val end: Int)
+
 fun isNameStartChar(c: String): Bool {
     return "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_".indexOf(c) != -1
 }
@@ -429,6 +432,25 @@ fun enclosingHolder(text: String, line: Int): String {
     return holder
 }
 
+// If the cursor is inside the quoted path of an `import ... from "..."`
+// on this line, returns that module path. Used to tell a click on the path
+// (`from "html"`) apart from a click on an imported name (`{ html }`).
+fun importPathAtCursor(lineText: String, character: Int): String {
+    val marker = lineText.indexOf("from \"")
+    if (marker == -1) {
+        return ""
+    }
+    val start = marker + 6
+    val end = lineText.indexOf("\"", start)
+    if (end == -1) {
+        return ""
+    }
+    if (character >= start && character <= end) {
+        return lineText.substring(start, end)
+    }
+    return ""
+}
+
 // `recv` in `recv.method` at cursor, or "" when the cursor is not on the
 // method side of a dotted call.
 fun receiverAt(lineText: String, character: Int): String {
@@ -539,7 +561,7 @@ fun scanImports(text: String): List<Import> {
     var i = 0
     while (i < lines.size()) {
         val t = lines.get(i).trim()
-        if (t.startsWith("import ")) {
+        if (t.startsWith("//") == false && t.startsWith("import ")) {
             var chunk = t
             var j = i
             while (chunk.indexOf("from \"") == -1 && j + 1 < lines.size()) {
@@ -583,6 +605,39 @@ fun parseImportChunk(chunk: String): Import? {
         return null
     }
     return Import(names.freeze(), chunk.substring(pstart, pend))
+}
+
+// Every `from "path"` occurrence with its document position, in order.
+// The range covers the quoted string (a bigger, single click target).
+// Only real imports count — commented-out ones are skipped, as are
+// string literals that merely contain `from "..."`.
+fun locateImportPaths(text: String): List<ImportPath> {
+    val out: MutableList<ImportPath> = MutableList<ImportPath>()
+    val imports = scanImports(text)
+    val lines = text.split("\n")
+    var li = 0
+    var i = 0
+    while (i < imports.size()) {
+        val needle = "from \"" + imports.get(i).path + "\""
+        var found = false
+        while (li < lines.size() && found == false) {
+            val t = lines.get(li)
+            val trimmed = t.trim()
+            if (trimmed.startsWith("//") == false) {
+                val col = t.indexOf(needle)
+                if (col != -1 && (trimmed.startsWith("import ") || t.substring(0, col).contains("}"))) {
+                    out.add(ImportPath(imports.get(i).path, li, col + 5, col + 7 + imports.get(i).path.length))
+                    found = true
+                }
+            }
+            li = li + 1
+        }
+        if (found == false) {
+            return out.freeze()
+        }
+        i = i + 1
+    }
+    return out.freeze()
 }
 
 // Directory of a file path (`/a/b/c.ei` -> `/a/b`). "" when none.

@@ -1,6 +1,6 @@
 // server_test.ei — unit tests for server dispatch helpers, the document
 // store and label mappings. The JSON-RPC loop itself is covered by the
-// stdio end-to-end script (lsp/test/e2e_lsp.py).
+// stdio end-to-end test (lsp/test/e2e_test.ei).
 
 import { DocStore, uriToPath, pathToUri, canonicalPath, Workspace } from ".lsp.src.store"
 import { scanSymbols, findBestSymbol, symbolKindLabel, quotedName } from ".lsp.src.analysis"

@@ -1,12 +1,12 @@
 // analysis_test.ei — unit tests for the LSP text analysis helpers.
 
-import { scanSymbols, wordAt, takeName, findSymbol, findBestSymbol, findTopLevel, findContract, findContractMethod, findMember, receiverAt, isCapitalized, indexOfWord, inferReceiverType, enclosingHolder, findImplementations, containsWord, scanImports, resolveModule, resolveInRoot, lineAt, declKeyword } from ".lsp.src.analysis"
+import { scanSymbols, wordAt, takeName, findSymbol, findBestSymbol, findTopLevel, findContract, findContractMethod, findMember, receiverAt, isCapitalized, indexOfWord, inferReceiverType, enclosingHolder, findImplementations, containsWord, scanImports, locateImportPaths, importPathAtCursor, resolveModule, resolveInRoot, lineAt, declKeyword } from ".lsp.src.analysis"
 import { implicitModule, synthesisContract } from ".lsp.src.index"
 import { uriToPath } from ".lsp.src.store"
 import { headerValue, isContentLength } from ".lsp.src.transport"
 import { parseTrailer, checkOutputToDiags } from ".lsp.src.diagnostics"
 import { probeStdDir } from ".lsp.src.toolchain"
-import { scanDeps, depSrcDirs, extraRoots, findModuleFile, importFileTarget } from ".lsp.src.deps"
+import { scanDeps, depSrcDirs, extraRoots, findModuleFile, importFileTarget, projectRoots } from ".lsp.src.deps"
 import { strLess } from ".lsp.src.index"
 import { contractFile } from ".lsp.src.index"
 import { uriToPath, Workspace } from ".lsp.src.store"
@@ -173,6 +173,28 @@ test "scanImports parses wrapped imports" {
     assert(scanImports("println(x)").size() == 0)
 }
 
+test "locateImportPaths maps every path with positions" {
+    val text = "import { a } from \"alpha\"\nimport { b,\n    c } from \"beta.gamma\"\n// import { z } from \"nope\"\nprintln(\"hi\")\n"
+    val paths = locateImportPaths(text)
+    assert(paths.size() == 2)
+    assert(paths.get(0).path == "alpha")
+    assert(paths.get(0).line == 0)
+    assert(paths.get(1).path == "beta.gamma")
+    assert(paths.get(1).line == 2)
+    val seg = text.split("\n").get(2)
+    assert(seg.substring(paths.get(1).start, paths.get(1).end) == "\"beta.gamma\"")
+}
+
+test "importPathAtCursor only fires inside the path string" {
+    val line = "import { html } from \"html\""
+    assert(importPathAtCursor(line, 24) == "html")
+    assert(importPathAtCursor(line, 9) == "")
+    assert(importPathAtCursor(line, 0) == "")
+    assert(importPathAtCursor("println(\"hi\")", 10) == "")
+    assert(importPathAtCursor("import { x } from \"a.b\"", 22) == "a.b")
+    assert(importPathAtCursor("import { x } from \"a.b\"", 2) == "")
+}
+
 test "resolveModule follows Eiwa path rules" {
     assert(resolveModule("/proj/src/main.ei", "util.helpers", "/proj") == "/proj/src/util/helpers.ei")
     assert(resolveModule("/proj/src/main.ei", ".consts", "/proj") == "/proj/consts.ei")
@@ -313,8 +335,7 @@ test "inferReceiverType reads declarations" {
     assert(inferReceiverType(text, 1, "") == "")
 }
 
-test "enclosingHolder finds the lexically enclosing type" {
-    val text = "type A {\n    fun f() {\n        println(this.g())\n    }\n}\ntype B {\n}\n"
+test "enclosingHolder finds the lexically enclosing type" {    val text = "type A {\n    fun f() {\n        println(this.g())\n    }\n}\ntype B {\n}\n"
     assert(enclosingHolder(text, 2) == "A")
     assert(enclosingHolder(text, 6) == "B")
     assert(enclosingHolder("init {\n}\n", 0) == "")
@@ -358,6 +379,33 @@ test "findModuleFile falls back to EIWA_MODULE_PATH" {
     Env.unset("EIWA_MODULE_PATH")
 }
 
+test "projectRoots prefers src layout" {
+    if (Dir.exists("/tmp/lsproot2/src") == false) {
+        Dir.mkdir("/tmp/lsproot2")
+        Dir.mkdir("/tmp/lsproot2/src")
+    }
+    val withSrc = projectRoots("/tmp/lsproot2")
+    assert(withSrc.size() == 2)
+    assert(withSrc.get(0) == "/tmp/lsproot2/src")
+    assert(withSrc.get(1) == "/tmp/lsproot2")
+    val flat = projectRoots("/tmp/lspflat_nonexistent_xyz")
+    assert(flat.size() == 1)
+    assert(flat.get(0) == "/tmp/lspflat_nonexistent_xyz")
+    assert(projectRoots("").size() == 0)
+}
+
+test "findModuleFile resolves root-relative imports against src" {
+    if (Dir.exists("/tmp/lsproot3/src/lib") == false) {
+        Dir.mkdir("/tmp/lsproot3")
+        Dir.mkdir("/tmp/lsproot3/src")
+        Dir.mkdir("/tmp/lsproot3/src/lib")
+    }
+    File.write("/tmp/lsproot3/src/lib/strings.ei", "fun trimmer(s: String): String {\n    return s\n}\n")
+    assert(findModuleFile("/tmp/lsproot3/src/main.ei", ".lib.strings", "/tmp/lsproot3") == "/tmp/lsproot3/src/lib/strings.ei")
+    assert(findModuleFile("/tmp/lsproot3/src/main.ei", ".lib.missing", "/tmp/lsproot3") == "")
+    assert(findModuleFile("/tmp/lsproot3/src/main.ei", ".lib.strings", "") == "/tmp/lsproot3/src/lib/strings.ei")
+}
+
 test "depSrcDirs resolves path deps against the project root" {
     if (Dir.exists("/tmp/lspproj/libs/mylib/src") == false) {
         Dir.mkdir("/tmp/lspproj")
@@ -371,6 +419,31 @@ test "depSrcDirs resolves path deps against the project root" {
     assert(dirs.size() == 1)
     assert(dirs.get(0) == "/tmp/lspproj/libs/mylib/src")
     assert(findModuleFile("/tmp/lspproj/src/main.ei", "mylib", "/tmp/lspproj") == "/tmp/lspproj/libs/mylib/src/mylib.ei")
+}
+
+test "scanDeps tolerates comments and single quotes" {
+    val raw = "# leading comment\ndependencies:\n  # a dep comment\n  arest:\n    git: https://example.com/arest.git # trailing comment\n    commit: 'abc123'\n"
+    val deps = scanDeps(raw)
+    assert(deps.size() == 1)
+    assert(deps.get(0).name == "arest")
+    assert(deps.get(0).commit == "abc123")
+}
+
+test "findModuleFile resolves nested dep layout without workspace root" {
+    if (Dir.exists("/tmp/lspwalk/proj/libs/arest/src/arest") == false) {
+        Dir.mkdir("/tmp/lspwalk")
+        Dir.mkdir("/tmp/lspwalk/proj")
+        Dir.mkdir("/tmp/lspwalk/proj/src")
+        Dir.mkdir("/tmp/lspwalk/proj/src/deep")
+        Dir.mkdir("/tmp/lspwalk/proj/libs")
+        Dir.mkdir("/tmp/lspwalk/proj/libs/arest")
+        Dir.mkdir("/tmp/lspwalk/proj/libs/arest/src")
+        Dir.mkdir("/tmp/lspwalk/proj/libs/arest/src/arest")
+    }
+    File.write("/tmp/lspwalk/proj/eiwa.yaml", "name: demo\ndependencies:\n  arest:\n    path: libs/arest\n")
+    File.write("/tmp/lspwalk/proj/libs/arest/src/arest/arest.ei", "fun arest(): Int {\n    return 1\n}\n")
+    File.write("/tmp/lspwalk/proj/src/deep/main.ei", "import { arest } from \"arest.arest\"\n")
+    assert(findModuleFile("/tmp/lspwalk/proj/src/deep/main.ei", "arest.arest", "") == "/tmp/lspwalk/proj/libs/arest/src/arest/arest.ei")
 }
 
 test "importFileTarget opens the imported module" {

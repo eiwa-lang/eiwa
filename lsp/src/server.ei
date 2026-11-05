@@ -5,7 +5,7 @@ import { parseJson, jsonEscape, JsonValue } from "std.json"
 import { File } from "std.fs"
 import { writeMessage } from "transport"
 import { DocStore, uriToPath, pathToUri, canonicalPath, Workspace } from "store"
-import { scanSymbols, findBestSymbol, findTopLevel, findContract, findContractMethod, findImplementations, findMember, receiverAt, isCapitalized, inferReceiverType, enclosingHolder, scanImports, wordAt, lineAt, lspKeywords } from "analysis"
+import { scanSymbols, findBestSymbol, findTopLevel, findContract, findContractMethod, findImplementations, findMember, receiverAt, isCapitalized, inferReceiverType, enclosingHolder, scanImports, locateImportPaths, importPathAtCursor, wordAt, lineAt, lspKeywords } from "analysis"
 import { implicitModule, synthesisContract, contractFile } from "index"
 import { findModuleFile, importFileTarget } from "deps"
 import { publishDiagnostics, publishEmptyDiagnostics } from "diagnostics"
@@ -88,7 +88,7 @@ fun handleInitialize(id: JsonValue, params: JsonValue?) {
             Workspace.root = rootPath
         }
     }
-    respond(id, "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"implementationProvider\":true,\"documentSymbolProvider\":true},\"serverInfo\":{\"name\":\"eiwa-lsp\",\"version\":\"0.1.0\"}}")
+    respond(id, "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"completionProvider\":{\"triggerCharacters\":[\".\"]},\"definitionProvider\":true,\"implementationProvider\":true,\"documentSymbolProvider\":true,\"documentLinkProvider\":{\"resolveProvider\":false}},\"serverInfo\":{\"name\":\"eiwa-lsp\",\"version\":\"0.1.0\"}}")
 }
 
 // Finds the on-disk module file a used name was imported from.
@@ -289,6 +289,17 @@ fun handleHover(id: JsonValue, params: JsonValue?) {
         respond(id, "null")
         return
     }
+    val hoverPath = importPathAtCursor(lineAt(text, line), character)
+    if (hoverPath != "") {
+        val mf = findModuleFile(uriToPath(uri), hoverPath, Workspace.root)
+        if (mf != "") {
+            val hvalue = "`" + hoverPath + "` → `" + mf + "`"
+            respond(id, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"" + jsonEscape(hvalue) + "\"}}")
+            return
+        }
+        respond(id, "null")
+        return
+    }
     val word = wordAt(lineAt(text, line), character)
     if (word == "") {
         respond(id, "null")
@@ -388,6 +399,16 @@ fun handleDefinition(id: JsonValue, params: JsonValue?) {
         respond(id, "null")
         return
     }
+    val pathHit = importPathAtCursor(lineAt(text, line), character)
+    if (pathHit != "") {
+        val mf = findModuleFile(uriToPath(uri), pathHit, Workspace.root)
+        if (mf != "" && File.exists(mf)) {
+            respond(id, "{\"uri\":\"" + jsonEscape(pathToUri(canonicalPath(mf))) + "\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}")
+            return
+        }
+        respond(id, "null")
+        return
+    }
     val hit = resolveMemberTarget(text, uri, line, character, word)
     if (hit.found) {
         respond(id, "{\"uri\":\"" + jsonEscape(hit.uri) + "\",\"range\":{\"start\":{\"line\":" + hit.line.toString() + ",\"character\":0},\"end\":{\"line\":" + hit.line.toString() + ",\"character\":0}}}")
@@ -472,6 +493,37 @@ fun handleDocumentSymbol(id: JsonValue, params: JsonValue?) {
     respond(id, "[" + arr + "]")
 }
 
+// Every import path as one clickable link spanning the whole quoted
+// string (`from ".lib.strings"`), pointing at the resolved module file.
+fun handleDocumentLink(id: JsonValue, params: JsonValue?) {
+    val uri = getString(getNode(params, "textDocument"), "uri")
+    val text = bufferOrFile(uri)
+    if (text == null) {
+        respond(id, "null")
+        return
+    }
+    val base = uriToPath(uri)
+    var arr = ""
+    var count = 0
+    if (base != "") {
+        val paths = locateImportPaths(text)
+        var i = 0
+        while (i < paths.size()) {
+            val cand = findModuleFile(base, paths.get(i).path, Workspace.root)
+            if (cand != "" && File.exists(cand)) {
+                if (count > 0) {
+                    arr = arr + ","
+                }
+                val ln = paths.get(i).line
+                arr = arr + "{\"range\":{\"start\":{\"line\":" + ln.toString() + ",\"character\":" + paths.get(i).start.toString() + "},\"end\":{\"line\":" + ln.toString() + ",\"character\":" + paths.get(i).end.toString() + "}},\"target\":\"" + jsonEscape(pathToUri(canonicalPath(cand))) + "\"}"
+                count = count + 1
+            }
+            i = i + 1
+        }
+    }
+    respond(id, "[" + arr + "]")
+}
+
 fun handleMessage(raw: String) {
     val root = parseJson(raw)
     val methodVal = root.get("method")
@@ -536,6 +588,11 @@ fun handleMessage(raw: String) {
         "textDocument/documentSymbol" -> {
             if (id != null) {
                 handleDocumentSymbol(id, params)
+            }
+        }
+        "textDocument/documentLink" -> {
+            if (id != null) {
+                handleDocumentLink(id, params)
             }
         }
         else -> {

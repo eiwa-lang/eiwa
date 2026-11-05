@@ -1,0 +1,405 @@
+// e2e_test.ei — end-to-end protocol test for eiwa-lsp, written in Eiwa.
+// Drives the server as a subprocess with a pre-built LSP transcript:
+//
+//   server < /tmp/.../input.txt > /tmp/.../output.txt
+//
+// This works because the server is strictly sequential: given the same input
+// bytes it always emits the same output frames, so a batch transcript is
+// exactly equivalent to an interactive session (no concurrency to race).
+//
+// Requires the server binary (EIWAC_LSP_BIN, else lsp/bin/eiwa-lsp[.exe]
+// relative to the cwd) and eiwac on PATH (or EIWAC) for diagnostics.
+
+import { parseJson, jsonEscape, JsonValue } from "std.json"
+import { File, Dir } from "std.fs"
+import { Env } from "std.env"
+import { Process } from "std.process"
+
+object E2EState {
+    var failures: MutableList<String> = MutableList<String>()
+}
+
+fun check(name: String, ok: Bool) {
+    checkDetail(name, ok, "")
+}
+
+fun checkDetail(name: String, ok: Bool, detail: String) {
+    if (ok) {
+        println("[PASS] " + name)
+    } else {
+        println("[FAIL] " + name + " :: " + detail)
+        E2EState.failures.add(name)
+    }
+}
+
+fun tmpRoot(): String {
+    val tmp = Env.get("TMPDIR")
+    if (tmp != null && tmp != "") {
+        return tmp + "/eiwa-lsp-e2e"
+    }
+    val temp = Env.get("TEMP")
+    if (temp != null && temp != "") {
+        return temp + "/eiwa-lsp-e2e"
+    }
+    return "/tmp/eiwa-lsp-e2e"
+}
+
+fun serverBin(): String {
+    val configured = Env.get("EIWAC_LSP_BIN")
+    if (configured != null && configured != "") {
+        return configured
+    }
+    if (File.exists("lsp/bin/eiwa-lsp")) {
+        return "lsp/bin/eiwa-lsp"
+    }
+    if (File.exists("lsp/bin/eiwa-lsp.exe")) {
+        return "lsp/bin/eiwa-lsp.exe"
+    }
+    return ""
+}
+
+fun writeFile(path: String, content: String) {
+    File.write(path, content)
+}
+
+fun frame(body: String): String {
+    return "Content-Length: " + body.length.toString() + "\r\n\r\n" + body
+}
+
+fun req(id: Int, method: String, params: String): String {
+    return frame("{\"jsonrpc\":\"2.0\",\"id\":" + id.toString() + ",\"method\":\"" + method + "\",\"params\":" + params + "}")
+}
+
+fun notif(method: String, params: String): String {
+    return frame("{\"jsonrpc\":\"2.0\",\"method\":\"" + method + "\",\"params\":" + params + "}")
+}
+
+fun docUri(rootUri: String, rel: String): String {
+    return rootUri + "/" + rel
+}
+
+fun textDoc(uri: String): String {
+    return "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\"}}"
+}
+
+fun position(uri: String, line: Int, character: Int): String {
+    return "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\"},\"position\":{\"line\":" + line.toString() + ",\"character\":" + character.toString() + "}}"
+}
+
+// Splits a framed transcript into raw JSON bodies.
+fun splitFrames(text: String): List<String> {
+    val out: MutableList<String> = MutableList<String>()
+    var pos = 0
+    var more = true
+    while (more) {
+        val h = text.indexOf("Content-Length:", pos)
+        if (h == -1) {
+            more = false
+        } else {
+            val hend = text.indexOf("\r\n\r\n", h)
+            if (hend == -1) {
+                more = false
+            } else {
+                val colon = text.indexOf(":", h)
+                val len = text.substring(colon + 1, hend).trim().toInt()
+                val start = hend + 4
+                if (len <= 0 || start + len > text.length) {
+                    more = false
+                } else {
+                    out.add(text.substring(start, start + len))
+                    pos = start + len
+                }
+            }
+        }
+    }
+    return out.freeze()
+}
+
+fun findById(frames: List<String>, id: Int): JsonValue? {
+    var i = 0
+    while (i < frames.size()) {
+        val root = parseJson(frames.get(i))
+        val v = root.get("id")
+        if (v != null && v.isNumber() && v.asNumber().toInt() == id) {
+            return root
+        }
+        i = i + 1
+    }
+    return null
+}
+
+fun findNotification(frames: List<String>, method: String): JsonValue? {
+    var i = 0
+    while (i < frames.size()) {
+        val root = parseJson(frames.get(i))
+        val m = root.get("method")
+        if (m != null && m.isString() && m.asString() == method) {
+            val id = root.get("id")
+            if (id == null) {
+                return root
+            }
+        }
+        i = i + 1
+    }
+    return null
+}
+
+fun diagCount(msg: JsonValue?): Int {
+    if (msg == null) {
+        return -1
+    }
+    val params = msg.get("params")
+    if (params == null) {
+        return -1
+    }
+    val diags = params.get("diagnostics")
+    if (diags == null || diags.isArray() == false) {
+        return -1
+    }
+    return diags.asArray().size()
+}
+
+fun diagMessage(msg: JsonValue?): String {
+    if (msg == null) {
+        return ""
+    }
+    val params = msg.get("params")
+    if (params == null) {
+        return ""
+    }
+    val diags = params.get("diagnostics")
+    if (diags == null || diags.isArray() == false || diags.asArray().size() == 0) {
+        return ""
+    }
+    val first = diags.getIndex(0)
+    if (first == null) {
+        return ""
+    }
+    val message = first.get("message")
+    if (message == null || message.isString() == false) {
+        return ""
+    }
+    return message.asString()
+}
+
+fun resultOf(msg: JsonValue?): JsonValue? {
+    if (msg == null) {
+        return null
+    }
+    return msg.get("result")
+}
+
+test "lsp stdio protocol end-to-end" {
+    val bin = serverBin()
+    assert(bin != "")
+    val unresoled = tmpRoot()
+    Dir.mkdir(unresoled)
+    Dir.mkdir(unresoled + "/src")
+    var root = unresoled
+    val canon = Process.realpath(unresoled)
+    if (canon != null) {
+        root = canon
+    }
+    val rootUri = "file://" + root.replace("\\", "/")
+
+    val mainText = "import { helper } from \"util\"\nimport { parseJson } from \"std.json\"\n\ntype Counter {\n    fun inc(): Int {\n        return 1\n    }\n}\n\ncontract Drawable {\n    fun draw()\n}\n\ninit {\n    val c = Counter()\n    println(c.inc())\n    println(helper())\n    val n = 42\n    println(n.toString())\n    val v = parseJson(\"{}\")\n    println(v)\n}\n"
+    val utilText = "fun helper(): Int {\n    return 7\n}\n"
+    val implText = "contract Drawable {\n    fun draw()\n}\ntype Button : Drawable {\n    implement fun draw() {\n        return\n    }\n}\ntype Label : Drawable {\n    implement fun draw() {\n        return\n    }\n}\n"
+    val greetText = "fun greet(name: String): String {\n    return name\n}\n"
+    val sameText = "import { greet } from \"greet\"\n\ninit {\n    println(greet(\"x\"))\n}\n"
+    val badText = "init {\n    val x: Int = \"hello\"\n}\n"
+    writeFile(root + "/src/main.ei", mainText)
+    writeFile(root + "/src/util.ei", utilText)
+    writeFile(root + "/src/impl.ei", implText)
+    writeFile(root + "/src/greet.ei", greetText)
+    writeFile(root + "/src/same.ei", sameText)
+    writeFile(root + "/src/bad.ei", badText)
+    writeFile(root + "/eiwa.yaml", "name: e2e\nversion: 0.1.0\n")
+
+    val mainUri = docUri(rootUri, "src/main.ei")
+    var input = ""
+    input = input + req(1, "initialize", "{\"rootUri\":\"" + rootUri + "\",\"capabilities\":{}}")
+    input = input + notif("initialized", "{}")
+    input = input + notif("textDocument/didOpen", "{\"textDocument\":{\"uri\":\"" + jsonEscape(docUri(rootUri, "src/bad.ei")) + "\",\"languageId\":\"eiwa\",\"version\":1,\"text\":\"" + jsonEscape(badText) + "\"}}")
+    input = input + notif("textDocument/didOpen", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\",\"languageId\":\"eiwa\",\"version\":1,\"text\":\"" + jsonEscape(mainText) + "\"}}")
+    input = input + req(2, "textDocument/hover", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":15,\"character\":15}}")
+    input = input + req(3, "textDocument/definition", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":15,\"character\":15}}")
+    input = input + req(4, "textDocument/definition", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":16,\"character\":13}}")
+    input = input + req(5, "textDocument/definition", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":19,\"character\":13}}")
+    input = input + req(6, "textDocument/definition", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":18,\"character\":14}}")
+    input = input + req(7, "textDocument/documentLink", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"}}")
+    input = input + req(8, "textDocument/documentSymbol", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"}}")
+    input = input + req(9, "textDocument/completion", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":15,\"character\":1}}")
+    input = input + notif("textDocument/didOpen", "{\"textDocument\":{\"uri\":\"" + jsonEscape(docUri(rootUri, "src/impl.ei")) + "\",\"languageId\":\"eiwa\",\"version\":1,\"text\":\"" + jsonEscape(implText) + "\"}}")
+    input = input + req(10, "textDocument/implementation", "{\"textDocument\":{\"uri\":\"" + jsonEscape(docUri(rootUri, "src/impl.ei")) + "\"},\"position\":{\"line\":1,\"character\":9}}")
+    input = input + notif("textDocument/didOpen", "{\"textDocument\":{\"uri\":\"" + jsonEscape(docUri(rootUri, "src/same.ei")) + "\",\"languageId\":\"eiwa\",\"version\":1,\"text\":\"" + jsonEscape(sameText) + "\"}}")
+    input = input + req(11, "textDocument/definition", "{\"textDocument\":{\"uri\":\"" + jsonEscape(docUri(rootUri, "src/same.ei")) + "\"},\"position\":{\"line\":0,\"character\":24}}")
+    input = input + req(12, "textDocument/definition", "{\"textDocument\":{\"uri\":\"" + jsonEscape(docUri(rootUri, "src/same.ei")) + "\"},\"position\":{\"line\":0,\"character\":10}}")
+    input = input + req(13, "textDocument/definition", "{\"textDocument\":{\"uri\":\"" + jsonEscape(docUri(rootUri, "src/same.ei")) + "\"},\"position\":{\"line\":3,\"character\":14}}")
+    input = input + req(14, "textDocument/hover", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":18,\"character\":14}}")
+    input = input + req(999, "shutdown", "{}")
+    input = input + notif("exit", "{}")
+    writeFile(root + "/input.txt", input)
+
+    val code = Process.exec("\"" + bin + "\" < \"" + root + "/input.txt\" > \"" + root + "/output.txt\"")
+    assert(code == 0)
+    val frames = splitFrames(File.read(root + "/output.txt"))
+    assert(frames.size() > 0)
+
+    val init = findById(frames, 1)
+    check("e2e initialize caps", init != null)
+    if (init != null) {
+        val res = init.get("result")
+        if (res == null) {
+            assert(false)
+        } else {
+            val caps = res.get("capabilities")
+            if (caps == null) {
+                assert(false)
+            } else {
+                val sync = caps.get("textDocumentSync")
+            check("e2e sync kind", sync != null && sync.isNumber() && sync.asNumber().toInt() == 1)
+            check("e2e hoverProvider", hasTrue(caps, "hoverProvider"))
+            check("e2e completionProvider", caps.get("completionProvider") != null)
+            check("e2e definitionProvider", hasTrue(caps, "definitionProvider"))
+            check("e2e implementationProvider", hasTrue(caps, "implementationProvider"))
+            check("e2e documentSymbolProvider", hasTrue(caps, "documentSymbolProvider"))
+            check("e2e documentLinkProvider", hasTrue(caps, "documentLinkProvider"))
+            }
+        }
+    }
+
+    val badDiag = findNotification(frames, "textDocument/publishDiagnostics")
+    check("e2e bad file has 1 diagnostic", diagCount(badDiag) == 1)
+    check("e2e diagnostic mentions Int", diagMessage(badDiag).contains("Int"))
+
+    val hov = resultOf(findById(frames, 2))
+    check("e2e hover markdown", hov != null && hov.get("contents") != null)
+
+    val defSame = resultOf(findById(frames, 3))
+    check("e2e definition receiver same-file", locMatches(defSame, uriOf(rootUri, "src/main.ei"), 4))
+
+    val defCross = resultOf(findById(frames, 4))
+    check("e2e definition cross-file import", locMatches(defCross, uriOf(rootUri, "src/util.ei"), 0))
+
+    val defStd = resultOf(findById(frames, 5))
+    check("e2e definition implicit std", locEndsWith(defStd, "std/json.ei"))
+
+    val defSynth = resultOf(findById(frames, 6))
+    check("e2e definition synthesized method", locEndsWith(defSynth, "std/core.ei"))
+
+    val links = resultOf(findById(frames, 7))
+    check("e2e documentLink has entries", links != null && links.isArray() && links.asArray().size() > 0)
+
+    val syms = resultOf(findById(frames, 8))
+    check("e2e document symbols", syms != null && syms.isArray() && syms.asArray().size() >= 4)
+
+    val comp = resultOf(findById(frames, 9))
+    check("e2e completion items", comp != null && comp.get("items") != null)
+
+    val impls = resultOf(findById(frames, 10))
+    check("e2e implementations", impls != null && impls.isArray() && impls.asArray().size() == 2)
+
+    val defPath = resultOf(findById(frames, 11))
+    check("e2e import path click goes to file", locMatchesName(defPath, "greet.ei", 0))
+
+    val defName = resultOf(findById(frames, 12))
+    check("e2e imported name click goes to fun", locMatchesName(defName, "greet.ei", 0))
+
+    val defCall = resultOf(findById(frames, 13))
+    check("e2e call click goes to fun", locMatchesName(defCall, "greet.ei", 0))
+
+    val hovSynth = resultOf(findById(frames, 14))
+    var hovSynthText = ""
+    if (hovSynth != null) {
+        val contents = hovSynth.get("contents")
+        if (contents != null) {
+            val value = contents.get("value")
+            if (value != null && value.isString()) {
+                hovSynthText = value.asString()
+            }
+        }
+    }
+    check("e2e synthesized method hover", hovSynthText.contains("fun toString"))
+
+    assert(E2EState.failures.size() == 0)
+}
+
+fun hasTrue(node: JsonValue, key: String): Bool {
+    val v = node.get(key)
+    if (v == null) {
+        return false
+    }
+    if (v.isBool()) {
+        return v.asBool()
+    }
+    return true
+}
+
+fun uriOf(rootUri: String, rel: String): String {
+    return rootUri + "/" + rel
+}
+
+fun locMatches(loc: JsonValue?, uri: String, line: Int): Bool {
+    if (loc == null) {
+        return false
+    }
+    val u = loc.get("uri")
+    if (u == null || u.isString() == false || u.asString() != uri) {
+        return false
+    }
+    val range = loc.get("range")
+    if (range == null) {
+        return false
+    }
+    val start = range.get("start")
+    if (start == null) {
+        return false
+    }
+    val ln = start.get("line")
+    if (ln == null || ln.isNumber() == false) {
+        return false
+    }
+    return ln.asNumber().toInt() == line
+}
+
+fun normSep(path: String): String {
+    return path.replace("\\", "/")
+}
+
+fun locEndsWith(loc: JsonValue?, suffix: String): Bool {
+    if (loc == null) {
+        return false
+    }
+    val u = loc.get("uri")
+    if (u == null || u.isString() == false) {
+        return false
+    }
+    return normSep(u.asString()).endsWith(suffix)
+}
+
+fun locMatchesName(loc: JsonValue?, fileName: String, line: Int): Bool {
+    if (loc == null) {
+        return false
+    }
+    val u = loc.get("uri")
+    if (u == null || u.isString() == false) {
+        return false
+    }
+    if (normSep(u.asString()).endsWith(fileName) == false) {
+        return false
+    }
+    val range = loc.get("range")
+    if (range == null) {
+        return false
+    }
+    val start = range.get("start")
+    if (start == null) {
+        return false
+    }
+    val ln = start.get("line")
+    if (ln == null || ln.isNumber() == false) {
+        return false
+    }
+    return ln.asNumber().toInt() == line
+}

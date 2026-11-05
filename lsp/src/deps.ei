@@ -9,48 +9,119 @@ import { List, MutableList } from "std.collections"
 import { File, Dir } from "std.fs"
 import { Env } from "std.env"
 import { split } from "std.string"
-import { resolveModule, resolveInRoot, scanImports } from "analysis"
+import { resolveModule, resolveInRoot, dirOf, scanImports } from "analysis"
 import { Workspace, uriToPath } from "store"
 
 type Dep(val name: String, var path: String, var commit: String)
 
 fun unquote(s: String): String {
-    if (s.length >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
-        return s.substring(1, s.length - 1)
+    if (s.length >= 2) {
+        val first = s.substring(0, 1)
+        val last = s.substring(s.length - 1, s.length)
+        if ((first == "\"" && last == "\"") || (first == "'" && last == "'")) {
+            return s.substring(1, s.length - 1)
+        }
     }
     return s
 }
 
-// Minimal parser for the `dependencies:` section of `eiwa.yaml`/`eiwa.freeze`:
-// two-space `  name:` entries with four-space `path:`/`commit:` fields.
+// Minimal parser for the `dependencies:` section of `eiwa.yaml`/`eiwa.freeze`.
+// Mirrors the `eiwa` CLI manifest parser: the first indented line under
+// `dependencies:` sets the entry level (any width, spaces or tabs); deeper
+// lines are fields of the current entry. Blank lines and `#` comments are
+// skipped; values honor quotes and trailing comments. Only `path:` and
+// `commit:` are kept (enough to locate sources; git URLs need no parsing
+// since unpinned deps fall back to scanning all checkouts).
+fun indentOfRaw(line: String): Int {
+    var n = 0
+    while (n < line.length) {
+        val c = line.substring(n, n + 1)
+        if (c == " " || c == "\t") {
+            n = n + 1
+        } else {
+            return n
+        }
+    }
+    return n
+}
+
+fun isSpaceChar(c: String): Bool {
+    return c == " " || c == "\t" || c == "\r" || c == "\n"
+}
+
+fun trimRaw(s: String): String {
+    var start = 0
+    var end = s.length
+    while (start < end && isSpaceChar(s.substring(start, start + 1))) {
+        start = start + 1
+    }
+    while (end > start && isSpaceChar(s.substring(end - 1, end))) {
+        end = end - 1
+    }
+    return s.substring(start, end)
+}
+
+fun stripComment(s: String): String {
+    var inSingle = false
+    var inDouble = false
+    var i = 0
+    while (i < s.length) {
+        val c = s.substring(i, i + 1)
+        if (c == "'" && inDouble == false) {
+            inSingle = inSingle == false
+        } else if (c == "\"" && inSingle == false) {
+            inDouble = inDouble == false
+        } else if (c == "#" && inSingle == false && inDouble == false) {
+            if (i == 0 || s.substring(i - 1, i) == " " || s.substring(i - 1, i) == "\t") {
+                return s.substring(0, i)
+            }
+        }
+        i = i + 1
+    }
+    return s
+}
+
+fun parseScalarRaw(s: String): String {
+    return unquote(trimRaw(stripComment(s)))
+}
+
 fun scanDeps(text: String): List<Dep> {
     val out: MutableList<Dep> = MutableList<Dep>()
     val lines = text.split("\n")
     var inDeps = false
+    var depIndent = -1
+    var curIdx = -1
     var i = 0
     while (i < lines.size()) {
         val raw = lines.get(i)
-        val t = raw.trim()
-        if (t == "dependencies:") {
-            inDeps = true
-        } else if (inDeps) {
-            if (raw.startsWith("    ")) {
-                val c = t.indexOf(":")
-                if (c != -1 && out.size() > 0) {
-                    val key = t.substring(0, c).trim()
-                    val value = unquote(t.substring(c + 1, t.length).trim())
-                    val cur = out.get(out.size() - 1)
-                    if (key == "path") {
-                        cur.path = value
-                    }
-                    if (key == "commit") {
-                        cur.commit = value
+        val trimmed = trimRaw(raw)
+        if (trimmed != "" && trimmed.startsWith("#") == false) {
+            val indent = indentOfRaw(raw)
+            if (indent == 0) {
+                inDeps = trimmed == "dependencies:"
+                depIndent = -1
+                curIdx = -1
+            } else if (inDeps) {
+                if (depIndent == -1) {
+                    depIndent = indent
+                }
+                if (indent == depIndent && trimmed.endsWith(":")) {
+                    out.add(Dep(trimmed.substring(0, trimmed.length - 1), "", ""))
+                    curIdx = out.size() - 1
+                } else if (indent > depIndent && curIdx != -1) {
+                    val c = trimmed.indexOf(":")
+                    if (c != -1) {
+                        val key = trimRaw(trimmed.substring(0, c))
+                        val value = parseScalarRaw(trimmed.substring(c + 1, trimmed.length))
+                        val cur = out.get(curIdx)
+                        if (key == "path") {
+                            cur.path = value
+                        }
+                        if (key == "commit") {
+                            cur.commit = value
+                        }
                     }
                 }
-            } else if (raw.startsWith("  ") && t.endsWith(":") && t.contains(" ") == false) {
-                out.add(Dep(t.substring(0, t.length - 1), "", ""))
-            } else if (raw.startsWith(" ") == false && t != "" && t.indexOf(":") != -1) {
-                inDeps = false
             }
         }
         i = i + 1
@@ -149,20 +220,75 @@ fun depSrcDirs(root: String, pkg: String): List<String> {
     return out.freeze()
 }
 
+// Candidate module roots for `.x` imports: the entry-file convention puts
+// project code under `src/` (entry `src/main.ei` -> root `src/`), while the
+// editor only knows the workspace folder. Try `<root>/src` first when it
+// exists, then the root itself (flat layout).
+fun projectRoots(root: String): List<String> {
+    val out: MutableList<String> = MutableList<String>()
+    if (root != "") {
+        if (Dir.exists(root + "/src")) {
+            out.add(root + "/src")
+        }
+        out.add(root)
+    }
+    return out.freeze()
+}
+
+// Nearest ancestor dir of `file` (or `file` itself when a dir) containing
+// `eiwa.freeze`/`eiwa.yaml`. Walks up so files inside dependency checkouts
+// or nested layouts resolve against their own manifest, not the workspace
+// root. "" when no manifest is found.
+fun manifestRootFor(file: String): String {
+    var dir = dirOf(file)
+    if (dir == "") {
+        dir = file
+    }
+    var guard = 0
+    while (dir != "" && guard < 64) {
+        if (manifestFile(dir) != "") {
+            return dir
+        }
+        val parent = dirOf(dir)
+        if (parent == dir) {
+            return ""
+        }
+        dir = parent
+        guard = guard + 1
+    }
+    return ""
+}
+
 // Resolves a bare `a.b.c` module against one file + all known roots,
 // returning the first path that exists on disk ("" when none does).
 fun findModuleFile(currentPath: String, mod: String, root: String): String {
     if (currentPath == "" || mod == "") {
         return ""
     }
-    if (mod.startsWith(".") || mod.startsWith("std.")) {
-        val cand = resolveModule(currentPath, mod, root)
+    var base = root
+    if (base == "") {
+        base = dirOf(currentPath)
+    }
+    if (mod.startsWith(".")) {
+        val roots = projectRoots(base)
+        var r = 0
+        while (r < roots.size()) {
+            val cand = resolveModule(currentPath, mod, roots.get(r))
+            if (cand != "" && File.exists(cand)) {
+                return cand
+            }
+            r = r + 1
+        }
+        return ""
+    }
+    if (mod.startsWith("std.")) {
+        val cand = resolveModule(currentPath, mod, base)
         if (cand != "" && File.exists(cand)) {
             return cand
         }
         return ""
     }
-    val direct = resolveModule(currentPath, mod, root)
+    val direct = resolveModule(currentPath, mod, base)
     if (direct != "" && File.exists(direct)) {
         return direct
     }
@@ -175,17 +301,43 @@ fun findModuleFile(currentPath: String, mod: String, root: String): String {
         }
         i = i + 1
     }
+    // Dependencies mirror the compiler's `--module-path <dep>/src`: the full
+    // dotted path maps under the dep src root (`arest.arest` ->
+    // `<src>/arest/arest.ei`). Some packages instead lay sources out with the
+    // package prefix stripped (`arest.arest` -> `<src>/arest.ei`); try both.
+    // The manifest is looked up from the importing file upward so nested
+    // layouts and dependency checkouts work regardless of workspace root.
+    var manifestRoot = manifestRootFor(currentPath)
+    if (manifestRoot == "") {
+        manifestRoot = root
+    }
     val dot = mod.indexOf(".")
     val pkg = if (dot == -1) mod else mod.substring(0, dot)
     val rest = if (dot == -1) mod else mod.substring(dot + 1, mod.length).replace(".", "/")
-    val dirs = depSrcDirs(root, pkg)
+    val full = mod.replace(".", "/")
+    val dirs = depSrcDirs(manifestRoot, pkg)
     var j = 0
     while (j < dirs.size()) {
-        val cand = dirs.get(j) + "/" + rest + ".ei"
-        if (File.exists(cand)) {
-            return cand
+        val stripped = dirs.get(j) + "/" + rest + ".ei"
+        if (File.exists(stripped)) {
+            return stripped
+        }
+        val kept = dirs.get(j) + "/" + full + ".ei"
+        if (kept != "" && kept != stripped && File.exists(kept)) {
+            return kept
         }
         j = j + 1
+    }
+    // Last resort: project sources (`src/` then root) for bare names, so
+    // top-level project modules resolve from deeply nested importers.
+    val proots = projectRoots(base)
+    var p = 0
+    while (p < proots.size()) {
+        val cand = resolveInRoot(mod, proots.get(p))
+        if (cand != "" && cand != direct && File.exists(cand)) {
+            return cand
+        }
+        p = p + 1
     }
     return ""
 }

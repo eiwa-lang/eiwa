@@ -13,9 +13,10 @@ transported over stdio with `Content-Length` framing. The server itself is
 | `textDocument/publishDiagnostics` (via `eiwac check` on save/open) | ✅ |
 | `textDocument/hover` (same-file + cross-file, receiver-aware) | ✅ |
 | `textDocument/completion` (keywords + file symbols) | ✅ |
-| `textDocument/definition` (same-file + imports + implicit stdlib + `Tipo.metodo` + import paths; synthesized `toString`/`equals`/`hashCode` → their contract methods) | ✅ |
+| `textDocument/definition` (same-file + imports + implicit stdlib + `Tipo.metodo` + import paths + root-relative `.x` vs `src/` layout; synthesized `toString`/`equals`/`hashCode` → their contract methods; import path click → file, `{ name }` click → declaration) | ✅ |
 | `textDocument/implementation` (same-file + imported modules: `implement fun` / types per contract) | ✅ |
 | `textDocument/documentSymbol` | ✅ |
+| `textDocument/documentLink` (every import path as one clickable link) | ✅ |
 | Cross-file goto / workspace symbols | follow-up |
 | Unsaved-buffer diagnostics overlay | follow-up (checks the file on disk) |
 | TCP transport (`--port`) | follow-up (stdio only for now) |
@@ -32,7 +33,7 @@ transported over stdio with `Content-Length` framing. The server itself is
 ./bin/eiwac test lsp/test
 
 # end-to-end protocol test (stdio JSON-RPC against a scratch project)
-EIWAC=$PWD/bin/eiwac python3 lsp/test/e2e_lsp.py lsp/bin/eiwa-lsp
+EIWAC_LSP_BIN=lsp/bin/eiwa-lsp EIWAC=$PWD/bin/eiwac ./bin/eiwac test lsp/test/e2e_test.ei
 ```
 
 The server speaks LSP on stdin/stdout. `EIWAC` env overrides the compiler
@@ -86,7 +87,7 @@ lsp/src/toolchain.ei     locates eiwac + stdlib (`--print-std-dir`, `EIWA_SRC`/`
 lsp/src/diagnostics.ei   eiwac check → LSP Diagnostic[] (errors + warnings)
 lsp/test/analysis_test.ei  unit tests (run: `eiwac test lsp/test`)
 lsp/test/server_test.ei    server dispatch + store unit tests
-lsp/test/e2e_lsp.py        stdio protocol test (run: `python3 lsp/test/e2e_lsp.py lsp/bin/eiwa-lsp`)
+lsp/test/e2e_test.ei        stdio protocol test (run: `eiwac test lsp/test/e2e_test.ei`)
 ```
 
 Design rule: no hand-written name tables. Implicit names (`println`,
