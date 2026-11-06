@@ -109,6 +109,8 @@ jobs:
           # sources via the just-built compiler instead of PATH lookup.
           # The LSP server binary must exist before the suite: e2e_test.ei
           # is discovered by the suite and asserts on it.
+          # (lsp/bin is gitignored: create it, the builder won't.)
+          mkdir -p lsp/bin
           if [ "${{ runner.os }}" = "Windows" ]; then
             EIWA_BASELINE_CPU=1 ./bin/eiwac.exe build -o lsp/bin/eiwa-lsp.exe lsp/src/main.ei
             EIWAC="$PWD/bin/eiwac.exe" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp.exe" ./bin/eiwac.exe test
@@ -123,6 +125,8 @@ jobs:
           # EIWAC lets the language server (and its checks) find the
           # just-built compiler regardless of PATH. EIWAC_LSP_BIN points
           # the Eiwa e2e transcript at the just-built server binary.
+          # (lsp/bin is gitignored: create it, the builder won't.)
+          mkdir -p lsp/bin
           if [ "${{ runner.os }}" = "Windows" ]; then
             EIWA_BASELINE_CPU=1 ./bin/eiwac.exe build -o lsp/bin/eiwa-lsp.exe lsp/src/main.ei
             EIWAC="$PWD/bin/eiwac.exe" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp.exe" ./bin/eiwac.exe test lsp/test/e2e_test.ei
