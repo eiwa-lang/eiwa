@@ -105,10 +105,12 @@ jobs:
       - name: Native test suite
         shell: bash
         run: |
+          # EIWAC lets stdlib-indexing tests (lsp/test) resolve the shipped
+          # sources via the just-built compiler instead of PATH lookup.
           if [ "${{ runner.os }}" = "Windows" ]; then
-            ./bin/eiwac.exe test
+            EIWAC="$PWD/bin/eiwac.exe" ./bin/eiwac.exe test
           else
-            ./bin/eiwac test
+            EIWAC="$PWD/bin/eiwac" ./bin/eiwac test
           fi
 
       - name: LSP end-to-end (stdio JSON-RPC)
