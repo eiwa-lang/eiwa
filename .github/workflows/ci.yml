@@ -107,10 +107,14 @@ jobs:
         run: |
           # EIWAC lets stdlib-indexing tests (lsp/test) resolve the shipped
           # sources via the just-built compiler instead of PATH lookup.
+          # The LSP server binary must exist before the suite: e2e_test.ei
+          # is discovered by the suite and asserts on it.
           if [ "${{ runner.os }}" = "Windows" ]; then
-            EIWAC="$PWD/bin/eiwac.exe" ./bin/eiwac.exe test
+            EIWA_BASELINE_CPU=1 ./bin/eiwac.exe build -o lsp/bin/eiwa-lsp.exe lsp/src/main.ei
+            EIWAC="$PWD/bin/eiwac.exe" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp.exe" ./bin/eiwac.exe test
           else
-            EIWAC="$PWD/bin/eiwac" ./bin/eiwac test
+            EIWA_BASELINE_CPU=1 ./bin/eiwac build -o lsp/bin/eiwa-lsp lsp/src/main.ei
+            EIWAC="$PWD/bin/eiwac" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp" ./bin/eiwac test
           fi
 
       - name: LSP end-to-end (stdio JSON-RPC)
