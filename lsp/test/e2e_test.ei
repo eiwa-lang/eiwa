@@ -47,15 +47,26 @@ fun tmpRoot(): String {
 fun serverBin(): String {
     val configured = Env.get("EIWAC_LSP_BIN")
     if (configured != null && configured != "") {
-        return configured
+        return nativeBin(configured)
     }
     if (File.exists("lsp/bin/eiwa-lsp")) {
-        return "lsp/bin/eiwa-lsp"
+        return nativeBin("lsp/bin/eiwa-lsp")
     }
     if (File.exists("lsp/bin/eiwa-lsp.exe")) {
-        return "lsp/bin/eiwa-lsp.exe"
+        return nativeBin("lsp/bin/eiwa-lsp.exe")
     }
     return ""
+}
+
+// Absolute native path for spawning: cmd.exe splits quoted program
+// paths on `/`, so the server must be launched by its real path
+// (backslashes on Windows). Falls back to the input when missing.
+fun nativeBin(path: String): String {
+    val rp = Process.realpath(path)
+    if (rp == null || rp == "") {
+        return path
+    }
+    return rp
 }
 
 fun writeFile(path: String, content: String) {

@@ -111,9 +111,11 @@ jobs:
           # is discovered by the suite and asserts on it.
           # (lsp/bin is gitignored: create it, the builder won't.)
           mkdir -p lsp/bin
+          # EIWAC must be a native Windows path: git-bash $PWD is msys
+          # format (/d/...) which the native _popen cannot execute.
           if [ "${{ runner.os }}" = "Windows" ]; then
             EIWA_BASELINE_CPU=1 ./bin/eiwac.exe build -o lsp/bin/eiwa-lsp.exe lsp/src/main.ei
-            EIWAC="$PWD/bin/eiwac.exe" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp.exe" ./bin/eiwac.exe test
+            EIWAC="$(cygpath -w "$PWD")/bin/eiwac.exe" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp.exe" ./bin/eiwac.exe test
           else
             EIWA_BASELINE_CPU=1 ./bin/eiwac build -o lsp/bin/eiwa-lsp lsp/src/main.ei
             EIWAC="$PWD/bin/eiwac" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp" ./bin/eiwac test
@@ -127,9 +129,11 @@ jobs:
           # the Eiwa e2e transcript at the just-built server binary.
           # (lsp/bin is gitignored: create it, the builder won't.)
           mkdir -p lsp/bin
+          # EIWAC must be a native Windows path: git-bash $PWD is msys
+          # format (/d/...) which the native _popen cannot execute.
           if [ "${{ runner.os }}" = "Windows" ]; then
             EIWA_BASELINE_CPU=1 ./bin/eiwac.exe build -o lsp/bin/eiwa-lsp.exe lsp/src/main.ei
-            EIWAC="$PWD/bin/eiwac.exe" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp.exe" ./bin/eiwac.exe test lsp/test/e2e_test.ei
+            EIWAC="$(cygpath -w "$PWD")/bin/eiwac.exe" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp.exe" ./bin/eiwac.exe test lsp/test/e2e_test.ei
           else
             EIWA_BASELINE_CPU=1 ./bin/eiwac build -o lsp/bin/eiwa-lsp lsp/src/main.ei
             EIWAC="$PWD/bin/eiwac" EIWAC_LSP_BIN="lsp/bin/eiwa-lsp" ./bin/eiwac test lsp/test/e2e_test.ei

@@ -80,6 +80,8 @@ fun pathToUri(path: String): String {
 // Canonical absolute path (resolves `..`, symlinks). Falls back to input
 // when unresolvable. The existence check keeps POSIX `realpath` semantics
 // on Windows, where `_fullpath` succeeds even for nonexistent paths.
+// Output always uses `/`: LSP locations (and `endsWith` matching) stay
+// identical on every platform.
 fun canonicalPath(path: String): String {
     if (path == "" || File.exists(path) == false) {
         return path
@@ -88,7 +90,7 @@ fun canonicalPath(path: String): String {
     if (rp == null) {
         return path
     }
-    return rp
+    return rp.replace("\\", "/")
 }
 
 // Workspace root (project dir) from `initialize`, used to resolve
