@@ -191,6 +191,9 @@ fun resultOf(msg: JsonValue?): JsonValue? {
 
 test "lsp stdio protocol end-to-end" {
     val bin = serverBin()
+    if (bin == "") {
+        println("e2e: no server binary (set EIWAC_LSP_BIN or build lsp/bin/eiwa-lsp[.exe])")
+    }
     assert(bin != "")
     val unresoled = tmpRoot()
     Dir.mkdir(unresoled)
@@ -242,8 +245,14 @@ test "lsp stdio protocol end-to-end" {
     writeFile(root + "/input.txt", input)
 
     val code = Process.exec("\"" + bin + "\" < \"" + root + "/input.txt\" > \"" + root + "/output.txt\"")
+    if (code != 0) {
+        println("e2e: server exit code=" + code.toString() + " bin=" + bin)
+    }
     assert(code == 0)
     val frames = splitFrames(File.read(root + "/output.txt"))
+    if (frames.size() == 0) {
+        println("e2e: empty output frames bin=" + bin)
+    }
     assert(frames.size() > 0)
 
     val init = findById(frames, 1)

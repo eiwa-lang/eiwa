@@ -3,6 +3,7 @@
 
 import { MutableMap } from "std.collections"
 import { Process } from "std.process"
+import { File } from "std.fs"
 
 type OpenDoc(val uri: String, var text: String, var version: Int)
 
@@ -58,9 +59,15 @@ object DocStore {
 }
 
 // `file:///tmp/x.ei` -> `/tmp/x.ei`. Returns "" for non-file URIs.
+// A leading `/` before a drive letter (`file:///C:/x.ei`) is stripped:
+// `/C:/...` is not a valid Windows path, `C:/...` is.
 fun uriToPath(uri: String): String {
     if (uri.startsWith("file://")) {
-        return uri.substring(7, uri.length)
+        val p = uri.substring(7, uri.length)
+        if (p.length >= 3 && p.substring(0, 1) == "/" && p.substring(2, 3) == ":") {
+            return p.substring(1, p.length)
+        }
+        return p
     }
     return ""
 }
@@ -70,8 +77,13 @@ fun pathToUri(path: String): String {
     return "file://" + path
 }
 
-// Canonical absolute path (resolves `..`, symlinks). Falls back to input.
+// Canonical absolute path (resolves `..`, symlinks). Falls back to input
+// when unresolvable. The existence check keeps POSIX `realpath` semantics
+// on Windows, where `_fullpath` succeeds even for nonexistent paths.
 fun canonicalPath(path: String): String {
+    if (path == "" || File.exists(path) == false) {
+        return path
+    }
     val rp = Process.realpath(path)
     if (rp == null) {
         return path

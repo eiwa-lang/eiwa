@@ -14,6 +14,20 @@ import { File } from "std.fs"
 import { Dir } from "std.fs"
 import { Env } from "std.env"
 
+// Writable scratch base for filesystem tests: the OS temp dir when set,
+// `/tmp` otherwise (always exists on Unix CI images; `%TEMP%` on Windows).
+fun testTmp(): String {
+    val t = Env.get("TEMP")
+    if (t != null && t != "") {
+        return t
+    }
+    val m = Env.get("TMPDIR")
+    if (m != null && m != "") {
+        return m
+    }
+    return "/tmp"
+}
+
 test "takeName extracts identifiers" {
     assert(takeName("Counter(val x: Int)") == "Counter")
     assert(takeName("inc(): Int {") == "inc")
@@ -364,61 +378,71 @@ test "extraRoots reads EIWA_MODULE_PATH" {
     Env.set("EIWA_MODULE_PATH", "/tmp/a:/tmp/b")
     assert(extraRoots().size() == 2)
     assert(extraRoots().get(1) == "/tmp/b")
+    Env.set("EIWA_MODULE_PATH", "C:\\a;C:\\b")
+    assert(extraRoots().size() == 2)
+    assert(extraRoots().get(1) == "C:\\b")
+    Env.set("EIWA_MODULE_PATH", "C:\\a")
+    assert(extraRoots().size() == 1)
+    assert(extraRoots().get(0) == "C:\\a")
     Env.unset("EIWA_MODULE_PATH")
     assert(extraRoots().size() == 0)
 }
 
 test "findModuleFile falls back to EIWA_MODULE_PATH" {
-    if (Dir.exists("/tmp/lspmod_extra") == false) {
-        Dir.mkdir("/tmp/lspmod_extra")
+    val modBase = testTmp() + "/lspmod_extra"
+    if (Dir.exists(modBase) == false) {
+        Dir.mkdir(modBase)
     }
-    File.write("/tmp/lspmod_extra/utilx.ei", "fun utilx(): Int {\n    return 1\n}\n")
-    Env.set("EIWA_MODULE_PATH", "/tmp/lspmod_extra")
-    assert(findModuleFile("/tmp/lspmod/a.ei", "utilx", "") == "/tmp/lspmod_extra/utilx.ei")
-    assert(findModuleFile("/tmp/lspmod/a.ei", "missing", "") == "")
+    File.write(modBase + "/utilx.ei", "fun utilx(): Int {\n    return 1\n}\n")
+    Env.set("EIWA_MODULE_PATH", modBase)
+    assert(findModuleFile(testTmp() + "/lspmod/a.ei", "utilx", "") == modBase + "/utilx.ei")
+    assert(findModuleFile(testTmp() + "/lspmod/a.ei", "missing", "") == "")
     Env.unset("EIWA_MODULE_PATH")
 }
 
 test "projectRoots prefers src layout" {
-    if (Dir.exists("/tmp/lsproot2/src") == false) {
-        Dir.mkdir("/tmp/lsproot2")
-        Dir.mkdir("/tmp/lsproot2/src")
+    val rootBase = testTmp() + "/lsproot2"
+    if (Dir.exists(rootBase + "/src") == false) {
+        Dir.mkdir(rootBase)
+        Dir.mkdir(rootBase + "/src")
     }
-    val withSrc = projectRoots("/tmp/lsproot2")
+    val withSrc = projectRoots(rootBase)
     assert(withSrc.size() == 2)
-    assert(withSrc.get(0) == "/tmp/lsproot2/src")
-    assert(withSrc.get(1) == "/tmp/lsproot2")
-    val flat = projectRoots("/tmp/lspflat_nonexistent_xyz")
+    assert(withSrc.get(0) == rootBase + "/src")
+    assert(withSrc.get(1) == rootBase)
+    val flat = projectRoots(testTmp() + "/lspflat_nonexistent_xyz")
     assert(flat.size() == 1)
-    assert(flat.get(0) == "/tmp/lspflat_nonexistent_xyz")
+    assert(flat.get(0) == testTmp() + "/lspflat_nonexistent_xyz")
     assert(projectRoots("").size() == 0)
 }
 
 test "findModuleFile resolves root-relative imports against src" {
-    if (Dir.exists("/tmp/lsproot3/src/lib") == false) {
-        Dir.mkdir("/tmp/lsproot3")
-        Dir.mkdir("/tmp/lsproot3/src")
-        Dir.mkdir("/tmp/lsproot3/src/lib")
+    val libBase = testTmp() + "/lsproot3"
+    if (Dir.exists(libBase + "/src/lib") == false) {
+        Dir.mkdir(libBase)
+        Dir.mkdir(libBase + "/src")
+        Dir.mkdir(libBase + "/src/lib")
     }
-    File.write("/tmp/lsproot3/src/lib/strings.ei", "fun trimmer(s: String): String {\n    return s\n}\n")
-    assert(findModuleFile("/tmp/lsproot3/src/main.ei", ".lib.strings", "/tmp/lsproot3") == "/tmp/lsproot3/src/lib/strings.ei")
-    assert(findModuleFile("/tmp/lsproot3/src/main.ei", ".lib.missing", "/tmp/lsproot3") == "")
-    assert(findModuleFile("/tmp/lsproot3/src/main.ei", ".lib.strings", "") == "/tmp/lsproot3/src/lib/strings.ei")
+    File.write(libBase + "/src/lib/strings.ei", "fun trimmer(s: String): String {\n    return s\n}\n")
+    assert(findModuleFile(libBase + "/src/main.ei", ".lib.strings", libBase) == libBase + "/src/lib/strings.ei")
+    assert(findModuleFile(libBase + "/src/main.ei", ".lib.missing", libBase) == "")
+    assert(findModuleFile(libBase + "/src/main.ei", ".lib.strings", "") == libBase + "/src/lib/strings.ei")
 }
 
 test "depSrcDirs resolves path deps against the project root" {
-    if (Dir.exists("/tmp/lspproj/libs/mylib/src") == false) {
-        Dir.mkdir("/tmp/lspproj")
-        Dir.mkdir("/tmp/lspproj/libs")
-        Dir.mkdir("/tmp/lspproj/libs/mylib")
-        Dir.mkdir("/tmp/lspproj/libs/mylib/src")
+    val projBase = testTmp() + "/lspproj"
+    if (Dir.exists(projBase + "/libs/mylib/src") == false) {
+        Dir.mkdir(projBase)
+        Dir.mkdir(projBase + "/libs")
+        Dir.mkdir(projBase + "/libs/mylib")
+        Dir.mkdir(projBase + "/libs/mylib/src")
     }
-    File.write("/tmp/lspproj/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
-    File.write("/tmp/lspproj/libs/mylib/src/mylib.ei", "fun hello(): String {\n    return \"hi\"\n}\n")
-    val dirs = depSrcDirs("/tmp/lspproj", "mylib")
+    File.write(projBase + "/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
+    File.write(projBase + "/libs/mylib/src/mylib.ei", "fun hello(): String {\n    return \"hi\"\n}\n")
+    val dirs = depSrcDirs(projBase, "mylib")
     assert(dirs.size() == 1)
-    assert(dirs.get(0) == "/tmp/lspproj/libs/mylib/src")
-    assert(findModuleFile("/tmp/lspproj/src/main.ei", "mylib", "/tmp/lspproj") == "/tmp/lspproj/libs/mylib/src/mylib.ei")
+    assert(dirs.get(0) == projBase + "/libs/mylib/src")
+    assert(findModuleFile(projBase + "/src/main.ei", "mylib", projBase) == projBase + "/libs/mylib/src/mylib.ei")
 }
 
 test "scanDeps tolerates comments and single quotes" {
@@ -430,35 +454,37 @@ test "scanDeps tolerates comments and single quotes" {
 }
 
 test "findModuleFile resolves nested dep layout without workspace root" {
-    if (Dir.exists("/tmp/lspwalk/proj/libs/arest/src/arest") == false) {
-        Dir.mkdir("/tmp/lspwalk")
-        Dir.mkdir("/tmp/lspwalk/proj")
-        Dir.mkdir("/tmp/lspwalk/proj/src")
-        Dir.mkdir("/tmp/lspwalk/proj/src/deep")
-        Dir.mkdir("/tmp/lspwalk/proj/libs")
-        Dir.mkdir("/tmp/lspwalk/proj/libs/arest")
-        Dir.mkdir("/tmp/lspwalk/proj/libs/arest/src")
-        Dir.mkdir("/tmp/lspwalk/proj/libs/arest/src/arest")
+    val walkBase = testTmp() + "/lspwalk"
+    if (Dir.exists(walkBase + "/proj/libs/arest/src/arest") == false) {
+        Dir.mkdir(walkBase)
+        Dir.mkdir(walkBase + "/proj")
+        Dir.mkdir(walkBase + "/proj/src")
+        Dir.mkdir(walkBase + "/proj/src/deep")
+        Dir.mkdir(walkBase + "/proj/libs")
+        Dir.mkdir(walkBase + "/proj/libs/arest")
+        Dir.mkdir(walkBase + "/proj/libs/arest/src")
+        Dir.mkdir(walkBase + "/proj/libs/arest/src/arest")
     }
-    File.write("/tmp/lspwalk/proj/eiwa.yaml", "name: demo\ndependencies:\n  arest:\n    path: libs/arest\n")
-    File.write("/tmp/lspwalk/proj/libs/arest/src/arest/arest.ei", "fun arest(): Int {\n    return 1\n}\n")
-    File.write("/tmp/lspwalk/proj/src/deep/main.ei", "import { arest } from \"arest.arest\"\n")
-    assert(findModuleFile("/tmp/lspwalk/proj/src/deep/main.ei", "arest.arest", "") == "/tmp/lspwalk/proj/libs/arest/src/arest/arest.ei")
+    File.write(walkBase + "/proj/eiwa.yaml", "name: demo\ndependencies:\n  arest:\n    path: libs/arest\n")
+    File.write(walkBase + "/proj/libs/arest/src/arest/arest.ei", "fun arest(): Int {\n    return 1\n}\n")
+    File.write(walkBase + "/proj/src/deep/main.ei", "import { arest } from \"arest.arest\"\n")
+    assert(findModuleFile(walkBase + "/proj/src/deep/main.ei", "arest.arest", "") == walkBase + "/proj/libs/arest/src/arest/arest.ei")
 }
 
 test "importFileTarget opens the imported module" {
-    if (Dir.exists("/tmp/lspproj2/libs/mylib/src") == false) {
-        Dir.mkdir("/tmp/lspproj2")
-        Dir.mkdir("/tmp/lspproj2/libs")
-        Dir.mkdir("/tmp/lspproj2/libs/mylib")
-        Dir.mkdir("/tmp/lspproj2/libs/mylib/src")
+    val projBase = testTmp() + "/lspproj2"
+    if (Dir.exists(projBase + "/libs/mylib/src") == false) {
+        Dir.mkdir(projBase)
+        Dir.mkdir(projBase + "/libs")
+        Dir.mkdir(projBase + "/libs/mylib")
+        Dir.mkdir(projBase + "/libs/mylib/src")
     }
-    File.write("/tmp/lspproj2/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
-    File.write("/tmp/lspproj2/libs/mylib/src/mylib.ei", "fun hello(): String {\n    return \"hi\"\n}\n")
-    Workspace.root = "/tmp/lspproj2"
+    File.write(projBase + "/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
+    File.write(projBase + "/libs/mylib/src/mylib.ei", "fun hello(): String {\n    return \"hi\"\n}\n")
+    Workspace.root = projBase
     val text = "import { hello } from \"mylib\"\ninit {\n    println(hello())\n}\n"
-    assert(importFileTarget(text, "file:///tmp/lspproj2/src/main.ei", "mylib") == "/tmp/lspproj2/libs/mylib/src/mylib.ei")
-    assert(importFileTarget(text, "file:///tmp/lspproj2/src/main.ei", "other") == "")
+    assert(importFileTarget(text, "file://" + projBase + "/src/main.ei", "mylib") == projBase + "/libs/mylib/src/mylib.ei")
+    assert(importFileTarget(text, "file://" + projBase + "/src/main.ei", "other") == "")
     Workspace.root = ""
 }
 

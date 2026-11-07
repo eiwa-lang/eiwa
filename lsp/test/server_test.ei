@@ -7,6 +7,21 @@ import { scanSymbols, findBestSymbol, symbolKindLabel, quotedName } from ".lsp.s
 import { resolveMemberTarget, findCrossFile, completionKind } from ".lsp.src.server"
 import { File } from "std.fs"
 import { Dir } from "std.fs"
+import { Env } from "std.env"
+
+// Writable scratch base for filesystem tests: the OS temp dir when set,
+// `/tmp` otherwise.
+fun testTmp(): String {
+    val t = Env.get("TEMP")
+    if (t != null && t != "") {
+        return t
+    }
+    val m = Env.get("TMPDIR")
+    if (m != null && m != "") {
+        return m
+    }
+    return "/tmp"
+}
 
 test "DocStore tracks open documents" {
     DocStore.open("file:///a.ei", "hello", 1)
@@ -27,6 +42,7 @@ test "DocStore tracks open documents" {
 
 test "uriToPath and pathToUri round-trip" {
     assert(uriToPath("file:///tmp/x.ei") == "/tmp/x.ei")
+    assert(uriToPath("file:///C:/x.ei") == "C:/x.ei")
     assert(uriToPath("untitled:1") == "")
     assert(pathToUri("/tmp/x.ei") == "file:///tmp/x.ei")
 }
@@ -103,19 +119,23 @@ test "findCrossFile jumps to synthesized contract methods" {
 }
 
 test "findCrossFile resolves cross-file members" {
-    if (Dir.exists("/tmp/lspcross/libs/mylib/src") == false) {
-        Dir.mkdir("/tmp/lspcross")
-        Dir.mkdir("/tmp/lspcross/libs")
-        Dir.mkdir("/tmp/lspcross/libs/mylib")
-        Dir.mkdir("/tmp/lspcross/libs/mylib/src")
+    val rawBase = testTmp() + "/lspcross"
+    if (Dir.exists(rawBase + "/libs/mylib/src") == false) {
+        Dir.mkdir(rawBase)
+        Dir.mkdir(rawBase + "/libs")
+        Dir.mkdir(rawBase + "/libs/mylib")
+        Dir.mkdir(rawBase + "/libs/mylib/src")
     }
-    File.write("/tmp/lspcross/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
-    File.write("/tmp/lspcross/libs/mylib/src/mylib.ei", "type Box {\n    fun open(): Bool {\n        return true\n    }\n}\n")
-    Workspace.root = "/tmp/lspcross"
+    // Canonicalize after creating: TMPDIR may contain symlinks
+    // (/var -> /private/var) and hits come back canonicalized.
+    val crossBase = canonicalPath(rawBase)
+    File.write(crossBase + "/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
+    File.write(crossBase + "/libs/mylib/src/mylib.ei", "type Box {\n    fun open(): Bool {\n        return true\n    }\n}\n")
+    Workspace.root = crossBase
     val text = "import { Box } from \"mylib\"\ninit {\n    val b = Box()\n    println(b.open())\n}\n"
-    val hit = findCrossFile(text, "file:///tmp/lspcross/src/main.ei", "open")
+    val hit = findCrossFile(text, "file://" + crossBase + "/src/main.ei", "open")
     assert(hit.found)
-    assert(hit.uri.endsWith("/tmp/lspcross/libs/mylib/src/mylib.ei"))
+    assert(hit.uri.endsWith(crossBase + "/libs/mylib/src/mylib.ei"))
     assert(hit.line == 1)
     Workspace.root = ""
 }

@@ -641,12 +641,16 @@ fun locateImportPaths(text: String): List<ImportPath> {
 }
 
 // Directory of a file path (`/a/b/c.ei` -> `/a/b`). "" when none.
+// Both `/` and `\` count as separators so Windows paths resolve too.
 fun dirOf(path: String): String {
     var slash = -1
-    var probe = path.indexOf("/")
-    while (probe != -1) {
-        slash = probe
-        probe = path.indexOf("/", probe + 1)
+    var i = 0
+    while (i < path.length) {
+        val c = path.substring(i, i + 1)
+        if (c == "/" || c == "\\") {
+            slash = i
+        }
+        i = i + 1
     }
     if (slash <= 0) {
         return ""
