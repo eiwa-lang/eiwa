@@ -44,6 +44,16 @@ fun tmpRoot(): String {
     return "/tmp/eiwa-lsp-e2e"
 }
 
+// Native-separator form of a path for filesystem calls and shell
+// commands (cmd.exe rejects `D:/...`). URIs always keep `/`.
+fun fsNative(p: String): String {
+    val t = Env.get("TEMP")
+    if (t != null && t != "") {
+        return p.replace("/", "\\")
+    }
+    return p
+}
+
 fun serverBin(): String {
     val configured = Env.get("EIWAC_LSP_BIN")
     if (configured != null && configured != "") {
@@ -214,7 +224,10 @@ test "lsp stdio protocol end-to-end" {
     if (canon != null) {
         root = canon
     }
+    // URIs always use `/`; filesystem paths use the native separator
+    // (cmd.exe rejects `D:/...` in redirect targets).
     val rootUri = "file://" + root.replace("\\", "/")
+    val fsRoot = fsNative(root)
 
     val mainText = "import { helper } from \"util\"\nimport { parseJson } from \"std.json\"\n\ntype Counter {\n    fun inc(): Int {\n        return 1\n    }\n}\n\ncontract Drawable {\n    fun draw()\n}\n\ninit {\n    val c = Counter()\n    println(c.inc())\n    println(helper())\n    val n = 42\n    println(n.toString())\n    val v = parseJson(\"{}\")\n    println(v)\n}\n"
     val utilText = "fun helper(): Int {\n    return 7\n}\n"
@@ -222,13 +235,13 @@ test "lsp stdio protocol end-to-end" {
     val greetText = "fun greet(name: String): String {\n    return name\n}\n"
     val sameText = "import { greet } from \"greet\"\n\ninit {\n    println(greet(\"x\"))\n}\n"
     val badText = "init {\n    val x: Int = \"hello\"\n}\n"
-    writeFile(root + "/src/main.ei", mainText)
-    writeFile(root + "/src/util.ei", utilText)
-    writeFile(root + "/src/impl.ei", implText)
-    writeFile(root + "/src/greet.ei", greetText)
-    writeFile(root + "/src/same.ei", sameText)
-    writeFile(root + "/src/bad.ei", badText)
-    writeFile(root + "/eiwa.yaml", "name: e2e\nversion: 0.1.0\n")
+    writeFile(fsRoot + "/src/main.ei", mainText)
+    writeFile(fsRoot + "/src/util.ei", utilText)
+    writeFile(fsRoot + "/src/impl.ei", implText)
+    writeFile(fsRoot + "/src/greet.ei", greetText)
+    writeFile(fsRoot + "/src/same.ei", sameText)
+    writeFile(fsRoot + "/src/bad.ei", badText)
+    writeFile(fsRoot + "/eiwa.yaml", "name: e2e\nversion: 0.1.0\n")
 
     val mainUri = docUri(rootUri, "src/main.ei")
     var input = ""
@@ -253,14 +266,14 @@ test "lsp stdio protocol end-to-end" {
     input = input + req(14, "textDocument/hover", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":18,\"character\":14}}")
     input = input + req(999, "shutdown", "{}")
     input = input + notif("exit", "{}")
-    writeFile(root + "/input.txt", input)
+    writeFile(fsRoot + "/input.txt", input)
 
-    val code = Process.exec("\"" + bin + "\" < \"" + root + "/input.txt\" > \"" + root + "/output.txt\"")
+    val code = Process.exec("\"" + bin + "\" < \"" + fsRoot + "/input.txt\" > \"" + fsRoot + "/output.txt\"")
     if (code != 0) {
         println("e2e: server exit code=" + code.toString() + " bin=" + bin)
     }
     assert(code == 0)
-    val frames = splitFrames(File.read(root + "/output.txt"))
+    val frames = splitFrames(File.read(fsRoot + "/output.txt"))
     if (frames.size() == 0) {
         println("e2e: empty output frames bin=" + bin)
     }
