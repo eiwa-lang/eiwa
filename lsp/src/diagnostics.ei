@@ -104,7 +104,9 @@ fun publishDiagnostics(uri: String) {
     var i = 0
     while (i < diags.size()) {
         val d = diags.get(i)
-        if (d.file == "" || d.file == path) {
+        // Compare slash-normalized: eiwac may print `\` while the LSP
+        // holds `/` (or vice versa); same file, different separators.
+        if (d.file == "" || d.file.replace("\\", "/") == path.replace("\\", "/")) {
             if (count > 0) {
                 arr = arr + ","
             }

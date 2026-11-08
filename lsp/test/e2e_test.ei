@@ -33,13 +33,13 @@ fun checkDetail(name: String, ok: Bool, detail: String) {
 }
 
 fun tmpRoot(): String {
-    val tmp = Env.get("TMPDIR")
-    if (tmp != null && tmp != "") {
-        return tmp + "/eiwa-lsp-e2e"
-    }
     val temp = Env.get("TEMP")
     if (temp != null && temp != "") {
         return temp + "/eiwa-lsp-e2e"
+    }
+    val tmp = Env.get("TMPDIR")
+    if (tmp != null && tmp != "") {
+        return tmp + "/eiwa-lsp-e2e"
     }
     return "/tmp/eiwa-lsp-e2e"
 }
@@ -331,8 +331,8 @@ test "lsp stdio protocol end-to-end" {
     }
 
     val badDiag = findNotification(frames, "textDocument/publishDiagnostics")
-    check("e2e bad file has 1 diagnostic", diagCount(badDiag) == 1)
-    check("e2e diagnostic mentions Int", diagMessage(badDiag).contains("Int"))
+    checkDetail("e2e bad file has 1 diagnostic", diagCount(badDiag) == 1, "got=" + diagCount(badDiag).toString())
+    checkDetail("e2e diagnostic mentions Int", diagMessage(badDiag).contains("Int"), "msg=" + diagMessage(badDiag))
 
     val hov = resultOf(findById(frames, 2))
     check("e2e hover markdown", hov != null && hov.get("contents") != null)
