@@ -64,6 +64,16 @@ fun fsSep(): String {
     return "/"
 }
 
+// `cmd /c` strips a leading/trailing quote pair from the whole command,
+// unbalancing quoted redirections. Prefixing with `call` avoids that.
+fun shellPrefix(): String {
+    val t = Env.get("TEMP")
+    if (t != null && t != "") {
+        return "call "
+    }
+    return ""
+}
+
 fun serverBin(): String {
     val configured = Env.get("EIWAC_LSP_BIN")
     if (configured != null && configured != "") {
@@ -278,7 +288,7 @@ test "lsp stdio protocol end-to-end" {
     input = input + notif("exit", "{}")
     writeFile(fsRoot + fsSep() + "input.txt", input)
 
-    val code = Process.exec("\"" + bin + "\" < \"" + fsRoot + fsSep() + "input.txt\" > \"" + fsRoot + fsSep() + "output.txt\" 2> \"" + fsRoot + fsSep() + "stderr.txt\"")
+    val code = Process.exec(shellPrefix() + "\"" + bin + "\" < \"" + fsRoot + fsSep() + "input.txt\" > \"" + fsRoot + fsSep() + "output.txt\" 2> \"" + fsRoot + fsSep() + "stderr.txt\"")
     if (code != 0) {
         println("e2e: server exit code=" + code.toString() + " bin=" + bin)
         println("e2e: server stderr: " + File.read(fsRoot + fsSep() + "stderr.txt"))

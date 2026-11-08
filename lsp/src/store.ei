@@ -3,7 +3,7 @@
 
 import { MutableMap } from "std.collections"
 import { Process } from "std.process"
-import { File } from "std.fs"
+import { File, Dir } from "std.fs"
 
 type OpenDoc(val uri: String, var text: String, var version: Int)
 
@@ -83,7 +83,7 @@ fun pathToUri(path: String): String {
 // Output always uses `/`: LSP locations (and `endsWith` matching) stay
 // identical on every platform.
 fun canonicalPath(path: String): String {
-    if (path == "" || File.exists(path) == false) {
+    if (path == "" || (File.exists(path) == false && Dir.exists(path) == false)) {
         return path
     }
     val rp = Process.realpath(path)
