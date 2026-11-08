@@ -54,6 +54,16 @@ fun fsNative(p: String): String {
     return p
 }
 
+// Native path separator for joining (`\` on Windows, `/` elsewhere).
+// Keeps every filesystem/shell path fully native; URIs always use `/`.
+fun fsSep(): String {
+    val t = Env.get("TEMP")
+    if (t != null && t != "") {
+        return "\\"
+    }
+    return "/"
+}
+
 fun serverBin(): String {
     val configured = Env.get("EIWAC_LSP_BIN")
     if (configured != null && configured != "") {
@@ -235,13 +245,13 @@ test "lsp stdio protocol end-to-end" {
     val greetText = "fun greet(name: String): String {\n    return name\n}\n"
     val sameText = "import { greet } from \"greet\"\n\ninit {\n    println(greet(\"x\"))\n}\n"
     val badText = "init {\n    val x: Int = \"hello\"\n}\n"
-    writeFile(fsRoot + "/src/main.ei", mainText)
-    writeFile(fsRoot + "/src/util.ei", utilText)
-    writeFile(fsRoot + "/src/impl.ei", implText)
-    writeFile(fsRoot + "/src/greet.ei", greetText)
-    writeFile(fsRoot + "/src/same.ei", sameText)
-    writeFile(fsRoot + "/src/bad.ei", badText)
-    writeFile(fsRoot + "/eiwa.yaml", "name: e2e\nversion: 0.1.0\n")
+    writeFile(fsRoot + fsSep() + "src/main.ei", mainText)
+    writeFile(fsRoot + fsSep() + "src/util.ei", utilText)
+    writeFile(fsRoot + fsSep() + "src/impl.ei", implText)
+    writeFile(fsRoot + fsSep() + "src/greet.ei", greetText)
+    writeFile(fsRoot + fsSep() + "src/same.ei", sameText)
+    writeFile(fsRoot + fsSep() + "src/bad.ei", badText)
+    writeFile(fsRoot + fsSep() + "eiwa.yaml", "name: e2e\nversion: 0.1.0\n")
 
     val mainUri = docUri(rootUri, "src/main.ei")
     var input = ""
@@ -266,14 +276,15 @@ test "lsp stdio protocol end-to-end" {
     input = input + req(14, "textDocument/hover", "{\"textDocument\":{\"uri\":\"" + jsonEscape(mainUri) + "\"},\"position\":{\"line\":18,\"character\":14}}")
     input = input + req(999, "shutdown", "{}")
     input = input + notif("exit", "{}")
-    writeFile(fsRoot + "/input.txt", input)
+    writeFile(fsRoot + fsSep() + "input.txt", input)
 
-    val code = Process.exec("\"" + bin + "\" < \"" + fsRoot + "/input.txt\" > \"" + fsRoot + "/output.txt\"")
+    val code = Process.exec("\"" + bin + "\" < \"" + fsRoot + fsSep() + "input.txt\" > \"" + fsRoot + fsSep() + "output.txt\" 2> \"" + fsRoot + fsSep() + "stderr.txt\"")
     if (code != 0) {
         println("e2e: server exit code=" + code.toString() + " bin=" + bin)
+        println("e2e: server stderr: " + File.read(fsRoot + fsSep() + "stderr.txt"))
     }
     assert(code == 0)
-    val frames = splitFrames(File.read(fsRoot + "/output.txt"))
+    val frames = splitFrames(File.read(fsRoot + fsSep() + "output.txt"))
     if (frames.size() == 0) {
         println("e2e: empty output frames bin=" + bin)
     }

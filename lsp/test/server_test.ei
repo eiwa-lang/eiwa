@@ -134,6 +134,9 @@ test "findCrossFile resolves cross-file members" {
     Workspace.root = crossBase
     val text = "import { Box } from \"mylib\"\ninit {\n    val b = Box()\n    println(b.open())\n}\n"
     val hit = findCrossFile(text, "file://" + crossBase + "/src/main.ei", "open")
+    if (hit.found == false || hit.uri.endsWith(crossBase + "/libs/mylib/src/mylib.ei") == false || hit.line != 1) {
+        println("findCrossFile DEBUG found=" + hit.found.toString() + " uri=" + hit.uri + " line=" + hit.line.toString() + " expectSuffix=" + crossBase + "/libs/mylib/src/mylib.ei")
+    }
     assert(hit.found)
     assert(hit.uri.endsWith(crossBase + "/libs/mylib/src/mylib.ei"))
     assert(hit.line == 1)
