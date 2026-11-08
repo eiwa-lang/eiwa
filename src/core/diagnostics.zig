@@ -43,14 +43,12 @@ pub const Color = struct {
     pub const bold_cyan = "\x1b[1;36m";
 };
 
-/// Returns true if terminal colors should be used.
+/// Returns true if terminal colors should be used: never when piped
+/// (so machine consumers like the LSP see plain `error:` lines).
 pub fn useColors() bool {
     if (std.c.getenv("NO_COLOR") != null) return false;
     if (std.c.getenv("TERM")) |term| {
         if (std.mem.eql(u8, std.mem.sliceTo(term, 0), "dumb")) return false;
-    }
-    if (builtin.os.tag == .windows) {
-        return true;
     }
     return std.c.isatty(std.posix.STDERR_FILENO) != 0;
 }
