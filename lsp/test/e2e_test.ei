@@ -128,7 +128,14 @@ fun position(uri: String, line: Int, character: Int): String {
 }
 
 // Splits a framed transcript into raw JSON bodies.
+// On Windows the server's stdout is text mode, so its `\r\n` framing
+// arrives doubled (`\r\r\n`); collapse it back before parsing. Bodies
+// never contain raw CRs (single-line JSON), so this is a no-op elsewhere.
 fun splitFrames(text: String): List<String> {
+    return splitFramesRaw(text.replace("\r\r\n", "\r\n"))
+}
+
+fun splitFramesRaw(text: String): List<String> {
     val out: MutableList<String> = MutableList<String>()
     var pos = 0
     var more = true
