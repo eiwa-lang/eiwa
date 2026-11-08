@@ -50,8 +50,17 @@ pub fn useColors() bool {
     if (std.c.getenv("TERM")) |term| {
         if (std.mem.eql(u8, std.mem.sliceTo(term, 0), "dumb")) return false;
     }
+    // UCRT `_isatty` takes a plain int fd; `std.c.isatty` on Windows
+    // takes a HANDLE, so it cannot be used with STDERR_FILENO here.
+    if (builtin.os.tag == .windows) {
+        return _isatty(2) != 0;
+    }
     return std.c.isatty(std.posix.STDERR_FILENO) != 0;
 }
+
+extern "c" fn _isatty(fd: c_int) c_int;
+
+extern "c" fn c_isatty(fd: c_int) c_int;
 
 /// Print an Internal Compiler Error (ICE) and instructions for reporting.
 pub fn printICE(
