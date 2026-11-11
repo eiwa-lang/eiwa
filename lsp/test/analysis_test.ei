@@ -1,6 +1,6 @@
 // analysis_test.ei — unit tests for the LSP text analysis helpers.
 
-import { scanSymbols, wordAt, takeName, findSymbol, findBestSymbol, findTopLevel, findContract, findContractMethod, findMember, receiverAt, isCapitalized, indexOfWord, inferReceiverType, enclosingHolder, findImplementations, containsWord, scanImports, locateImportPaths, importPathAtCursor, resolveModule, resolveInRoot, lineAt, declKeyword } from ".lsp.src.analysis"
+import { scanSymbols, wordAt, takeName, findSymbol, findBestSymbol, findTopLevel, findContract, findContractMethod, findMember, findLocalDecl, receiverAt, isCapitalized, indexOfWord, inferReceiverType, enclosingHolder, findImplementations, containsWord, scanImports, locateImportPaths, importPathAtCursor, resolveModule, resolveInRoot, lineAt, declKeyword } from ".lsp.src.analysis"
 import { implicitModule, synthesisContract } from ".lsp.src.index"
 import { uriToPath } from ".lsp.src.store"
 import { headerValue, isContentLength } from ".lsp.src.transport"
@@ -551,4 +551,57 @@ test "checkOutputToDiags parses eiwac output" {
     assert(diags.get(0).col == 6)
     assert(diags.get(0).message == "Expected Int but found String for variable 'x'.")
     assert(checkOutputToDiags("OK /tmp/ok.ei\n").size() == 0)
+}
+
+test "findLocalDecl resolves params on the signature and in the body" {
+    val text = "fun renderVerificationPending(locale: String) {\n    println(locale)\n}"
+    assert(findLocalDecl(text, 0, "locale") == 0)
+    assert(findLocalDecl(text, 1, "locale") == 0)
+    assert(findLocalDecl(text, 1, "missing") == -1)
+}
+
+test "findLocalDecl finds vals alongside params" {
+    val text = "fun f(locale: String) {\n    val other = 1\n    println(locale, other)\n}"
+    assert(findLocalDecl(text, 2, "locale") == 0)
+    assert(findLocalDecl(text, 2, "other") == 1)
+}
+
+test "findLocalDecl misses closed siblings and top-level code" {
+    val closed = "fun a() {\n    val locale = \"x\"\n}\nfun b() {\n    println(locale)\n}"
+    assert(findLocalDecl(closed, 4, "locale") == -1)
+    assert(findLocalDecl("val locale = \"x\"\nprintln(locale)", 1, "locale") == -1)
+}
+
+test "findLocalDecl follows multi-line signatures" {
+    val text = "fun f(\n    locale: String\n) {\n    println(locale)\n}"
+    assert(findLocalDecl(text, 3, "locale") == 0)
+}
+
+test "findLocalDecl misses lambda-shadowed params" {
+    val text = "fun f(x: Int) {\n    val g = { x -> println(x) }\n}"
+    assert(findLocalDecl(text, 1, "x") == -1)
+}
+
+test "findLocalDecl misses for-lambda shadowed names" {
+    val text = "fun f(n: Int) {\n    for ([1, 2]) { n -> println(n) }\n    println(n)\n}"
+    assert(findLocalDecl(text, 1, "n") == -1)
+}
+
+test "findLocalDecl still resolves the outer name without shadowing" {
+    val text = "fun f(x: Int) {\n    val g = { y -> println(x, y) }\n}"
+    assert(findLocalDecl(text, 1, "x") == 0)
+}
+
+test "scanSymbols registers extension funs under the method name" {
+    val text = "fun BodyBuilder.renderVerificationState(ticket: String, locale: String) {\n}\nfun BodyBuilder.renderVerificationPending() {\n    renderVerificationState(\"t\", \"en\")\n}"
+    val syms = scanSymbols(text)
+    val m = findBestSymbol(syms, "renderVerificationState")
+    if (m != null) {
+        assert(m.line == 0)
+        assert(m.kind == "fun")
+        assert(m.container == "BodyBuilder")
+    } else {
+        assert(false)
+    }
+    assert(findBestSymbol(syms, "BodyBuilder") == null)
 }

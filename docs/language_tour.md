@@ -456,7 +456,7 @@ Eiwa supports native Kotlin-style string templates. Expressions and variables ca
 
 * **Simple Identifiers:** `$variableName`
 * **Arbitrary Expressions:** `${expression}` (including arithmetic, property reads, method calls, or nested logic)
-* **Escaped Dollar Sign:** `\$` emits a literal `$` without triggering interpolation.
+* **Escaped Dollar Sign:** `\$` emits a literal `$` without triggering interpolation. `$` followed by a digit is always literal (e.g. SQL `"WHERE id = $1"` needs no escape).
 
 ```kotlin
 type Account(val id: Int, val holder: String, val balance: Double) : Stringable {
@@ -2366,7 +2366,7 @@ test "should add two numbers correctly" {
 }
 ```
 
-Then, run `eiwa test` in your terminal. The compiler will automatically discover, group, and run all your tests in an isolated native binary.
+Then, run `eiwa test` in your terminal. The compiler will automatically discover, group, and run all your tests in an isolated native binary. Pass a file or directory to run a subset (`eiwa test test/profile_test.ei`), and use `--jobs N` to bound parallelism (default: CPU count; `EIWA_TEST_JOBS` sets the same, the flag wins).
 
 ## 20. Structured Concurrency & Parallelism (`task`, `await` & `Dispatchers`)
 
@@ -3380,7 +3380,7 @@ Options:
 
 ### 30.1 Standalone Files (Delegation to `eiwac`)
 
-`eiwa run`, `eiwa build` and `eiwa test` also accept a standalone `.ei` file. When any argument after the command ends with `.ei`, the CLI skips project mode entirely and forwards the full command line to the `eiwac` backend (no `eiwa.yaml` required):
+`eiwa run` and `eiwa build` also accept a standalone `.ei` file. When any argument after the command ends with `.ei` (and there is no `eiwa.yaml`), the CLI skips project mode entirely and forwards the full command line to the `eiwac` backend (no `eiwa.yaml` required). `eiwa test <file.ei>` inside a project instead runs through the project flow, so the file still sees the project's dependencies:
 
 ```bash
 eiwa run app.ei                  # compile + execute (standalone .ei, JIT)

@@ -34,7 +34,7 @@ type CliArgs(
 fun isValueOption(arg: String): Bool {
     return arg == "-o" || arg == "--branch" || arg == "--tag" || arg == "--commit" ||
         arg == "--module-path" || arg == "--github" || arg == "--gitlab" || arg == "--git" || arg == "--path" ||
-        arg == "--target"
+        arg == "--target" || arg == "--jobs" || arg == "--timeout-ms"
 }
 
 fun optionValue(args: CliArgs, key: String): String? {
@@ -498,14 +498,16 @@ fun printHelp() {
     println("  remove     Remove a dependency (eiwa remove <name>)")
     println("  build      Compile the project (src/main.ei) to a native binary")
     println("  run        Compile and execute the project")
-    println("  test       Run all test blocks found in the project")
+    println("  test [filter] Run test blocks (all *_test.ei, or one file/dir)")
     println("  check      Type-check the project without emitting code (fast, for editors/CI)")
     println("  freeze     Pin resolved dependency commits into eiwa.freeze")
     println("  update     Re-resolve dependencies (or one: eiwa update <name>)")
     println("")
-    println("  build|run|test|check <file.ei>  Compile/run/test/check a standalone .ei file")
+    println("  build|run|check <file.ei>  Compile/run/check a standalone .ei file")
     println("                            directly (delegates to the eiwac backend,")
     println("                            no eiwa.yaml required)")
+    println("  test [filter]      Run tests: all *_test.ei, one file, or one dir")
+    println("                     (e.g. eiwa test test/profile_test.ei)")
     println("")
     println("Arguments:")
     println("  project-dir  Project directory (default: current directory)")
@@ -515,6 +517,8 @@ fun printHelp() {
     println("  -o <name>       Output binary name/path (build)")
     println("  --release       Optimized build (-O3), projects and files")
     println("  --target <t>    Target platform / triple (e.g. windows, linux, macos, wasm)")
+    println("  --jobs <n>      Test files in parallel (test; default: CPU count)")
+    println("  --timeout-ms <ms>  Per-test timeout (test; default 120000)")
     println("  --module-path <d>  Extra directory to resolve imports (repeatable)")
     println("  --no-cache      Disable the incremental build cache")
     println("  -h, --help      Show this help")
@@ -529,6 +533,8 @@ fun printHelp() {
     println("Environment:")
     println("  EIWAC           Path to the eiwac compiler (default: eiwac next to the eiwa binary)")
     println("  EIWA_CACHE_DIR  Cache root (default: ~/.eiwa)")
+    println("  EIWA_TEST_JOBS  Same as --jobs (test parallelism; flag wins)")
+    println("  EIWA_TEST_TIMEOUT_MS  Same as --timeout-ms (flag wins)")
 }
 
 fun enterProjectDir(arg: String?) {
@@ -1074,15 +1080,37 @@ fun hasEiwaFileArg(): Bool {
     return false
 }
 
+// `eiwa test <target>`: a target ending in `.ei` is always a file filter.
+// Otherwise a target containing its own eiwa.yaml is a project directory;
+// an existing path without one is a filter (file or test subdirectory)
+// inside the current project. Anything else falls back to project-dir
+// mode for backwards compatibility (enterProjectDir reports the error).
+fun isTestPathFilter(target: String): Bool {
+    if (endsWith(target, ".ei")) {
+        return true
+    }
+    if (File.exists(target + "/eiwa.yaml")) {
+        return false
+    }
+    return File.exists(target)
+}
+
 fun compilerCommand(cmd: String) {
-    if (hasEiwaFileArg()) {
+    // `test` never bare-delegates: a file filter still needs the project's
+    // --module-path entries, so it goes through the project flow below.
+    if (cmd != "test" && hasEiwaFileArg()) {
         delegateToEiwac(cmd)
         return
     }
     val eiwacResolved = eiwacPath()
     val args = parseArgs()
     val target: String? = positional(args, 0)
-    enterProjectDir(target)
+    var testFilter: String? = null
+    if (cmd == "test" && target != null && isTestPathFilter(target!!)) {
+        testFilter = target
+    } else {
+        enterProjectDir(target)
+    }
     if (File.exists("eiwa.yaml") == false) {
         if (cmd == "test") {
             delegateToEiwac(cmd)
@@ -1116,7 +1144,8 @@ fun compilerCommand(cmd: String) {
     }
 
     // Forward eiwac flags/options supplied on the CLI: --release,
-    // --target, extra --module-path entries and user program args (after `--` on run).
+    // --target, --jobs/--timeout-ms (test only), extra --module-path
+    // entries and user program args (after `--` on run).
     var extraFlags = ""
     if (hasFlag(args, "--release")) {
         extraFlags = extraFlags + " --release"
@@ -1154,7 +1183,20 @@ fun compilerCommand(cmd: String) {
 
     var fullCmd = ""
     if (cmd == "test") {
-        fullCmd = ctx.eiwac + " test" + extraFlags + userModulePaths + modulePaths
+        var testFlags = ""
+        val jobsOpt = optionValue(args, "--jobs")
+        if (jobsOpt != null) {
+            testFlags = testFlags + " --jobs " + jobsOpt
+        }
+        val timeoutOpt = optionValue(args, "--timeout-ms")
+        if (timeoutOpt != null) {
+            testFlags = testFlags + " --timeout-ms " + timeoutOpt
+        }
+        var filterArg = ""
+        if (testFilter != null) {
+            filterArg = " " + testFilter!!
+        }
+        fullCmd = ctx.eiwac + " test" + extraFlags + testFlags + userModulePaths + modulePaths + filterArg
     } else if (cmd == "check") {
         fullCmd = ctx.eiwac + " check" + extraFlags + userModulePaths + modulePaths + " " + entry
     } else {

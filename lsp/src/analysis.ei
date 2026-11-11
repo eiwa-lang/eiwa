@@ -129,6 +129,7 @@ fun scanSymbols(text: String): List<Symbol> {
 fun registerDecl(out: MutableList<Symbol>, kw: String, t: String, line: Int, container: String): String {
     var rest = t.trim()
     var kind = kw
+    var scope = container
     if (rest.startsWith("implement ")) {
         rest = rest.substring(9, rest.length).trim()
         kind = "implement"
@@ -140,6 +141,25 @@ fun registerDecl(out: MutableList<Symbol>, kw: String, t: String, line: Int, con
         rest = rest.substring(4, rest.length).trim()
         if (kind != "implement") {
             kind = "fun"
+        }
+        // Extension function (`fun Receiver.method(...)`): the declared
+        // name is after the dot; the receiver becomes the container.
+        // Without this the symbol was registered as `Receiver`, so a
+        // call to `method()` never resolved to its declaration.
+        val open = rest.indexOf("(")
+        val head = if (open == -1) rest else rest.substring(0, open)
+        var dot = -1
+        var probe = head.indexOf(".")
+        while (probe != -1) {
+            dot = probe
+            probe = head.indexOf(".", probe + 1)
+        }
+        if (dot != -1) {
+            val after = head.substring(dot + 1, head.length).trim()
+            if (takeName(after) != "") {
+                scope = head.substring(0, dot).trim()
+                rest = if (open == -1) after else after + rest.substring(open, rest.length)
+            }
         }
     } else {
         val inner = declKeyword(rest)
@@ -155,7 +175,7 @@ fun registerDecl(out: MutableList<Symbol>, kw: String, t: String, line: Int, con
     }
     val name = takeName(rest)
     if (name != "") {
-        out.add(Symbol(name, kind, line, t, container))
+        out.add(Symbol(name, kind, line, t, scope))
     }
     return name
 }
@@ -296,6 +316,333 @@ fun findBestSymbol(symbols: List<Symbol>, name: String): Symbol? {
         i = i + 1
     }
     return best
+}
+
+// True for lines that open a lexical scope able to hold locals:
+// `fun` declarations (params live here) and `type` bodies
+// (constructor params and fields live here).
+fun isScopeRoot(t: String): Bool {
+    if (t.startsWith("fun ") || t.startsWith("implement fun ")) {
+        return true
+    }
+    if (t.startsWith("type ")) {
+        return true
+    }
+    return false
+}
+
+// Line with `//` comments cut and `"..."` contents blanked, so braces,
+// parens and keywords inside them never count as code.
+fun codeOnly(s: String): String {
+    var out = ""
+    var i = 0
+    while (i < s.length) {
+        val c = s.charAt(i)
+        if (c == "/" && i + 1 < s.length && s.charAt(i + 1) == "/") {
+            i = s.length
+        } else if (c == "\"") {
+            i = i + 1
+            var closed = false
+            while (i < s.length && closed == false) {
+                if (s.charAt(i) == "\"") {
+                    closed = true
+                }
+                i = i + 1
+            }
+        } else {
+            out = out + c
+            i = i + 1
+        }
+    }
+    return out
+}
+
+// Net `{` minus `}` depth of one line (comments and strings ignored).
+fun braceDelta(lineText: String): Int {
+    val s = codeOnly(lineText)
+    var depth = 0
+    var i = 0
+    while (i < s.length) {
+        val c = s.charAt(i)
+        if (c == "{") {
+            depth = depth + 1
+        } else if (c == "}") {
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    return depth
+}
+
+// True when the scope opened at `root` is still open at `line`
+// (cursor line included): the braces opened after `root` never net-close.
+// A closed sibling is not our scope — callers keep looking upward.
+fun scopeIsOpen(lines: List<String>, root: Int, line: Int): Bool {
+    if (root >= line) {
+        return true
+    }
+    var depth = braceDelta(lines.get(root))
+    var opened = depth > 0
+    var s = root + 1
+    while (s <= line) {
+        depth = depth + braceDelta(lines.get(s))
+        if (depth > 0) {
+            opened = true
+        } else if (opened) {
+            return false
+        }
+        s = s + 1
+    }
+    return opened
+}
+
+// True when the identifier at `pos` is exactly `word` (not a longer name).
+fun isWordAt(s: String, pos: Int, word: String): Bool {
+    if (word == "" || pos < 0 || pos + word.length > s.length) {
+        return false
+    }
+    if (s.substring(pos, pos + word.length) != word) {
+        return false
+    }
+    if (pos > 0 && isNameChar(s.charAt(pos - 1))) {
+        return false
+    }
+    val after = pos + word.length
+    if (after < s.length && isNameChar(s.charAt(after))) {
+        return false
+    }
+    return true
+}
+
+// True when the non-blank char at/after `at` opens a type, a default
+// value, or ends the parameter.
+fun nextSigil(span: String, at: Int): String {
+    var i = at
+    while (i < span.length) {
+        val c = span.charAt(i)
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") {
+            return c
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// Index of the nearest non-blank char at/before `at`, or -1.
+fun prevNonBlank(span: String, at: Int): Int {
+    var p = at
+    while (p >= 0) {
+        val c = span.charAt(p)
+        if (c != " " && c != "\t" && c != "\n" && c != "\r") {
+            return p
+        }
+        p = p - 1
+    }
+    return -1
+}
+
+// True when the `word` occurrence at `i` is a parameter declaration:
+// followed by `:` / `,` / `)` / `=`, preceded by `(` / `,` (or a `val` /
+// `var` introducer anchored on one of those).
+fun matchParamAt(span: String, i: Int, word: String): Bool {
+    if (isWordAt(span, i, word) == false) {
+        return false
+    }
+    if (nextSigil(span, i + word.length) != ":" && nextSigil(span, i + word.length) != "," && nextSigil(span, i + word.length) != ")" && nextSigil(span, i + word.length) != "=") {
+        return false
+    }
+    val p = prevNonBlank(span, i - 1)
+    if (p == -1) {
+        return true
+    }
+    if (span.charAt(p) == "(" || span.charAt(p) == ",") {
+        return true
+    }
+    if (isNameChar(span.charAt(p))) {
+        var s = p
+        while (s >= 0 && isNameChar(span.charAt(s))) {
+            s = s - 1
+        }
+        if (span.substring(s + 1, p + 1) == "val" || span.substring(s + 1, p + 1) == "var") {
+            val r = prevNonBlank(span, s)
+            return r == -1 || span.charAt(r) == "(" || span.charAt(r) == ","
+        }
+    }
+    return false
+}
+
+// True when `word` is declared as a top-level `name:` / `name =`
+// parameter in `span` (text strictly inside one paren pair).
+fun spanHasParam(span: String, word: String): Bool {
+    if (word == "" || span == "") {
+        return false
+    }
+    var depth = 0
+    var i = 0
+    while (i < span.length) {
+        val c = span.charAt(i)
+        if (c == "(") {
+            depth = depth + 1
+        } else if (c == ")") {
+            if (depth > 0) {
+                depth = depth - 1
+            }
+        } else if (depth == 0 && matchParamAt(span, i, word)) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// True when the `fun`/`type` declaration starting at `funLine`
+// declares `word` as a parameter. Multi-line signatures are followed
+// (cap 30 lines); unbalanced shapes bail out instead of guessing.
+fun sigDeclaresParam(lines: List<String>, funLine: Int, word: String): Bool {
+    if (word == "") {
+        return false
+    }
+    val first = codeOnly(lines.get(funLine))
+    val openIdx = first.indexOf("(")
+    if (openIdx == -1) {
+        return false
+    }
+    var span = ""
+    var depth = 0
+    var li = funLine
+    var pos = openIdx
+    var closed = false
+    var guard = 0
+    while (li < lines.size() && closed == false && guard < 30) {
+        val t = if (li == funLine) first else codeOnly(lines.get(li))
+        if (li > funLine) {
+            pos = 0
+        }
+        while (pos < t.length && closed == false) {
+            val c = t.charAt(pos)
+            if (c == "(") {
+                depth = depth + 1
+            } else if (c == ")") {
+                if (depth == 1) {
+                    closed = true
+                } else if (depth > 1) {
+                    span = span + c
+                    depth = depth - 1
+                } else {
+                    return false
+                }
+            } else if (depth >= 1) {
+                span = span + c
+            }
+            if (closed == false) {
+                pos = pos + 1
+            }
+        }
+        if (closed == false) {
+            span = span + "\n"
+            li = li + 1
+            pos = 0
+        }
+        guard = guard + 1
+    }
+    if (closed == false) {
+        return false
+    }
+    return spanHasParam(span, word)
+}
+
+// Nearest preceding `val x` / `var x` in (root, line] whose block stays
+// open at the cursor (closed siblings never match), or -1.
+fun precedingLocal(lines: List<String>, root: Int, line: Int, word: String): Int {
+    var best = -1
+    var s = root + 1
+    while (s <= line) {
+        val t = codeOnly(lines.get(s)).trim()
+        if (t.startsWith("val ") || t.startsWith("var ")) {
+            if (takeName(t.substring(4, t.length)) == word && blockStaysOpen(lines, s, line)) {
+                best = s
+            }
+        }
+        s = s + 1
+    }
+    return best
+}
+
+// True when no net `}` closes between `startLine` and `endLine` (both
+// included): a declaration on `startLine` is still visible at `endLine`.
+fun blockStaysOpen(lines: List<String>, startLine: Int, endLine: Int): Bool {
+    var depth = 0
+    var i = startLine
+    while (i <= endLine) {
+        depth = depth + braceDelta(lines.get(i))
+        if (depth < 0) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// True when `word` is rebound as a lambda parameter (`{ word -> ... }`,
+// Eiwa `for` included: `for (coll) { word -> ... }`) on some line in
+// [root, line]. A use at the cursor may then belong to that inner binder
+// (or to code after it), never safely to the outer `fun`/`type` — so the
+// outer hit is unsafe and callers must miss instead. A miss falls back to
+// the whole-file lookup; a wrong outer hit jumps to unrelated code.
+fun lambdaShadows(lines: List<String>, root: Int, line: Int, word: String): Bool {
+    if (word == "") {
+        return false
+    }
+    var li = root
+    while (li <= line) {
+        val s = codeOnly(lines.get(li))
+        var i = 0
+        while (i < s.length) {
+            if (isWordAt(s, i, word)) {
+                var j = i + word.length
+                while (j < s.length && (s.charAt(j) == " " || s.charAt(j) == "\t")) {
+                    j = j + 1
+                }
+                if (j + 1 < s.length && s.charAt(j) == "-" && s.charAt(j + 1) == ">") {
+                    return true
+                }
+            }
+            i = i + 1
+        }
+        li = li + 1
+    }
+    return false
+}
+
+// Same-file local declaration for go-to-definition/hover: a parameter of
+// the enclosing `fun`/`type`, or the nearest preceding `val`/`var` that
+// is still in scope at the cursor. Returns the line, or -1 when the name
+// is not a local (callers fall back to whole-file and cross-file lookup,
+// which must never return another file's locals).
+fun findLocalDecl(text: String, line: Int, word: String): Int {
+    if (word == "") {
+        return -1
+    }
+    val lines = text.split("\n")
+    if (line < 0 || line >= lines.size()) {
+        return -1
+    }
+    var f = line
+    while (f >= 0) {
+        if (isScopeRoot(lines.get(f).trim())) {
+            if (f == line || scopeIsOpen(lines, f, line)) {
+                val local = precedingLocal(lines, f, line, word)
+                if (local != -1 && lambdaShadows(lines, local, line, word) == false) {
+                    return local
+                }
+                if (sigDeclaresParam(lines, f, word) && lambdaShadows(lines, f, line, word) == false) {
+                    return f
+                }
+            }
+        }
+        f = f - 1
+    }
+    return -1
 }
 
 fun findContract(symbols: List<Symbol>, name: String): Symbol? {

@@ -142,3 +142,23 @@ test "findCrossFile resolves cross-file members" {
     assert(hit.line == 1)
     Workspace.root = ""
 }
+
+test "findCrossFile skips other files vals for bare words" {
+    val rawBase = testTmp() + "/lsplocalmiss"
+    if (Dir.exists(rawBase + "/libs/mylib/src") == false) {
+        Dir.mkdir(rawBase)
+        Dir.mkdir(rawBase + "/libs")
+        Dir.mkdir(rawBase + "/libs/mylib")
+        Dir.mkdir(rawBase + "/libs/mylib/src")
+    }
+    val missBase = canonicalPath(rawBase)
+    File.write(missBase + "/eiwa.yaml", "name: demo\ndependencies:\n  mylib:\n    path: libs/mylib\n")
+    File.write(missBase + "/libs/mylib/src/mylib.ei", "val locale = \"en\"\n")
+    Workspace.root = missBase
+    val text = "import { Other } from \"mylib\"\nfun f(locale: String) {\n    println(locale)\n}\n"
+    assert(findCrossFile(text, "file://" + missBase + "/src/main.ei", "locale", false).found == false)
+    val hit = findCrossFile(text, "file://" + missBase + "/src/main.ei", "locale", true)
+    assert(hit.found)
+    assert(hit.line == 0)
+    Workspace.root = ""
+}

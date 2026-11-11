@@ -5,7 +5,7 @@ import { parseJson, jsonEscape, JsonValue } from "std.json"
 import { File } from "std.fs"
 import { writeMessage } from "transport"
 import { DocStore, uriToPath, pathToUri, canonicalPath, Workspace } from "store"
-import { scanSymbols, findBestSymbol, findTopLevel, findContract, findContractMethod, findImplementations, findMember, receiverAt, isCapitalized, inferReceiverType, enclosingHolder, scanImports, locateImportPaths, importPathAtCursor, wordAt, lineAt, lspKeywords } from "analysis"
+import { scanSymbols, findBestSymbol, findTopLevel, findContract, findContractMethod, findImplementations, findMember, findLocalDecl, receiverAt, isCapitalized, inferReceiverType, enclosingHolder, scanImports, locateImportPaths, importPathAtCursor, wordAt, lineAt, lspKeywords } from "analysis"
 import { implicitModule, synthesisContract, contractFile } from "index"
 import { findModuleFile, importFileTarget } from "deps"
 import { publishDiagnostics, publishEmptyDiagnostics } from "diagnostics"
@@ -123,7 +123,7 @@ fun resolveImportTarget(text: String, uri: String, word: String): String {
 // Cross-file lookup order: explicitly imported or implicit top-level
 // declaration first (lexical scope wins), then synthesized methods at
 // their contract, then any imported module declaring the name.
-fun findCrossFile(text: String, uri: String, word: String): MemberHit {
+fun findCrossFile(text: String, uri: String, word: String, allowMembers: Bool = true): MemberHit {
     val tpath = resolveImportTarget(text, uri, word)
     if (tpath != "" && File.exists(tpath)) {
         val ttext = bufferOrFile(pathToUri(tpath))
@@ -152,13 +152,16 @@ fun findCrossFile(text: String, uri: String, word: String): MemberHit {
             }
         }
     }
-    return findInImports(text, uri, word)
+    return findInImports(text, uri, word, allowMembers)
 }
 
 // Best-effort: first imported module (in order) declaring `word`.
 // Used when the name itself was never imported (e.g. a method reached
 // through its holder: `import { Box }` + `b.open()` with unknown `b`).
-fun findInImports(text: String, uri: String, word: String): MemberHit {
+// With allowMembers == false, `val`/`var` hits are skipped: a bare word
+// can never validly refer to another file's locals, so a miss is better
+// than jumping to unrelated code.
+fun findInImports(text: String, uri: String, word: String, allowMembers: Bool = true): MemberHit {
     val path = uriToPath(uri)
     if (path == "" || word == "") {
         return MemberHit(uri, 0, "", "", false)
@@ -171,7 +174,7 @@ fun findInImports(text: String, uri: String, word: String): MemberHit {
             val ttext = bufferOrFile(pathToUri(cand))
             if (ttext != null) {
                 val tsym = findBestSymbol(scanSymbols(ttext), word)
-                if (tsym != null) {
+                if (tsym != null && (allowMembers || (tsym.kind != "val" && tsym.kind != "var"))) {
                     return MemberHit(pathToUri(canonicalPath(cand)), tsym.line, tsym.kind, tsym.detail, true)
                 }
             }
@@ -311,9 +314,18 @@ fun handleHover(id: JsonValue, params: JsonValue?) {
         respond(id, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"" + jsonEscape(hvalue) + "\"}}")
         return
     }
+    val dotted = receiverAt(lineAt(text, line), character) != ""
+    if (dotted == false) {
+        val local = findLocalDecl(text, line, word)
+        if (local != -1) {
+            val lvalue = "```eiwa\n" + lineAt(text, local).trim() + "\n```\n_local • line " + (local + 1).toString() + "_"
+            respond(id, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"" + jsonEscape(lvalue) + "\"}}")
+            return
+        }
+    }
     val sym = findBestSymbol(scanSymbols(text), word)
     if (sym == null) {
-        val xhit = findCrossFile(text, uri, word)
+        val xhit = findCrossFile(text, uri, word, dotted)
         if (xhit.found) {
             val value = "```eiwa\n" + xhit.detail + "\n```\n_" + xhit.kind + " • " + xhit.uri + ":" + (xhit.line + 1).toString() + "_"
             respond(id, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"" + jsonEscape(value) + "\"}}")
@@ -414,12 +426,20 @@ fun handleDefinition(id: JsonValue, params: JsonValue?) {
         respond(id, "{\"uri\":\"" + jsonEscape(hit.uri) + "\",\"range\":{\"start\":{\"line\":" + hit.line.toString() + ",\"character\":0},\"end\":{\"line\":" + hit.line.toString() + ",\"character\":0}}}")
         return
     }
+    val dotted = receiverAt(lineAt(text, line), character) != ""
+    if (dotted == false) {
+        val local = findLocalDecl(text, line, word)
+        if (local != -1) {
+            respond(id, "{\"uri\":\"" + jsonEscape(uri) + "\",\"range\":{\"start\":{\"line\":" + local.toString() + ",\"character\":0},\"end\":{\"line\":" + local.toString() + ",\"character\":0}}}")
+            return
+        }
+    }
     val sym = findBestSymbol(scanSymbols(text), word)
     if (sym != null) {
         respond(id, "{\"uri\":\"" + jsonEscape(uri) + "\",\"range\":{\"start\":{\"line\":" + sym.line.toString() + ",\"character\":0},\"end\":{\"line\":" + sym.line.toString() + ",\"character\":0}}}")
         return
     }
-    val cross = findCrossFile(text, uri, word)
+    val cross = findCrossFile(text, uri, word, dotted)
     if (cross.found) {
         respond(id, "{\"uri\":\"" + jsonEscape(cross.uri) + "\",\"range\":{\"start\":{\"line\":" + cross.line.toString() + ",\"character\":0},\"end\":{\"line\":" + cross.line.toString() + ",\"character\":0}}}")
         return

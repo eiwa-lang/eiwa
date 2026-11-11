@@ -474,8 +474,12 @@ fn run(init: std.process.Init) !void {
             \\Test runner (test command, no file):
             \\  Tests run in parallel (one child per CPU core). A hung test is
             \\  killed and reported after a timeout instead of freezing the suite.
-            \\  EIWA_TEST_JOBS        override the parallel window (1 = sequential)
-            \\  EIWA_TEST_TIMEOUT_MS  per-test timeout in ms (default 120000)
+            \\  `eiwac test [dir|file.ei]` runs one file, a directory, or (default
+            \\  `.`) every `*_test.ei` file underneath.
+            \\  --jobs N              max concurrent test files (default: CPU count)
+            \\  --timeout-ms MS       per-test timeout (default 120000)
+            \\  EIWA_TEST_JOBS        same as --jobs (1 = sequential; flag wins)
+            \\  EIWA_TEST_TIMEOUT_MS  same as --timeout-ms (flag wins)
             \\
             \\Incremental cache: unchanged builds reuse artifacts under
             \\EIWA_CACHE_DIR (default ~/.eiwa/cache) keyed by content hashes.
@@ -522,6 +526,10 @@ fn run(init: std.process.Init) !void {
     var no_cache: bool = false;
     var target_arg: ?[]const u8 = null;
     var output_name: ?[]const u8 = null;
+    // `test` only: bound on concurrent test children (flag > env > CPU count)
+    // and per-test timeout in ms (flag > env > 120s default).
+    var jobs_arg: ?[]const u8 = null;
+    var timeout_ms_arg: ?[]const u8 = null;
     var module_paths = ArrayList([]const u8).init(allocator);
     // Root used for "."-prefixed (root-relative) imports when compiling a
     // single test file. The `eiwa` CLI passes --module-root src so tests see
@@ -566,6 +574,24 @@ fn run(init: std.process.Init) !void {
             test_module_root = args[arg_idx];
         } else if (std.mem.eql(u8, arg, "--release")) {
             is_release = true;
+        } else if (is_test and std.mem.eql(u8, arg, "--jobs")) {
+            if (arg_idx + 1 >= args.len) {
+                std.debug.print("Error: --jobs requires a count (e.g. --jobs 4)\n", .{});
+                return;
+            }
+            arg_idx += 1;
+            jobs_arg = args[arg_idx];
+        } else if (is_test and std.mem.startsWith(u8, arg, "--jobs=")) {
+            jobs_arg = arg["--jobs=".len..];
+        } else if (is_test and std.mem.eql(u8, arg, "--timeout-ms")) {
+            if (arg_idx + 1 >= args.len) {
+                std.debug.print("Error: --timeout-ms requires milliseconds (e.g. --timeout-ms 60000)\n", .{});
+                return;
+            }
+            arg_idx += 1;
+            timeout_ms_arg = args[arg_idx];
+        } else if (is_test and std.mem.startsWith(u8, arg, "--timeout-ms=")) {
+            timeout_ms_arg = arg["--timeout-ms=".len..];
         } else if (std.mem.startsWith(u8, arg, "-I") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-D")) {
             if (arg.len == 2 and arg_idx + 1 < args.len) {
                 try cli_c_flags.append(arg);
@@ -649,21 +675,29 @@ fn run(init: std.process.Init) !void {
             // finish) while keeping the machine from being overwhelmed by ~100
             // concurrent compilers. As one child completes the next is spawned.
             // `EIWA_TEST_JOBS` overrides the window (e.g. 1 = fully sequential).
+            // `--jobs` wins over the env var; both clamp to >= 1.
             const cpu_count = std.Thread.getCpuCount() catch 4;
-            const jobs = if (std.c.getenv("EIWA_TEST_JOBS")) |v|
+            const jobs_env = if (jobs_arg) |v|
+                std.fmt.parseInt(usize, v, 10) catch cpu_count
+            else if (std.c.getenv("EIWA_TEST_JOBS")) |v|
                 std.fmt.parseInt(usize, std.mem.span(v), 10) catch cpu_count
             else
                 cpu_count;
+            const jobs = @max(1, jobs_env);
             const window = @min(jobs, test_files.items.len);
 
             // Per-test deadline: a hung test (e.g. a busy-looping coroutine) is
             // killed and reported as a failure instead of freezing the suite.
-            // `EIWA_TEST_TIMEOUT_MS` overrides the default 120s.
+            // `--timeout-ms` wins, then `EIWA_TEST_TIMEOUT_MS`, then 120s.
+            // Clamped to >= 1: a zero/negative deadline is already past, so
+            // every child would be killed at once with a lying timeout report.
             const default_timeout_ms: i64 = 120 * 1000;
-            const timeout_ms = if (std.c.getenv("EIWA_TEST_TIMEOUT_MS")) |v|
+            const timeout_ms = @max(1, if (timeout_ms_arg) |v|
+                std.fmt.parseInt(i64, v, 10) catch default_timeout_ms
+            else if (std.c.getenv("EIWA_TEST_TIMEOUT_MS")) |v|
                 std.fmt.parseInt(i64, std.mem.span(v), 10) catch default_timeout_ms
             else
-                default_timeout_ms;
+                default_timeout_ms);
             const timeout_duration = std.Io.Duration.fromMilliseconds(timeout_ms);
 
             var running: std.ArrayList(TestProc) = .empty;
