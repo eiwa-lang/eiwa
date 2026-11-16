@@ -453,10 +453,49 @@ pub const LLVMEmitter = struct {
         }
     }
 
+    /// Freestanding only: one section per defined function so the firmware
+    /// linker can garbage-collect unreachable code (--gc-sections, on by
+    /// default in IDF). Without this the whole reachable-blind emission
+    /// lands in a single .text and blows the factory partition.
+    fn separateFunctionSections(self: *LLVMEmitter) !void {        const is_freestanding = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
+        if (!is_freestanding) return;
+        const mod = self.module orelse return error.ModuleAlreadyDisposed;
+        var n: usize = 0;
+        var f = llvm.LLVMGetFirstFunction(mod);
+        while (f != null) : (f = llvm.LLVMGetNextFunction(f.?)) {
+            if (llvm.LLVMIsDeclaration(f.?) != 0) continue;
+            const fname = std.mem.span(llvm.LLVMGetValueName(f.?));
+            const sec_nul = try std.fmt.allocPrint(self.allocator, ".text.{s}.{d}", .{ fname, n });
+            defer self.allocator.free(sec_nul);
+            const sec = try self.allocator.dupeZ(u8, sec_nul);
+            defer self.allocator.free(sec);
+            llvm.LLVMSetSection(f.?, sec);
+            n += 1;
+        }
+        // Same for data: descriptors, vtables and string tables share
+        // .rodata/.data otherwise and can never be collected. Standard
+        // prefixes keep the IDF linker script placing them correctly;
+        // llvm.* globals (ctors) are linker-collected and must stay put.
+        var g = llvm.LLVMGetFirstGlobal(mod);
+        while (g != null) : (g = llvm.LLVMGetNextGlobal(g.?)) {
+            if (llvm.LLVMIsDeclaration(g.?) != 0) continue;
+            const gname = std.mem.span(llvm.LLVMGetValueName(g.?));
+            if (std.mem.startsWith(u8, gname, "llvm.")) continue;
+            const prefix: []const u8 = if (llvm.LLVMIsGlobalConstant(g.?) != 0) ".rodata" else ".data";
+            const sec_nul = try std.fmt.allocPrint(self.allocator, "{s}.{s}.{d}", .{ prefix, gname, n });
+            defer self.allocator.free(sec_nul);
+            const sec = try self.allocator.dupeZ(u8, sec_nul);
+            defer self.allocator.free(sec);
+            llvm.LLVMSetSection(g.?, sec);
+            n += 1;
+        }
+    }
+
     pub fn emitModule(self: *LLVMEmitter, ast_root: *ast.ASTNode) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         const split = self.unit_modules != null;
         const is_entry = self.unit_is_entry;
+        const freestanding = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
 
         if (self.target_info) |ti| {
             const triple_z = try self.allocator.dupeZ(u8, ti.triple);
@@ -520,6 +559,10 @@ pub const LLVMEmitter = struct {
             _ = llvm.LLVMBuildRet(self.builder, ralloc);
         }
 
+        // Note: when prefer_gc_alloc is off (freestanding included), the
+        // GC_* prototypes above get libc-forwarding bodies later in
+        // emitNonGCHelpers — nothing to do here.
+
         // Declare printf and sprintf prototypes
         const i32_type = llvm.LLVMInt32TypeInContext(self.context);
         var printf_params = [_]llvm.LLVMTypeRef{ptr_type};
@@ -576,30 +619,37 @@ pub const LLVMEmitter = struct {
                 ctor_count += 1;
             }
 
-            const crash_fn = llvm.LLVMAddFunction(mod, "__eiwa_crash_init_ctor", void_fn_type);
-            const crash_bb = llvm.LLVMAppendBasicBlockInContext(self.context, crash_fn, "entry");
-            llvm.LLVMPositionBuilderAtEnd(self.builder, crash_bb);
-            const crash_install_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_install_crash_handler").?;
-            _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, crash_install_fn, null, 0, "");
-            _ = llvm.LLVMBuildRetVoid(self.builder);
+            if (!freestanding) {
+                const crash_fn = llvm.LLVMAddFunction(mod, "__eiwa_crash_init_ctor", void_fn_type);
+                const crash_bb = llvm.LLVMAppendBasicBlockInContext(self.context, crash_fn, "entry");
+                llvm.LLVMPositionBuilderAtEnd(self.builder, crash_bb);
+                const crash_install_fn = llvm.LLVMGetNamedFunction(mod, "eiwa_install_crash_handler").?;
+                _ = llvm.LLVMBuildCall2(self.builder, void_fn_type, crash_install_fn, null, 0, "");
+                _ = llvm.LLVMBuildRetVoid(self.builder);
 
-            var crash_entry_vals = [_]llvm.LLVMValueRef{
-                llvm.LLVMConstInt(i32_type, 65535, 0),
-                crash_fn,
-                llvm.LLVMConstNull(ptr_type),
-            };
-            ctor_entries[ctor_count] = llvm.LLVMConstStructInContext(self.context, &crash_entry_vals, 3, 0);
-            ctor_count += 1;
+                var crash_entry_vals = [_]llvm.LLVMValueRef{
+                    llvm.LLVMConstInt(i32_type, 65535, 0),
+                    crash_fn,
+                    llvm.LLVMConstNull(ptr_type),
+                };
+                ctor_entries[ctor_count] = llvm.LLVMConstStructInContext(self.context, &crash_entry_vals, 3, 0);
+                ctor_count += 1;
+            }
 
-            const ctor_arr = llvm.LLVMConstArray(ctor_entry_type, &ctor_entries, @intCast(ctor_count));
-            const ctors_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(ctor_arr), "llvm.global_ctors");
-            llvm.LLVMSetLinkage(ctors_global, llvm.LLVMAppendingLinkage);
-            llvm.LLVMSetInitializer(ctors_global, ctor_arr);
+            if (ctor_count > 0) {
+                const ctor_arr = llvm.LLVMConstArray(ctor_entry_type, &ctor_entries, @intCast(ctor_count));
+                const ctors_global = llvm.LLVMAddGlobal(mod, llvm.LLVMTypeOf(ctor_arr), "llvm.global_ctors");
+                llvm.LLVMSetLinkage(ctors_global, llvm.LLVMAppendingLinkage);
+                llvm.LLVMSetInitializer(ctors_global, ctor_arr);
+            }
         }
 
         const is_windows = if (self.target_info) |ti| ti.os_tag == .windows else (builtin.target.os.tag == .windows);
-        const setjmp_name: [*:0]const u8 = if (is_windows) "setjmp" else "_setjmp";
-        const longjmp_name: [*:0]const u8 = if (is_windows) "longjmp" else "_longjmp";
+        const is_freestanding = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
+        // newlib (freestanding) provides setjmp/longjmp, not the
+        // signal-mask-skipping _setjmp/_longjmp variants.
+        const setjmp_name: [*:0]const u8 = if (is_windows) "setjmp" else if (is_freestanding) "setjmp" else "_setjmp";
+        const longjmp_name: [*:0]const u8 = if (is_windows) "longjmp" else if (is_freestanding) "longjmp" else "_longjmp";
 
         var setjmp_params = [_]llvm.LLVMTypeRef{ptr_type};
         const setjmp_type = llvm.LLVMFunctionType(i32_type, &setjmp_params, 1, 0);
@@ -1977,8 +2027,13 @@ pub const LLVMEmitter = struct {
         const real_main_type = llvm.LLVMGlobalGetValueType(real_main);
 
         var shim_params = [_]llvm.LLVMTypeRef{ i32_type, ptr_type };
-        const shim_type = llvm.LLVMFunctionType(i32_type, &shim_params, 2, 0);
-        const shim = llvm.LLVMAddFunction(mod, "main", shim_type);
+        const freestanding = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
+        const shim_type = if (freestanding)
+            llvm.LLVMFunctionType(llvm.LLVMVoidTypeInContext(self.context), null, 0, 0)
+        else
+            llvm.LLVMFunctionType(i32_type, &shim_params, 2, 0);
+        const shim_name: [*:0]const u8 = if (freestanding) "app_main" else "main";
+        const shim = llvm.LLVMAddFunction(mod, shim_name, shim_type);
         const shim_entry = llvm.LLVMAppendBasicBlockInContext(self.context, shim, "entry");
         llvm.LLVMPositionBuilderAtEnd(self.builder, shim_entry);
 
@@ -1990,16 +2045,21 @@ pub const LLVMEmitter = struct {
             }
         }
 
-        if (llvm.LLVMGetNamedFunction(mod, "GC_init")) |gc_init| {
-            const gci_type = llvm.LLVMGlobalGetValueType(gc_init);
-            _ = llvm.LLVMBuildCall2(self.builder, gci_type, gc_init, null, 0, "");
-        }
-        if (llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads")) |gc_allow| {
-            const gca_type = llvm.LLVMGlobalGetValueType(gc_allow);
-            _ = llvm.LLVMBuildCall2(self.builder, gca_type, gc_allow, null, 0, "");
+        // Freestanding links no GC: skip the runtime init/root calls (the
+        // prototypes stay declared but unreferenced, so nothing dangles).
+        if (prefer_gc_alloc) {
+            if (llvm.LLVMGetNamedFunction(mod, "GC_init")) |gc_init| {
+                const gci_type = llvm.LLVMGlobalGetValueType(gc_init);
+                _ = llvm.LLVMBuildCall2(self.builder, gci_type, gc_init, null, 0, "");
+            }
+            if (llvm.LLVMGetNamedFunction(mod, "GC_allow_register_threads")) |gc_allow| {
+                const gca_type = llvm.LLVMGlobalGetValueType(gc_allow);
+                _ = llvm.LLVMBuildCall2(self.builder, gca_type, gc_allow, null, 0, "");
+            }
         }
 
-        if (llvm.LLVMGetNamedFunction(mod, "GC_add_roots")) |gc_roots| {
+        if (prefer_gc_alloc) {
+            if (llvm.LLVMGetNamedFunction(mod, "GC_add_roots")) |gc_roots| {
             const i8_type = llvm.LLVMInt8TypeInContext(self.context);
             const roots_type = llvm.LLVMGlobalGetValueType(gc_roots);
             for (modules.items) |m| {
@@ -2028,6 +2088,21 @@ pub const LLVMEmitter = struct {
                     }
                 }
             }
+        }
+        }
+
+        // Freestanding entry is `void app_main(void)`: no argv to forward
+        // (globals stay zero-initialized) and no exit code to return.
+        if (freestanding) {
+            if (!self.is_test_mode) {
+                var obj_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
+                defer obj_scope.deinit();
+                try self.emitEnumInitializers(mod, modules);
+                try self.emitObjectInitializers(mod, modules, &obj_scope);
+            }
+            _ = llvm.LLVMBuildCall2(self.builder, real_main_type, real_main, null, 0, "");
+            _ = llvm.LLVMBuildRetVoid(self.builder);
+            return;
         }
 
         const argc_val = llvm.LLVMGetParam(shim, 0);
@@ -4636,6 +4711,7 @@ pub const LLVMEmitter = struct {
     pub fn emitObjectFile(self: *LLVMEmitter, obj_path: []const u8) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         try self.collectUsedLibAnnotations();
+        try self.separateFunctionSections();
 
         var desc_it = llvm.LLVMGetFirstGlobal(mod);
         while (desc_it) |dg| : (desc_it = llvm.LLVMGetNextGlobal(dg)) {
@@ -4686,8 +4762,11 @@ pub const LLVMEmitter = struct {
 
         const opt_level: llvm.LLVMCodeGenOptLevel = if (self.is_release) llvm.LLVMCodeGenLevelAggressive else llvm.LLVMCodeGenLevelNone;
 
-        const reloc_mode: llvm.LLVMRelocMode = if (self.target_info != null and self.target_info.?.os_tag == .windows)
-            llvm.LLVMRelocDefault
+        const reloc_mode: llvm.LLVMRelocMode = if (self.target_info) |ti|
+            if (ti.os_tag == .freestanding or ti.os_tag == .windows)
+                llvm.LLVMRelocDefault
+            else
+                llvm.LLVMRelocPIC
         else
             llvm.LLVMRelocPIC;
 
@@ -4796,9 +4875,14 @@ pub const LLVMEmitter = struct {
         for (self.cli_c_flags) |flag| try cc_argv.append(flag);
 
         {
-            const src_dir = eiwa_home.resolve(self.allocator);
-            const repo_root = std.fs.path.dirname(src_dir) orelse ".";
-            try cc_argv.append(try std.fs.path.join(self.allocator, &.{ repo_root, "src/runtime/eiwa_crash.c" }));
+            const freestanding_link = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
+            // Freestanding links no host crash handler (sigaction/dladdr):
+            // the firmware owns fault handling.
+            if (!freestanding_link) {
+                const src_dir = eiwa_home.resolve(self.allocator);
+                const repo_root = std.fs.path.dirname(src_dir) orelse ".";
+                try cc_argv.append(try std.fs.path.join(self.allocator, &.{ repo_root, "src/runtime/eiwa_crash.c" }));
+            }
         }
         // Build requirements declared by `lib` annotations (@Include/@Define/@Source/@Link),
         // so vendored C sources compile and link into the native binary.

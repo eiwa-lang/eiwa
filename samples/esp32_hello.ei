@@ -1,0 +1,7 @@
+// First freestanding program: links without GC, threads or network.
+// Output goes to UART0 via the IDF stdout default.
+init {
+    print("hello from Eiwa on ESP32")
+    print("blink 1")
+    print("blink 2")
+}

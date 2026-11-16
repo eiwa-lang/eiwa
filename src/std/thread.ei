@@ -120,6 +120,59 @@ lib("windows") Win32Thread {
     fun getActiveProcessorCount(groupNumber: Int): Int
 }
 
+// ESP-IDF ships a POSIX threads implementation, so the esp32 motor uses
+// the same pthread surface as posix (real primitives, replaced nothing).
+@Header("<pthread.h>", "<unistd.h>")
+lib("esp32") EspPthread {
+    @Alias("pthread_create")
+    fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
+
+    @Alias("pthread_join")
+    fun pthreadJoin(thread: Pointer, retval: Pointer): Int
+
+    @Alias("pthread_attr_init")
+    fun pthreadAttrInit(attr: Pointer): Int
+
+    @Alias("pthread_attr_setstacksize")
+    fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int
+
+    @Alias("pthread_attr_destroy")
+    fun pthreadAttrDestroy(attr: Pointer): Int
+
+    @Alias("pthread_detach")
+    fun pthreadDetach(thread: Pointer): Int
+
+    @Alias("pthread_self")
+    fun pthreadSelf(): Pointer
+
+    @Alias("pthread_mutex_init")
+    fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int
+
+    @Alias("pthread_mutex_lock")
+    fun pthreadMutexLock(mutex: Pointer): Int
+
+    @Alias("pthread_mutex_unlock")
+    fun pthreadMutexUnlock(mutex: Pointer): Int
+
+    @Alias("pthread_mutex_destroy")
+    fun pthreadMutexDestroy(mutex: Pointer): Int
+
+    @Alias("pthread_cond_init")
+    fun pthreadCondInit(cond: Pointer, attr: Pointer): Int
+
+    @Alias("pthread_cond_wait")
+    fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int
+
+    @Alias("pthread_cond_signal")
+    fun pthreadCondSignal(cond: Pointer): Int
+
+    @Alias("pthread_cond_broadcast")
+    fun pthreadCondBroadcast(cond: Pointer): Int
+
+    @Alias("pthread_cond_destroy")
+    fun pthreadCondDestroy(cond: Pointer): Int
+}
+
 contract ThreadOpsContract {
     fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
     fun pthreadJoin(thread: Pointer, retval: Pointer): Int
@@ -175,6 +228,25 @@ object("windows") NativeThread : ThreadOpsContract {
     implement fun pthreadCondSignal(cond: Pointer): Int = Win32Thread.pthreadCondSignal(cond)
     implement fun pthreadCondBroadcast(cond: Pointer): Int = Win32Thread.pthreadCondBroadcast(cond)
     implement fun pthreadCondDestroy(cond: Pointer): Int = Win32Thread.pthreadCondDestroy(cond)
+}
+
+object("esp32") NativeThread : ThreadOpsContract {
+    implement fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int = EspPthread.pthreadCreate(threadOut, attr, startRoutine, arg)
+    implement fun pthreadJoin(thread: Pointer, retval: Pointer): Int = EspPthread.pthreadJoin(thread, retval)
+    implement fun pthreadAttrInit(attr: Pointer): Int = EspPthread.pthreadAttrInit(attr)
+    implement fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int = EspPthread.pthreadAttrSetstacksize(attr, size)
+    implement fun pthreadAttrDestroy(attr: Pointer): Int = EspPthread.pthreadAttrDestroy(attr)
+    implement fun pthreadDetach(thread: Pointer): Int = EspPthread.pthreadDetach(thread)
+    implement fun pthreadSelf(): Pointer = EspPthread.pthreadSelf()
+    implement fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int = EspPthread.pthreadMutexInit(mutex, attr)
+    implement fun pthreadMutexLock(mutex: Pointer): Int = EspPthread.pthreadMutexLock(mutex)
+    implement fun pthreadMutexUnlock(mutex: Pointer): Int = EspPthread.pthreadMutexUnlock(mutex)
+    implement fun pthreadMutexDestroy(mutex: Pointer): Int = EspPthread.pthreadMutexDestroy(mutex)
+    implement fun pthreadCondInit(cond: Pointer, attr: Pointer): Int = EspPthread.pthreadCondInit(cond, attr)
+    implement fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int = EspPthread.pthreadCondWait(cond, mutex)
+    implement fun pthreadCondSignal(cond: Pointer): Int = EspPthread.pthreadCondSignal(cond)
+    implement fun pthreadCondBroadcast(cond: Pointer): Int = EspPthread.pthreadCondBroadcast(cond)
+    implement fun pthreadCondDestroy(cond: Pointer): Int = EspPthread.pthreadCondDestroy(cond)
 }
 
 object ThreadConstants {
@@ -363,6 +435,11 @@ object("windows") CurrentCoreDetector : CoreDetector {
         }
         return 1
     }
+}
+
+// Single-core by construction (C3/C6): no sysconf needed.
+object("esp32") CurrentCoreDetector : CoreDetector {
+    implement fun getCores(): Int = 1
 }
 
 object CurrentCoreDetector : CoreDetector {

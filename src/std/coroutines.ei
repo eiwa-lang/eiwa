@@ -89,6 +89,28 @@ object("windows") PollLayout : PollLayoutContract {
     }
 }
 
+// lwIP pollfd matches the POSIX layout; the real wait lands with the
+// cooperative scheduler (abort until then, never silently wrong).
+lib("esp32") EspStub {
+    @Alias("abort")
+    fun abort(): Void
+}
+
+object("esp32") PollLayout : PollLayoutContract {
+    implement fun entrySize(): Int = 8
+    implement fun eventsOffset(): Int = 4
+    implement fun reventsOffset(): Int = 6
+    implement fun fdBytes(): Int = 4
+    implement fun pollInLow(): Int = 1
+    implement fun pollInHigh(): Int = 0
+    implement fun pollOutLow(): Int = 4
+    implement fun pollOutHigh(): Int = 0
+    implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
+        EspStub.abort()
+        return -1
+    }
+}
+
 // ============================================================================
 // Continuations & Scheduler (Thread-Safe, Instantiable)
 // ============================================================================

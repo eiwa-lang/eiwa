@@ -1172,6 +1172,9 @@ fn run(init: std.process.Init) !void {
         null;
 
     const split_eligible = cache_enabled and build_options.has_llvm and llvm_emitter.prefer_gc_alloc;
+    // Freestanding skips the split/link flow: a single object is emitted
+    // for the platform project (e.g. idf.py build) to link.
+    const is_freestanding = target_info.os_tag == .freestanding;
     if (split_eligible) {
         var dep_module_set = std.AutoHashMap(*ast.ASTNode, void).init(arena.allocator());
         var entry_module_set = std.AutoHashMap(*ast.ASTNode, void).init(arena.allocator());
@@ -1185,7 +1188,7 @@ fn run(init: std.process.Init) !void {
         }
 
         var deps_obj_path: ?[]const u8 = null;
-        if (dep_module_set.count() > 0 and entry_module_set.count() > 0) {
+        if (!is_freestanding and dep_module_set.count() > 0 and entry_module_set.count() > 0) {
             if (computeProgramCacheKey(arena.allocator(), io, &registry, is_release, target_info, cli_c_flags.items, module_paths.items, true, &global_classes_ast)) |hex| {
                 if (cacheDir(arena.allocator(), "objects")) |dir| {
                     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
@@ -1239,7 +1242,17 @@ fn run(init: std.process.Init) !void {
 
     if (is_build) {
         const fb = final_bin.?;
-        if (!linked_split) try emitter.emitNativeBinary(fb, io);
+        if (!linked_split) {
+            if (is_freestanding) {
+                try emitter.emitObjectFile(fb);
+            } else {
+                try emitter.emitNativeBinary(fb, io);
+            }
+        }
+        if (is_freestanding) {
+            std.debug.print("LLVM backend: freestanding object '{s}' (link it in the platform project, e.g. idf.py build)\n", .{fb});
+            return;
+        }
         std.debug.print("LLVM backend: Successfully built native binary '{s}' (Release: {})\n", .{ fb, is_release });
         // Populate the binary cache for future builds/runs (best-effort).
         if (cache_bin_path) |cp| {
@@ -1257,6 +1270,10 @@ fn run(init: std.process.Init) !void {
         };
         execCachedBinary(io, arena.allocator(), cp, positionals.items[1..]);
     } else {
+        if (is_freestanding) {
+            std.debug.print("Error: 'run' executes via the host JIT, which cannot run freestanding objects. Use 'build' and link the object in the platform project.\n", .{});
+            std.process.exit(1);
+        }
         const exit_code = try emitter.executeJIT(io);
         const code: u8 = if (exit_code < 0) 1 else @intCast(@min(exit_code, 255));
         std.process.exit(code);
