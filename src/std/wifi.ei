@@ -2,7 +2,6 @@
 // (main/Kconfig.projbuild: EIWA_WIFI_SSID / EIWA_WIFI_PASS), never in
 // .ei sources. Local dev: put real values in sdkconfig (gitignored);
 // CI builds with empty defaults and only proves the link.
-import { Standard } from "std.core"
 
 @Header("src/runtime/third_party/eiwa_wifi/wifi_helpers.h")
 @Source("src/runtime/third_party/eiwa_wifi/wifi_helpers.c")

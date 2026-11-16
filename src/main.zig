@@ -617,6 +617,11 @@ fn run(init: std.process.Init) !void {
         }
 
         if (!std.mem.endsWith(u8, search_path, ".ei")) {
+            // Test children always build for the host (no --target
+            // forwarding): directory runs validate logic, not firmware.
+            if (target_arg != null) {
+                std.debug.print("Note: --target is ignored for directory test runs; testing host logic.\n", .{});
+            }
             var dir = std.Io.Dir.cwd().openDir(io, search_path, .{ .iterate = true }) catch |err| {
                 std.debug.print("Failed to open test path '{s}': {}\n", .{ search_path, err });
                 std.process.exit(1);
@@ -984,6 +989,10 @@ fn run(init: std.process.Init) !void {
         var fb: []const u8 = output_name orelse (if (out_bin_name.len > 0) out_bin_name else "a.out");
         if (target_info.os_tag == .windows and !std.mem.endsWith(u8, fb, ".exe")) {
             fb = try std.fmt.allocPrint(allocator, "{s}.exe", .{fb});
+        }
+        // A freestanding build emits a linkable object, not an executable.
+        if (target_info.os_tag == .freestanding and !std.mem.endsWith(u8, fb, ".o")) {
+            fb = try std.fmt.allocPrint(allocator, "{s}.o", .{fb});
         }
         final_bin = fb;
     }

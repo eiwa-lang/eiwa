@@ -89,11 +89,12 @@ object("windows") PollLayout : PollLayoutContract {
     }
 }
 
-// lwIP pollfd matches the POSIX layout; the real wait lands with the
-// cooperative scheduler (abort until then, never silently wrong).
-lib("esp32") EspStub {
-    @Alias("abort")
-    fun abort(): Void
+// lwIP pollfd matches the POSIX layout (same 8-byte entries). The wait
+// itself is the compat poll() (select-based): reads/writes block like the
+// host path, and the scheduler keeps polling with timeout 0 (never blocks).
+lib("esp32") EspPoll {
+    @Alias("poll")
+    fun poll(fds: Pointer, nfds: Int, timeout: Int): Int
 }
 
 object("esp32") PollLayout : PollLayoutContract {
@@ -106,8 +107,7 @@ object("esp32") PollLayout : PollLayoutContract {
     implement fun pollOutLow(): Int = 4
     implement fun pollOutHigh(): Int = 0
     implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
-        EspStub.abort()
-        return -1
+        return EspPoll.poll(fds, nfds, timeout)
     }
 }
 

@@ -199,9 +199,9 @@ pub fn getHeapReallocFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
 /// based on target OS and CPU architecture.
 pub fn getJmpBufWords(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) usize {
     // RISC-V newlib (ESP-IDF): _JBLEN = 14 longs + 12 doubles = 152 bytes
-    // on RV32 = 19 64-bit words. Validate against the real toolchain in
-    // the freestanding-link ticket; oversizing only wastes a few bytes.
-    if (arch == .riscv32) return 19;
+    // on RV32 = 19 64-bit words. Other RISC-V OSes (e.g. glibc) have
+    // different layouts: keep the conservative fallback for them.
+    if (arch == .riscv32) return if (os == .freestanding) 19 else 64;
     return switch (os) {
         .macos, .ios, .watchos, .tvos, .visionos => switch (arch) {
             .aarch64 => 24, // 192 bytes (_JBLEN = 48 ints)
@@ -453,10 +453,8 @@ pub const LLVMEmitter = struct {
         }
     }
 
-    /// Freestanding only: one section per defined function so the firmware
-    /// linker can garbage-collect unreachable code (--gc-sections, on by
-    /// default in IDF). Without this the whole reachable-blind emission
-    /// lands in a single .text and blows the factory partition.
+    /// Freestanding only: one section per function/global, so --gc-sections
+    /// can drop the unreachable code the whole-program emission leaves behind.
     fn separateFunctionSections(self: *LLVMEmitter) !void {
         const is_freestanding = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
         if (!is_freestanding) return;
@@ -473,10 +471,8 @@ pub const LLVMEmitter = struct {
             llvm.LLVMSetSection(f.?, sec);
             n += 1;
         }
-        // Same for data: descriptors, vtables and string tables share
-        // .rodata/.data otherwise and can never be collected. Standard
-        // prefixes keep the IDF linker script placing them correctly;
-        // llvm.* globals (ctors) are linker-collected and must stay put.
+        // Same for data (descriptors/vtables/string tables): standard
+        // prefixes keep the linker script placing them; llvm.* stays put.
         var g = llvm.LLVMGetFirstGlobal(mod);
         while (g != null) : (g = llvm.LLVMGetNextGlobal(g.?)) {
             if (llvm.LLVMIsDeclaration(g.?) != 0) continue;
@@ -559,10 +555,6 @@ pub const LLVMEmitter = struct {
             const ralloc = llvm.LLVMBuildCall2(self.builder, realloc_type, realloc_fn, &rargs, 2, "gc_realloc");
             _ = llvm.LLVMBuildRet(self.builder, ralloc);
         }
-
-        // Note: when prefer_gc_alloc is off (freestanding included), the
-        // GC_* prototypes above get libc-forwarding bodies later in
-        // emitNonGCHelpers — nothing to do here.
 
         // Declare printf and sprintf prototypes
         const i32_type = llvm.LLVMInt32TypeInContext(self.context);
@@ -2046,8 +2038,7 @@ pub const LLVMEmitter = struct {
             }
         }
 
-        // Freestanding links no GC: skip the runtime init/root calls (the
-        // prototypes stay declared but unreferenced, so nothing dangles).
+        // Freestanding links no GC: skip init/root calls (prototypes stay declared but unreferenced).
         if (prefer_gc_alloc) {
             if (llvm.LLVMGetNamedFunction(mod, "GC_init")) |gc_init| {
                 const gci_type = llvm.LLVMGlobalGetValueType(gc_init);
@@ -2092,8 +2083,7 @@ pub const LLVMEmitter = struct {
         }
         }
 
-        // Freestanding entry is `void app_main(void)`: no argv to forward
-        // (globals stay zero-initialized) and no exit code to return.
+        // Freestanding entry is void app_main(void): no argv, no exit code.
         if (freestanding) {
             if (!self.is_test_mode) {
                 var obj_scope = std.StringHashMap(llvm.LLVMValueRef).init(self.allocator);
@@ -4877,8 +4867,7 @@ pub const LLVMEmitter = struct {
 
         {
             const freestanding_link = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
-            // Freestanding links no host crash handler (sigaction/dladdr):
-            // the firmware owns fault handling.
+            // Freestanding: the firmware owns fault handling.
             if (!freestanding_link) {
                 const src_dir = eiwa_home.resolve(self.allocator);
                 const repo_root = std.fs.path.dirname(src_dir) orelse ".";

@@ -1,6 +1,4 @@
 // Bare-metal GPIO output for ESP32 (onboard LED on most C3 devkits).
-// No host counterpart: firmware-only programs use this directly.
-import { Standard } from "std.core"
 
 @Header("driver/gpio.h")
 lib("esp32") EspGpio {
@@ -17,8 +15,7 @@ contract LedOps {
     fun off(pin: Int): Void
 }
 
-// Host stub: logs instead of driving pins, so firmware demos still
-// typecheck and run on the host (radio/pins stay firmware-only).
+// Host stub: firmware demos still typecheck and run on the host.
 object Led : LedOps {
     implement fun init(pin: Int): Void {}
 

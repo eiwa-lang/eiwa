@@ -12,6 +12,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
+// Standalone reuse without the sample Kconfig.projbuild: empty SSID means
+// "unconfigured" and connect() honestly returns 0.
+#ifndef CONFIG_EIWA_WIFI_SSID
+#define CONFIG_EIWA_WIFI_SSID ""
+#endif
+#ifndef CONFIG_EIWA_WIFI_PASS
+#define CONFIG_EIWA_WIFI_PASS ""
+#endif
+
 #define EIWA_WIFI_GOT_IP_BIT BIT0
 #define EIWA_WIFI_WAIT_MS 15000
 
