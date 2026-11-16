@@ -457,7 +457,8 @@ pub const LLVMEmitter = struct {
     /// linker can garbage-collect unreachable code (--gc-sections, on by
     /// default in IDF). Without this the whole reachable-blind emission
     /// lands in a single .text and blows the factory partition.
-    fn separateFunctionSections(self: *LLVMEmitter) !void {        const is_freestanding = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
+    fn separateFunctionSections(self: *LLVMEmitter) !void {
+        const is_freestanding = if (self.target_info) |ti| ti.os_tag == .freestanding else false;
         if (!is_freestanding) return;
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
         var n: usize = 0;
