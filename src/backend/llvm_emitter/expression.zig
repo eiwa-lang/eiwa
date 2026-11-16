@@ -2335,13 +2335,9 @@ fn emitExpressionRaw(
                     }
                 }
 
-                // A callee that names a local variable (or parameter) holds a
-                // closure value `{ fn_ptr, env }` at runtime, never a function
-                // symbol. Skip the named-function lookup below so the dynamic
-                // closure invocation path handles it (otherwise a stub declared
-                // under the same name — e.g. collections `add` — is called with
-                // the wrong signature).
-                const callee_is_var = scope.get(callee_name) != null;
+                // Closure variables never carry a resolved_c_name, while checker-
+                // rewritten static calls always do: only the former take the dynamic path.
+                const callee_is_var = call.callee.data.identifier.resolved_c_name == null and scope.get(callee_name) != null;
 
                 const target_func_init = if (callee_is_var)
                     null
