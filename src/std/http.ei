@@ -52,6 +52,7 @@ enum HttpStatus {
     NOT_FOUND,
     METHOD_NOT_ALLOWED,
     CONFLICT,
+    PAYLOAD_TOO_LARGE,
     UNPROCESSABLE_ENTITY,
     TOO_MANY_REQUESTS,
     INTERNAL_SERVER_ERROR,
@@ -77,6 +78,7 @@ fun httpStatusCode(status: HttpStatus): Int {
         HttpStatus.NOT_FOUND -> 404
         HttpStatus.METHOD_NOT_ALLOWED -> 405
         HttpStatus.CONFLICT -> 409
+        HttpStatus.PAYLOAD_TOO_LARGE -> 413
         HttpStatus.UNPROCESSABLE_ENTITY -> 422
         HttpStatus.TOO_MANY_REQUESTS -> 429
         HttpStatus.INTERNAL_SERVER_ERROR -> 500
@@ -104,6 +106,7 @@ fun httpStatusReason(status: HttpStatus): String {
         HttpStatus.NOT_FOUND -> "Not Found"
         HttpStatus.METHOD_NOT_ALLOWED -> "Method Not Allowed"
         HttpStatus.CONFLICT -> "Conflict"
+        HttpStatus.PAYLOAD_TOO_LARGE -> "Payload Too Large"
         HttpStatus.UNPROCESSABLE_ENTITY -> "Unprocessable Entity"
         HttpStatus.TOO_MANY_REQUESTS -> "Too Many Requests"
         HttpStatus.INTERNAL_SERVER_ERROR -> "Internal Server Error"
@@ -131,6 +134,7 @@ fun httpStatusFromCode(code: Int): HttpStatus? {
         404 -> HttpStatus.NOT_FOUND
         405 -> HttpStatus.METHOD_NOT_ALLOWED
         409 -> HttpStatus.CONFLICT
+        413 -> HttpStatus.PAYLOAD_TOO_LARGE
         422 -> HttpStatus.UNPROCESSABLE_ENTITY
         429 -> HttpStatus.TOO_MANY_REQUESTS
         500 -> HttpStatus.INTERNAL_SERVER_ERROR
@@ -256,12 +260,22 @@ type Client(val performer: HttpPerformer = CurlPerformer()) {
 
 type Request(val method: String, val path: String, val body: String, val headers: Map<String, String>, val queries: Map<String, String>)
 
+// Thrown when headers or body exceed the readRequest caps. The server loop
+// maps it to 413; the caps keep a tiny device from buffering a huge body.
+type RequestTooLarge(val limit: Int) : Throwable {
+    implement fun message(): String {
+        return "request exceeds " + this.limit.toString() + " bytes"
+    }
+}
+
 type ServerConnection(val sock: Socket) {
 
-    fun readRequest(): Request {
+    fun readRequest(maxHeader: Int = 2048, maxBody: Int = 8192): Request {
         // The request (headers + body) may arrive in several TCP segments
         // (e.g. via a proxy like Traefik). Keep reading until the headers are
         // complete AND the full body (per Content-Length) has been received.
+        // Caps: oversized headers are cut mid-stream, oversized bodies are
+        // rejected as soon as Content-Length is known (never buffered).
         var raw = ""
         var complete = false
         while (!complete) {
@@ -272,15 +286,25 @@ type ServerConnection(val sock: Socket) {
                 raw = raw + chunk
                 val bodyStart = raw.indexOf("\r\n\r\n")
                 if (bodyStart >= 0) {
+                    if (bodyStart > maxHeader) {
+                        throw RequestTooLarge(maxHeader)
+                    }
                     val contentLength = this.parseContentLength(raw.substring(0, bodyStart))
+                    if (contentLength > maxBody) {
+                        throw RequestTooLarge(maxBody)
+                    }
                     if (contentLength <= 0) {
                         complete = true
                     } else {
                         val haveBody = raw.length - (bodyStart + 4)
                         if (haveBody >= contentLength) {
                             complete = true
+                        } else if (raw.length > maxHeader + maxBody) {
+                            throw RequestTooLarge(maxBody)
                         }
                     }
+                } else if (raw.length > maxHeader + 4096) {
+                    throw RequestTooLarge(maxHeader)
                 }
             }
         }

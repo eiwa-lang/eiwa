@@ -1,0 +1,58 @@
+import { TCPServer, SocketClient } from "std.net"
+import { Server, ServerConnection, RequestTooLarge, HttpStatus } from "std.http"
+import { task } from "std.coroutines"
+
+fun bigBody(n: Int): String {
+    var s = ""
+    var i = 0
+    while (i < n) {
+        s = s + "a"
+        i = i + 1
+    }
+    return s
+}
+
+test "http server: oversized body throws RequestTooLarge" {
+    val srv = TCPServer()
+    srv.bind(18081)
+    val cli = SocketClient.connect("127.0.0.1", 18081)!!
+    val conn = ServerConnection(srv.accept()!!)
+    cli.write("POST /x HTTP/1.1\r\nContent-Length: 100\r\n\r\n" + bigBody(100))
+
+    var threw = false
+    try {
+        conn.readRequest(2048, 16)
+    } catch (e: RequestTooLarge) {
+        threw = true
+    }
+    assert(threw)
+    conn.close()
+    cli.close()
+    srv.close()
+}
+
+test "http server: 413 round trip on loopback" {
+    val srv = Server()
+    srv.bind(18082)
+    val t = task {
+        val cli = SocketClient.connect("127.0.0.1", 18082)!!
+        cli.write("POST /big HTTP/1.1\r\nContent-Length: 100\r\n\r\n" + bigBody(100))
+        val res = cli.read(4096)
+        cli.close()
+        res.indexOf("413") >= 0
+    }
+    val c = srv.accept()
+    if (c != null) {
+        try {
+            val req = c.readRequest(2048, 16)
+            c.writeResponse(HttpStatus.OK, "text/plain", "unexpected:" + req.path)
+        } catch (e: RequestTooLarge) {
+            c.writeResponse(HttpStatus.PAYLOAD_TOO_LARGE, "text/plain", "too big")
+        }
+        c.close()
+    } else {
+        assert(false, "accept should have returned a connection")
+    }
+    assert(t.await())
+    srv.close()
+}
