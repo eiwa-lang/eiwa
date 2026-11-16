@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done (a9f235c)
 
 - [ ] `--target esp32` e alias `esp32-riscv` reconhecidos com arquitetura RISC-V 32-bit
 - [ ] Tabela de tamanho de `jmp_buf` cobre o alvo 32-bit do firmware

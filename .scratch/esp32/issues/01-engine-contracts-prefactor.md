@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done (0f328ee)
 
 - [ ] Todo `lib` que toca syscall tem tag de alvo ou contrato correspondente; build host inalterado
 - [ ] Cliente HTTP funciona via contrato de engine com o motor atual como default
