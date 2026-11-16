@@ -5,7 +5,7 @@
 
 import { mod } from "std.math"
 import { NativeMemory, Standard } from "std.core"
-import { Thread, RawMutex, Mutex, CondVar, Threads, ThreadConstants, NativeThread, NativeGC, NativeExc, sync } from "std.thread"
+import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, NativeExc, StackDefaults, sync } from "std.thread"
 import { AtomicBool } from "std.atomic"
 import { MutableList } from "std.collections"
 
@@ -549,7 +549,7 @@ type Dispatcher(
     var isShutdown: Bool,
     var isStarted: Bool = false,
     val lock: Mutex = Mutex(),
-    val stackSize: Int = ThreadConstants.WORKER_STACK_SIZE
+    val stackSize: Int = StackDefaults.workerStackSize()
 ) {
     val threads: MutableList<Thread?> = MutableList<Thread?>()
 

@@ -270,6 +270,22 @@ object ThreadConstants {
     val THREAD_TASK_SIZE: Int = 32
 }
 
+// Per-target worker stack default. Host keeps the measured 8 MiB; firmware
+// has ~320KB DRAM total, so the esp32 motor uses 16KB (enough for state
+// machines, no deep recursion on device). Callers needing deep stacks pass
+// an explicit size via spawnWithStack instead.
+contract StackConfig {
+    fun workerStackSize(): Int
+}
+
+object StackDefaults : StackConfig {
+    implement fun workerStackSize(): Int = ThreadConstants.WORKER_STACK_SIZE
+}
+
+object("esp32") StackDefaults : StackConfig {
+    implement fun workerStackSize(): Int = 16384
+}
+
 type RawMutex(val ptr: Pointer) {
     fun lock() {
         NativeThread.pthreadMutexLock(this.ptr)
@@ -456,7 +472,7 @@ object Threads {
     }
 
     fun stackAttr(): Pointer {
-        return Threads.stackAttrSized(ThreadConstants.WORKER_STACK_SIZE)
+        return Threads.stackAttrSized(StackDefaults.workerStackSize())
     }
 
     fun stackAttrSized(stackSize: Int): Pointer {
@@ -485,7 +501,7 @@ object Threads {
     }
 
     fun spawnThread(block: () -> Void, detach: Bool): Thread {
-        return Threads.spawnThreadWithStack(block, detach, ThreadConstants.WORKER_STACK_SIZE)
+        return Threads.spawnThreadWithStack(block, detach, StackDefaults.workerStackSize())
     }
 
     fun spawnThreadWithStack(block: () -> Void, detach: Bool, stackSize: Int): Thread {
