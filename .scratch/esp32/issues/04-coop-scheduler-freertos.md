@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (Perfil freestanding linka no IDF).
 
-**Status:** ready-for-agent
+**Status:** done (27edf99)
 
 - [ ] Duas tasks cooperativas alternam e piscam LED com tempos corretos
 - [ ] Espera usa primitives do RTOS (sem busy-loop)
