@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 (Perfil freestanding linka no IDF), 04 (Scheduler cooperativo sobre FreeRTOS).
 
-**Status:** ready-for-agent
+**Status:** done (a447f7b)
 
 - [ ] `GET /health` responde 200 com corpo correto
 - [ ] POST acima do teto responde 413 e fecha a conexão
