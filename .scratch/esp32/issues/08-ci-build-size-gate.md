@@ -4,7 +4,7 @@
 
 **Blocked by:** 06 (WiFi mais exemplo fim-a-fim).
 
-**Status:** ready-for-agent
+**Status:** done (f70c08a)
 
 - [ ] Job compila o firmware-exemplo do zero no CI
 - [ ] Gate de `size` com tetos de flash/RAM falha o PR se estourar
