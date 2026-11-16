@@ -126,6 +126,18 @@ pub const TargetInfo = struct {
                 .family = .wasm,
                 .is_host = false,
             };
+        } else if (std.mem.eql(u8, lower, "esp32") or std.mem.eql(u8, lower, "esp32-riscv")) {
+            // ESP32 RISC-V members (C3/C6/H2): common RV32IMC baseline, no OS.
+            // The chip itself is an ESP-IDF project setting (IDF_TARGET,
+            // default C3), not part of the codegen triple.
+            return TargetInfo{
+                .allocator = allocator,
+                .triple = try allocator.dupe(u8, "riscv32-unknown-elf"),
+                .os_tag = .freestanding,
+                .arch = .riscv32,
+                .family = .none,
+                .is_host = false,
+            };
         }
 
         // Custom full triple: parse components loosely
@@ -148,6 +160,8 @@ pub const TargetInfo = struct {
         var arch: std.Target.Cpu.Arch = .x86_64;
         if (std.mem.startsWith(u8, lower, "aarch64") or std.mem.startsWith(u8, lower, "arm64")) {
             arch = .aarch64;
+        } else if (std.mem.startsWith(u8, lower, "riscv32")) {
+            arch = .riscv32;
         } else if (std.mem.startsWith(u8, lower, "x86_64") or std.mem.startsWith(u8, lower, "amd64")) {
             arch = .x86_64;
         } else if (std.mem.startsWith(u8, lower, "arm") or std.mem.startsWith(u8, lower, "armhf")) {
@@ -182,6 +196,11 @@ pub const TargetInfo = struct {
         if (std.mem.eql(u8, t, "posix") and self.family == .posix) return true;
         if (std.mem.eql(u8, t, "windows") and self.family == .windows) return true;
         if (std.mem.eql(u8, t, "wasm") and self.family == .wasm) return true;
+
+        // ESP32 RISC-V members: the triple carries no "esp32" substring
+        // (stock-LLVM bare-metal triple), so match explicitly.
+        if ((std.mem.eql(u8, t, "esp32") or std.mem.eql(u8, t, "esp32-riscv")) and
+            self.arch == .riscv32 and self.os_tag == .freestanding) return true;
 
         // OS tag match
         const os_name = @tagName(self.os_tag);
@@ -241,4 +260,20 @@ test "target info parsing and matching" {
     try testing.expect(macos.matchesTag("posix"));
     try testing.expect(macos.matchesTag("macos"));
     try testing.expect(macos.matchesTag("darwin"));
+
+    const esp = try TargetInfo.parse(allocator, "esp32");
+    defer allocator.free(esp.triple);
+    try testing.expect(esp.arch == .riscv32);
+    try testing.expect(esp.os_tag == .freestanding);
+    try testing.expect(!esp.is_host);
+    try testing.expect(esp.matchesTag("esp32"));
+    try testing.expect(esp.matchesTag("esp32-riscv"));
+    try testing.expect(esp.matchesTag("riscv32"));
+    try testing.expect(esp.matchesTag("freestanding"));
+    try testing.expect(!esp.matchesTag("posix"));
+
+    const esp_alias = try TargetInfo.parse(allocator, "esp32-riscv");
+    defer allocator.free(esp_alias.triple);
+    try testing.expect(esp_alias.arch == .riscv32);
+    try testing.expect(std.mem.eql(u8, esp_alias.triple, esp.triple));
 }

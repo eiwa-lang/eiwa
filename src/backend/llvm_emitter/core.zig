@@ -198,6 +198,10 @@ pub fn getHeapReallocFn(mod: llvm.LLVMModuleRef) llvm.LLVMValueRef {
 /// Returns the size in 64-bit words for `jmp_buf` in `EiwaExceptionFrame`
 /// based on target OS and CPU architecture.
 pub fn getJmpBufWords(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) usize {
+    // RISC-V newlib (ESP-IDF): _JBLEN = 14 longs + 12 doubles = 152 bytes
+    // on RV32 = 19 64-bit words. Validate against the real toolchain in
+    // the freestanding-link ticket; oversizing only wastes a few bytes.
+    if (arch == .riscv32) return 19;
     return switch (os) {
         .macos, .ios, .watchos, .tvos, .visionos => switch (arch) {
             .aarch64 => 24, // 192 bytes (_JBLEN = 48 ints)

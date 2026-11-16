@@ -456,7 +456,7 @@ fn run(init: std.process.Init) !void {
             \\
             \\Options:
             \\  --release            Optimized build
-            \\  --target <name>      Target triple or alias (windows, linux, macos, wasm)
+            \\  --target <name>      Target triple or alias (windows, linux, macos, wasm, esp32)
             \\  -o <name>            Output binary name (build command)
             \\  --module-path <dir>  Root directory for module resolution (can be repeated)
             \\  --aot                run: build a cached native binary and execute
