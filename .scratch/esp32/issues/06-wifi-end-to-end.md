@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 (HTTP server sobre lwIP).
 
-**Status:** ready-for-agent
+**Status:** done (bdad55c)
 
 - [ ] Conexão só inicia o server após IP obtido; queda de WiFi não trava o firmware
 - [ ] `GET /blink` alterna o LED e responde 200
