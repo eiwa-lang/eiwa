@@ -146,8 +146,13 @@ type Response(val status: Int, val body: String) {
     }
 }
 
-type Client() {
-    fun get(url: String): Response {
+contract HttpPerformer {
+    fun get(url: String): Response
+    fun post(url: String, body: String): Response
+}
+
+type CurlPerformer() : HttpPerformer {
+    implement fun get(url: String): Response {
         val curl = NativeHttp.curlEasyInit()
         if (curl == null) {
             return Response(0, "")
@@ -188,7 +193,7 @@ type Client() {
         return Response(status, bodyStr)
     }
 
-    fun post(url: String, body: String): Response {
+    implement fun post(url: String, body: String): Response {
         val curl = NativeHttp.curlEasyInit()
         if (curl == null) {
             return Response(0, "")
@@ -234,6 +239,18 @@ type Client() {
         val bodyBuf = buffer as CString
         val bodyStr = if (bodyBuf.ptr == null) "" else String(bodyBuf.ptr, bodyBuf.length)
         return Response(status, bodyStr)
+    }
+}
+
+// shortcut: curl is the universal motor for now; the per-target default
+// (lwIP on ESP32) lands with the ESP motor.
+type Client(val performer: HttpPerformer = CurlPerformer()) {
+    fun get(url: String): Response {
+        return this.performer.get(url)
+    }
+
+    fun post(url: String, body: String): Response {
+        return this.performer.post(url, body)
     }
 }
 
