@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (Contratos antes dos motores).
 
-**Status:** ready-for-agent
+**Status:** blocked — lives in the external `eiwa-lang/arest` repo (needs the `HttpEngine` ESP motor there); unblocked by 01's contract, nothing to do in this repo.
 
 - [ ] Mesma assinatura de `get`/`post` nos dois alvos
 - [ ] Erro de compilação claro se o motor não existir para o alvo
