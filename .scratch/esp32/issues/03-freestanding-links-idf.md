@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (Contratos antes dos motores), 02 (Alvo esp32 emite objeto RV32).
 
-**Status:** ready-for-agent
+**Status:** done (c5ac8bb)
 
 - [ ] Link sem `-lgc`, sem pthreads, sem curl; alocador padrão usa o heap do firmware
 - [ ] Entrada via `app_main`, saída de texto via serial
