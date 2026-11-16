@@ -34,7 +34,7 @@ test "coop: idle connections do not starve new requests" {
         while (i < idleCount) {
             val c = SocketClient.connect("127.0.0.1", port)
             if (c != null) {
-                idle.add(c!!)
+                idle.add(c)
             }
             i = i + 1
         }

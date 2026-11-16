@@ -1,5 +1,3 @@
-import { repeat } from "std.system"
-
 fun withVal(v: Int, f: (Int) -> Void): Void {
     f(v)
 }
