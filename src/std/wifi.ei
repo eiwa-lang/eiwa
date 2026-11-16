@@ -1,0 +1,35 @@
+// WiFi station facade. Credentials live in the IDF build config
+// (main/Kconfig.projbuild: EIWA_WIFI_SSID / EIWA_WIFI_PASS), never in
+// .ei sources. Local dev: put real values in sdkconfig (gitignored);
+// CI builds with empty defaults and only proves the link.
+import { Standard } from "std.core"
+
+@Header("src/runtime/third_party/eiwa_wifi/wifi_helpers.h")
+@Source("src/runtime/third_party/eiwa_wifi/wifi_helpers.c")
+lib("esp32") EspWifi {
+    @Alias("eiwa_wifi_connect")
+    fun connect(): Int
+
+    @Alias("eiwa_wifi_connected")
+    fun connected(): Int
+}
+
+contract WifiOps {
+    fun connect(): Bool
+    fun isConnected(): Bool
+}
+
+object Wifi : WifiOps {
+    implement fun connect(): Bool = false
+    implement fun isConnected(): Bool = false
+}
+
+object("esp32") Wifi : WifiOps {
+    implement fun connect(): Bool {
+        return EspWifi.connect() != 0
+    }
+
+    implement fun isConnected(): Bool {
+        return EspWifi.connected() != 0
+    }
+}

@@ -7,9 +7,10 @@ idf_component_register(
          "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/runtime/third_party/eiwa_exc/exc_state.c"
          "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/runtime/third_party/eiwa_string/string_helpers.c"
          "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/runtime/third_party/eiwa_net/net_helpers.c"
+         "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/runtime/third_party/eiwa_wifi/wifi_helpers.c"
     INCLUDE_DIRS "."
                  "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/runtime/third_party"
-    PRIV_REQUIRES freertos lwip)
+    PRIV_REQUIRES freertos lwip esp_wifi esp_event nvs_flash esp_driver_gpio)
 
 # The whole object links (entry is app_main); --gc-sections (IDF default)
 # dead-strips every unreachable section. idf::lwip must follow our objects

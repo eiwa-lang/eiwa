@@ -44,6 +44,9 @@ pub const std_modules = std.StaticStringMap([]const u8).initComptime(.{
     .{ "db.ei", @embedFile("../../std/db.ei") },
     // --- Domain & Math layer ---
     .{ "money.ei", @embedFile("../../std/money.ei") },
+    // --- Embedded layer (ESP32) ---
+    .{ "wifi.ei", @embedFile("../../std/wifi.ei") },
+    .{ "gpio.ei", @embedFile("../../std/gpio.ei") },
 });
 
 pub const user_implicit_imports = &[_][]const u8{ "std.core", "std.io", "std.system", "std.exceptions", "std.env", "std.collections", "std.string", "std.time", "std.serde", "std.log", "std.coroutines", "std.thread", "std.atomic", "std.uuid", "std.ulid", "std.random", "std.regex" };
