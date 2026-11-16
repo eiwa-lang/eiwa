@@ -1,0 +1,85 @@
+import { MutableMap } from "std.collections"
+
+object ShadowStore {
+    var slots: MutableMap<String, String>? = null
+    var hits: Int = 0
+
+    fun table(): MutableMap<String, String> {
+        if (ShadowStore.slots == null) {
+            ShadowStore.slots = MutableMap<String, String>()
+        }
+        return ShadowStore.slots!!
+    }
+
+    fun prune(): Int {
+        ShadowStore.hits = ShadowStore.hits + 1
+        val table = ShadowStore.table()
+        if (table.size() < 50) {
+            return -1
+        }
+        return table.size()
+    }
+}
+
+object InitShadowStore {
+    var slots: MutableMap<String, String>? = null
+
+    fun table(): MutableMap<String, String> {
+        if (InitShadowStore.slots == null) {
+            InitShadowStore.slots = MutableMap<String, String>()
+        }
+        return InitShadowStore.slots!!
+    }
+
+    init {
+        val table = InitShadowStore.table()
+        assert(table.size() == 0)
+    }
+}
+
+object Plain {
+    fun table(): Int {
+        return 7
+    }
+}
+
+fun plainCall(): Int {
+    val S_table = 42
+    return Plain.table() + S_table
+}
+
+type Counter(val n: Int) {
+    fun bump(): Int {
+        val n = 5
+        return this.n + n
+    }
+    fun n(): Int {
+        return 99
+    }
+}
+
+test "dummy first" {
+    assert(1 == 1)
+}
+
+test "local shadowing sibling method name" {
+    ShadowStore.slots = null
+    ShadowStore.hits = 0
+    assert(ShadowStore.prune() == -1)
+    assert(ShadowStore.hits == 1)
+    ShadowStore.table().put("k", "v")
+    assert(ShadowStore.table().size() == 1)
+}
+
+test "local shadowing sibling method name in init block" {
+    assert(InitShadowStore.table().size() == 0)
+}
+
+test "local named like a mangled callee" {
+    assert(plainCall() == 49)
+}
+
+test "type method local shadows method name" {
+    val c = Counter(n = 10)
+    assert(c.bump() == 15)
+}

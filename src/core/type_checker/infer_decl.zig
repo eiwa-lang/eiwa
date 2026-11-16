@@ -1393,9 +1393,21 @@ pub fn inferFunDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaT
 
 pub fn inferVarDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *EiwaType) anyerror!void {
     const v = &node.data.var_decl;
+    // Locals must keep their plain name: `{Obj}_{name}` would collide with a same-named method symbol.
+    var in_function = false;
+    var cur: ?*Scope = scope;
+    while (cur) |s| {
+        if (s.is_function_boundary or s.is_lambda_boundary) {
+            in_function = true;
+            break;
+        }
+        cur = s.parent;
+    }
     if (self.current_class_name) |class_name| {
-        const actual_class = self.alias_map.get(class_name) orelse class_name;
-        @constCast(v).resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ actual_class, v.name });
+        if (!in_function) {
+            const actual_class = self.alias_map.get(class_name) orelse class_name;
+            @constCast(v).resolved_c_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ actual_class, v.name });
+        }
     }
     var declared: ?*const EiwaType = null;
     if (v.type_ref) |tr| {
@@ -1594,13 +1606,17 @@ pub fn inferObjectDecl(self: *TypeChecker, node: *ASTNode, scope: *Scope, t: *Ei
             self.reportError(init_node.line, init_node.column, "TypeError: 'return' is not allowed in object init {{}}.", .{});
             return error.TypeError;
         }
+        // Init locals are body locals, not fields: no `{Obj}_{name}` mangling.
+        var init_scope = Scope.init(self.allocator, &obj_scope);
+        defer init_scope.deinit();
+        init_scope.is_function_boundary = true;
         const ib = init_node.data.init_decl.body;
         if (ib.data == .block) {
             for (ib.data.block.statements) |s| {
-                _ = try self.inferNode(s, &obj_scope);
+                _ = try self.inferNode(s, &init_scope);
             }
         } else {
-            _ = try self.inferNode(ib, &obj_scope);
+            _ = try self.inferNode(ib, &init_scope);
         }
     }
     t.* = .Void;
