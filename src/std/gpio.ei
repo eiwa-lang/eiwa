@@ -1,0 +1,43 @@
+// Bare-metal GPIO output for ESP32 (onboard LED on most C3 devkits).
+
+@Header("driver/gpio.h")
+lib("esp32") EspGpio {
+    @Alias("gpio_set_direction")
+    fun setDirection(pin: Int, mode: Int): Int
+
+    @Alias("gpio_set_level")
+    fun setLevel(pin: Int, level: Int): Int
+}
+
+contract LedOps {
+    fun init(pin: Int): Void
+    fun on(pin: Int): Void
+    fun off(pin: Int): Void
+}
+
+// Host stub: firmware demos still typecheck and run on the host.
+object Led : LedOps {
+    implement fun init(pin: Int): Void {}
+
+    implement fun on(pin: Int): Void {
+        print("led $pin on (stub)")
+    }
+
+    implement fun off(pin: Int): Void {
+        print("led $pin off (stub)")
+    }
+}
+
+object("esp32") Led : LedOps {
+    implement fun init(pin: Int): Void {
+        EspGpio.setDirection(pin, 2)
+    }
+
+    implement fun on(pin: Int): Void {
+        EspGpio.setLevel(pin, 1)
+    }
+
+    implement fun off(pin: Int): Void {
+        EspGpio.setLevel(pin, 0)
+    }
+}

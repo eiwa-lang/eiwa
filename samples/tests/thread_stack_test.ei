@@ -1,0 +1,5 @@
+import { StackDefaults } from "std.thread"
+
+test "stack defaults: host worker stack is 8MiB" {
+    assert(StackDefaults.workerStackSize() == 8388608)
+}
