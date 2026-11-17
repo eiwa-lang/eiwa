@@ -1,0 +1,11 @@
+menu "Eiwa WiFi"
+
+    config EIWA_WIFI_SSID
+        string "WiFi SSID for the Eiwa station"
+        default ""
+
+    config EIWA_WIFI_PASS
+        string "WiFi password (empty = open network)"
+        default ""
+
+endmenu
