@@ -150,13 +150,8 @@ type Response(val status: Int, val body: String) {
     }
 }
 
-contract HttpPerformer {
-    fun get(url: String): Response
-    fun post(url: String, body: String): Response
-}
-
-type CurlPerformer() : HttpPerformer {
-    implement fun get(url: String): Response {
+type Client() {
+    fun get(url: String): Response {
         val curl = NativeHttp.curlEasyInit()
         if (curl == null) {
             return Response(0, "")
@@ -197,7 +192,7 @@ type CurlPerformer() : HttpPerformer {
         return Response(status, bodyStr)
     }
 
-    implement fun post(url: String, body: String): Response {
+    fun post(url: String, body: String): Response {
         val curl = NativeHttp.curlEasyInit()
         if (curl == null) {
             return Response(0, "")
@@ -246,36 +241,14 @@ type CurlPerformer() : HttpPerformer {
     }
 }
 
-// shortcut: curl is the universal motor for now; the per-target default
-// (lwIP on ESP32) lands with the ESP motor.
-type Client(val performer: HttpPerformer = CurlPerformer()) {
-    fun get(url: String): Response {
-        return this.performer.get(url)
-    }
-
-    fun post(url: String, body: String): Response {
-        return this.performer.post(url, body)
-    }
-}
-
 type Request(val method: String, val path: String, val body: String, val headers: Map<String, String>, val queries: Map<String, String>)
-
-// Thrown when headers or body exceed the readRequest caps. The server loop
-// maps it to 413; the caps keep a tiny device from buffering a huge body.
-type RequestTooLarge(val limit: Int) : Throwable {
-    implement fun message(): String {
-        return "request exceeds " + this.limit.toString() + " bytes"
-    }
-}
 
 type ServerConnection(val sock: Socket) {
 
-    fun readRequest(maxHeader: Int = 2048, maxBody: Int = 8192): Request {
+    fun readRequest(): Request {
         // The request (headers + body) may arrive in several TCP segments
         // (e.g. via a proxy like Traefik). Keep reading until the headers are
         // complete AND the full body (per Content-Length) has been received.
-        // Caps: oversized headers are cut mid-stream, oversized bodies are
-        // rejected as soon as Content-Length is known (never buffered).
         var raw = ""
         var complete = false
         while (!complete) {
@@ -286,25 +259,15 @@ type ServerConnection(val sock: Socket) {
                 raw = raw + chunk
                 val bodyStart = raw.indexOf("\r\n\r\n")
                 if (bodyStart >= 0) {
-                    if (bodyStart > maxHeader) {
-                        throw RequestTooLarge(maxHeader)
-                    }
                     val contentLength = this.parseContentLength(raw.substring(0, bodyStart))
-                    if (contentLength > maxBody) {
-                        throw RequestTooLarge(maxBody)
-                    }
                     if (contentLength <= 0) {
                         complete = true
                     } else {
                         val haveBody = raw.length - (bodyStart + 4)
                         if (haveBody >= contentLength) {
                             complete = true
-                        } else if (raw.length > maxHeader + maxBody) {
-                            throw RequestTooLarge(maxBody)
                         }
                     }
-                } else if (raw.length > maxHeader + 4096) {
-                    throw RequestTooLarge(maxHeader)
                 }
             }
         }

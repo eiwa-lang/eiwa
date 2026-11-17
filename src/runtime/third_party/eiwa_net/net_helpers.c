@@ -159,13 +159,7 @@ void eiwa_socket_close(int64_t fd) {
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
-#ifdef ESP_PLATFORM
-// No top-level <poll.h> on ESP-IDF; the port provides <sys/poll.h> with
-// the same pollfd/poll surface (backed by lwIP/VFS).
-#include <sys/poll.h>
-#else
 #include <poll.h>
-#endif
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>

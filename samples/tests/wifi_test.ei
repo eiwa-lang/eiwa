@@ -1,7 +1,0 @@
-import { Wifi } from "std.wifi"
-
-// Host stub: no radio here, connect() is honestly false.
-test "wifi: host stub reports disconnected" {
-    assert(!Wifi.connect())
-    assert(!Wifi.isConnected())
-}

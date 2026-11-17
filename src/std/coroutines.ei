@@ -5,7 +5,7 @@
 
 import { mod } from "std.math"
 import { NativeMemory, Standard } from "std.core"
-import { Thread, RawMutex, Mutex, CondVar, Threads, NativeThread, NativeGC, NativeExc, StackDefaults, sync } from "std.thread"
+import { Thread, RawMutex, Mutex, CondVar, Threads, ThreadConstants, NativeThread, NativeGC, NativeExc, sync } from "std.thread"
 import { AtomicBool } from "std.atomic"
 import { MutableList } from "std.collections"
 
@@ -86,28 +86,6 @@ object("windows") PollLayout : PollLayoutContract {
     implement fun pollOutHigh(): Int = 0
     implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
         return Win32Poll.poll(fds, nfds, timeout)
-    }
-}
-
-// lwIP pollfd matches the POSIX layout (same 8-byte entries). The wait
-// itself is the compat poll() (select-based): reads/writes block like the
-// host path, and the scheduler keeps polling with timeout 0 (never blocks).
-lib("esp32") EspPoll {
-    @Alias("poll")
-    fun poll(fds: Pointer, nfds: Int, timeout: Int): Int
-}
-
-object("esp32") PollLayout : PollLayoutContract {
-    implement fun entrySize(): Int = 8
-    implement fun eventsOffset(): Int = 4
-    implement fun reventsOffset(): Int = 6
-    implement fun fdBytes(): Int = 4
-    implement fun pollInLow(): Int = 1
-    implement fun pollInHigh(): Int = 0
-    implement fun pollOutLow(): Int = 4
-    implement fun pollOutHigh(): Int = 0
-    implement fun poll(fds: Pointer, nfds: Int, timeout: Int): Int {
-        return EspPoll.poll(fds, nfds, timeout)
     }
 }
 
@@ -549,7 +527,7 @@ type Dispatcher(
     var isShutdown: Bool,
     var isStarted: Bool = false,
     val lock: Mutex = Mutex(),
-    val stackSize: Int = StackDefaults.workerStackSize()
+    val stackSize: Int = ThreadConstants.WORKER_STACK_SIZE
 ) {
     val threads: MutableList<Thread?> = MutableList<Thread?>()
 

@@ -17,74 +17,12 @@ lib NativeNet {
 
     @Alias("eiwa_socket_write")
     fun socketWrite(fd: Int, data: Pointer, len: Int): Int
-
+    
     @Alias("eiwa_tcp_set_nonblocking")
     fun setNonblocking(fd: Int): Int
-
+    
     @Alias("eiwa_socket_close")
     fun socketClose(fd: Int): Void
-}
-
-// Same BSD-socket surface for lwIP: the C file is portable (socket, bind,
-// listen, accept, read, write, fcntl, getaddrinfo, poll all exist in lwIP),
-// so the esp32 motor reuses it instead of forking the C code.
-@Header("src/runtime/third_party/eiwa_net/net_helpers.h")
-@Source("src/runtime/third_party/eiwa_net/net_helpers.c")
-lib("esp32") EspNet {
-    @Alias("eiwa_tcp_bind")
-    fun tcpBind(port: Int): Int
-
-    @Alias("eiwa_tcp_connect")
-    fun tcpConnect(host: Pointer, port: Int): Int
-
-    @Alias("eiwa_tcp_accept")
-    fun tcpAccept(fd: Int): Int
-
-    @Alias("eiwa_socket_read")
-    fun socketRead(fd: Int, buf: Pointer, maxLen: Int): Int
-
-    @Alias("eiwa_socket_write")
-    fun socketWrite(fd: Int, data: Pointer, len: Int): Int
-
-    @Alias("eiwa_tcp_set_nonblocking")
-    fun setNonblocking(fd: Int): Int
-
-    @Alias("eiwa_socket_close")
-    fun socketClose(fd: Int): Void
-}
-
-contract NetOps {
-    fun tcpBind(port: Int): Int
-    fun tcpConnect(host: Pointer, port: Int): Int
-    fun tcpAccept(fd: Int): Int
-    fun socketRead(fd: Int, buf: Pointer, maxLen: Int): Int
-    fun socketWrite(fd: Int, data: Pointer, len: Int): Int
-    fun setNonblocking(fd: Int): Int
-    fun socketClose(fd: Int): Void
-}
-
-object Net : NetOps {
-    implement fun tcpBind(port: Int): Int = NativeNet.tcpBind(port)
-    implement fun tcpConnect(host: Pointer, port: Int): Int = NativeNet.tcpConnect(host, port)
-    implement fun tcpAccept(fd: Int): Int = NativeNet.tcpAccept(fd)
-    implement fun socketRead(fd: Int, buf: Pointer, maxLen: Int): Int = NativeNet.socketRead(fd, buf, maxLen)
-    implement fun socketWrite(fd: Int, data: Pointer, len: Int): Int = NativeNet.socketWrite(fd, data, len)
-    implement fun setNonblocking(fd: Int): Int = NativeNet.setNonblocking(fd)
-    implement fun socketClose(fd: Int): Void {
-        NativeNet.socketClose(fd)
-    }
-}
-
-object("esp32") Net : NetOps {
-    implement fun tcpBind(port: Int): Int = EspNet.tcpBind(port)
-    implement fun tcpConnect(host: Pointer, port: Int): Int = EspNet.tcpConnect(host, port)
-    implement fun tcpAccept(fd: Int): Int = EspNet.tcpAccept(fd)
-    implement fun socketRead(fd: Int, buf: Pointer, maxLen: Int): Int = EspNet.socketRead(fd, buf, maxLen)
-    implement fun socketWrite(fd: Int, data: Pointer, len: Int): Int = EspNet.socketWrite(fd, data, len)
-    implement fun setNonblocking(fd: Int): Int = EspNet.setNonblocking(fd)
-    implement fun socketClose(fd: Int): Void {
-        EspNet.socketClose(fd)
-    }
 }
 
 type Socket(val fd: Int = -1) {
@@ -92,7 +30,7 @@ type Socket(val fd: Int = -1) {
     fun read(maxLen: Int): String {
         val buf = Standard.gcMalloc(maxLen + 1)
         EventLoop.waitReadable(this.fd)
-        val n = Net.socketRead(this.fd, buf, maxLen)
+        val n = NativeNet.socketRead(this.fd, buf, maxLen)
         if (n <= 0) {
             return ""
         }
@@ -103,21 +41,21 @@ type Socket(val fd: Int = -1) {
     @Suspend
     fun write(data: String): Int {
         EventLoop.waitWritable(this.fd)
-        return Net.socketWrite(this.fd, data.ptr, data.length)
+        return NativeNet.socketWrite(this.fd, data.ptr, data.length)
     }
     
     fun close(): Void {
-        Net.socketClose(this.fd)
+        NativeNet.socketClose(this.fd)
     }
 }
 
 object SocketClient {
     fun connect(host: String, port: Int): Socket? {
-        val fd = Net.tcpConnect(host.ptr, port)
+        val fd = NativeNet.tcpConnect(host.ptr, port)
         if (fd < 0) {
             return null
         }
-        Net.setNonblocking(fd)
+        NativeNet.setNonblocking(fd)
         return Socket(fd)
     }
 }
@@ -130,9 +68,9 @@ type BindException(val port: Int) : Throwable {
 
 type TCPServer(var fd: Int = -1) {
     fun tryBind(port: Int): Bool {
-        this.fd = Net.tcpBind(port)
+        this.fd = NativeNet.tcpBind(port)
         if (this.fd >= 0) {
-            Net.setNonblocking(this.fd)
+            NativeNet.setNonblocking(this.fd)
         }
         return this.fd >= 0
     }
@@ -152,17 +90,17 @@ type TCPServer(var fd: Int = -1) {
         if (pr <= 0) {
             return null
         }
-        val clientFd = Net.tcpAccept(this.fd)
+        val clientFd = NativeNet.tcpAccept(this.fd)
         if (clientFd < 0) {
             return null
         }
-        Net.setNonblocking(clientFd)
+        NativeNet.setNonblocking(clientFd)
         return Socket(clientFd)
     }
     
     fun close(): Void {
         if (this.fd >= 0) {
-            Net.socketClose(this.fd)
+            NativeNet.socketClose(this.fd)
             this.fd = -1
         }
     }

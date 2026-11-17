@@ -120,59 +120,6 @@ lib("windows") Win32Thread {
     fun getActiveProcessorCount(groupNumber: Int): Int
 }
 
-// ESP-IDF ships a POSIX threads implementation, so the esp32 motor uses
-// the same pthread surface as posix (real primitives, replaced nothing).
-@Header("<pthread.h>", "<unistd.h>")
-lib("esp32") EspPthread {
-    @Alias("pthread_create")
-    fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
-
-    @Alias("pthread_join")
-    fun pthreadJoin(thread: Pointer, retval: Pointer): Int
-
-    @Alias("pthread_attr_init")
-    fun pthreadAttrInit(attr: Pointer): Int
-
-    @Alias("pthread_attr_setstacksize")
-    fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int
-
-    @Alias("pthread_attr_destroy")
-    fun pthreadAttrDestroy(attr: Pointer): Int
-
-    @Alias("pthread_detach")
-    fun pthreadDetach(thread: Pointer): Int
-
-    @Alias("pthread_self")
-    fun pthreadSelf(): Pointer
-
-    @Alias("pthread_mutex_init")
-    fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int
-
-    @Alias("pthread_mutex_lock")
-    fun pthreadMutexLock(mutex: Pointer): Int
-
-    @Alias("pthread_mutex_unlock")
-    fun pthreadMutexUnlock(mutex: Pointer): Int
-
-    @Alias("pthread_mutex_destroy")
-    fun pthreadMutexDestroy(mutex: Pointer): Int
-
-    @Alias("pthread_cond_init")
-    fun pthreadCondInit(cond: Pointer, attr: Pointer): Int
-
-    @Alias("pthread_cond_wait")
-    fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int
-
-    @Alias("pthread_cond_signal")
-    fun pthreadCondSignal(cond: Pointer): Int
-
-    @Alias("pthread_cond_broadcast")
-    fun pthreadCondBroadcast(cond: Pointer): Int
-
-    @Alias("pthread_cond_destroy")
-    fun pthreadCondDestroy(cond: Pointer): Int
-}
-
 contract ThreadOpsContract {
     fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int
     fun pthreadJoin(thread: Pointer, retval: Pointer): Int
@@ -230,25 +177,6 @@ object("windows") NativeThread : ThreadOpsContract {
     implement fun pthreadCondDestroy(cond: Pointer): Int = Win32Thread.pthreadCondDestroy(cond)
 }
 
-object("esp32") NativeThread : ThreadOpsContract {
-    implement fun pthreadCreate(threadOut: Pointer, attr: Pointer, startRoutine: Pointer, arg: Pointer): Int = EspPthread.pthreadCreate(threadOut, attr, startRoutine, arg)
-    implement fun pthreadJoin(thread: Pointer, retval: Pointer): Int = EspPthread.pthreadJoin(thread, retval)
-    implement fun pthreadAttrInit(attr: Pointer): Int = EspPthread.pthreadAttrInit(attr)
-    implement fun pthreadAttrSetstacksize(attr: Pointer, size: Int): Int = EspPthread.pthreadAttrSetstacksize(attr, size)
-    implement fun pthreadAttrDestroy(attr: Pointer): Int = EspPthread.pthreadAttrDestroy(attr)
-    implement fun pthreadDetach(thread: Pointer): Int = EspPthread.pthreadDetach(thread)
-    implement fun pthreadSelf(): Pointer = EspPthread.pthreadSelf()
-    implement fun pthreadMutexInit(mutex: Pointer, attr: Pointer): Int = EspPthread.pthreadMutexInit(mutex, attr)
-    implement fun pthreadMutexLock(mutex: Pointer): Int = EspPthread.pthreadMutexLock(mutex)
-    implement fun pthreadMutexUnlock(mutex: Pointer): Int = EspPthread.pthreadMutexUnlock(mutex)
-    implement fun pthreadMutexDestroy(mutex: Pointer): Int = EspPthread.pthreadMutexDestroy(mutex)
-    implement fun pthreadCondInit(cond: Pointer, attr: Pointer): Int = EspPthread.pthreadCondInit(cond, attr)
-    implement fun pthreadCondWait(cond: Pointer, mutex: Pointer): Int = EspPthread.pthreadCondWait(cond, mutex)
-    implement fun pthreadCondSignal(cond: Pointer): Int = EspPthread.pthreadCondSignal(cond)
-    implement fun pthreadCondBroadcast(cond: Pointer): Int = EspPthread.pthreadCondBroadcast(cond)
-    implement fun pthreadCondDestroy(cond: Pointer): Int = EspPthread.pthreadCondDestroy(cond)
-}
-
 object ThreadConstants {
     // POSIX sysconf keys for online processor count
     val SC_NPROCESSORS_ONLN_DARWIN: Int = 58
@@ -268,22 +196,6 @@ object ThreadConstants {
     val WORKER_STACK_SIZE: Int = 8388608
     val GC_STACK_BASE_SIZE: Int = 16
     val THREAD_TASK_SIZE: Int = 32
-}
-
-// Per-target worker stack default. Host keeps the measured 8 MiB; firmware
-// has ~320KB DRAM total, so the esp32 motor uses 16KB (enough for state
-// machines, no deep recursion on device). Callers needing deep stacks pass
-// an explicit size via spawnWithStack instead.
-contract StackConfig {
-    fun workerStackSize(): Int
-}
-
-object StackDefaults : StackConfig {
-    implement fun workerStackSize(): Int = ThreadConstants.WORKER_STACK_SIZE
-}
-
-object("esp32") StackDefaults : StackConfig {
-    implement fun workerStackSize(): Int = 16384
 }
 
 type RawMutex(val ptr: Pointer) {
@@ -453,11 +365,6 @@ object("windows") CurrentCoreDetector : CoreDetector {
     }
 }
 
-// Single-core by construction (C3/C6): no sysconf needed.
-object("esp32") CurrentCoreDetector : CoreDetector {
-    implement fun getCores(): Int = 1
-}
-
 object CurrentCoreDetector : CoreDetector {
     implement fun getCores(): Int = 1
 }
@@ -472,7 +379,7 @@ object Threads {
     }
 
     fun stackAttr(): Pointer {
-        return Threads.stackAttrSized(StackDefaults.workerStackSize())
+        return Threads.stackAttrSized(ThreadConstants.WORKER_STACK_SIZE)
     }
 
     fun stackAttrSized(stackSize: Int): Pointer {
@@ -501,7 +408,7 @@ object Threads {
     }
 
     fun spawnThread(block: () -> Void, detach: Bool): Thread {
-        return Threads.spawnThreadWithStack(block, detach, StackDefaults.workerStackSize())
+        return Threads.spawnThreadWithStack(block, detach, ThreadConstants.WORKER_STACK_SIZE)
     }
 
     fun spawnThreadWithStack(block: () -> Void, detach: Bool, stackSize: Int): Thread {

@@ -1106,7 +1106,7 @@ fun compilerCommand(cmd: String) {
     val args = parseArgs()
     val target: String? = positional(args, 0)
     var testFilter: String? = null
-    if (cmd == "test" && target != null && isTestPathFilter(target)) {
+    if (cmd == "test" && target != null && isTestPathFilter(target!!)) {
         testFilter = target
     } else {
         enterProjectDir(target)
