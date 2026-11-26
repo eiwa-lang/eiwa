@@ -1,0 +1,11 @@
+// Regression: a bare `return` in `init {}` (which is inlined into `main`,
+// returning i32) used to emit `ret void` and fail LLVM verification with
+// "Function return type does not match operand type of return inst!".
+import { env } from "std.env"
+
+init {
+    if (env("EIWA_INIT_RETURN_SKIP", "") == "1") {
+        return
+    }
+    print("init ran to completion")
+}

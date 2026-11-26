@@ -1,0 +1,34 @@
+// A captured value whose name matches an imported C function (`access`,
+// `read`, `time`, ...) must be captured, not resolved to the C symbol.
+// Before the fix this emitted `@access` (the libc function) as the String and
+// crashed on the bogus length — the #34 "String length garbage at -O3" report.
+import { assert } from "std.core"
+
+// Declared (never called) so a function named `access` exists in the LLVM
+// module, which is what used to shadow the capture. POSIX-only, like the rest
+// of the repo's unistd users.
+lib("posix") ShadowProbe {
+    @Alias("access")
+    fun canAccess(path: Pointer, mode: Int): Int
+}
+
+fun shadowWrap(access: String, payload: String): String {
+    val f: (String) -> String = { x -> x + "|" + access + "|" + payload }
+    return f("A")
+}
+
+fun shadowCall(read: () -> String): String {
+    val f: (String) -> String = { x -> x + read() }
+    return f("A")
+}
+
+test "lambda captures a param shadowing libc access()" {
+    val got = shadowWrap("TOKEN", "P")
+    assert(got == "A|TOKEN|P", "got '$got'")
+    assert(got.length == 9, "length ${got.length}")
+}
+
+test "lambda captures a callable param shadowing libc read()" {
+    val up: () -> String = { "B" }
+    assert(shadowCall(up) == "AB", "got '${shadowCall(up)}'")
+}
