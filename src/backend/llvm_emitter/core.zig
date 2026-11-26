@@ -4530,7 +4530,13 @@ pub const LLVMEmitter = struct {
     /// Runs LLVM PassBuilder optimization passes (mem2reg for dev, default<O3> for release).
     pub fn optimizeModule(self: *LLVMEmitter, target_machine: llvm.LLVMTargetMachineRef) !void {
         const mod = self.module orelse return error.ModuleAlreadyDisposed;
-        const pass_pipeline = if (self.is_release) "default<O3>" else "mem2reg";
+        // EIWA_OPT_PIPELINE overrides the release pipeline so a miscompile can be
+        // bisected by pass (e.g. EIWA_OPT_PIPELINE=default<O2>).
+        const env_pipeline: ?[]const u8 = if (self.is_release)
+            (if (std.c.getenv("EIWA_OPT_PIPELINE")) |v| std.mem.span(v) else null)
+        else
+            null;
+        const pass_pipeline = env_pipeline orelse if (self.is_release) "default<O3>" else "mem2reg";
         const pass_z = try self.allocator.dupeZ(u8, pass_pipeline);
         defer self.allocator.free(pass_z);
 
@@ -4544,6 +4550,25 @@ pub const LLVMEmitter = struct {
                 std.debug.print("LLVM Pass Warning: {s}\n", .{err_str});
                 llvm.LLVMDisposeErrorMessage(err_str);
             }
+        }
+    }
+
+    /// EIWA_DUMP_IR=<path> / EIWA_DUMP_IR_PRE=<path> write the module IR around
+    /// the pass pipeline. The emitted unit's object name is appended so the deps
+    /// object and the entry object do not overwrite each other.
+    fn dumpModule(self: *LLVMEmitter, env_name: [*:0]const u8, unit_path: []const u8) void {
+        const mod = self.module orelse return;
+        const dump_path = std.c.getenv(env_name) orelse return;
+        const path = std.fmt.allocPrint(self.allocator, "{s}.{s}.ll", .{
+            std.mem.span(dump_path),
+            std.fs.path.basename(unit_path),
+        }) catch return;
+        defer self.allocator.free(path);
+        const path_z = self.allocator.dupeZ(u8, path) catch return;
+        defer self.allocator.free(path_z);
+        var err_msg: [*c]u8 = null;
+        if (llvm.LLVMPrintModuleToFile(mod, path_z.ptr, &err_msg) != 0) {
+            if (err_msg != null) llvm.LLVMDisposeMessage(err_msg);
         }
     }
 
@@ -4721,8 +4746,13 @@ pub const LLVMEmitter = struct {
             }
         }
 
+        // Dump the module around the pass pipeline (debugging miscompiles).
+        self.dumpModule("EIWA_DUMP_IR_PRE", obj_path);
+
         // Run passes
         try self.optimizeModule(target_machine);
+
+        self.dumpModule("EIWA_DUMP_IR", obj_path);
 
         const obj_z = try self.allocator.dupeZ(u8, obj_path);
         defer self.allocator.free(obj_z);

@@ -315,6 +315,10 @@ fn computeProgramCacheKey(
     // Host-CPU tuning changes codegen; include the opt-out env var if set.
     if (std.c.getenv("EIWA_BASELINE_CPU")) |v| hasher.update(std.mem.span(v));
     hasher.update(&.{0});
+    // The release pass pipeline is overridable for bisecting miscompiles; it
+    // changes the emitted object, so it must invalidate cached artifacts.
+    if (std.c.getenv("EIWA_OPT_PIPELINE")) |v| hasher.update(std.mem.span(v));
+    hasher.update(&.{0});
 
     // Any change to the compiler (including the embedded stdlib sources)
     // invalidates every cached binary.

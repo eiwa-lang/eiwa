@@ -165,6 +165,9 @@ fn collectCapturesLLVM(
     mod: llvm.LLVMModuleRef,
     structs: *std.StringHashMap(core.StructInfo),
     ctx: llvm.LLVMContextRef,
+    /// Enclosing scope: a name found here is a value that shadows same-named C
+    /// functions (`access`, `read`, `time`, ...) and must be captured.
+    outer: *const std.StringHashMap(llvm.LLVMValueRef),
 ) anyerror!void {
     switch (node.data) {
         .identifier => |i| {
@@ -194,13 +197,19 @@ fn collectCapturesLLVM(
                 return;
             }
             const name = i.resolved_c_name orelse i.name;
-            // Skip global functions and type names
-            const name_z = try std.heap.page_allocator.dupeZ(u8, name);
-            defer std.heap.page_allocator.free(name_z);
-            if (llvm.LLVMGetNamedFunction(mod, name_z.ptr) != null) return;
-            const iname_z = try std.heap.page_allocator.dupeZ(u8, i.name);
-            defer std.heap.page_allocator.free(iname_z);
-            if (llvm.LLVMGetNamedFunction(mod, iname_z.ptr) != null) return;
+            // A name present in the enclosing scope is a value: it shadows any
+            // same-named global C function (`access`, `read`, `time`, ...) and
+            // must be captured — including function-typed values (closures).
+            const shadowed = outer.contains(i.name) or outer.contains(name);
+            if (!shadowed) {
+                // Skip global functions and type names
+                const name_z = try std.heap.page_allocator.dupeZ(u8, name);
+                defer std.heap.page_allocator.free(name_z);
+                if (llvm.LLVMGetNamedFunction(mod, name_z.ptr) != null) return;
+                const iname_z = try std.heap.page_allocator.dupeZ(u8, i.name);
+                defer std.heap.page_allocator.free(iname_z);
+                if (llvm.LLVMGetNamedFunction(mod, iname_z.ptr) != null) return;
+            }
             if (structs.contains(name) or structs.contains(i.name)) return;
             // Object singletons are not values: they have no instance global
             // (members live in `{Obj}_{field}` globals) and member access is
@@ -221,30 +230,30 @@ fn collectCapturesLLVM(
             }
         },
         .call_expr => |c| {
-            try collectCapturesLLVM(c.callee, locals, captures, mod, structs, ctx);
-            for (c.arguments) |arg| try collectCapturesLLVM(arg, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(c.callee, locals, captures, mod, structs, ctx, outer);
+            for (c.arguments) |arg| try collectCapturesLLVM(arg, locals, captures, mod, structs, ctx, outer);
         },
-        .unary_expr => |u| try collectCapturesLLVM(u.operand, locals, captures, mod, structs, ctx),
+        .unary_expr => |u| try collectCapturesLLVM(u.operand, locals, captures, mod, structs, ctx, outer),
         .binary_expr => |b| {
-            try collectCapturesLLVM(b.left, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(b.right, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(b.left, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(b.right, locals, captures, mod, structs, ctx, outer);
         },
         .if_expr => |i| {
-            try collectCapturesLLVM(i.condition, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(i.then_branch, locals, captures, mod, structs, ctx);
-            if (i.else_branch) |eb| try collectCapturesLLVM(eb, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(i.condition, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(i.then_branch, locals, captures, mod, structs, ctx, outer);
+            if (i.else_branch) |eb| try collectCapturesLLVM(eb, locals, captures, mod, structs, ctx, outer);
         },
         .index_expr => |idx| {
-            try collectCapturesLLVM(idx.object, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(idx.index, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(idx.object, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(idx.index, locals, captures, mod, structs, ctx, outer);
         },
         .index_set_expr => |s| {
-            try collectCapturesLLVM(s.object, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(s.index, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(s.value, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(s.object, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(s.index, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(s.value, locals, captures, mod, structs, ctx, outer);
         },
         .assignment => |a| {
-            try collectCapturesLLVM(a.value, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(a.value, locals, captures, mod, structs, ctx, outer);
             // The target name can also be a capture (if assigned-to from outer scope)
             if (!locals.contains(a.name)) {
                 for (captures.items) |cap| {
@@ -256,51 +265,51 @@ fn collectCapturesLLVM(
                 }
             }
         },
-        .get_expr => |g| try collectCapturesLLVM(g.object, locals, captures, mod, structs, ctx),
+        .get_expr => |g| try collectCapturesLLVM(g.object, locals, captures, mod, structs, ctx, outer),
         .set_expr => |s| {
-            try collectCapturesLLVM(s.object, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(s.value, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(s.object, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(s.value, locals, captures, mod, structs, ctx, outer);
         },
-        .block => |b| for (b.statements) |s| try collectCapturesLLVM(s, locals, captures, mod, structs, ctx),
+        .block => |b| for (b.statements) |s| try collectCapturesLLVM(s, locals, captures, mod, structs, ctx, outer),
         .while_stmt => |w| {
-            try collectCapturesLLVM(w.condition, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(w.body, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(w.condition, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(w.body, locals, captures, mod, structs, ctx, outer);
         },
         .for_stmt => |f| {
-            try collectCapturesLLVM(f.iterable, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(f.body, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(f.iterable, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(f.body, locals, captures, mod, structs, ctx, outer);
         },
-        .return_stmt => |r| { if (r.value) |v| try collectCapturesLLVM(v, locals, captures, mod, structs, ctx); },
-        .break_stmt => |b| { if (b.value) |v| try collectCapturesLLVM(v, locals, captures, mod, structs, ctx); },
-        .throw_stmt => |t| try collectCapturesLLVM(t.expr, locals, captures, mod, structs, ctx),
-        .var_decl => |v| { if (v.initializer) |init| try collectCapturesLLVM(init, locals, captures, mod, structs, ctx); },
+        .return_stmt => |r| { if (r.value) |v| try collectCapturesLLVM(v, locals, captures, mod, structs, ctx, outer); },
+        .break_stmt => |b| { if (b.value) |v| try collectCapturesLLVM(v, locals, captures, mod, structs, ctx, outer); },
+        .throw_stmt => |t| try collectCapturesLLVM(t.expr, locals, captures, mod, structs, ctx, outer),
+        .var_decl => |v| { if (v.initializer) |init| try collectCapturesLLVM(init, locals, captures, mod, structs, ctx, outer); },
         .ternary_expr => |t| {
-            try collectCapturesLLVM(t.condition, locals, captures, mod, structs, ctx);
-            try collectCapturesLLVM(t.then_branch, locals, captures, mod, structs, ctx);
-            if (t.else_branch) |eb| try collectCapturesLLVM(eb, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(t.condition, locals, captures, mod, structs, ctx, outer);
+            try collectCapturesLLVM(t.then_branch, locals, captures, mod, structs, ctx, outer);
+            if (t.else_branch) |eb| try collectCapturesLLVM(eb, locals, captures, mod, structs, ctx, outer);
         },
-        .as_expr => |a| try collectCapturesLLVM(a.value, locals, captures, mod, structs, ctx),
-        .named_arg => |na| try collectCapturesLLVM(na.value, locals, captures, mod, structs, ctx),
-        .is_expr => |i| try collectCapturesLLVM(i.value, locals, captures, mod, structs, ctx),
+        .as_expr => |a| try collectCapturesLLVM(a.value, locals, captures, mod, structs, ctx, outer),
+        .named_arg => |na| try collectCapturesLLVM(na.value, locals, captures, mod, structs, ctx, outer),
+        .is_expr => |i| try collectCapturesLLVM(i.value, locals, captures, mod, structs, ctx, outer),
         .try_stmt => |t| {
-            try collectCapturesLLVM(t.body, locals, captures, mod, structs, ctx);
-            for (t.catches) |c| try collectCapturesLLVM(c.body, locals, captures, mod, structs, ctx);
+            try collectCapturesLLVM(t.body, locals, captures, mod, structs, ctx, outer);
+            for (t.catches) |c| try collectCapturesLLVM(c.body, locals, captures, mod, structs, ctx, outer);
         },
         .when_expr => |w| {
-            if (w.subject) |subj| try collectCapturesLLVM(subj, locals, captures, mod, structs, ctx);
+            if (w.subject) |subj| try collectCapturesLLVM(subj, locals, captures, mod, structs, ctx, outer);
             for (w.cases) |case| {
-                for (case.conds) |cond| try collectCapturesLLVM(cond, locals, captures, mod, structs, ctx);
-                try collectCapturesLLVM(case.body, locals, captures, mod, structs, ctx);
+                for (case.conds) |cond| try collectCapturesLLVM(cond, locals, captures, mod, structs, ctx, outer);
+                try collectCapturesLLVM(case.body, locals, captures, mod, structs, ctx, outer);
             }
         },
         .string_template => |st| {
-            for (st.parts) |p| try collectCapturesLLVM(p, locals, captures, mod, structs, ctx);
+            for (st.parts) |p| try collectCapturesLLVM(p, locals, captures, mod, structs, ctx, outer);
         },
         .array_literal => |arr| {
-            for (arr.elements) |e| try collectCapturesLLVM(e, locals, captures, mod, structs, ctx);
+            for (arr.elements) |e| try collectCapturesLLVM(e, locals, captures, mod, structs, ctx, outer);
         },
         .map_literal => |m| {
-            for (m.elements) |e| try collectCapturesLLVM(e, locals, captures, mod, structs, ctx);
+            for (m.elements) |e| try collectCapturesLLVM(e, locals, captures, mod, structs, ctx, outer);
         },
         // Nested lambda: build inner_locals (outer locals + inner params + inner decls)
         // so the inner lambda's own variables are not treated as captures.
@@ -314,7 +323,7 @@ fn collectCapturesLLVM(
             for (l.params) |p| try inner_locals.put(p.name, {});
             if (l.params.len == 0) try inner_locals.put("it", {});
             for (l.body) |s| try collectDeclaredLocalsLLVM(s, &inner_locals);
-            for (l.body) |s| try collectCapturesLLVM(s, &inner_locals, captures, mod, structs, ctx);
+            for (l.body) |s| try collectCapturesLLVM(s, &inner_locals, captures, mod, structs, ctx, outer);
         },
         else => {},
     }
@@ -1908,7 +1917,7 @@ fn emitExpressionRaw(
 
             var captures = compat.ArrayList(CaptureInfo).init(std.heap.page_allocator);
             defer captures.deinit();
-            for (lam.body) |stmt| try collectCapturesLLVM(stmt, &locals, &captures, mod, structs, ctx);
+            for (lam.body) |stmt| try collectCapturesLLVM(stmt, &locals, &captures, mod, structs, ctx, scope);
 
             // --- Step 2: Determine param types (excluding env) ----------------------
             var param_types = try std.heap.page_allocator.alloc(llvm.LLVMTypeRef, lam.params.len);

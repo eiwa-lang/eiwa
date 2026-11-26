@@ -1295,7 +1295,14 @@ pub fn emitStatement(
                 }
             } else {
                 try emitReturnPops(ctx, mod, builder, func_val);
-                _ = llvm.LLVMBuildRetVoid(builder);
+                // `return` inside `init {}`/top-level code lands in `main`, which
+                // returns i32: a bare `ret void` there is invalid IR.
+                const ret_type = llvm.LLVMGetReturnType(llvm.LLVMGlobalGetValueType(func_val));
+                if (llvm.LLVMGetTypeKind(ret_type) == llvm.LLVMVoidTypeKind) {
+                    _ = llvm.LLVMBuildRetVoid(builder);
+                } else {
+                    _ = llvm.LLVMBuildRet(builder, llvm.LLVMConstNull(ret_type));
+                }
             }
         },
         .break_stmt => |b| {

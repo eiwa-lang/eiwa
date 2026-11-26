@@ -144,8 +144,10 @@ jobs:
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
             ./bin/eiwac.exe run samples/main.ei
+            ./bin/eiwac.exe run samples/init_return.ei
           else
             ./bin/eiwac run samples/main.ei
+            ./bin/eiwac run samples/init_return.ei
           fi
 
       - name: Crash report (native binary)
